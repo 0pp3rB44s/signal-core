@@ -1,0 +1,99 @@
+
+/* CGC Dashboard V4.3 Tables */
+
+.wallet-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(340px, 0.9fr);
+  gap: 18px;
+}
+
+.command-center {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.position-metrics,
+.trade-cockpit-grid,
+.protection-summary-grid,
+.strategy-heatmap-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.position-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.trade-cockpit-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.position-metrics > div,
+.trade-cockpit-grid > div,
+.risk-list > div {
+  min-height: 58px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.42);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.position-metrics span,
+.trade-cockpit-grid span,
+.risk-list span {
+  display: block;
+  margin-bottom: 4px;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.position-metrics strong,
+.trade-cockpit-grid strong,
+.risk-list strong {
+  color: #f8fafc;
+}
+
+.log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-list code {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.66);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+@media (max-width: 1240px) {
+  .wallet-grid,
+  .command-center,
+  .position-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .wallet-grid,
+  .command-center,
+  .position-metrics,
+  .trade-cockpit-grid {
+    grid-template-columns: 1fr;
+  }
+}

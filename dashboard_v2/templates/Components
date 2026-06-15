@@ -1,0 +1,131 @@
+
+
+{# ========================================================= #}
+{# CGC DASHBOARD V4 COMPONENT REGISTRY                       #}
+{# Institutional component architecture layer                #}
+{# ========================================================= #}
+
+{# ========================= #}
+{# EXECUTIVE HERO COMPONENT #}
+{# ========================= #}
+{% macro executive_hero(executive) %}
+<article id="v4-executive-hero" class="v4-executive-hero {{ executive.level if executive else '' }}">
+  <div>
+    <span>Executive Status</span>
+    <h2 id="v4-executive-status">{{ executive.status if executive else 'UNKNOWN' }}</h2>
+    <p id="v4-executive-summary">
+      Risk {{ executive.risk_state if executive else 'UNKNOWN' }} ·
+      {{ executive.open_positions if executive else 0 }} open ·
+      source {{ executive.data_source if executive else 'UNKNOWN' }}
+    </p>
+  </div>
+
+  <div class="v4-hero-pnl">
+    <span>Total PnL</span>
+    <strong id="v4-total-pnl" class="{{ executive.level if executive else '' }}">
+      {{ executive.total_pnl if executive else 0 }}
+    </strong>
+    <small id="v4-pnl-summary">
+      Daily {{ executive.daily_pnl if executive else 0 }} ·
+      Weekly {{ executive.weekly_pnl if executive else 0 }}
+    </small>
+  </div>
+</article>
+{% endmacro %}
+
+
+{# ======================= #}
+{# MARKET SPARK COMPONENT #}
+{# ======================= #}
+{% macro market_spark_card(market, spark) %}
+<article class="mini-market-card market-card-live {{ market.level }}">
+  <div>
+    <span>{{ market.symbol }}</span>
+    <strong>{{ market.regime }}</strong>
+  </div>
+
+  <div class="sparkline-track">
+    {% if spark %}
+      {% for point in spark.points %}
+        <span style="height: {{ point }}%"></span>
+      {% endfor %}
+    {% else %}
+      <span style="height: 25%"></span>
+      <span style="height: 35%"></span>
+      <span style="height: 45%"></span>
+      <span style="height: 40%"></span>
+      <span style="height: 55%"></span>
+      <span style="height: 50%"></span>
+    {% endif %}
+  </div>
+
+  <div class="market-meta-row">
+    <small>{{ market.direction }} · pnl {{ market.pnl_pct }}%</small>
+    {% if spark %}
+      <small>score {{ spark.score_hint }} · vol {{ spark.volatility_rank }}</small>
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
+
+
+{# ======================= #}
+{# EXECUTION TIMELINE     #}
+{# ======================= #}
+{% macro execution_event(event) %}
+<article class="timeline-event {{ event.level }}">
+  <span>{{ event.event_type }}</span>
+  <strong>{{ event.summary }}</strong>
+  <small>
+    {{ event.timestamp }} ·
+    {{ event.strategy }} ·
+    pnl {{ event.net_pnl }}
+  </small>
+</article>
+{% endmacro %}
+
+
+{# ======================= #}
+{# STRATEGY HEATMAP CELL  #}
+{# ======================= #}
+{% macro strategy_heatmap_cell(cell) %}
+<article class="heatmap-cell {{ cell.level }}">
+  <span>{{ cell.x }}</span>
+  <strong>{{ cell.y }}</strong>
+  <small>exp {{ cell.value }} · {{ cell.status }}</small>
+</article>
+{% endmacro %}
+
+
+{# ======================= #}
+{# POSITION TELEMETRY     #}
+{# ======================= #}
+{% macro telemetry_row(telemetry) %}
+<div class="telemetry-mini-grid">
+  <div>
+    <span>Live RR</span>
+    <strong>{{ telemetry.live_rr }}</strong>
+  </div>
+  <div>
+    <span>Distance SL</span>
+    <strong>{{ telemetry.distance_to_sl_pct }}%</strong>
+  </div>
+  <div>
+    <span>Notional</span>
+    <strong>{{ telemetry.notional }}</strong>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ======================= #}
+{# PROTECTION ALERT ITEM  #}
+{# ======================= #}
+{% macro protection_alert(alert) %}
+<code class="{{ alert.level }}">{{ alert.message }}</code>
+{% endmacro %}
+
+
+{# ========================================================= #}
+{# END COMPONENT REGISTRY                                    #}
+{# ========================================================= #}

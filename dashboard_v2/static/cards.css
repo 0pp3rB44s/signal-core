@@ -1,0 +1,212 @@
+
+.protection-summary-grid {
+  margin-bottom: 14px;
+}
+
+.protection-summary-grid > div {
+  border: 1px solid rgba(239,68,68,0.16);
+}
+
+
+/* CGC Dashboard V4.2 Cards */
+
+.wallet-card,
+.command-card,
+.panel,
+.chart-card,
+.position-card,
+.candidate-card,
+.timeline-event {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.86), rgba(15, 23, 42, 0.58));
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.18);
+}
+
+.panel {
+  padding: 18px;
+  gap: 14px;
+}
+
+.wallet-card {
+  min-height: 96px;
+  padding: 18px;
+  justify-content: space-between;
+}
+
+.wallet-card.primary {
+  background:
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 42%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.82));
+}
+
+.badge,
+.direction-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 5px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 999px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.72);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.good,
+.success {
+  color: #22c55e;
+  font-weight: 800;
+}
+
+.warning {
+  color: #facc15;
+  font-weight: 800;
+}
+
+.danger {
+  color: #ef4444;
+  font-weight: 800;
+}
+
+/* CGC Dashboard V4.4 Overview Hierarchy */
+.v4-live-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.v4-strip-card {
+  min-height: 86px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.76), rgba(2, 6, 23, 0.58));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+.v4-strip-card span,
+.v4-strip-card small {
+  display: block;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.v4-strip-card strong {
+  display: block;
+  margin: 7px 0 4px;
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 950;
+}
+
+.v4-strip-card.good {
+  border-color: rgba(34, 197, 94, 0.28);
+}
+
+.v4-strip-card.good strong {
+  color: #22c55e;
+}
+
+.v4-strip-card.warning {
+  border-color: rgba(250, 204, 21, 0.28);
+}
+
+.v4-strip-card.warning strong {
+  color: #facc15;
+}
+
+.v4-strip-card.danger {
+  border-color: rgba(239, 68, 68, 0.34);
+}
+
+.v4-strip-card.danger strong {
+  color: #ef4444;
+}
+
+.v4-candidate-board .candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.v4-candidate-card {
+  min-height: 148px;
+  padding: 15px;
+  overflow: hidden;
+}
+
+.v4-candidate-card .candidate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.v4-candidate-card p {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: #cbd5e1;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.v4-risk-guard .risk-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.v4-risk-guard .risk-list > div {
+  min-height: 48px;
+  padding: 9px 11px;
+}
+
+.v4-risk-guard .risk-list span {
+  font-size: 0.66rem;
+}
+
+.v4-risk-guard .risk-list strong {
+  font-size: 0.94rem;
+}
+
+@media (max-width: 1240px) {
+  .v4-live-strip,
+  .v4-candidate-board .candidate-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .v4-live-strip,
+  .v4-candidate-board .candidate-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.reject-command-center {
+  margin-bottom: 14px;
+}
+
+.reject-command-center > div {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.reject-command-center strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1rem;
+  font-weight: 900;
+}

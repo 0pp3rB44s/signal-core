@@ -1,0 +1,21 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+logs/
+state/
+state_backup/
+backups/
+data_store/
+reports/runtime_snapshots/
+*.bak*
+*.backup*
+
+# Generated reports / audits
+reports/
+full_tree.txt
+project_inventory.txt
+*.save
+0

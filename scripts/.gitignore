@@ -1,0 +1,52 @@
+# Safe Startup
+
+# Quick Bootstrap (New Mac / Fresh Install)
+
+Run full environment bootstrap:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+This automatically:
+
+- creates `.venv`
+- installs dependencies
+- creates `.env`
+- prepares runtime folders
+- makes scripts executable
+
+---
+
+# Runtime Cleanup
+
+Clean local runtime/cache artifacts safely:
+
+```bash
+./scripts/clean_runtime.sh
+```
+
+This will:
+
+- remove `__pycache__`
+- remove `.pyc` artifacts
+- remove `.bak/.tmp/.orig` files
+- backup runtime state/logs first
+
+---
+
+# Project Structure
+
+app/                core runtime
+backtesting/        validation + optimization
+clients/            Bitget API + schemas
+dashboard_v2/       live dashboard
+execution/          execution + protection engine
+planning/           trade planning + adaptive TP
+reports/            backtests + analytics
+risk/               institutional risk engine
+scripts/            startup/bootstrap/deployment
+state/              runtime persistence
+strategies/         signal generation + scoring
+telemetry/          logging + analytics
+backups/            runtime cleanup backups
