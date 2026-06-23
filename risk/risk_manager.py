@@ -48,6 +48,21 @@ class RiskManager:
         strategy_stats = by_strategy.get(strategy_name) or {}
         symbol_stats = by_symbol.get(symbol) or {}
 
+        # --- Defensive daily status checks ---
+        daily_status = self._daily_defensive_status()
+        daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
+        consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
+
+        if daily_realized_pnl <= -10.0:
+            reasons.append(
+                f"kill-switch: daily defensive mode active (daily_pnl={daily_realized_pnl:.2f})"
+            )
+
+        if consecutive_losses >= 3:
+            reasons.append(
+                f"kill-switch: consecutive loss limit reached ({consecutive_losses})"
+            )
+
         if self._stats_should_pause(strategy_stats, min_trades=5):
             reasons.append(f"expectancy-watch: strategy weak but not hard-paused ({strategy_name})")
 
@@ -99,12 +114,12 @@ class RiskManager:
             return True, reasons
 
         if expectancy < 0:
-            reasons.append(f"strategy weighting SOFT_PENALTY: negative expectancy ({strategy_name}, exp={expectancy:.3f})")
-            return True, reasons
+            reasons.append(f"strategy weighting HARD_BLOCK: negative expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
+            return False, reasons
 
         if tp1_hit_rate < 0.25:
-            reasons.append(f"strategy weighting SOFT_PENALTY: weak TP1 hit-rate ({strategy_name}, tp1={tp1_hit_rate:.3f})")
-            return True, reasons
+            reasons.append(f"strategy weighting HARD_BLOCK: weak TP1 hit-rate ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})")
+            return False, reasons
 
         if expectancy >= 0.15 and tp1_hit_rate >= 0.45:
             reasons.append(f"strategy weighting BOOST: strong expectancy ({strategy_name}, exp={expectancy:.3f})")
@@ -160,6 +175,20 @@ class RiskManager:
     @staticmethod
     def _latest_strategy_expectancy() -> dict:
         path = REPORTS_PATH / "strategy_expectancy.json"
+        if not path.exists():
+            return {}
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return {}
+
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _daily_defensive_status() -> dict:
+        path = BASE_PATH / "data_store" / "trades" / "daily_learning_report.json"
         if not path.exists():
             return {}
 

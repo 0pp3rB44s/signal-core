@@ -11,20 +11,19 @@ class LowVolReclaimStrategy:
     _last_watch_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _reject_counts: dict[str, int] = {}
 
-    # Reclaim Unlock v4: allow normal-vol reclaim probes while continuation stays hard-blocked.
-    LOW_VOL_MAX_RANK = 65.0
-    MIN_VOLUME_RATIO = 0.12
-    MAX_SPREAD_BPS = 6.5
-    MIN_BODY_PCT = 0.03
-    # Controlled unlock: allow more reclaim data while continuation remains hard-blocked.
-    MIN_PARTICIPATION_SCORE = 0.62
-    MIN_FOLLOWTHROUGH_VOLUME_RATIO = 0.08
+    # Defensive production gate after autopsy: low-vol reclaim was leaking on weak follow-through.
+    LOW_VOL_MAX_RANK = 55.0
+    MIN_VOLUME_RATIO = 0.20
+    MAX_SPREAD_BPS = 5.0
+    MIN_BODY_PCT = 0.04
+    MIN_PARTICIPATION_SCORE = 0.75
+    MIN_FOLLOWTHROUGH_VOLUME_RATIO = 0.10
     MAX_EMA_RECLAIM_DISTANCE_PCT = 2.50
     MTF_OVERRIDE_MIN_PRESSURE_SCORE = 38.0
     MTF_OVERRIDE_MIN_EXPANSION_PROB = 58.0
-    MTF_OVERRIDE_MIN_VOLUME_RATIO = 0.10
-    MTF_OVERRIDE_MIN_PARTICIPATION_SCORE = 0.58
-    MTF_OVERRIDE_MAX_VOL_RANK = 75.0
+    MTF_OVERRIDE_MIN_VOLUME_RATIO = 0.18
+    MTF_OVERRIDE_MIN_PARTICIPATION_SCORE = 0.72
+    MTF_OVERRIDE_MAX_VOL_RANK = 65.0
 
     def _reject(self, market: MarketSnapshot, reason: str, **context: object) -> None:
         symbol = str(market.symbol).upper()
@@ -212,7 +211,8 @@ class LowVolReclaimStrategy:
         prev2 = primary_candles[-3]
 
         notes: list[str] = ["low_vol_reclaim_mode"]
-        notes.append("reclaim_unlock_v4=true")
+        notes.append("defensive_reclaim_gate_v6=true")
+        notes.append("reclaim_unlock_v5=true")
         market_context_notes = [str(note) for note in (getattr(market, "notes", []) or [])]
 
         primary_trend = (market.primary.trend or "").lower()
@@ -619,7 +619,7 @@ class LowVolReclaimStrategy:
         notes.append("entry_model=retest_zone_first")
         notes.append("low_vol_scalp_expectation")
         notes.append("fast_tp_required")
-        notes.append("reclaim_unlock_v5=true")
+        notes.append("followthrough_relaxed_0_06=true")
         notes.append("selector_exhaustion_soft_override=true")
 
         for context_note in market_context_notes:

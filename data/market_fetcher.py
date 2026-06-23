@@ -900,6 +900,24 @@ class MarketFetcher:
                 notes.append("possible_bullish_reversal_context=true")
             if breakout_ready and breakout_direction in {"short", "bearish", "down", "breakdown"}:
                 notes.append("possible_bearish_reversal_context=true")
+
+            # P5.3 Structure Engine handoff: expose raw breakout structure flags
+            # to momentum_breakout.py. Without these parser-friendly notes the
+            # prearmed context sees structure_source=missing|score=0 and blocks
+            # otherwise valid high-probability breakout/breakdown setups.
+            for raw_note in breakout_context.get("notes", []) or []:
+                text = str(raw_note).strip()
+                if not text:
+                    continue
+                notes.append(text)
+                notes.append(f"breakout_note={text}")
+
+            notes.append(f"range_tightening={str(bool(breakout_context.get('tightening', False))).lower()}")
+            notes.append(f"higher_lows_building={str(bool(breakout_context.get('higher_lows', False))).lower()}")
+            notes.append(f"lower_highs_building={str(bool(breakout_context.get('lower_highs', False))).lower()}")
+            notes.append(f"closes_pressing_highs={str(bool(breakout_context.get('close_near_high', False))).lower()}")
+            notes.append(f"closes_pressing_lows={str(bool(breakout_context.get('close_near_low', False))).lower()}")
+            notes.append(f"breakout_structure_detected={str(bool(breakout_context.get('diag_structure_detected', False))).lower()}")
         except Exception as exc:
             self.log.warning("BREAKOUT_CONTEXT_FAILED | %s | error=%s", primary.symbol, exc)
 

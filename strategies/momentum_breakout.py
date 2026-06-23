@@ -35,9 +35,9 @@ class MomentumBreakoutStrategy:
 
         self.lookback = 20
         self.min_breakout_pct = 0.12
-        self.min_volume_ratio = 1.15
-        self.min_participation_score = 0.85
-        self.min_followthrough_volume_ratio = 0.35
+        self.min_volume_ratio = 0.90
+        self.min_participation_score = 0.75
+        self.min_followthrough_volume_ratio = 0.25
         self.max_pullback_bps = 45
         self.min_close_position_pct = 0.55
         self.max_bars_since_breakout = 3
@@ -49,7 +49,11 @@ class MomentumBreakoutStrategy:
         self.prearmed_min_close_position_pct = 0.50
         self.weak_pressure_min_score = 30.0
         self.weak_pressure_min_expansion_prob = 55.0
-        self.strict_breakout_min_volume_ratio = 0.85
+        self.strict_breakout_min_volume_ratio = 0.70
+        self.context_min_expansion_prob = float(os.getenv("BREAKOUT_CONTEXT_MIN_EXPANSION_PROB", "70"))
+        self.context_min_pressure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_PRESSURE_SCORE", "45"))
+        self.context_min_structure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_STRUCTURE_SCORE", "1"))
+        self.context_high_prob_pressure_floor = float(os.getenv("BREAKOUT_CONTEXT_HIGH_PROB_PRESSURE_FLOOR", "35"))
 
     def detect(self, market: MarketSnapshot) -> Optional[StrategyCandidate]:
         candles = market.primary.candles
@@ -67,14 +71,35 @@ class MomentumBreakoutStrategy:
             and primary_trend == "bullish"
             and confirmation_trend == "bullish"
         )
+        prearmed_context_override = bool(
+            pre_alignment_prearmed_context.get("allowed")
+            and pre_alignment_prearmed_context.get("breakout_context_ready")
+            and pre_alignment_prearmed_context.get("has_structure")
+            and pre_alignment_prearmed_context.get("breakout_direction_pressure")
+            and float(pre_alignment_prearmed_context.get("pressure_score", 0.0)) >= self.context_min_pressure_score
+            and float(pre_alignment_prearmed_context.get("expansion_prob", 0.0)) >= self.context_min_expansion_prob
+        )
         mtf_prearmed_override = (
             pre_alignment_prearmed_context.get("allowed")
-            and market.alignment in {"aligned_bullish", "mixed"}
-            and confirmation_trend == "bullish"
-            and primary_trend in {"bullish", "mixed", "neutral"}
+            and (
+                (
+                    market.alignment in {"aligned_bullish", "mixed"}
+                    and confirmation_trend in {"bullish", "mixed", "neutral"}
+                    and primary_trend in {"bullish", "mixed", "neutral"}
+                )
+                or prearmed_context_override
+            )
+        )
+        strong_reversal_breakout_override = (
+            bool(pre_alignment_prearmed_context.get("breakout_context_ready"))
+            and float(pre_alignment_prearmed_context.get("pressure_score", 0.0)) >= 65.0
+            and float(pre_alignment_prearmed_context.get("expansion_prob", 0.0)) >= 75.0
+            and str(pre_alignment_prearmed_context.get("direction", "")).lower() == "bullish"
+            and market.alignment in {"aligned_bearish", "mixed"}
+            and primary_trend in {"bearish", "mixed", "neutral"}
         )
 
-        if not strict_trend_alignment and not mtf_prearmed_override:
+        if not strict_trend_alignment and not mtf_prearmed_override and not strong_reversal_breakout_override:
             self._log_rejection(
                 market,
                 "trend_not_aligned_for_breakout",
@@ -83,6 +108,7 @@ class MomentumBreakoutStrategy:
                     f"primary_trend={primary_trend}",
                     f"confirmation_trend={confirmation_trend}",
                     f"mtf_prearmed_override={mtf_prearmed_override}",
+                    f"strong_reversal_breakout_override={strong_reversal_breakout_override}",
                 ],
             )
             return None
@@ -90,6 +116,17 @@ class MomentumBreakoutStrategy:
         if mtf_prearmed_override and not strict_trend_alignment:
             logger.info(
                 "MTF_PREARMED_OVERRIDE | %s | direction=LONG | alignment=%s | primary=%s | confirmation=%s | pressure_score=%.2f | expansion_prob=%.1f",
+                market.symbol,
+                market.alignment,
+                primary_trend,
+                confirmation_trend,
+                float(pre_alignment_prearmed_context.get("pressure_score", 0.0)),
+                float(pre_alignment_prearmed_context.get("expansion_prob", 0.0)),
+            )
+
+        if strong_reversal_breakout_override and not strict_trend_alignment:
+            logger.info(
+                "STRONG_REVERSAL_BREAKOUT_OVERRIDE | %s | direction=LONG | alignment=%s | primary=%s | confirmation=%s | pressure_score=%.2f | expansion_prob=%.1f",
                 market.symbol,
                 market.alignment,
                 primary_trend,
@@ -112,7 +149,7 @@ class MomentumBreakoutStrategy:
         breakout_pressure_ok = (
             float(prearmed_context.get("pressure_score", 0.0)) >= self.weak_pressure_min_score
             and float(prearmed_context.get("expansion_prob", 0.0)) >= self.weak_pressure_min_expansion_prob
-        ) or bool(prearmed_context.get("breakout_context_ready"))
+        ) or bool(prearmed_context.get("breakout_context_ready")) or bool(prearmed_context.get("high_prob_context"))
 
         if not breakout_pressure_ok:
             self._log_rejection(
@@ -246,21 +283,21 @@ class MomentumBreakoutStrategy:
                         direction="LONG",
                     )
 
-                    required_prearmed_volume = 0.25 if prearmed_context.get("breakout_context_ready") else self.prearmed_min_volume_ratio
-                    high_quality_prearmed = (
-                        (
-                            bool(prearmed_context.get("breakout_context_ready"))
-                            or float(prearmed_context.get("pressure_score", 0.0)) >= 30.0
-                        )
-                        and float(prearmed_context.get("expansion_prob", 0.0)) >= 55.0
-                        and float(candidate_vol_ratio or 0.0) >= 0.45
-                        and float(participation_score or 0.0) >= 0.55
+                    high_quality_prearmed = bool(
+                        prearmed_context.get("allowed")
+                        and prearmed_context.get("breakout_context_ready")
+                        and prearmed_context.get("has_structure")
+                        and prearmed_context.get("breakout_direction_pressure")
+                        and float(prearmed_context.get("pressure_score", 0.0)) >= self.context_min_pressure_score
+                        and float(prearmed_context.get("expansion_prob", 0.0)) >= self.context_min_expansion_prob
                     )
+                    required_prearmed_volume = 0.20 if high_quality_prearmed else (0.25 if prearmed_context.get("breakout_context_ready") else self.prearmed_min_volume_ratio)
                     choppy_window = self._is_choppy(candidate_window)
 
+                    required_prearmed_participation = 0.55 if high_quality_prearmed else 0.75
                     if (
                         candidate_vol_ratio >= required_prearmed_volume
-                        and participation_score >= 0.75
+                        and participation_score >= required_prearmed_participation
                         and (not choppy_window or high_quality_prearmed)
                     ):
                         breakout_candle = entry_candle
@@ -436,6 +473,17 @@ class MomentumBreakoutStrategy:
             ],
         )
 
+        logger.info(
+            "MOMENTUM_FUNNEL | %s | strategy=%s | direction=LONG | stage=CANDIDATE_CREATED | result=PASS | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f | followthrough_volume_ratio=%.2f | prearmed=%s",
+            market.symbol,
+            self.name,
+            float(prearmed_context_data.get("pressure_score", 0.0)),
+            float(prearmed_context_data.get("expansion_prob", 0.0)),
+            float(vol_ratio or 0.0),
+            self._participation_score(candles, breakout_index, direction="LONG"),
+            self._volume_ratio_at(candles, len(candles) - 1),
+            prearmed_breakout,
+        )
         return StrategyCandidate(
             symbol=market.symbol,
             strategy=self.name,
@@ -459,6 +507,11 @@ class MomentumBreakoutStrategy:
                 f"participation_score={self._participation_score(candles, breakout_index, direction='LONG'):.2f}",
                 f"followthrough_volume_ratio={self._volume_ratio_at(candles, len(candles) - 1):.2f}",
                 f"directional_pressure_ok={breakout_pressure_ok}",
+                f"breakout_context_ready={bool(prearmed_context_data.get('breakout_context_ready', False))}",
+                f"prearmed_context_allowed={bool(prearmed_context_data.get('allowed', False))}",
+                f"prearmed_context_override={bool(locals().get('prearmed_context_override', False))}",
+                f"structure_score={prearmed_context_data.get('structure_score', 0)}",
+                f"high_quality_breakout_context={bool(prearmed_context_data.get('high_quality_breakout_context', False))}",
             ],
         )
 
@@ -470,42 +523,75 @@ class MomentumBreakoutStrategy:
 
         wanted_pressure = "bullish" if direction == "LONG" else "bearish"
         breakout_context_ready = "breakout_context ready=true" in notes_text
+        breakout_context_present = "breakout_context" in notes_text
         breakout_context_direction = f"direction={wanted_pressure}" in notes_text
         volatility_pressure_direction = f"pressure={wanted_pressure}" in notes_text
         named_breakout_pressure = f"{wanted_pressure} breakout pressure" in notes_text
 
-        has_structure = (
-            "range tightening" in notes_text
-            or ("higher lows building" in notes_text if direction == "LONG" else "lower highs building" in notes_text)
-            or ("closes pressing highs" in notes_text if direction == "LONG" else "closes pressing lows" in notes_text)
-        )
-        breakout_direction_pressure = (
-            breakout_context_direction
+        has_range_tightening = "range tightening" in notes_text or "range_tightening=true" in notes_text
+        has_higher_lows = "higher lows building" in notes_text or "higher_lows_building=true" in notes_text
+        has_lower_highs = "lower highs building" in notes_text or "lower_highs_building=true" in notes_text
+        has_closes_pressing_highs = "closes pressing highs" in notes_text or "closes_pressing_highs=true" in notes_text
+        has_closes_pressing_lows = "closes pressing lows" in notes_text or "closes_pressing_lows=true" in notes_text
+
+        structure_score = 0
+        if has_range_tightening:
+            structure_score += 1
+        if (has_higher_lows if direction == "LONG" else has_lower_highs):
+            structure_score += 1
+        if (has_closes_pressing_highs if direction == "LONG" else has_closes_pressing_lows):
+            structure_score += 1
+
+        has_structure = structure_score >= self.context_min_structure_score
+
+        high_prob_context = (
+            expansion_prob >= self.context_min_expansion_prob
+            and pressure_score >= self.context_high_prob_pressure_floor
             and has_structure
-            and expansion_prob >= 75.0
-            and pressure_score >= 50.0
+        )
+
+        breakout_direction_pressure = (
+            (breakout_context_direction or volatility_pressure_direction or named_breakout_pressure or high_prob_context)
+            and has_structure
+            and expansion_prob >= self.context_min_expansion_prob
+            and pressure_score >= self.context_high_prob_pressure_floor
+        )
+
+        inferred_breakout_context_ready = bool(
+            breakout_context_ready
+            or (
+                breakout_context_present
+                and breakout_context_direction
+                and has_structure
+                and expansion_prob >= self.context_min_expansion_prob
+                and pressure_score >= self.context_high_prob_pressure_floor
+            )
+            or high_prob_context
         )
 
         has_directional_pressure = (
             volatility_pressure_direction
             or named_breakout_pressure
-            or (breakout_context_ready and breakout_context_direction)
+            or (inferred_breakout_context_ready and (breakout_context_direction or high_prob_context))
             or breakout_direction_pressure
         )
+
         compression_or_high_prob = (
             "compression=true" in notes_text
-            or breakout_context_ready
+            or inferred_breakout_context_ready
             or expansion_prob >= self.prearmed_min_expansion_prob
         )
 
-        required_pressure_score = 60.0 if breakout_context_ready else 50.0
+        required_pressure_score = self.context_min_pressure_score if inferred_breakout_context_ready else 50.0
+
         high_quality_breakout_context = (
-            breakout_context_ready
-            and breakout_context_direction
+            inferred_breakout_context_ready
+            and has_directional_pressure
             and has_structure
-            and pressure_score >= 65.0
+            and pressure_score >= max(65.0, self.context_min_pressure_score)
             and expansion_prob >= 75.0
         )
+
         effective_max_spread_bps = 5.5 if high_quality_breakout_context else self.prearmed_max_spread_bps
 
         allowed = (
@@ -516,6 +602,35 @@ class MomentumBreakoutStrategy:
             and pressure_score >= required_pressure_score
         )
 
+        context_reasons = []
+        if not compression_or_high_prob:
+            context_reasons.append("no_compression_or_high_probability")
+        if not has_directional_pressure:
+            context_reasons.append("no_directional_pressure")
+        if not has_structure:
+            context_reasons.append(f"structure_score={structure_score}<min")
+        if spread_bps > effective_max_spread_bps:
+            context_reasons.append(f"spread_bps={spread_bps:.2f}>max_{effective_max_spread_bps:.2f}")
+        if pressure_score < required_pressure_score:
+            context_reasons.append(f"pressure_score={pressure_score:.2f}<required_{required_pressure_score:.2f}")
+
+        # Observability enhancements
+        spread_found = spread_bps != 99.0
+        spread_source = "parsed" if spread_found else "missing_fallback_99"
+        structure_source_parts = []
+        if has_range_tightening:
+            structure_source_parts.append("range_tightening")
+        if has_higher_lows:
+            structure_source_parts.append("higher_lows")
+        if has_lower_highs:
+            structure_source_parts.append("lower_highs")
+        if has_closes_pressing_highs:
+            structure_source_parts.append("closes_pressing_highs")
+        if has_closes_pressing_lows:
+            structure_source_parts.append("closes_pressing_lows")
+        structure_source = ",".join(structure_source_parts) if structure_source_parts else "missing"
+        notes_sample = " || ".join(str(note) for note in (market.notes or [])[-10:])
+
         raw_symbols = os.getenv(
             "STRATEGY_DEBUG_SYMBOLS",
             "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT",
@@ -524,7 +639,7 @@ class MomentumBreakoutStrategy:
 
         if market.symbol.upper() in debug_symbols:
             logger.info(
-                "PREARMED_CONTEXT | %s | direction=%s | allowed=%s | spread_bps=%.3f | max_spread_bps=%.3f | pressure_score=%.2f | required_pressure=%.2f | expansion_prob=%.1f | ready=%s | directional=%s | structure=%s | high_quality=%s | compression_or_high_prob=%s",
+                "PREARMED_CONTEXT | %s | direction=%s | allowed=%s | spread_bps=%.3f | max_spread_bps=%.3f | pressure_score=%.2f | required_pressure=%.2f | expansion_prob=%.1f | ready=%s | directional=%s | structure=%s | high_quality=%s | compression_or_high_prob=%s | breakout_context_present=%s | breakout_context_direction=%s | volatility_pressure_direction=%s | named_breakout_pressure=%s | has_structure=%s | breakout_direction_pressure=%s | spread_found=%s | spread_source=%s | structure_source=%s | notes_count=%s | notes_sample=%s",
                 market.symbol,
                 direction,
                 allowed,
@@ -533,11 +648,22 @@ class MomentumBreakoutStrategy:
                 pressure_score,
                 required_pressure_score,
                 expansion_prob,
-                breakout_context_ready,
+                inferred_breakout_context_ready,
                 has_directional_pressure,
                 has_structure,
                 high_quality_breakout_context,
                 compression_or_high_prob,
+                breakout_context_present,
+                breakout_context_direction,
+                volatility_pressure_direction,
+                named_breakout_pressure,
+                has_structure,
+                breakout_direction_pressure,
+                spread_found,
+                spread_source,
+                structure_source + f"|score={structure_score}",
+                len(market.notes or []),
+                notes_sample,
             )
 
         return {
@@ -548,9 +674,22 @@ class MomentumBreakoutStrategy:
             "required_pressure_score": required_pressure_score,
             "effective_max_spread_bps": effective_max_spread_bps,
             "high_quality_breakout_context": high_quality_breakout_context,
-            "breakout_context_ready": breakout_context_ready,
+            "breakout_context_ready": inferred_breakout_context_ready,
+            "raw_breakout_context_ready": breakout_context_ready,
             "breakout_direction_pressure": breakout_direction_pressure,
+            "high_prob_context": high_prob_context,
+            "structure_score": structure_score,
+            "context_reasons": context_reasons,
             "direction": wanted_pressure,
+            "breakout_context_present": breakout_context_present,
+            "breakout_context_direction": breakout_context_direction,
+            "volatility_pressure_direction": volatility_pressure_direction,
+            "named_breakout_pressure": named_breakout_pressure,
+            "has_structure": has_structure,
+            "spread_found": spread_found,
+            "spread_source": spread_source,
+            "structure_source": structure_source,
+            "notes_count": len(market.notes or []),
         }
 
     @staticmethod
@@ -568,24 +707,35 @@ class MomentumBreakoutStrategy:
     @staticmethod
     def _extract_spread_bps(notes: list[str], default: float = 99.0) -> float:
         note_text = " | ".join(str(note).lower() for note in (notes or []))
-        marker = "spread "
-        if marker not in note_text:
-            return default
-        try:
-            raw = note_text.split(marker, 1)[1].split()[0].strip("|,;")
-            raw = raw.replace("bps", "")
-            return float(raw)
-        except Exception:
-            return default
+        markers = ["spread_bps=", "spread_bps:", "spread=", "spread "]
+        for marker in markers:
+            if marker not in note_text:
+                continue
+            try:
+                raw = note_text.split(marker, 1)[1].split()[0].strip("|,;")
+                raw = raw.replace("bps", "")
+                return float(raw)
+            except Exception:
+                continue
+        return default
 
     def _log_rejection(self, market: MarketSnapshot, reason: str, details: list[str]) -> None:
         raw_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT")
         debug_symbols = {symbol.strip().upper() for symbol in raw_symbols.split(",") if symbol.strip()}
+        audit_mode = os.getenv("MOMENTUM_FUNNEL_AUDIT", "1") == "1"
 
-        if market.symbol.upper() not in debug_symbols:
+        if not audit_mode and market.symbol.upper() not in debug_symbols:
             return
 
         joined_details = " | ".join(details[-6:]) if details else "no_details"
+        stage = str(reason or "unknown")
+        logger.info(
+            "MOMENTUM_FUNNEL | %s | strategy=%s | direction=LONG | stage=%s | result=FAIL | %s",
+            market.symbol,
+            self.name,
+            stage,
+            joined_details,
+        )
         logger.info(
             "MOMENTUM_BREAKOUT_REJECT | %s | reason=%s | %s",
             market.symbol,
@@ -673,9 +823,9 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
 
         self.lookback = 20
         self.min_breakdown_pct = 0.12
-        self.min_volume_ratio = 1.15
-        self.min_participation_score = 1.0
-        self.min_followthrough_volume_ratio = 0.45
+        self.min_volume_ratio = 0.90
+        self.min_participation_score = 0.75
+        self.min_followthrough_volume_ratio = 0.25
         self.max_reclaim_bps = 35
         self.max_close_position_pct = 0.38
         self.max_bars_since_breakdown = 2
@@ -687,7 +837,11 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         self.prearmed_max_close_position_pct = 0.45
         self.weak_pressure_min_score = 45.0
         self.weak_pressure_min_expansion_prob = 65.0
-        self.strict_breakdown_min_volume_ratio = 1.05
+        self.strict_breakdown_min_volume_ratio = 0.70
+        self.context_min_expansion_prob = float(os.getenv("BREAKOUT_CONTEXT_MIN_EXPANSION_PROB", "70"))
+        self.context_min_pressure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_PRESSURE_SCORE", "45"))
+        self.context_min_structure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_STRUCTURE_SCORE", "1"))
+        self.context_high_prob_pressure_floor = float(os.getenv("BREAKOUT_CONTEXT_HIGH_PROB_PRESSURE_FLOOR", "35"))
 
     def detect(self, market: MarketSnapshot) -> Optional[StrategyCandidate]:
         candles = market.primary.candles
@@ -705,11 +859,24 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
             and primary_trend == "bearish"
             and confirmation_trend == "bearish"
         )
+        prearmed_context_override = bool(
+            pre_alignment_prearmed_context.get("allowed")
+            and pre_alignment_prearmed_context.get("breakout_context_ready")
+            and pre_alignment_prearmed_context.get("has_structure")
+            and pre_alignment_prearmed_context.get("breakout_direction_pressure")
+            and float(pre_alignment_prearmed_context.get("pressure_score", 0.0)) >= self.context_min_pressure_score
+            and float(pre_alignment_prearmed_context.get("expansion_prob", 0.0)) >= self.context_min_expansion_prob
+        )
         mtf_prearmed_override = (
             pre_alignment_prearmed_context.get("allowed")
-            and market.alignment in {"aligned_bearish", "mixed"}
-            and confirmation_trend == "bearish"
-            and primary_trend in {"bearish", "mixed", "neutral"}
+            and (
+                (
+                    market.alignment in {"aligned_bearish", "mixed"}
+                    and confirmation_trend in {"bearish", "mixed", "neutral"}
+                    and primary_trend in {"bearish", "mixed", "neutral"}
+                )
+                or prearmed_context_override
+            )
         )
 
         if not strict_trend_alignment and not mtf_prearmed_override:
@@ -750,7 +917,7 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         breakdown_pressure_ok = (
             float(prearmed_context.get("pressure_score", 0.0)) >= self.weak_pressure_min_score
             and float(prearmed_context.get("expansion_prob", 0.0)) >= self.weak_pressure_min_expansion_prob
-        ) or bool(prearmed_context.get("breakout_context_ready"))
+        ) or bool(prearmed_context.get("breakout_context_ready")) or bool(prearmed_context.get("high_prob_context"))
 
         if not breakdown_pressure_ok:
             self._log_breakdown_rejection(
@@ -760,6 +927,10 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
                     f"pressure_score={float(prearmed_context.get('pressure_score', 0.0)):.2f}",
                     f"expansion_prob={float(prearmed_context.get('expansion_prob', 0.0)):.1f}",
                     f"breakout_context_ready={prearmed_context.get('breakout_context_ready')}",
+                    f"required_score={self.weak_pressure_min_score:.2f}",
+                    f"required_expansion={self.weak_pressure_min_expansion_prob:.1f}",
+                    f"prearmed_allowed={prearmed_context.get('allowed')}",
+                    f"breakout_direction_pressure={prearmed_context.get('breakout_direction_pressure')}",
                 ],
             )
             return None
@@ -890,9 +1061,10 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
                     )
                     choppy_window = self._is_choppy(candidate_window)
 
+                    required_prearmed_participation = 0.55 if high_quality_prearmed else 0.75
                     if (
                         candidate_vol_ratio >= required_prearmed_volume
-                        and participation_score >= 0.75
+                        and participation_score >= required_prearmed_participation
                         and (not choppy_window or high_quality_prearmed)
                     ):
                         breakdown_candle = entry_candle
@@ -930,10 +1102,19 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
 
         candles_after_breakdown = candles[breakdown_index + 1 :]
         if not candles_after_breakdown:
+            self._log_breakdown_rejection(market, "no_confirmation_candles_after_breakdown", [])
             return None
 
         bars_since_breakdown = len(candles) - 1 - breakdown_index
         if bars_since_breakdown > self.max_bars_since_breakdown and not prearmed_breakdown:
+            self._log_breakdown_rejection(
+                market,
+                "late_breakdown_entry",
+                [
+                    f"bars_since_breakdown={bars_since_breakdown}",
+                    f"max_bars_since_breakdown={self.max_bars_since_breakdown}",
+                ],
+            )
             return None
 
         max_reclaim = prev_low * (self.max_reclaim_bps / 10_000)
@@ -941,14 +1122,29 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         highest_after_breakdown = max(c.high for c in candles_after_breakdown) if candles_after_breakdown else entry_candle.high
         reclaim_ceiling = prev_low + max_reclaim
         if highest_after_breakdown > reclaim_ceiling and not prearmed_breakdown:
+            self._log_breakdown_rejection(
+                market,
+                "reclaim_broke_breakdown_level",
+                [
+                    f"highest_after_breakdown={highest_after_breakdown:.6f}",
+                    f"reclaim_ceiling={reclaim_ceiling:.6f}",
+                    f"prev_low={prev_low:.6f}",
+                    f"max_reclaim_bps={self.max_reclaim_bps}",
+                ],
+            )
             return None
 
         if entry_candle.close >= prev_low and not prearmed_breakdown:
+            self._log_breakdown_rejection(
+                market,
+                "entry_close_above_breakdown_level",
+                [f"entry_close={entry_candle.close:.6f}", f"prev_low={prev_low:.6f}"],
+            )
             return None
 
         entry_extension_pct = ((prev_low - entry_candle.close) / prev_low) * 100 if prev_low else 0.0
         if entry_extension_pct > self.max_entry_extension_pct:
-            self._log_rejection(
+            self._log_breakdown_rejection(
                 market,
                 "entry_too_extended_after_breakdown",
                 [
@@ -961,12 +1157,21 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
             return None
 
         if entry_candle.close >= entry_candle.open and not prearmed_breakdown:
+            self._log_breakdown_rejection(
+                market,
+                "entry_not_bearish_continuation",
+                [
+                    f"entry_close={entry_candle.close:.6f}",
+                    f"entry_open={entry_candle.open:.6f}",
+                    f"breakdown_close={breakdown_candle.close:.6f}",
+                ],
+            )
             return None
 
         followthrough_volume_ratio = self._volume_ratio_at(candles, len(candles) - 1)
         required_followthrough = 0.45 if prearmed_breakdown else self.min_followthrough_volume_ratio
         if followthrough_volume_ratio < required_followthrough:
-            self._log_rejection(
+            self._log_breakdown_rejection(
                 market,
                 "weak_followthrough_participation",
                 [
@@ -979,6 +1184,7 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
 
         entry_range = entry_candle.high - entry_candle.low
         if entry_range <= 0:
+            self._log_breakdown_rejection(market, "invalid_entry_range", [])
             return None
 
         close_position_pct = (entry_candle.close - entry_candle.low) / entry_range
@@ -986,6 +1192,14 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         allowed_close_position_pct = 0.65 if prearmed_breakdown else self.max_close_position_pct
 
         if close_position_pct > allowed_close_position_pct:
+            self._log_breakdown_rejection(
+                market,
+                "weak_entry_close_for_breakdown",
+                [
+                    f"close_position_pct={close_position_pct:.2f}",
+                    f"allowed={allowed_close_position_pct:.2f}",
+                ],
+            )
             return None
 
         invalidation = max(entry_candle.high, breakdown_candle.high)
@@ -1018,6 +1232,17 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
             ],
         )
 
+        logger.info(
+            "MOMENTUM_FUNNEL | %s | strategy=%s | direction=SHORT | stage=CANDIDATE_CREATED | result=PASS | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f | followthrough_volume_ratio=%.2f | prearmed=%s",
+            market.symbol,
+            self.name,
+            float(prearmed_context_data.get("pressure_score", 0.0)),
+            float(prearmed_context_data.get("expansion_prob", 0.0)),
+            float(vol_ratio or 0.0),
+            self._participation_score(candles, breakdown_index, direction="SHORT"),
+            self._volume_ratio_at(candles, len(candles) - 1),
+            prearmed_breakdown,
+        )
         return StrategyCandidate(
             symbol=market.symbol,
             strategy=self.name,
@@ -1041,17 +1266,30 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
                 f"participation_score={self._participation_score(candles, breakdown_index, direction='SHORT'):.2f}",
                 f"followthrough_volume_ratio={self._volume_ratio_at(candles, len(candles) - 1):.2f}",
                 f"directional_pressure_ok={breakdown_pressure_ok}",
+                f"breakout_context_ready={bool(prearmed_context_data.get('breakout_context_ready', False))}",
+                f"prearmed_context_allowed={bool(prearmed_context_data.get('allowed', False))}",
+                f"prearmed_context_override={bool(locals().get('prearmed_context_override', False))}",
+                f"structure_score={prearmed_context_data.get('structure_score', 0)}",
+                f"high_quality_breakout_context={bool(prearmed_context_data.get('high_quality_breakout_context', False))}",
             ],
         )
     def _log_breakdown_rejection(self, market: MarketSnapshot, reason: str, details: list[str]) -> None:
         raw_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT")
         debug_symbols = {symbol.strip().upper() for symbol in raw_symbols.split(",") if symbol.strip()}
+        audit_mode = os.getenv("MOMENTUM_FUNNEL_AUDIT", "1") == "1"
 
-        if market.symbol.upper() not in debug_symbols:
+        if not audit_mode and market.symbol.upper() not in debug_symbols:
             return
 
         joined_details = " | ".join(details[-6:]) if details else "no_details"
-
+        stage = str(reason or "unknown")
+        logger.info(
+            "MOMENTUM_FUNNEL | %s | strategy=%s | direction=SHORT | stage=%s | result=FAIL | %s",
+            market.symbol,
+            self.name,
+            stage,
+            joined_details,
+        )
         logger.info(
             "MOMENTUM_BREAKDOWN_REJECT | %s | reason=%s | %s",
             market.symbol,

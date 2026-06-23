@@ -48,6 +48,18 @@ class TradePlanner:
             return default
 
     @staticmethod
+    def _extract_note_bool(candidate: StrategyCandidate, marker: str, default: bool = False) -> bool:
+        note_text = TradePlanner._note_text(candidate)
+        marker = marker.lower()
+        if marker not in note_text:
+            return default
+        try:
+            raw = note_text.split(marker, 1)[1].split()[0].strip(";|,").lower()
+        except Exception:
+            return default
+        return raw in {"true", "1", "yes", "y"}
+
+    @staticmethod
     def _extract_note_float_any(candidate: StrategyCandidate, markers: list[str], default: float = 0.0) -> float:
         for marker in markers:
             value = TradePlanner._extract_note_float(candidate, marker, default)
@@ -129,6 +141,71 @@ class TradePlanner:
             return "trend_continuation"
 
         return "planner_recovered_strategy"
+
+    @staticmethod
+    def _master_entry_quality_gate(
+        candidate: StrategyCandidate,
+        score_total: float,
+        entry_quality: float,
+        pressure_score: float,
+        expansion_prob: float,
+        participation_score: float,
+        followthrough_volume_ratio: float,
+        volume_ratio: float,
+    ) -> tuple[bool, list[str]]:
+        """Final planner-level quality gate before a candidate can become executable.
+
+        This centralizes the context checks that were previously spread across selector,
+        scorer, and strategy-specific notes. It is intentionally conservative: weak
+        candidates may still be logged/observed, but they must not reach execution.
+        """
+        strategy = str(candidate.strategy or "").lower()
+        reasons: list[str] = []
+
+        if entry_quality > 0.0 and entry_quality < 75.0:
+            reasons.append(f"entry_quality={entry_quality:.2f}<75")
+
+        if pressure_score < 40.0 and expansion_prob < 65.0:
+            reasons.append(f"weak_pressure_expansion={pressure_score:.2f}/{expansion_prob:.2f}")
+
+        if participation_score > 0.0 and participation_score < 0.70:
+            reasons.append(f"participation={participation_score:.2f}<0.70")
+
+        if followthrough_volume_ratio > 0.0 and followthrough_volume_ratio < 0.10:
+            reasons.append(f"followthrough={followthrough_volume_ratio:.2f}<0.10")
+
+        if volume_ratio > 0.0 and volume_ratio < 0.60:
+            reasons.append(f"volume_ratio={volume_ratio:.2f}<0.60")
+
+        if "continuation" in strategy:
+            if not TradePlanner._extract_note_bool(candidate, "continuation_quality=", False):
+                reasons.append("continuation_quality=false")
+            if not TradePlanner._extract_note_bool(candidate, "structure_ok=", False):
+                reasons.append("continuation_structure_ok=false")
+            if not TradePlanner._extract_note_bool(candidate, "pressure_ok=", False):
+                reasons.append("continuation_pressure_ok=false")
+            if not TradePlanner._extract_note_bool(candidate, "participation_ok=", False):
+                reasons.append("continuation_participation_ok=false")
+            if pressure_score < 50.0:
+                reasons.append(f"continuation_pressure={pressure_score:.2f}<50")
+            if participation_score > 0.0 and participation_score < 1.00:
+                reasons.append(f"continuation_participation={participation_score:.2f}<1.00")
+
+        if "momentum" in strategy or "breakout" in strategy or "breakdown" in strategy:
+            if expansion_prob < 70.0:
+                reasons.append(f"momentum_expansion={expansion_prob:.2f}<70")
+            if pressure_score < 45.0:
+                reasons.append(f"momentum_pressure={pressure_score:.2f}<45")
+
+        if "low_vol_reclaim" in strategy:
+            if score_total < 72.0:
+                reasons.append(f"low_vol_score={score_total:.2f}<72")
+            if participation_score > 0.0 and participation_score < 0.75:
+                reasons.append(f"low_vol_participation={participation_score:.2f}<0.75")
+            if followthrough_volume_ratio > 0.0 and followthrough_volume_ratio < 0.10:
+                reasons.append(f"low_vol_followthrough={followthrough_volume_ratio:.2f}<0.10")
+
+        return len(reasons) == 0, reasons
 
     @staticmethod
     def _target_move_bps(entry: float, target: float) -> float:
@@ -301,6 +378,16 @@ class TradePlanner:
             ["expansion_prob=", "expansion_prob ", "mtf_expansion_prob=", "prearmed_expansion_prob="],
             0.0,
         )
+        master_gate_passed, master_gate_reasons = self._master_entry_quality_gate(
+            candidate=candidate,
+            score_total=float(score.total),
+            entry_quality=entry_quality,
+            pressure_score=pressure_score,
+            expansion_prob=expansion_prob,
+            participation_score=participation_score,
+            followthrough_volume_ratio=followthrough_volume_ratio,
+            volume_ratio=volume_ratio,
+        )
         strong_continuation_quality = (
             "trend_continuation" in str(candidate.strategy or "").lower()
             and score.total >= 82
@@ -371,6 +458,9 @@ class TradePlanner:
         notes.append(f"planner_entry_quality={entry_quality:.2f}")
         notes.append(f"planner_pressure_score={pressure_score:.2f}")
         notes.append(f"planner_expansion_prob={expansion_prob:.2f}")
+        notes.append(f"master_entry_quality_passed={master_gate_passed}")
+        if master_gate_reasons:
+            notes.append("master_entry_quality_reasons=" + "|".join(master_gate_reasons))
         notes.append(f"planner_strategy_score={float(score.total):.2f}")
         notes.append(f"planner_alignment={candidate.market.alignment}")
         notes.append(f"planner_risk_status={getattr(risk, 'status', 'UNKNOWN')}")
@@ -390,6 +480,33 @@ class TradePlanner:
             notes.append(
                 f"a_plus_low_vol_reclaim_cap_override={original_reclaim_tp1_cap_bps:.2f}->{reclaim_tp1_cap_bps:.2f}"
             )
+
+        breakout_ready = (
+            "breakout_ready=true" in note_text
+            or "breakout_context_ready=true" in note_text
+            or "breakout_context ready=true" in note_text
+            or "breakdown_ready=true" in note_text
+            or "entry_model=retest_zone_first" in note_text
+        )
+        low_vol_reclaim_day_defensive_block = False
+        low_vol_reclaim_day_defensive_reasons: list[str] = []
+        if is_low_vol_reclaim and not a_plus_low_vol_reclaim:
+            if entry_quality < 75.0:
+                low_vol_reclaim_day_defensive_block = True
+                low_vol_reclaim_day_defensive_reasons.append(f"entry_quality={entry_quality:.2f}<75")
+            if pressure_score < 45.0 and expansion_prob < 70.0:
+                low_vol_reclaim_day_defensive_block = True
+                low_vol_reclaim_day_defensive_reasons.append(
+                    f"pressure_expansion_weak={pressure_score:.2f}/{expansion_prob:.2f}"
+                )
+            if not breakout_ready and score.total < 80.0:
+                low_vol_reclaim_day_defensive_block = True
+                low_vol_reclaim_day_defensive_reasons.append(f"no_breakout_context_score={score.total:.2f}<80")
+
+            if low_vol_reclaim_day_defensive_block:
+                notes.append("day_defensive_low_vol_reclaim_gate=true")
+                notes.append("day_defensive_reasons=" + "|".join(low_vol_reclaim_day_defensive_reasons))
+
         if is_low_vol_reclaim:
             # Reclaim scalps are fast mean-reversion trades. Use TP1 RR as the execution gate,
             # not the global TP2-style planner_min_rr gate.
@@ -402,6 +519,7 @@ class TradePlanner:
         if (
             verdict == "BLOCKED"
             and is_low_vol_reclaim
+            and not low_vol_reclaim_day_defensive_block
             and score.total >= 72.0
             and risk.allowed
             and rr_to_tp1 >= 1.00
@@ -411,15 +529,33 @@ class TradePlanner:
             verdict = "EXECUTABLE"
             notes.append("planner_soft_bridge_activated=low_vol_reclaim_rr_guarded")
 
+        if low_vol_reclaim_day_defensive_block:
+            verdict = "BLOCKED"
+            notes.append("blocked_reason=day_defensive_low_vol_reclaim_quality_gate")
+
+        if verdict == "EXECUTABLE" and not master_gate_passed:
+            verdict = "BLOCKED"
+            notes.append("blocked_reason=master_entry_quality_gate")
+            notes.append("master_entry_quality_gate_blocked=true")
+            logger.warning(
+                "MASTER_ENTRY_QUALITY_BLOCKED | %s | strategy=%s | direction=%s | reasons=%s",
+                candidate.symbol,
+                candidate.strategy,
+                candidate.direction,
+                "|".join(master_gate_reasons) if master_gate_reasons else "unknown",
+            )
 
         if (
             verdict == "BLOCKED"
+            and not low_vol_reclaim_day_defensive_block
             and score.total >= 64.0
             and risk.allowed
             and str(getattr(risk, "status", "")).upper() in {"GO", "WATCH"}
         ):
             notes.append("planner_soft_bridge_candidate=true")
         reasons = list(score.reasons) + list(risk.reasons)
+        if low_vol_reclaim_day_defensive_block:
+            reasons.append("DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK " + " | ".join(low_vol_reclaim_day_defensive_reasons))
         if strategy_name == "adaptive_momentum_continuation":
             if entry_quality < 75.0:
                 verdict = "BLOCKED"

@@ -30,6 +30,18 @@ class StrategyScorer:
             return default
 
     @staticmethod
+    def _note_bool(candidate: StrategyCandidate, marker: str, default: bool = False) -> bool:
+        notes_text = StrategyScorer._notes_text(candidate)
+        marker = marker.lower()
+        if marker not in notes_text:
+            return default
+        try:
+            raw = notes_text.split(marker, 1)[1].split()[0].strip("|,;").lower()
+        except Exception:
+            return default
+        return raw in {"true", "1", "yes", "y"}
+
+    @staticmethod
     def _has_mtf_override(candidate: StrategyCandidate) -> bool:
         notes_text = StrategyScorer._notes_text(candidate)
         return (
@@ -134,6 +146,8 @@ class StrategyScorer:
     @staticmethod
     def _continuation_pressure_penalty(candidate: StrategyCandidate) -> tuple[float, str | None]:
         notes_text = StrategyScorer._notes_text(candidate)
+        if not StrategyScorer._note_bool(candidate, "continuation_quality=", False):
+            return -25.0, "continuation_quality_false"
         pressure_score = StrategyScorer._pressure_score(candidate)
         expansion_prob = StrategyScorer._expansion_prob(candidate)
         pressure_ok = StrategyScorer._directional_pressure_ok(candidate)
@@ -212,6 +226,10 @@ class StrategyScorer:
         breakdown: dict[str, float] = {}
         reasons: list[str] = []
 
+        if not self._note_bool(candidate, "continuation_quality=", False):
+            breakdown["continuation_quality_gate"] = -25.0
+            reasons.append("continuation_quality_false")
+
         fallback_execution_score = self._extract_note_float(candidate, "fallback_execution_score=", 0.0)
         entry_quality_long = max(
             self._extract_note_float(candidate, "entry_quality_long=", 0.0),
@@ -247,9 +265,15 @@ class StrategyScorer:
         entry_quality = entry_quality_long if direction == "LONG" else entry_quality_short
 
         base_score = fallback_execution_score or float(candidate.market.score_hint or 0.0)
-        base_score = max(base_score, 45.0)
+        base_score = max(base_score, 20.0)
 
-        breakdown["fallback_execution_score"] = min(base_score, 80.0)
+        if pressure_score < 45.0 or expansion_prob < 70.0:
+            base_score = min(base_score, 40.0)
+
+        if not self._breakout_context_ready(candidate) and pressure_score < 50.0:
+            base_score = min(base_score, 35.0)
+
+        breakdown["fallback_execution_score"] = min(base_score, 55.0)
 
         alignment_score = 0.0
         if candidate.market.alignment == wanted_alignment:
@@ -317,19 +341,22 @@ class StrategyScorer:
             penalty_reasons.append("adaptive_entry_quality_watch")
 
         if pressure_score < 35.0 and expansion_prob < 65.0:
-            penalty -= 18.0
+            penalty -= 28.0
             penalty_reasons.append("adaptive_weak_pressure_and_expansion")
-        elif pressure_score < 25.0:
-            penalty -= 12.0
-            penalty_reasons.append("adaptive_pressure_too_weak")
+        elif pressure_score < 45.0:
+            penalty -= 20.0
+            penalty_reasons.append("adaptive_pressure_below_45")
+        elif pressure_score < 50.0:
+            penalty -= 10.0
+            penalty_reasons.append("adaptive_pressure_watch")
 
-        if (
-            "breakout_context ready=false" in notes_text
-            and not self._breakout_context_ready(candidate)
-            and pressure_score < 45.0
-        ):
-            penalty -= 12.0
-            penalty_reasons.append("adaptive_no_breakout_context")
+        if not self._breakout_context_ready(candidate):
+            if pressure_score < 45.0:
+                penalty -= 18.0
+                penalty_reasons.append("adaptive_no_breakout_context")
+            elif expansion_prob < 75.0:
+                penalty -= 8.0
+                penalty_reasons.append("adaptive_breakout_context_missing_watch")
 
         breakdown["fallback_penalty"] = penalty
 
@@ -341,7 +368,18 @@ class StrategyScorer:
             breakdown["retest_quality_penalty"] = -10.0
 
         total = round(max(sum(breakdown.values()), 0.0), 1)
-        total = min(total, 88.0)
+
+        if pressure_score < 35.0 and expansion_prob < 65.0:
+            total = min(total, 55.0)
+            penalty_reasons.append("adaptive_score_cap_weak_pressure_expansion_55")
+        elif pressure_score < 45.0 and not self._breakout_context_ready(candidate):
+            total = min(total, 60.0)
+            penalty_reasons.append("adaptive_score_cap_no_breakout_context_60")
+        elif pressure_score < 50.0:
+            total = min(total, 68.0)
+            penalty_reasons.append("adaptive_score_cap_pressure_watch_68")
+
+        total = min(total, 82.0)
         verdict = self._verdict(total)
 
         reasons.extend(self._reason_pack(candidate, breakdown, total, verdict))
@@ -350,6 +388,7 @@ class StrategyScorer:
         reasons.append(f"entry_quality={entry_quality:.1f}")
         reasons.append(f"pressure_score={pressure_score:.1f}")
         reasons.append(f"expansion_prob={expansion_prob:.1f}")
+        reasons.append(f"breakout_context_ready={self._breakout_context_ready(candidate)}")
         if penalty_reasons:
             reasons.append(f"fallback_penalties={' | '.join(penalty_reasons)}")
 

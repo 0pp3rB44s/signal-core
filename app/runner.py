@@ -101,6 +101,42 @@ def _execution_aware_score(snapshot: MarketSnapshot) -> float:
 def _build_fallback_candidate(snapshot: MarketSnapshot) -> StrategyCandidate | None:
     note_text = " ".join(str(note).lower() for note in (snapshot.notes or []))
 
+    def _strategy_set_from_env(name: str) -> set[str]:
+        values: list[str] = []
+        raw_value = os.getenv(name, "")
+        if raw_value:
+            values.extend(raw_value.split(","))
+
+        env_path = Path(".env")
+        if env_path.exists():
+            try:
+                for line in env_path.read_text(errors="ignore").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == name:
+                        values.extend(value.split(","))
+            except Exception:
+                pass
+
+        return {item.strip().lower() for item in values if item.strip()}
+
+    fallback_strategy_name = "adaptive_momentum_continuation"
+    enabled_strategies = _strategy_set_from_env("ENABLED_STRATEGIES")
+    disabled_strategies = _strategy_set_from_env("DISABLED_STRATEGIES")
+    explicitly_enabled = fallback_strategy_name in enabled_strategies
+    explicitly_disabled = fallback_strategy_name in disabled_strategies
+
+    if explicitly_disabled or not explicitly_enabled:
+        logging.getLogger("fallback_candidate_bridge").info(
+            "ADAPTIVE_CONTINUATION_DISABLED | %s | source=env_or_dotenv | guard=builder | explicitly_enabled=%s | explicitly_disabled=%s",
+            snapshot.symbol,
+            explicitly_enabled,
+            explicitly_disabled,
+        )
+        return None
+
     execution_score = _execution_aware_score(snapshot)
     alignment = (snapshot.alignment or "").lower()
     primary_trend = (snapshot.primary.trend or "").lower()
@@ -567,24 +603,51 @@ class StartupRunner:
                             selector_reason = "selector_bad_return_treated_as_no_candidate"
 
                     if candidate is None:
-                        fallback_candidate = _build_fallback_candidate(snapshot)
+                        enabled_strategies = {
+                            item.strip().lower()
+                            for item in os.getenv("ENABLED_STRATEGIES", "").split(",")
+                            if item.strip()
+                        }
+                        disabled_strategies = {
+                            item.strip().lower()
+                            for item in os.getenv("DISABLED_STRATEGIES", "").split(",")
+                            if item.strip()
+                        }
 
-                        if fallback_candidate is not None:
-                            candidate = fallback_candidate
-                            selector_reason = (
-                                f"fallback adaptive continuation bridge | execution_score="
-                                f"{_execution_aware_score(snapshot):.1f}"
-                            )
+                        fallback_strategy_name = "adaptive_momentum_continuation"
+                        fallback_enabled = (
+                            fallback_strategy_name in enabled_strategies
+                            if enabled_strategies
+                            else True
+                        )
+                        fallback_disabled = fallback_strategy_name in disabled_strategies
 
-                            self.log.warning(
-                                "FALLBACK_CANDIDATE_BRIDGE | %s | direction=%s | execution_score=%.1f | alignment=%s | trend=%s/%s",
+                        if fallback_disabled or not fallback_enabled:
+                            self.log.info(
+                                "ADAPTIVE_CONTINUATION_DISABLED | %s | source=env | enabled=%s | disabled=%s",
                                 snapshot.symbol,
-                                candidate.direction,
-                                _execution_aware_score(snapshot),
-                                snapshot.alignment,
-                                snapshot.primary.trend,
-                                snapshot.confirmation.trend,
+                                fallback_enabled,
+                                fallback_disabled,
                             )
+                        else:
+                            fallback_candidate = _build_fallback_candidate(snapshot)
+
+                            if fallback_candidate is not None:
+                                candidate = fallback_candidate
+                                selector_reason = (
+                                    f"fallback adaptive continuation bridge | execution_score="
+                                    f"{_execution_aware_score(snapshot):.1f}"
+                                )
+
+                                self.log.warning(
+                                    "FALLBACK_CANDIDATE_BRIDGE | %s | direction=%s | execution_score=%.1f | alignment=%s | trend=%s/%s",
+                                    snapshot.symbol,
+                                    candidate.direction,
+                                    _execution_aware_score(snapshot),
+                                    snapshot.alignment,
+                                    snapshot.primary.trend,
+                                    snapshot.confirmation.trend,
+                                )
 
                     if candidate is not None:
                         signal_cooldown_key = f"signal::{candidate.symbol}::{candidate.direction}::{candidate.strategy}"

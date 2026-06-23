@@ -114,6 +114,11 @@ def _trade_quality_from_journal(trade: dict, pnl: float, fees: float = 0.0) -> d
 
     exchange_truth = "EXCHANGE_TRUTH" in sync_source_text
     low_confidence = "LOW_CONFIDENCE" in sync_source_text
+    exchange_truth_pnl_available = trade.get("exchange_truth_pnl") not in (None, "")
+
+    if low_confidence and not exchange_truth_pnl_available:
+        net_pnl = 0.0
+        notes.append("pnl truth missing; win/loss scoring blocked")
 
     if tp1_hit:
         score += 25
@@ -343,8 +348,14 @@ class TradePlanCsvLogger:
                     f"{plan.account_risk_pct:.2f}", f"{plan.leverage:.2f}", f"{plan.position_notional_usdt:.2f}",
                     " | ".join(plan.notes), " | ".join(plan.reasons),
                     " | ".join(
-                        note for note in plan.notes
+                        str(note) for note in plan.notes
                         if str(note).startswith("planner_")
+                        or str(note).startswith("rr_to_tp1=")
+                        or str(note).startswith("rr_to_tp2=")
+                        or str(note).startswith("tp1_move_bps=")
+                        or str(note).startswith("minimum_tp1_move_bps=")
+                        or str(note).startswith("strong_continuation_quality=")
+                        or str(note).startswith("master_entry_quality_passed=")
                     ),
                 ])
 
@@ -366,7 +377,14 @@ class TradeDecisionSnapshotLogger:
             timestamp = opened_at or datetime.now(timezone.utc).isoformat()
             link_key = f"{plan.symbol}|{timestamp[:19]}"
             decision_snapshot = " | ".join(
-                note for note in plan.notes if str(note).startswith("planner_")
+                str(note) for note in plan.notes
+                if str(note).startswith("planner_")
+                or str(note).startswith("rr_to_tp1=")
+                or str(note).startswith("rr_to_tp2=")
+                or str(note).startswith("tp1_move_bps=")
+                or str(note).startswith("minimum_tp1_move_bps=")
+                or str(note).startswith("strong_continuation_quality=")
+                or str(note).startswith("master_entry_quality_passed=")
             )
             writer.writerow([
                 timestamp,
@@ -722,6 +740,15 @@ class TradeDatasetV2Logger:
             "follow_through_pct",
             "max_adverse_excursion_pct",
             "max_favorable_excursion_pct",
+            "trade_duration_seconds",
+            "time_to_first_green_seconds",
+            "time_to_first_red_seconds",
+            "time_to_mfe_seconds",
+            "time_to_mae_seconds",
+            "time_to_near_tp_seconds",
+            "immediate_adverse_move_pct",
+            "first_5m_pnl",
+            "first_3_candles_result",
             "entry_volume_ratio",
             "timed_exit",
             "trade_grade",
@@ -785,6 +812,15 @@ class TradeDatasetV2Logger:
             "follow_through_pct": "",
             "max_adverse_excursion_pct": "",
             "max_favorable_excursion_pct": "",
+            "trade_duration_seconds": "",
+            "time_to_first_green_seconds": "",
+            "time_to_first_red_seconds": "",
+            "time_to_mfe_seconds": "",
+            "time_to_mae_seconds": "",
+            "time_to_near_tp_seconds": "",
+            "immediate_adverse_move_pct": "",
+            "first_5m_pnl": "",
+            "first_3_candles_result": "",
             "entry_volume_ratio": "",
             "timed_exit": "",
             "trade_grade": "",
@@ -812,8 +848,17 @@ class TradeDatasetV2Logger:
         })
 
     def append_close(self, trade: dict, result: str, pnl: float, quality: dict) -> None:
-        fees = _safe_float(trade.get("fees_paid", trade.get("fees", 0.0)), 0.0)
-        net_pnl = pnl - fees
+        exchange_truth_pnl = trade.get("exchange_truth_pnl")
+        exchange_truth_fee = trade.get("exchange_truth_fee")
+
+        if exchange_truth_pnl not in ("", None):
+            pnl = _safe_float(exchange_truth_pnl)
+            fees = _safe_float(exchange_truth_fee, 0.0) if exchange_truth_fee not in ("", None) else 0.0
+            net_pnl = pnl
+        else:
+            fees = _safe_float(trade.get("fees_paid", trade.get("fees", 0.0)), 0.0)
+            net_pnl = pnl - abs(fees)
+
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
         self._append_row({
             "event_type": "CLOSE",
@@ -851,6 +896,15 @@ class TradeDatasetV2Logger:
             "follow_through_pct": quality.get("follow_through_pct", ""),
             "max_adverse_excursion_pct": trade.get("max_adverse_excursion_pct", quality.get("max_drawdown_pct", "")),
             "max_favorable_excursion_pct": trade.get("max_favorable_excursion_pct", quality.get("follow_through_pct", "")),
+            "trade_duration_seconds": trade.get("trade_duration_seconds", ""),
+            "time_to_first_green_seconds": trade.get("time_to_first_green_seconds", ""),
+            "time_to_first_red_seconds": trade.get("time_to_first_red_seconds", ""),
+            "time_to_mfe_seconds": trade.get("time_to_mfe_seconds", ""),
+            "time_to_mae_seconds": trade.get("time_to_mae_seconds", ""),
+            "time_to_near_tp_seconds": trade.get("time_to_near_tp_seconds", ""),
+            "immediate_adverse_move_pct": trade.get("immediate_adverse_move_pct", ""),
+            "first_5m_pnl": trade.get("first_5m_pnl", ""),
+            "first_3_candles_result": trade.get("first_3_candles_result", ""),
             "entry_volume_ratio": quality.get("entry_volume_ratio", ""),
             "timed_exit": quality.get("timed_exit", ""),
             "trade_grade": quality.get("trade_grade", ""),
@@ -990,8 +1044,17 @@ class StrategyPerformanceLogger:
         })
 
     def append_close_event(self, *, trade: dict, result: str, pnl: float, quality: dict) -> None:
-        fees = _safe_float(trade.get("fees_paid", trade.get("fees", 0.0)), 0.0)
-        net_pnl = pnl - fees
+        exchange_truth_pnl = trade.get("exchange_truth_pnl")
+        exchange_truth_fee = trade.get("exchange_truth_fee")
+
+        if exchange_truth_pnl not in ("", None):
+            pnl = _safe_float(exchange_truth_pnl)
+            fees = _safe_float(exchange_truth_fee, 0.0) if exchange_truth_fee not in ("", None) else 0.0
+            net_pnl = pnl
+        else:
+            fees = _safe_float(trade.get("fees_paid", trade.get("fees", 0.0)), 0.0)
+            net_pnl = pnl - abs(fees)
+
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
         self._append_row({
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1178,8 +1241,18 @@ class LiveTradeJournalLogger:
             target["closed_at"] = closed_at
             target["sync_source"] = "position_manager"
 
-            fees_paid = _safe_float(target.get("fees_paid", target.get("fees", 0.0)), 0.0)
-            quality = _trade_quality_from_journal(target, pnl=pnl, fees=fees_paid)
+            exchange_truth_pnl = target.get("exchange_truth_pnl")
+            exchange_truth_fee = target.get("exchange_truth_fee")
+            if exchange_truth_pnl not in ("", None):
+                pnl = _safe_float(exchange_truth_pnl)
+                fees_paid = _safe_float(exchange_truth_fee, 0.0) if exchange_truth_fee not in ("", None) else 0.0
+                quality_pnl = pnl
+                quality_fees = 0.0
+            else:
+                fees_paid = _safe_float(target.get("fees_paid", target.get("fees", 0.0)), 0.0)
+                quality_pnl = pnl
+                quality_fees = fees_paid
+            quality = _trade_quality_from_journal(target, pnl=quality_pnl, fees=quality_fees)
             target.update(quality)
 
             self.dataset.append_close(
@@ -1221,7 +1294,7 @@ class LiveTradeJournalLogger:
                     "result": result,
                     "pnl": pnl,
                     "fees": fees_paid,
-                    "net_pnl": round(pnl - fees_paid, 8),
+                    "net_pnl": round(pnl if exchange_truth_pnl not in ("", None) else pnl - abs(fees_paid), 8),
                     "tp1_hit": target.get("tp1_hit", ""),
                     "tp2_hit": target.get("tp2_hit", ""),
                     "tp3_hit": target.get("tp3_hit", ""),
@@ -1393,10 +1466,18 @@ def append_closed_trade_row(
     trade_payload["closed_reason"] = resolved_reason
     trade_payload["close_reason"] = resolved_reason
 
+    exchange_truth_pnl = trade_payload.get("exchange_truth_pnl")
+    exchange_truth_fee = trade_payload.get("exchange_truth_fee")
+    if exchange_truth_pnl not in ("", None):
+        resolved_pnl_float = _safe_float(exchange_truth_pnl)
+        quality_fees = 0.0
+    else:
+        quality_fees = _safe_float(trade_payload.get("fees_paid", trade_payload.get("fees", 0.0)), 0.0)
+
     quality = _trade_quality_from_journal(
         trade_payload,
         pnl=resolved_pnl_float,
-        fees=_safe_float(trade_payload.get("fees_paid", trade_payload.get("fees", 0.0)), 0.0),
+        fees=quality_fees,
     )
 
     TradeDatasetV2Logger("logs/trade_dataset_v2.csv").append_close(

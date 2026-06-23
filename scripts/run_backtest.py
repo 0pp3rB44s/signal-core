@@ -69,6 +69,16 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# Helper: find first present numeric field in a tuple of field names
+def _first_numeric_field(row: dict[str, Any], field_names: tuple[str, ...]) -> tuple[str, float] | tuple[str, None]:
+    for field_name in field_names:
+        value = row.get(field_name)
+        if value in (None, ""):
+            continue
+        return field_name, _safe_float(value)
+    return "", None
+
+
 def _load_candles_from_json(path: Path) -> list[Candle]:
     with open(path, "r", encoding="utf-8") as f:
         rows = json.load(f)
@@ -183,13 +193,50 @@ def _extract_reasons(row: dict[str, Any]) -> list[str]:
 
 
 def _trade_pnl(row: dict[str, Any]) -> float:
-    return _safe_float(
-        row.get("net_pnl")
-        or row.get("pnl_pct")
-        or row.get("pnl")
-        or row.get("realized_pnl")
-        or 0.0
+    """Return the most trustworthy closed-trade PnL.
+
+    Priority:
+    1. Bitget / exchange net position PnL fields. These are absolute USDT values and should already include fees.
+    2. Explicit net PnL fields written by the bot.
+    3. Realized PnL minus explicit fees, only when exchange net fields are missing.
+    4. Legacy percentage/gross fields as last-resort fallback.
+
+    This prevents green price-move trades from being counted as wins when fees made them net negative.
+    """
+    exchange_net_fields = (
+        "bitget_position_pnl",
+        "position_pnl",
+        "position_pnl_usdt",
+        "exchange_position_pnl",
+        "exchange_position_pnl_usdt",
+        "exchange_truth_position_pnl",
+        "exchange_truth_pnl",
+        "exchange_truth_net_pnl",
+        "closed_pnl",
+        "close_pnl",
     )
+    field_name, exchange_net_pnl = _first_numeric_field(row, exchange_net_fields)
+    if exchange_net_pnl is not None:
+        return exchange_net_pnl
+
+    explicit_net_fields = (
+        "net_pnl_usdt",
+        "net_realized_pnl",
+        "realized_net_pnl",
+        "net_pnl",
+    )
+    field_name, explicit_net_pnl = _first_numeric_field(row, explicit_net_fields)
+    if explicit_net_pnl is not None:
+        return explicit_net_pnl
+
+    realized_field, realized_pnl = _first_numeric_field(row, ("realized_pnl", "gross_pnl", "pnl"))
+    if realized_pnl is not None:
+        _, fees = _first_numeric_field(row, ("fees", "fee", "fees_paid", "exchange_truth_fee", "total_fee"))
+        if fees is not None:
+            return realized_pnl - abs(fees)
+        return realized_pnl
+
+    return _safe_float(row.get("pnl_pct") or 0.0)
 
 
 
@@ -209,19 +256,69 @@ def _is_recovery_trade(row: dict[str, Any]) -> bool:
     event_type = str(row.get("event_type") or row.get("event") or "").lower()
     close_source = str(row.get("close_source") or "").lower()
 
+    confidence = str(row.get("data_confidence") or "").upper().strip()
+    process_verdict = str(row.get("process_verdict") or "").upper().strip()
+
+    strategy_truth_markers = {
+        "low_vol_reclaim",
+        "liquidity_sweep_reversal",
+        "momentum_breakout",
+        "momentum_breakdown",
+        "trend_continuation",
+        "adaptive_momentum_continuation",
+    }
+
+    trusted_confidence = {
+        "STRATEGY_TRUTH",
+        "STRATEGY_TRUTH_VALIDATED",
+        "EXCHANGE_TRUTH",
+        "EXCHANGE_TRUTH_CLOSE",
+    }
+
+    trusted_process = {
+        "STRATEGY_TRUTH_VALIDATED",
+        "VALIDATED_POSITION_CLOSE",
+        "EXCHANGE_TRUTH_CLOSE",
+        "POSITION_CLOSED_SYNCED",
+    }
+
+    trusted_event = event_type in {"close", "position_closed", "closed_synced"}
+    trusted_strategy_close = (
+        strategy in strategy_truth_markers
+        and trusted_event
+        and (
+            confidence in trusted_confidence
+            or process_verdict in trusted_process
+            or close_source == "bitget_order_history"
+        )
+    )
+
+    hard_recovery_blob = "|".join([close_reason, close_source, process_verdict.lower()])
+    hard_recovery_markers = (
+        "manual_sync",
+        "state_recovery",
+        "recovered_",
+        "legacy_close",
+        "unlinked",
+        "no_position_to_close",
+        "closed_state_dataset_backfill",
+    )
+    if trusted_strategy_close and not any(marker in hard_recovery_blob for marker in hard_recovery_markers):
+        return False
+
     blob = "|".join([strategy, close_reason, event_type, close_source])
     recovery_markers = (
         "recovered_",
         "recovery",
         "reconciliation",
         "closed_sync",
-        "closed_synced",
+        # "exchange_position_closed_sync",  # removed as requested
+        # "closed_synced",  # removed as requested
         "no_position_to_close",
         "legacy_close",
         "unlinked",
         "manual_sync",
         "state_recovery",
-        "exchange_position_closed_sync",
         "closed_state_dataset_backfill",
     )
     return any(marker in blob for marker in recovery_markers)
@@ -234,11 +331,22 @@ def _data_confidence(row: dict[str, Any]) -> str:
     strategy = str(row.get("strategy") or row.get("setup_strategy") or "").lower()
     close_reason = str(row.get("closed_reason") or row.get("close_reason") or "").lower()
 
+    confidence_aliases = {
+        "STRATEGY_TRUTH_VALIDATED": "STRATEGY_TRUTH",
+        "VALIDATED_POSITION_CLOSE": "STRATEGY_TRUTH",
+        "EXCHANGE_TRUTH_CLOSE": "EXCHANGE_TRUTH",
+    }
     if confidence:
-        return confidence
+        return confidence_aliases.get(confidence, confidence)
 
     if close_source == "bitget_order_history":
         return "EXCHANGE_TRUTH"
+
+    exchange_truth_pnl = row.get("exchange_truth_pnl")
+    process_verdict = str(row.get("process_verdict") or "").upper().strip()
+
+    if process_verdict == "EXCHANGE_TRUTH_CLOSE" and exchange_truth_pnl in (None, ""):
+        return "LOW_CONFIDENCE"
 
     event_type = str(row.get("event_type") or row.get("event") or "").upper()
     sync_source = str(row.get("sync_source") or row.get("source") or "").lower()
@@ -258,13 +366,13 @@ def _data_confidence(row: dict[str, Any]) -> str:
         "recovery",
         "reconciliation",
         "closed_sync",
-        "closed_synced",
+        # "exchange_position_closed_sync",  # removed as requested
+        # "closed_synced",  # removed as requested
         "no_position_to_close",
         "legacy_close",
         "unlinked",
         "manual_sync",
         "state_recovery",
-        "exchange_position_closed_sync",
         "closed_state_dataset_backfill",
         "position_manager_guaranteed_close",
     )
@@ -278,11 +386,11 @@ def _data_confidence(row: dict[str, Any]) -> str:
 
     low_confidence_markers = (
         "closed_state_dataset_backfill",
-        "exchange_position_closed_sync",
+        # "exchange_position_closed_sync",  # removed as requested
         "position_manager_guaranteed_close",
         "recovered_",
         "recovery",
-        "closed_synced",
+        # "closed_synced",  # removed as requested
         "manual_sync",
         "state_recovery",
         "no_position_to_close",
@@ -308,6 +416,7 @@ def _expectancy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     for row in rows:
         pnl = _trade_pnl(row)
+        # PnL source is exchange/net-first via _trade_pnl; wins/losses are net-after-fees whenever Bitget truth is available.
         total_pnl += pnl
         if pnl > 0:
             wins += 1
@@ -557,7 +666,15 @@ def _build_daily_validation() -> dict[str, Any]:
     ]
     low_confidence_trade_rows = [row for row in closed_trade_rows if _data_confidence(row) in {"LOW_CONFIDENCE", "UNKNOWN"}]
     recovery_trade_rows = [row for row in closed_trade_rows if _is_recovery_trade(row) or _data_confidence(row) in {"LOW_CONFIDENCE", "UNKNOWN"}]
-    strategy_trade_rows = exchange_truth_trade_rows + strategy_truth_trade_rows
+    strategy_trade_rows = []
+
+    for row in exchange_truth_trade_rows + strategy_truth_trade_rows:
+        if (
+            str(row.get("process_verdict") or "").upper().strip() == "EXCHANGE_TRUTH_CLOSE"
+            and row.get("exchange_truth_pnl") in (None, "")
+        ):
+            continue
+        strategy_trade_rows.append(row)
 
     total_stats = _expectancy_stats(closed_trade_rows)
     strategy_stats = _expectancy_stats(strategy_trade_rows)
@@ -566,11 +683,13 @@ def _build_daily_validation() -> dict[str, Any]:
     # Build daily learning report
     learning_report = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "pnl_truth_mode": "exchange_net_pnl_first_fees_included",
         "daily_trade_count": strategy_stats["trades"],
         "daily_winrate": strategy_stats["winrate"],
         "daily_avg_win": strategy_stats["avg_win"],
         "daily_avg_loss": strategy_stats["avg_loss"],
         "daily_profit_factor": strategy_stats["profit_factor"],
+        "daily_total_net_pnl": strategy_stats["total_pnl"],
         "largest_win": strategy_stats["largest_win"],
         "largest_loss": strategy_stats["largest_loss"],
         "avg_win_loss_ratio": round(
@@ -592,9 +711,22 @@ def _build_daily_validation() -> dict[str, Any]:
         "exchange_truth_trade_count": len(exchange_truth_trade_rows),
         "strategy_truth_trade_count": len(strategy_truth_trade_rows),
         "low_confidence_trade_count": len(low_confidence_trade_rows),
+        "exchange_truth_missing_pnl_count": sum(
+            1
+            for row in closed_trade_rows
+            if str(row.get("process_verdict") or "").upper().strip() == "EXCHANGE_TRUTH_CLOSE"
+            and row.get("exchange_truth_pnl") in (None, "")
+        ),
         "data_confidence_verdict": (
             "TRUSTED"
-            if len(strategy_trade_rows) > 0 and len(recovery_trade_rows) <= len(strategy_trade_rows)
+            if len(strategy_trade_rows) > 0
+            and len(recovery_trade_rows) <= len(strategy_trade_rows)
+            and sum(
+                1
+                for row in closed_trade_rows
+                if str(row.get("process_verdict") or "").upper().strip() == "EXCHANGE_TRUTH_CLOSE"
+                and row.get("exchange_truth_pnl") in (None, "")
+            ) == 0
             else "LOW_CONFIDENCE"
         ),
         "learning_verdict": (

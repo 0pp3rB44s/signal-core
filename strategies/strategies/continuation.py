@@ -179,7 +179,12 @@ class ContinuationStrategy:
         breakout_context_ready = "breakout_context ready=true" in note_text
         breakout_context_direction = f"direction={wanted_pressure}" in note_text
         volatility_pressure_direction = f"pressure={wanted_pressure}" in note_text
-        compression = "compression=true" in note_text or "range tightening" in note_text
+        has_range_tightening = "range tightening" in note_text or "range_tightening=true" in note_text
+        has_higher_lows = "higher lows building" in note_text or "higher_lows_building=true" in note_text
+        has_lower_highs = "lower highs building" in note_text or "lower_highs_building=true" in note_text
+        has_closes_pressing_highs = "closes pressing highs" in note_text or "closes_pressing_highs=true" in note_text
+        has_closes_pressing_lows = "closes pressing lows" in note_text or "closes_pressing_lows=true" in note_text
+        compression = "compression=true" in note_text or has_range_tightening
         regime_hint = self._continuation_regime_hint(
             market=market,
             direction=direction,
@@ -192,9 +197,9 @@ class ContinuationStrategy:
 
         if direction == "LONG":
             structure_ok = (
-                "higher lows building" in note_text
-                or "closes pressing highs" in note_text
-                or "range tightening" in note_text
+                has_higher_lows
+                or has_closes_pressing_highs
+                or has_range_tightening
             )
             regime_ok = (
                 alignment in {"aligned_bullish", "mixed"}
@@ -203,9 +208,9 @@ class ContinuationStrategy:
             )
         else:
             structure_ok = (
-                "lower highs building" in note_text
-                or "closes pressing lows" in note_text
-                or "range tightening" in note_text
+                has_lower_highs
+                or has_closes_pressing_lows
+                or has_range_tightening
             )
             regime_ok = (
                 alignment in {"aligned_bearish", "mixed"}
@@ -234,7 +239,19 @@ class ContinuationStrategy:
             and volatility_rank >= self.MTF_OVERRIDE_MIN_VOLATILITY_RANK
         ) or compression_quality
 
-        allowed = bool(regime_ok and structure_ok and pressure_ok and participation_ok)
+        breakout_quality_ok = bool((breakout_context_ready and breakout_context_direction) or compression_quality)
+        continuation_quality_reasons = []
+        if not breakout_quality_ok:
+            continuation_quality_reasons.append("breakout_context_not_ready")
+        if not structure_ok:
+            continuation_quality_reasons.append("structure_not_confirmed")
+        if not pressure_ok:
+            continuation_quality_reasons.append("pressure_not_confirmed")
+        if not participation_ok:
+            continuation_quality_reasons.append("participation_not_confirmed")
+
+        continuation_quality = bool(regime_ok and structure_ok and pressure_ok and participation_ok and breakout_quality_ok)
+        allowed = continuation_quality
 
         return {
             "allowed": allowed,
@@ -243,9 +260,23 @@ class ContinuationStrategy:
             "pressure_score": pressure_score,
             "expansion_prob": expansion_prob,
             "breakout_context_ready": breakout_context_ready,
+            "breakout_context_direction": breakout_context_direction,
+            "continuation_quality": continuation_quality,
+            "continuation_quality_reasons": continuation_quality_reasons,
             "compression": compression,
             "compression_quality": compression_quality,
             "structure_ok": structure_ok,
+            "structure_source": ",".join(
+                item
+                for item, active in {
+                    "range_tightening": has_range_tightening,
+                    "higher_lows": has_higher_lows,
+                    "lower_highs": has_lower_highs,
+                    "closes_pressing_highs": has_closes_pressing_highs,
+                    "closes_pressing_lows": has_closes_pressing_lows,
+                }.items()
+                if active
+            ) or "missing",
             "regime_ok": regime_ok,
             "pressure_ok": pressure_ok,
             "participation_ok": participation_ok,
@@ -256,11 +287,6 @@ class ContinuationStrategy:
         }
 
     def detect(self, market: MarketSnapshot) -> StrategyCandidate | None:
-        logger.warning(
-            "CONTINUATION_DISABLED | %s | reason=strategy_isolation_liquidity_sweep_only",
-            market.symbol,
-        )
-        return None
         primary_candles = market.primary.candles
         confirmation_candles = market.confirmation.candles
 
@@ -342,6 +368,10 @@ class ContinuationStrategy:
             body_pct_of_range=float(body_pct_of_range),
         )
         mtf_context["regime_hint"] = regime_hint
+        mtf_context["participation_score"] = float(participation_score or 0.0)
+        mtf_context["followthrough_volume_ratio"] = float(followthrough_volume_ratio or 0.0)
+        mtf_context["volume_ratio"] = float(volume_ratio or 0.0)
+        mtf_context["volatility_rank"] = float(volatility_rank or 0.0)
 
         if mtf_override:
             logger.info(
@@ -866,6 +896,17 @@ class ContinuationStrategy:
         notes.append(f"pullback_depth_pct {pullback_depth_pct:.3f}")
         notes.append(f"reclaim_proximity_pct {reclaim_proximity_pct:.3f}")
         notes.append(f"close_position {close_position:.3f}")
+        notes.append(f"continuation_quality={bool(mtf_context.get('continuation_quality', False))}")
+        notes.append("continuation_quality_reasons=" + ",".join(str(reason) for reason in (mtf_context.get("continuation_quality_reasons") or [])))
+        notes.append(f"structure_ok={bool(mtf_context.get('structure_ok', False))}")
+        notes.append(f"pressure_ok={bool(mtf_context.get('pressure_ok', False))}")
+        notes.append(f"participation_ok={bool(mtf_context.get('participation_ok', False))}")
+        notes.append(f"breakout_context_ready={bool(mtf_context.get('breakout_context_ready', False))}")
+        notes.append(f"breakout_context_direction={bool(mtf_context.get('breakout_context_direction', False))}")
+        notes.append(f"pressure_score={float(mtf_context.get('pressure_score', 0.0)):.2f}")
+        notes.append(f"expansion_prob={float(mtf_context.get('expansion_prob', 0.0)):.1f}")
+        notes.append(f"participation_score={float(participation_score or 0.0):.2f}")
+        notes.append(f"followthrough_volume_ratio={float(followthrough_volume_ratio or 0.0):.2f}")
 
         logger.info(
             "RECLAIM_QUALITY | %s | direction=%s | reclaim_strength_score=%.2f | retest_quality_score=%.2f | pullback_depth_pct=%.3f | reclaim_proximity_pct=%.3f",
@@ -956,6 +997,20 @@ class ContinuationStrategy:
         for context_note in market_context_notes:
             if context_note not in notes:
                 notes.append(context_note)
+
+        if not bool(mtf_context.get("continuation_quality", False)):
+            self._reject(
+                market,
+                "continuation_quality_failed",
+                direction=direction,
+                reasons=",".join(str(reason) for reason in (mtf_context.get("continuation_quality_reasons") or [])),
+                pressure_score=round(float(mtf_context.get("pressure_score", 0.0)), 2),
+                expansion_prob=round(float(mtf_context.get("expansion_prob", 0.0)), 1),
+                participation_score=round(float(participation_score or 0.0), 3),
+                followthrough_volume_ratio=round(float(followthrough_volume_ratio or 0.0), 3),
+                regime_hint=regime_hint,
+            )
+            return None
 
         return StrategyCandidate(
             symbol=market.symbol,

@@ -28,6 +28,8 @@ class PositionManager:
         self.residual_position_pct_threshold = 5.0
         self.residual_position_abs_threshold = 0.000001
         self.tp_miss_near_pct = 0.18
+        self.near_tp_protection_trigger_pct = 85.0
+        self.near_tp_be_fee_buffer_pct = 0.08
         self.failed_continuation_min_age_minutes = 10.0
         self.failed_continuation_sl_buffer_pct = 0.06
         self.failed_continuation_min_unrealized_pct = -0.35
@@ -179,7 +181,20 @@ class PositionManager:
             if symbol not in bitget_open_symbols:
                 entry_price = float(position.get("avg_entry") or 0)
                 direction = str(position.get("direction") or "")
-                exchange_close_truth = self._exchange_close_truth_from_order_history(position)
+                exchange_close_truth = self._exchange_close_truth_from_position_history(position)
+                position_history_source = str(exchange_close_truth.get("close_source") or "") == "bitget_position_history"
+                position_history_has_pnl = exchange_close_truth.get("pnl") not in (None, "")
+                if not position_history_source or not position_history_has_pnl:
+                    fallback_close_truth = self._exchange_close_truth_from_order_history(position)
+                    if fallback_close_truth.get("exit_price") or fallback_close_truth.get("size") or fallback_close_truth.get("pnl"):
+                        if position_history_has_pnl:
+                            fallback_close_truth["pnl"] = exchange_close_truth.get("pnl")
+                            fallback_close_truth["fee"] = exchange_close_truth.get("fee")
+                            fallback_close_truth["gross_pnl"] = exchange_close_truth.get("gross_pnl")
+                            fallback_close_truth["open_fee"] = exchange_close_truth.get("open_fee")
+                            fallback_close_truth["close_fee"] = exchange_close_truth.get("close_fee")
+                            fallback_close_truth["close_source"] = "bitget_position_history_with_order_fallback"
+                        exchange_close_truth = fallback_close_truth
 
                 closed_price = float(
                     exchange_close_truth.get("exit_price")
@@ -250,8 +265,18 @@ class PositionManager:
                     )
                 self._sync_journal_close(symbol, position["closed_reason"], pnl_pct)
                 position["close_source"] = exchange_close_truth.get("close_source") or "exchange_position_closed_sync"
-                position["data_confidence"] = "EXCHANGE_TRUTH" if exchange_close_truth.get("close_source") == "bitget_order_history" else "STRATEGY_TRUTH"
-                position["process_verdict"] = "EXCHANGE_TRUTH_CLOSE" if exchange_close_truth.get("close_source") == "bitget_order_history" else "POSITION_CLOSED_SYNCED"
+                exchange_truth_pnl_available = exchange_close_truth.get("pnl") not in (None, "")
+                close_source = str(exchange_close_truth.get("close_source") or "")
+                exchange_source = close_source in {"bitget_order_history", "bitget_position_history"}
+                if exchange_source and exchange_truth_pnl_available:
+                    position["data_confidence"] = "EXCHANGE_TRUTH"
+                    position["process_verdict"] = "EXCHANGE_TRUTH_CLOSE"
+                elif exchange_source:
+                    position["data_confidence"] = "LOW_CONFIDENCE"
+                    position["process_verdict"] = "EXCHANGE_TRUTH_MISSING_PNL"
+                else:
+                    position["data_confidence"] = "STRATEGY_TRUTH"
+                    position["process_verdict"] = "POSITION_CLOSED_SYNCED"
                 position["exchange_truth_order_id"] = exchange_close_truth.get("order_id", "")
                 position["exchange_truth_exit_price"] = exchange_close_truth.get("exit_price", closed_price)
                 position["exchange_truth_size"] = exchange_close_truth.get("size", "")
@@ -282,9 +307,9 @@ class PositionManager:
                     closed_price,
                     pnl_pct,
                     position.get("stale_tpsl_cleanup_done"),
-                    exchange_close_truth.get("close_source") or "exchange_position_closed_sync",
-                    "EXCHANGE_TRUTH" if exchange_close_truth.get("close_source") == "bitget_order_history" else "STRATEGY_TRUTH",
-                    "EXCHANGE_TRUTH_CLOSE" if exchange_close_truth.get("close_source") == "bitget_order_history" else "POSITION_CLOSED_SYNCED",
+                    position.get("close_source"),
+                    position.get("data_confidence"),
+                    position.get("process_verdict"),
                 )
 
                 events.append(
@@ -332,6 +357,166 @@ class PositionManager:
             previous_mae = float(position.get("max_adverse_excursion_pct") or 0.0)
             position["max_favorable_excursion_pct"] = round(max(previous_mfe, pnl_pct), 4)
             position["max_adverse_excursion_pct"] = round(min(previous_mae, pnl_pct), 4)
+
+            # --- Telemetry: trade duration/timing fields ---
+            now_iso = datetime.now(timezone.utc).isoformat()
+            opened_at = str(position.get("opened_at") or position.get("created_at") or "")
+
+            if opened_at:
+                try:
+                    opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                    now_dt = datetime.now(timezone.utc)
+                    age_seconds = max(0.0, (now_dt - opened_dt).total_seconds())
+                    position["trade_duration_seconds"] = round(age_seconds, 3)
+
+                    if pnl_pct > 0 and not position.get("time_to_first_green_seconds"):
+                        position["time_to_first_green_seconds"] = round(age_seconds, 3)
+
+                    if pnl_pct < 0 and not position.get("time_to_first_red_seconds"):
+                        position["time_to_first_red_seconds"] = round(age_seconds, 3)
+
+                    if position["max_favorable_excursion_pct"] > previous_mfe and not position.get("time_to_mfe_seconds"):
+                        position["time_to_mfe_seconds"] = round(age_seconds, 3)
+
+                    if position["max_adverse_excursion_pct"] < previous_mae and not position.get("time_to_mae_seconds"):
+                        position["time_to_mae_seconds"] = round(age_seconds, 3)
+
+                    # --- P0.5A: entry quality autopsy telemetry ---
+                    # These are observation-based fields; they do not affect execution.
+                    if pnl_pct < 0 and not position.get("immediate_adverse_move_pct"):
+                        position["immediate_adverse_move_pct"] = round(pnl_pct, 4)
+
+                    if age_seconds >= 300 and not position.get("first_5m_pnl"):
+                        position["first_5m_pnl"] = round(pnl_pct, 4)
+
+                    first_three_samples = position.get("first_3_candles_samples")
+                    if not isinstance(first_three_samples, list):
+                        first_three_samples = []
+
+                    if len(first_three_samples) < 3:
+                        first_three_samples.append(round(pnl_pct, 4))
+                        position["first_3_candles_samples"] = first_three_samples
+
+                    if len(first_three_samples) >= 3 and not position.get("first_3_candles_result"):
+                        positive_count = sum(1 for sample in first_three_samples[:3] if sample > 0)
+                        negative_count = sum(1 for sample in first_three_samples[:3] if sample < 0)
+
+                        if positive_count == 3:
+                            first_three_result = "GREEN_START"
+                        elif negative_count == 3:
+                            first_three_result = "RED_START"
+                        elif positive_count > 0 and negative_count > 0:
+                            first_three_result = "MIXED_START"
+                        else:
+                            first_three_result = "FLAT_START"
+
+                        position["first_3_candles_result"] = first_three_result
+                        position["first_3_candles_source"] = "sync_observations"
+                except Exception:
+                    pass
+
+            # Near-TP protection: if a trade reaches most of TP1 but fails to fill,
+            # protect it at BE + fee buffer instead of letting it round-trip to red.
+            take_profits = position.get("take_profits") or []
+            tp1 = self._safe_float(take_profits[0], 0.0) if isinstance(take_profits, list) and take_profits else 0.0
+            if tp1 > 0 and entry > 0 and not bool(position.get("tp1_hit", False)):
+                tp_distance_pct = abs(tp1 - entry) / max(entry, 1e-9) * 100.0
+                distance_to_tp_pct = abs(tp1 - current_price) / max(current_price, 1e-9) * 100.0
+                tp_reach_pct = max(0.0, min(999.0, (position["max_favorable_excursion_pct"] / tp_distance_pct) * 100.0)) if tp_distance_pct > 0 else 0.0
+                previous_min_distance = self._safe_float(position.get("min_distance_to_tp_pct"), 999.0)
+                position["near_tp_distance_pct"] = round(distance_to_tp_pct, 5)
+                position["min_distance_to_tp_pct"] = round(min(previous_min_distance, distance_to_tp_pct), 5)
+                position["tp1_reach_pct"] = round(tp_reach_pct, 2)
+
+                if tp_reach_pct >= self.near_tp_protection_trigger_pct and not bool(position.get("near_tp_protection_active", False)):
+                    if direction == "LONG":
+                        protective_stop = round(entry * (1.0 + self.near_tp_be_fee_buffer_pct / 100.0), 8)
+                        should_move_stop = protective_stop > stop and protective_stop < current_price
+                    else:
+                        protective_stop = round(entry * (1.0 - self.near_tp_be_fee_buffer_pct / 100.0), 8)
+                        should_move_stop = protective_stop < stop and protective_stop > current_price
+
+                    position["near_tp_seen"] = True
+                    if not position.get("near_tp_seen_at"):
+                        position["near_tp_seen_at"] = datetime.now(timezone.utc).isoformat()
+                    # --- Telemetry: time to near TP ---
+                    if not position.get("time_to_near_tp_seconds"):
+                        try:
+                            opened_at = str(position.get("opened_at") or position.get("created_at") or "")
+                            if opened_at:
+                                opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                                position["time_to_near_tp_seconds"] = round(
+                                    (datetime.now(timezone.utc) - opened_dt).total_seconds(),
+                                    3,
+                                )
+                        except Exception:
+                            pass
+                    position["near_tp_protection_candidate_stop"] = protective_stop
+                    position["near_tp_protection_reach_pct"] = round(tp_reach_pct, 2)
+
+                    if should_move_stop:
+                        self.log.warning(
+                            "PROTECTION_ACTION_STARTED | %s | action=move_stop_loss | reason=NEAR_TP_PROTECTION | direction=%s | old_stop=%s | new_stop=%s | entry=%s | current=%s | tp1=%s | reach=%.2f",
+                            symbol,
+                            direction,
+                            stop,
+                            protective_stop,
+                            entry,
+                            current_price,
+                            tp1,
+                            tp_reach_pct,
+                        )
+                        moved = self._move_exchange_stop_loss_with_retries(
+                            position,
+                            protective_stop,
+                            "NEAR_TP_PROTECTION",
+                        )
+                        if moved:
+                            position["stop_loss"] = protective_stop
+                            stop = protective_stop
+                            position["near_tp_protection_active"] = True
+                            position["break_even_active"] = True
+                            position["tp1_locked_stop_active"] = True
+                            position["near_tp_protection_reason"] = "tp1_reached_85pct_be_fee_lock"
+                            self.log.warning(
+                                "PROTECTION_ACTION_SUCCESS | %s | action=move_stop_loss | reason=NEAR_TP_PROTECTION | new_stop=%s | entry=%s | current=%s | tp1=%s | reach=%.2f",
+                                symbol,
+                                protective_stop,
+                                entry,
+                                current_price,
+                                tp1,
+                                tp_reach_pct,
+                            )
+                            self.log.warning(
+                                "NEAR_TP_PROTECTION_ARMED | %s | direction=%s | reach=%.2f | stop=%s | entry=%s | current=%s | tp1=%s",
+                                symbol,
+                                direction,
+                                tp_reach_pct,
+                                protective_stop,
+                                entry,
+                                current_price,
+                                tp1,
+                            )
+                        else:
+                            position["near_tp_protection_failed"] = "move_exchange_stop_loss_with_retries_returned_false"
+                            self.log.error(
+                                "PROTECTION_ACTION_FAILED | %s | action=move_stop_loss | reason=NEAR_TP_PROTECTION | new_stop=%s | entry=%s | current=%s | tp1=%s | reach=%.2f | error=%s",
+                                symbol,
+                                protective_stop,
+                                entry,
+                                current_price,
+                                tp1,
+                                tp_reach_pct,
+                                "move_exchange_stop_loss_with_retries_returned_false",
+                            )
+                            self.log.error(
+                                "NEAR_TP_PROTECTION_FAILED | %s | direction=%s | reach=%.2f | stop=%s | error=%s",
+                                symbol,
+                                direction,
+                                tp_reach_pct,
+                                protective_stop,
+                                "move_exchange_stop_loss_with_retries_returned_false",
+                            )
 
             note_parts: list[str] = []
 
@@ -568,6 +753,25 @@ class PositionManager:
                         )
 
             tps = [float(x) for x in position.get("take_profits", [])]
+
+            # Near-TP / profit-giveback tracking for trade autopsy.
+            next_target = self._next_unhit_target(position)
+            distance_to_next_tp_pct = self._distance_to_target_pct(direction, current_price, next_target)
+            previous_min_near_tp_distance = float(position.get("min_distance_to_tp_pct") or 999.0)
+            if next_target > 0:
+                position["current_distance_to_tp_pct"] = round(distance_to_next_tp_pct, 4)
+                position["min_distance_to_tp_pct"] = round(min(previous_min_near_tp_distance, distance_to_next_tp_pct), 4)
+                if distance_to_next_tp_pct <= self.tp_miss_near_pct:
+                    if not bool(position.get("near_tp_seen", False)):
+                        position["near_tp_seen_at"] = datetime.now(timezone.utc).isoformat()
+                        position["near_tp_first_price"] = current_price
+                        position["near_tp_first_target"] = next_target
+                        position["mfe_at_near_tp_seen_pct"] = position.get("max_favorable_excursion_pct", pnl_pct)
+                    position["near_tp_seen"] = True
+                    position["near_tp_latest_price"] = current_price
+                    position["near_tp_latest_target"] = next_target
+                    position["near_tp_distance_pct"] = round(distance_to_next_tp_pct, 4)
+                    note_parts.append(f"NEAR_TP_SEEN distance={distance_to_next_tp_pct:.4f}% target={next_target:.8f}")
             tp1_size_inferred = (
                 not position.get("tp1_hit")
                 and current_remaining_pct <= (100.0 - float(self.settings.tp1_close_pct) + 5.0)
@@ -751,7 +955,24 @@ class PositionManager:
                     failed_continuation_stop,
                     failed_continuation_context,
                 )
+                self.log.warning(
+                    "PROTECTION_ACTION_STARTED | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | direction=%s | old_stop=%s | new_stop=%s | current=%s | pnl_pct=%.4f",
+                    symbol,
+                    direction,
+                    previous_stop,
+                    failed_continuation_stop,
+                    current_price,
+                    pnl_pct,
+                )
                 if self._move_exchange_stop_loss_with_retries(position, failed_continuation_stop, "FAILED_CONTINUATION_PROTECTION"):
+                    self.log.warning(
+                        "PROTECTION_ACTION_SUCCESS | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | old_stop=%s | new_stop=%s | current=%s | pnl_pct=%.4f",
+                        symbol,
+                        previous_stop,
+                        failed_continuation_stop,
+                        current_price,
+                        pnl_pct,
+                    )
                     position["stop_loss"] = failed_continuation_stop
                     position["exchange_stop_loss"] = failed_continuation_stop
                     position["break_even_active"] = True
@@ -772,6 +993,15 @@ class PositionManager:
                     position["failed_continuation_protection_failed"] = True
                     position["failed_continuation_context"] = failed_continuation_context
                     note_parts.append("WARNING: failed continuation detected but SL tighten failed")
+                    self.log.error(
+                        "PROTECTION_ACTION_FAILED | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | old_stop=%s | new_stop=%s | current=%s | pnl_pct=%.4f | context=%s",
+                        symbol,
+                        previous_stop,
+                        failed_continuation_stop,
+                        current_price,
+                        pnl_pct,
+                        failed_continuation_context,
+                    )
                     self.log.error(
                         "FAILED_CONTINUATION_SL_TIGHTEN_FAILED | %s | attempted_stop=%s | context=%s",
                         symbol,
@@ -1035,6 +1265,14 @@ class PositionManager:
                 leverage = row_float("leverage")
                 fees = row_float("fees")
                 slippage_pct = row_float("slippage_pct")
+                stop_loss = row_float("stop_loss")
+
+                raw_take_profits = str(row.get("take_profits") or "")
+                take_profits: list[float] = []
+                for raw_tp in raw_take_profits.replace(",", "|").split("|"):
+                    parsed_tp = self._safe_float(raw_tp.strip(), 0.0)
+                    if parsed_tp > 0:
+                        take_profits.append(parsed_tp)
 
                 if not position.get("avg_entry") and entry > 0:
                     position["avg_entry"] = entry
@@ -1051,6 +1289,27 @@ class PositionManager:
                 if not position.get("slippage_pct") and slippage_pct:
                     position["slippage_pct"] = slippage_pct
 
+                current_stop_loss = self._safe_float(position.get("stop_loss"), 0.0)
+                if current_stop_loss <= 0 and stop_loss > 0:
+                    position["stop_loss"] = stop_loss
+                    position["hydrated_stop_loss_from_open_dataset"] = True
+
+                current_take_profits = position.get("take_profits") or []
+                has_current_take_profits = isinstance(current_take_profits, list) and any(
+                    self._safe_float(tp, 0.0) > 0 for tp in current_take_profits
+                )
+                if not has_current_take_profits and take_profits:
+                    position["take_profits"] = take_profits
+                    position["hydrated_take_profits_from_open_dataset"] = True
+
+                if (current_stop_loss <= 0 and stop_loss > 0) or (not has_current_take_profits and take_profits):
+                    self.log.warning(
+                        "OPEN_DATASET_PROTECTION_HYDRATED | %s | stop=%s | tps=%s",
+                        symbol,
+                        position.get("stop_loss"),
+                        position.get("take_profits"),
+                    )
+
                 current_size = self._position_size(position)
                 if current_size <= 0 and notional > 0 and entry > 0:
                     inferred_size = round(notional / entry, 8)
@@ -1066,6 +1325,62 @@ class PositionManager:
                 opened_at,
                 exc,
             )
+
+    def _ensure_close_dataset_context(self, position: dict) -> None:
+        """Telemetry-only: ensure CLOSE dataset rows carry full autopsy context."""
+        if not isinstance(position, dict):
+            return
+
+        self._hydrate_position_from_open_dataset_row(position)
+        self._hydrate_close_position_size(position)
+
+        avg_entry = self._safe_float(position.get("avg_entry"), 0.0)
+        entry_price = self._safe_float(position.get("entry_price"), 0.0)
+        if avg_entry <= 0 and entry_price > 0:
+            position["avg_entry"] = entry_price
+            avg_entry = entry_price
+        if entry_price <= 0 and avg_entry > 0:
+            position["entry_price"] = avg_entry
+
+        raw_tps = position.get("take_profits") or []
+        normalized_tps = []
+        if isinstance(raw_tps, list):
+            for tp in raw_tps:
+                parsed = self._safe_float(tp, 0.0)
+                if parsed > 0:
+                    normalized_tps.append(parsed)
+        elif isinstance(raw_tps, str):
+            for raw_tp in raw_tps.replace(",", "|").split("|"):
+                parsed = self._safe_float(raw_tp.strip(), 0.0)
+                if parsed > 0:
+                    normalized_tps.append(parsed)
+
+        if normalized_tps:
+            position["take_profits"] = normalized_tps
+            position["tp1"] = normalized_tps[0]
+            if len(normalized_tps) >= 2:
+                position["tp2"] = normalized_tps[1]
+            if len(normalized_tps) >= 3:
+                position["tp3"] = normalized_tps[2]
+
+        position["near_tp_seen"] = bool(position.get("near_tp_seen", False))
+        position["near_tp_distance_pct"] = self._safe_float(position.get("near_tp_distance_pct"), 999.0)
+        position["min_distance_to_tp_pct"] = self._safe_float(position.get("min_distance_to_tp_pct"), 999.0)
+        position["max_favorable_excursion_pct"] = self._safe_float(position.get("max_favorable_excursion_pct"), 0.0)
+        position["max_adverse_excursion_pct"] = self._safe_float(position.get("max_adverse_excursion_pct"), 0.0)
+
+        near_tp_seen_at = str(position.get("near_tp_seen_at") or "")
+        closed_at = str(position.get("closed_at") or "")
+        if near_tp_seen_at and closed_at and not position.get("time_from_near_tp_to_exit_seconds"):
+            try:
+                near_tp_dt = datetime.fromisoformat(near_tp_seen_at.replace("Z", "+00:00"))
+                closed_dt = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+                position["time_from_near_tp_to_exit_seconds"] = round(
+                    max(0.0, (closed_dt - near_tp_dt).total_seconds()),
+                    3,
+                )
+            except Exception:
+                pass
 
     def _ensure_closed_trade_dataset_row(self, position: dict) -> None:
         status = str(position.get("status") or "")
@@ -1165,6 +1480,43 @@ class PositionManager:
                 position.get("close_source"),
             )
 
+        exchange_close_truth = {}
+        if position.get("exchange_truth_pnl") in (None, ""):
+            exchange_close_truth = self._exchange_close_truth_from_position_history(position)
+            if str(exchange_close_truth.get("close_source") or "") == "bitget_position_history" and exchange_close_truth.get("pnl") not in (None, ""):
+                position["close_source"] = "bitget_position_history"
+                position["data_confidence"] = "EXCHANGE_TRUTH"
+                position["process_verdict"] = "EXCHANGE_TRUTH_CLOSE"
+                position["exchange_truth_order_id"] = exchange_close_truth.get("order_id", "")
+                position["exchange_truth_exit_price"] = exchange_close_truth.get("exit_price", position.get("exchange_truth_exit_price", ""))
+                position["exchange_truth_size"] = exchange_close_truth.get("size", position.get("exchange_truth_size", ""))
+                position["exchange_truth_pnl"] = exchange_close_truth.get("pnl", "")
+                position["exchange_truth_fee"] = exchange_close_truth.get("fee", "")
+                position["realized_pnl"] = exchange_close_truth.get("pnl", position.get("realized_pnl", ""))
+                position["fees_paid"] = exchange_close_truth.get("fee", position.get("fees_paid", ""))
+
+        data_confidence = str(position.get("data_confidence") or data_confidence or "")
+        process_verdict = str(position.get("process_verdict") or process_verdict or "")
+        close_source = str(position.get("close_source") or close_source or "")
+
+        if position.get("exchange_truth_pnl") in (None, ""):
+            exchange_close_truth = self._exchange_close_truth_from_position_history(position)
+            if str(exchange_close_truth.get("close_source") or "") == "bitget_position_history" and exchange_close_truth.get("pnl") not in (None, ""):
+                position["close_source"] = "bitget_position_history"
+                position["data_confidence"] = "EXCHANGE_TRUTH"
+                position["process_verdict"] = "EXCHANGE_TRUTH_CLOSE"
+                position["exchange_truth_order_id"] = exchange_close_truth.get("order_id", "")
+                position["exchange_truth_exit_price"] = exchange_close_truth.get("exit_price", position.get("exchange_truth_exit_price", ""))
+                position["exchange_truth_size"] = exchange_close_truth.get("size", position.get("exchange_truth_size", ""))
+                position["exchange_truth_pnl"] = exchange_close_truth.get("pnl", "")
+                position["exchange_truth_fee"] = exchange_close_truth.get("fee", "")
+                position["realized_pnl"] = exchange_close_truth.get("pnl", position.get("realized_pnl", ""))
+                position["fees_paid"] = exchange_close_truth.get("fee", position.get("fees_paid", ""))
+
+        data_confidence = str(position.get("data_confidence") or data_confidence or "")
+        process_verdict = str(position.get("process_verdict") or process_verdict or "")
+        close_source = str(position.get("close_source") or close_source or "")
+
         self.log.warning(
             "EXCHANGE_TRUTH_BACKFILL_ALLOWED_MAIN_DATASET | %s | status=%s | closed_at=%s | reason=%s | data_confidence=%s | process_verdict=%s | close_source=%s",
             symbol,
@@ -1177,8 +1529,7 @@ class PositionManager:
         )
 
         # Write EXCHANGE_TRUTH closed state to trade_dataset_v2.csv
-        self._hydrate_position_from_open_dataset_row(position)
-        self._hydrate_close_position_size(position)
+        self._ensure_close_dataset_context(position)
 
         direction = str(position.get("direction") or "").upper()
         entry_price = float(position.get("avg_entry") or position.get("entry_price") or 0.0)
@@ -1196,7 +1547,6 @@ class PositionManager:
         )
         close_reason = str(position.get("closed_reason") or status.lower())
 
-        
         self._append_closed_trade_dataset_row(
             position=position,
             close_reason=close_reason,
@@ -1769,7 +2119,41 @@ class PositionManager:
             "tp1_locked_stop_active": position.get("tp1_locked_stop_active", False),
             "last_sl_move_reason": position.get("last_sl_move_reason", ""),
             "protection_integrity": position.get("protection_integrity", ""),
+            "max_favorable_excursion_pct": position.get("max_favorable_excursion_pct", ""),
+            "max_adverse_excursion_pct": position.get("max_adverse_excursion_pct", ""),
+            "near_tp_seen": position.get("near_tp_seen", False),
+            "near_tp_seen_at": position.get("near_tp_seen_at", ""),
+            "near_tp_distance_pct": position.get("near_tp_distance_pct", ""),
+            "min_distance_to_tp_pct": position.get("min_distance_to_tp_pct", ""),
+            "current_distance_to_tp_pct": position.get("current_distance_to_tp_pct", ""),
+            "near_tp_first_price": position.get("near_tp_first_price", ""),
+            "near_tp_first_target": position.get("near_tp_first_target", ""),
+            "near_tp_latest_price": position.get("near_tp_latest_price", ""),
+            "near_tp_latest_target": position.get("near_tp_latest_target", ""),
+            "mfe_at_near_tp_seen_pct": position.get("mfe_at_near_tp_seen_pct", ""),
+            "profit_giveback_pct": round(max(0.0, float(position.get("max_favorable_excursion_pct") or 0.0) - float(pnl_pct or 0.0)), 4),
+            "reversed_after_near_tp": bool(position.get("near_tp_seen", False)) and float(pnl_pct or 0.0) < float(position.get("max_favorable_excursion_pct") or 0.0),
+            "close_source": position.get("close_source", ""),
+            "data_confidence": position.get("data_confidence", ""),
+            "process_verdict": position.get("process_verdict", ""),
+            "exchange_truth_order_id": position.get("exchange_truth_order_id", ""),
+            "exchange_truth_exit_price": position.get("exchange_truth_exit_price", ""),
+            "exchange_truth_size": position.get("exchange_truth_size", ""),
+            "exchange_truth_pnl": position.get("exchange_truth_pnl", ""),
+            "exchange_truth_fee": position.get("exchange_truth_fee", ""),
         }
+
+        if position.get("exchange_truth_pnl") not in (None, ""):
+            try:
+                pnl = float(position.get("exchange_truth_pnl") or pnl)
+            except (TypeError, ValueError):
+                pass
+
+        if position.get("exchange_truth_pnl") not in (None, ""):
+            try:
+                pnl = float(position.get("exchange_truth_pnl") or pnl)
+            except (TypeError, ValueError):
+                pass
 
         if extra:
             payload_extra.update(extra)
@@ -2245,6 +2629,110 @@ class PositionManager:
         message = str(exc).lower()
         return "22002" in message and "no position to close" in message
 
+    def _exchange_close_truth_from_position_history(self, position: dict) -> dict:
+        """Fetch realized close truth from Bitget position history."""
+        symbol = str(position.get("symbol") or "").upper()
+        direction = str(position.get("direction") or "").upper()
+        if not symbol:
+            return {"close_source": "bitget_position_history_unavailable"}
+
+        hold_side = "long" if direction == "LONG" else "short" if direction == "SHORT" else ""
+
+        try:
+            payload = self.client.get_position_history(symbol=symbol, limit=20)
+        except Exception as exc:
+            self.log.warning("EXCHANGE_CLOSE_TRUTH_POSITION_HISTORY_FAILED | %s | error=%s", symbol, exc)
+            return {"close_source": "bitget_position_history_error"}
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        rows = []
+        if isinstance(data, dict):
+            raw_rows = data.get("list") or data.get("positions") or data.get("data") or []
+            if isinstance(raw_rows, list):
+                rows = raw_rows
+        elif isinstance(data, list):
+            rows = data
+
+        if not rows:
+            return {"close_source": "bitget_position_history_empty"}
+
+        def row_time(row: dict) -> int:
+            for key in ("utime", "ctime", "updatedTime", "createdTime", "closeTime"):
+                try:
+                    value = int(float(row.get(key) or 0))
+                except (TypeError, ValueError):
+                    value = 0
+                if value > 0:
+                    return value
+            return 0
+
+        candidates = []
+        for row in rows:
+            row_symbol = str(row.get("symbol") or row.get("instId") or "").upper()
+            row_hold_side = str(row.get("holdSide") or row.get("posSide") or row.get("side") or "").lower()
+            if row_symbol and row_symbol != symbol:
+                continue
+            if hold_side and row_hold_side and row_hold_side != hold_side:
+                continue
+            candidates.append(row)
+
+        if not candidates:
+            return {"close_source": "bitget_position_history_no_match"}
+
+        selected = sorted(candidates, key=row_time, reverse=True)[0]
+
+        def pick_float(row: dict, keys: tuple[str, ...], default: float = 0.0) -> float:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return self._safe_float(value, default)
+            return default
+
+        net_profit = pick_float(selected, ("netProfit", "net_profit", "realizedPnl", "realizedPNL", "realizedPnlAfterFee", "achievedProfits", "totalProfits", "profit"), 0.0)
+        pnl = pick_float(selected, ("pnl", "positionPnl", "positionPNL", "grossPnl", "grossPNL", "realizedPnl", "realizedPNL"), net_profit)
+        open_fee = abs(pick_float(selected, ("openFee", "open_fee", "openingFee", "entryFee"), 0.0))
+        close_fee = abs(pick_float(selected, ("closeFee", "close_fee", "closingFee", "exitFee"), 0.0))
+        total_fee = open_fee + close_fee
+        exit_price = self._safe_float(
+            selected.get("closeAvgPrice")
+            or selected.get("closePrice")
+            or selected.get("averageClosePrice")
+            or selected.get("avgClosePrice"),
+            0.0,
+        )
+        size = self._safe_float(
+            selected.get("closeTotalPos")
+            or selected.get("closeSize")
+            or selected.get("total")
+            or selected.get("size"),
+            0.0,
+        )
+
+        self.log.warning(
+            "EXCHANGE_CLOSE_TRUTH_SELECTED | %s | source=bitget_position_history | exit=%s | size=%s | net_profit=%s | pnl=%s | fee=%s | raw_time=%s | keys=%s",
+            symbol,
+            exit_price,
+            size,
+            net_profit,
+            pnl,
+            total_fee,
+            row_time(selected),
+            sorted(selected.keys()),
+        )
+
+        return {
+            "close_source": "bitget_position_history",
+            "order_id": selected.get("orderId") or selected.get("id") or "",
+            "exit_price": exit_price,
+            "size": size,
+            "pnl": net_profit,
+            "gross_pnl": pnl,
+            "fee": total_fee,
+            "open_fee": open_fee,
+            "close_fee": close_fee,
+            "raw": selected,
+        }
+
     def _exchange_close_truth_from_order_history(self, position: dict) -> dict:
         symbol = str(position.get("symbol") or "").upper()
         direction = str(position.get("direction") or "").upper()
@@ -2325,13 +2813,65 @@ class PositionManager:
             metrics.get("state"),
         )
 
+        raw_order = metrics.get("raw") if isinstance(metrics.get("raw"), dict) else order
+
+        pnl_keys = (
+            "pnl",
+            "profit",
+            "realizedPnl",
+            "realisedPnl",
+            "totalProfits",
+            "totalProfit",
+            "netProfit",
+            "netPnl",
+            "closedPnl",
+            "closePnl",
+            "posPnl",
+        )
+
+        realized_pnl = None
+        for key in pnl_keys:
+            value = raw_order.get(key)
+            if value not in (None, ""):
+                try:
+                    realized_pnl = float(value)
+                    break
+                except Exception:
+                    pass
+
+        fee_keys = (
+            "fee",
+            "fees",
+            "transactionFee",
+            "tradeFee",
+            "totalFee",
+            "deductedFee",
+        )
+
+        realized_fee = None
+        for key in fee_keys:
+            value = raw_order.get(key)
+            if value not in (None, ""):
+                try:
+                    realized_fee = float(value)
+                    break
+                except Exception:
+                    pass
+
+        if realized_pnl is None:
+            self.log.warning(
+                "EXCHANGE_CLOSE_TRUTH_PNL_UNAVAILABLE | %s | order_id=%s",
+                symbol,
+                metrics.get("order_id"),
+            )
+
         return {
             "close_source": metrics.get("close_source"),
             "order_id": metrics.get("order_id", ""),
             "exit_price": float(metrics.get("avg_price") or 0.0),
             "size": float(metrics.get("filled_qty") or 0.0),
-            "pnl": float(metrics.get("pnl") or 0.0),
-            "fee": float(metrics.get("fee") or 0.0),
+            "pnl": realized_pnl if realized_pnl is not None else "",
+            "fee": realized_fee if realized_fee is not None else "",
             "raw": metrics.get("raw", {}),
         }
 
@@ -2354,7 +2894,7 @@ class PositionManager:
 
         notional = entry_price * size if entry_price > 0 and size > 0 else 0.0
         margin = notional / leverage if notional > 0 and leverage > 0 else 0.0
-        if margin > 0 and realized_pnl is not None:
+        if margin > 0 and realized_pnl not in (None, ""):
             return round((realized_pnl_float / margin) * 100.0, 6)
 
         return self._pnl_pct(direction, entry_price, exit_price)

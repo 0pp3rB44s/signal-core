@@ -148,6 +148,11 @@ class BreakoutEngine:
         if lower_highs:
             notes.append("lower_highs_building=true")
 
+        # Diagnostics for structure flags
+        notes.append(f"diag_tightening={tightening}")
+        notes.append(f"diag_higher_lows={higher_lows}")
+        notes.append(f"diag_lower_highs={lower_highs}")
+
         if acceleration > 0.2:
             notes.append("bullish_acceleration=true")
 
@@ -159,6 +164,10 @@ class BreakoutEngine:
 
         if close_near_low:
             notes.append("closes_pressing_lows=true")
+
+        # Diagnostics for close position flags
+        notes.append(f"diag_close_near_high={close_near_high}")
+        notes.append(f"diag_close_near_low={close_near_low}")
 
         if range_expansion:
             notes.append("range_expansion=true")
@@ -178,12 +187,30 @@ class BreakoutEngine:
         if breakout_ready:
             notes.append("breakout_ready=true")
 
+        # Structure diagnostics before return
+        structure_detected = any([
+            tightening,
+            higher_lows,
+            lower_highs,
+            close_near_high,
+            close_near_low,
+        ])
+        notes.append(f"diag_structure_detected={structure_detected}")
+
         return {
             "breakout_ready": breakout_ready,
             "pressure_score": round(float(pressure_score), 2),
             "pressure_regime": pressure_regime,
             "confidence_score": round(max(0.0, min(confidence_score, 100.0)), 2),
             "direction": direction,
+            # Diagnostics fields
+            "diag_tightening": tightening,
+            "diag_higher_lows": higher_lows,
+            "diag_lower_highs": lower_highs,
+            "diag_close_near_high": close_near_high,
+            "diag_close_near_low": close_near_low,
+            "diag_structure_detected": structure_detected,
+            # Existing structure
             "tightening": tightening,
             "higher_lows": higher_lows,
             "lower_highs": lower_highs,

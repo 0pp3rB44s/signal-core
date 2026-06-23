@@ -72,6 +72,38 @@ class BitgetAccountClientMixin:
 
         return payload
 
+    def get_position_history(
+        self,
+        product_type: str | None = None,
+        symbol: str | None = None,
+        start_time_ms: int | str | None = None,
+        end_time_ms: int | str | None = None,
+        limit: int = 100,
+        id_less_than: str | None = None,
+    ) -> dict[str, Any]:
+        """Return closed futures position history from Bitget."""
+
+        params: dict[str, Any] = {
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "limit": str(max(1, min(int(limit), 100))),
+        }
+
+        if symbol:
+            params["symbol"] = symbol.upper()
+        if start_time_ms is not None:
+            params["startTime"] = str(start_time_ms)
+        if end_time_ms is not None:
+            params["endTime"] = str(end_time_ms)
+        if id_less_than:
+            params["idLessThan"] = str(id_less_than)
+
+        return self._request(
+            "GET",
+            "/api/v2/mix/position/history-position",
+            params=params,
+            private=True,
+        )
+
     def get_open_orders(
         self,
         product_type: str | None = None,

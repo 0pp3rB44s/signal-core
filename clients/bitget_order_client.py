@@ -202,14 +202,26 @@ class BitgetOrderClientMixin:
     def close_futures_position(
         self,
         symbol: str,
-        hold_side: str,
-        size: float,
+        hold_side: str | None = None,
+        size: float = 0.0,
         margin_mode: str = "isolated",
         product_type: str | None = None,
         margin_coin: str = "USDT",
         client_oid: str | None = None,
+        direction: str | None = None,
+        **_: Any,
     ) -> dict[str, Any]:
         """Close/reduce an existing Bitget futures position."""
+        if hold_side is None and direction is not None:
+            direction_upper = str(direction).upper()
+            if direction_upper == "LONG":
+                hold_side = "long"
+            elif direction_upper == "SHORT":
+                hold_side = "short"
+
+        if hold_side is None:
+            raise ValueError(f"Close position requires hold_side or direction for {symbol}")
+
         hold_side_lower = hold_side.lower()
 
         if hold_side_lower not in {"long", "short"}:
@@ -356,4 +368,3 @@ class BitgetOrderClientMixin:
         )
 
         return results
-

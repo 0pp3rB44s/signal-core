@@ -154,6 +154,23 @@ def _prearmed_quality(candidate: StrategyCandidate) -> bool:
 
 # --- MTF override helpers
 
+def _prearmed_context_override(candidate: StrategyCandidate) -> bool:
+    note_text = _note_text(candidate)
+    pressure_score = _pressure_score(candidate)
+    expansion_prob = _expansion_prob(candidate)
+    participation_score = _extract_note_float(candidate, "participation_score=", 0.0)
+    followthrough_volume_ratio = _extract_note_float(candidate, "followthrough_volume_ratio=", 0.0)
+    structure_score = _extract_note_float(candidate, "structure_score=", 0.0)
+    return (
+        ("prearmed_context_override=true" in note_text or "high_quality_breakout_context=true" in note_text)
+        and pressure_score >= 45.0
+        and expansion_prob >= 70.0
+        and structure_score >= 1.0
+        and participation_score >= 0.55
+        and followthrough_volume_ratio >= 0.25
+    )
+
+
 def _has_mtf_override(candidate: StrategyCandidate) -> bool:
     note_text = _note_text(candidate)
     return (
@@ -544,6 +561,7 @@ def _selector_score(candidate: StrategyCandidate) -> float:
     # Strategy-specific confirmations from notes.
     note_text = _note_text(candidate)
     prearmed_quality = _prearmed_quality(candidate)
+    prearmed_context_override = _prearmed_context_override(candidate)
     mtf_override = _has_mtf_override(candidate)
     mtf_quality = _mtf_quality(candidate)
     pressure_ok = _directional_pressure_ok(candidate)
@@ -561,6 +579,8 @@ def _selector_score(candidate: StrategyCandidate) -> float:
 
     if prearmed_quality:
         score += 14
+    if _prearmed_context_override(candidate):
+        score += 10
     if mtf_quality:
         score += 10
     if "prearmed_breakout" in note_text or "prearmed_breakdown" in note_text:
@@ -725,6 +745,7 @@ def _hard_filters(candidate: StrategyCandidate) -> tuple[bool, str]:
     notes = candidate.notes or []
     note_text = _note_text(candidate)
     prearmed_quality = _prearmed_quality(candidate)
+    prearmed_context_override = _prearmed_context_override(candidate)
     mtf_override = _has_mtf_override(candidate)
     mtf_quality = _mtf_quality(candidate)
     pressure_ok = _directional_pressure_ok(candidate)
@@ -863,10 +884,10 @@ def _hard_filters(candidate: StrategyCandidate) -> tuple[bool, str]:
     if "momentum_breakout" in strategy:
         if direction != "LONG":
             return False, "blocked: momentum breakout must be LONG"
-        if alignment != "aligned_bullish" and not mtf_quality:
-            return False, "blocked: momentum breakout requires bullish alignment or MTF confirmation"
-        if (primary_trend != "bullish" or confirmation_trend != "bullish") and not mtf_quality:
-            return False, "blocked: momentum breakout requires bullish confirmation or MTF override"
+        if alignment != "aligned_bullish" and not mtf_quality and not prearmed_context_override:
+            return False, "blocked: momentum breakout requires bullish alignment or MTF/prearmed context confirmation"
+        if (primary_trend != "bullish" or confirmation_trend != "bullish") and not mtf_quality and not prearmed_context_override:
+            return False, "blocked: momentum breakout requires bullish confirmation or MTF/prearmed context override"
         fallback_momentum_context = (
             alignment == "aligned_bullish"
             and primary_trend == "bullish"
@@ -880,19 +901,21 @@ def _hard_filters(candidate: StrategyCandidate) -> tuple[bool, str]:
             )
         )
 
-        if "volume expansion" not in note_text and not prearmed_quality and not fallback_momentum_context:
+        if "volume expansion" not in note_text and not prearmed_quality and not prearmed_context_override and not fallback_momentum_context:
             return False, "blocked: momentum breakout needs volume expansion"
         if (
             "breakout above range" not in note_text
             and "range expansion" not in note_text
             and "higher_lows_building=true" not in note_text
             and "range_tightening=true" not in note_text
+            and not prearmed_context_override
         ):
             return False, "blocked: momentum breakout needs range breakout"
         if (
             "pullback held" not in note_text
             and "higher_lows_building=true" not in note_text
             and "close_pos=" not in note_text
+            and not prearmed_context_override
         ):
             return False, "blocked: momentum breakout needs pullback hold"
         return True, "ok"
@@ -901,15 +924,15 @@ def _hard_filters(candidate: StrategyCandidate) -> tuple[bool, str]:
     if "momentum_breakdown" in strategy:
         if direction != "SHORT":
             return False, "blocked: momentum breakdown must be SHORT"
-        if alignment != "aligned_bearish" and not mtf_quality:
-            return False, "blocked: momentum breakdown requires bearish alignment or MTF confirmation"
-        if (primary_trend != "bearish" or confirmation_trend != "bearish") and not mtf_quality:
-            return False, "blocked: momentum breakdown requires bearish confirmation or MTF override"
-        if "volume expansion" not in note_text and not prearmed_quality:
+        if alignment != "aligned_bearish" and not mtf_quality and not prearmed_context_override:
+            return False, "blocked: momentum breakdown requires bearish alignment or MTF/prearmed context confirmation"
+        if (primary_trend != "bearish" or confirmation_trend != "bearish") and not mtf_quality and not prearmed_context_override:
+            return False, "blocked: momentum breakdown requires bearish confirmation or MTF/prearmed context override"
+        if "volume expansion" not in note_text and not prearmed_quality and not prearmed_context_override:
             return False, "blocked: momentum breakdown needs volume expansion"
-        if "breakdown below range" not in note_text:
+        if "breakdown below range" not in note_text and not prearmed_context_override:
             return False, "blocked: momentum breakdown needs range breakdown"
-        if "reclaim failed" not in note_text:
+        if "reclaim failed" not in note_text and not prearmed_context_override:
             return False, "blocked: momentum breakdown needs failed reclaim"
         return True, "ok"
 
@@ -1065,10 +1088,11 @@ def select_best_candidate(
 
         retest_reason = _retest_required_reason(candidate, execution_penalty)
 
+        prearmed_context_override = _prearmed_context_override(candidate)
         if "momentum_breakdown" in strategy:
-            required_score = 70 if prearmed_quality else MIN_MOMENTUM_BREAKDOWN_SCORE
+            required_score = 70 if (prearmed_quality or prearmed_context_override) else MIN_MOMENTUM_BREAKDOWN_SCORE
         elif "momentum" in strategy or "breakout" in strategy:
-            required_score = 70 if prearmed_quality else MIN_MOMENTUM_SCORE
+            required_score = 70 if (prearmed_quality or prearmed_context_override) else MIN_MOMENTUM_SCORE
         elif "continuation" in strategy:
             required_score = 74 if mtf_quality else MIN_CONTINUATION_SCORE
         elif "low_vol_reclaim" in strategy:
