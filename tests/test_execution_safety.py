@@ -1,4 +1,5 @@
 from telemetry.trade_logger import LiveTradeJournalLogger, TradeDatasetLogger
+from execution.position_manager import PositionManager
 
 
 def test_force_sync_closed_closes_open_trade(tmp_path) -> None:
@@ -117,3 +118,31 @@ def test_trade_dataset_logger_writes_open_and_close_rows(tmp_path) -> None:
     assert "SOLUSDT" in content
     assert "momentum_breakout" in content
     assert "tp1_fee_be" in content
+
+
+def test_position_repair_passes_stop_loss_to_protection_placer() -> None:
+    calls = []
+
+    class FakeClient:
+        def place_futures_protection_orders(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "stop_loss": {"verified": True},
+                "take_profits": [101.0],
+            }
+
+    manager = PositionManager.__new__(PositionManager)
+    manager.client = FakeClient()
+
+    position = {
+        "symbol": "SOLUSDT",
+        "direction": "LONG",
+        "stop_loss": 99.0,
+        "take_profits": [101.0],
+        "size": 1.25,
+        "protection_payload": {},
+    }
+
+    assert manager._ensure_exchange_protection(position) is True
+    assert calls[0]["stop_loss"] == 99.0
+    assert "trigger_price" not in calls[0]

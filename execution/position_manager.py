@@ -2283,7 +2283,7 @@ class PositionManager:
                 symbol=symbol,
                 direction=direction,
                 size=size,
-                trigger_price=stop_loss,
+                stop_loss=stop_loss,
                 take_profits=take_profits,
                 margin_mode="isolated",
             )
