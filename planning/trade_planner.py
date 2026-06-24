@@ -273,6 +273,35 @@ class TradePlanner:
             reason_text,
         )
 
+    @staticmethod
+    def _primary_block_reason(reasons: list[str], notes: list[str]) -> str:
+        """Classify the main planner block reason without changing execution logic."""
+        blob = " | ".join([str(item) for item in (reasons or [])] + [str(item) for item in (notes or [])]).upper()
+
+        ordered_markers = [
+            ("LARGEST_LOSS_GUARD", "LARGEST_LOSS_GUARD"),
+            ("RR_TO_TP1", "RR_TO_TP1"),
+            ("POOR_RISK_SHAPE", "POOR_RISK_SHAPE"),
+            ("LOW_VOL_RECLAIM_TARGET_TOO_FAR", "LOW_VOL_RECLAIM_TARGET_TOO_FAR"),
+            ("LOW_VOL_RECLAIM_STOP_TOO_FAR", "LOW_VOL_RECLAIM_STOP_TOO_FAR"),
+            ("LOW_VOL_RECLAIM_POOR_RISK_SHAPE", "LOW_VOL_RECLAIM_POOR_RISK_SHAPE"),
+            ("A_PLUS_LOW_VOL_RECLAIM_RISK_SHAPE_TOO_WIDE", "A_PLUS_LOW_VOL_RECLAIM_RISK_SHAPE_TOO_WIDE"),
+            ("TP1_NET_EDGE", "TP1_NET_EDGE"),
+            ("DAY_DEFENSIVE", "DAY_DEFENSIVE"),
+            ("MASTER_ENTRY_QUALITY", "MASTER_ENTRY_QUALITY"),
+            ("ADAPTIVE_ENTRY_QUALITY", "ADAPTIVE_ENTRY_QUALITY"),
+            ("ADAPTIVE_PRESSURE_EXPANSION_WEAK", "ADAPTIVE_PRESSURE_EXPANSION_WEAK"),
+            ("ADAPTIVE_PARTICIPATION_WEAK", "ADAPTIVE_PARTICIPATION_WEAK"),
+            ("POSITION NOTIONAL", "POSITION_NOTIONAL"),
+            ("RISK", "RISK_GATE"),
+        ]
+
+        for marker, label in ordered_markers:
+            if marker in blob:
+                return label
+
+        return "OTHER"
+
     def build(self, candidate: StrategyCandidate, score: StrategyScore, risk: RiskVerdict) -> TradePlan:
         entry = candidate.detection.entry_hint
         stop = self._build_stop(candidate)
@@ -706,6 +735,7 @@ class TradePlanner:
             notes.append(f"low_vol_reclaim_planner_final_rr={rr:.2f}")
             notes.append(f"low_vol_reclaim_planner_final_verdict={verdict}")
         planner_reason_text = " | ".join(str(reason) for reason in reasons[-8:]) if reasons else "no_reasons"
+        primary_block_reason = self._primary_block_reason(reasons, notes) if verdict == "BLOCKED" else "NONE"
         if "blocked_reason=largest_loss_guard" in notes:
             logger.warning(
                 "LARGEST_LOSS_GUARD_BLOCKED | %s | strategy=%s | direction=%s | stop_bps=%.2f | tp1_bps=%.2f",
@@ -717,10 +747,11 @@ class TradePlanner:
             )
         if verdict == "BLOCKED":
             logger.warning(
-                "PLAN_REJECT | %s | strategy=%s | direction=%s | score=%.1f | rr=%.2f | rr_to_tp1=%.2f | tp1_move_bps=%.2f | min_tp1_move_bps=%.2f | notional=%.2f | reasons=%s",
+                "PLAN_REJECT | %s | strategy=%s | direction=%s | primary_block_reason=%s | score=%.1f | rr=%.2f | rr_to_tp1=%.2f | tp1_move_bps=%.2f | min_tp1_move_bps=%.2f | notional=%.2f | reasons=%s",
                 candidate.symbol,
                 plan_strategy,
                 candidate.direction,
+                primary_block_reason,
                 float(score.total),
                 rr,
                 rr_to_tp1,
