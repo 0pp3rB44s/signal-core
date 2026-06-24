@@ -48,6 +48,78 @@ def _normalize_strategy_label(strategy: str | None, extra: dict | None = None) -
     return "recovered_unlinked_close"
 
 
+
+def _join_report_text(report: ExecutionReport) -> str:
+    parts: list[str] = []
+    for attr in ("entry_reason", "message", "volatility_state", "alignment", "risk_verdict"):
+        value = getattr(report, attr, "")
+        if value not in (None, ""):
+            parts.append(str(value))
+    for attr in ("active_signals", "score_breakdown"):
+        value = getattr(report, attr, []) or []
+        if isinstance(value, (list, tuple, set)):
+            parts.extend(str(item) for item in value)
+        elif value not in (None, ""):
+            parts.append(str(value))
+    return " | ".join(parts)
+
+
+def _extract_marker_float(text: str, marker: str, default: str = "") -> float | str:
+    lower = str(text or "").lower()
+    marker = marker.lower()
+    if marker not in lower:
+        return default
+    try:
+        raw = lower.split(marker, 1)[1].split()[0].strip(";|,")
+        return round(float(raw), 6)
+    except Exception:
+        return default
+
+
+def _extract_marker_bool(text: str, marker: str, default: str = "") -> str:
+    lower = str(text or "").lower()
+    marker = marker.lower()
+    if marker not in lower:
+        return default
+    try:
+        raw = lower.split(marker, 1)[1].split()[0].strip(";|,").lower()
+    except Exception:
+        return default
+    if raw in {"true", "1", "yes", "y", "on"}:
+        return "true"
+    if raw == "prearmed":
+        return "prearmed"
+    if raw in {"false", "0", "no", "n", "off"}:
+        return "false"
+    return raw
+
+
+def _extract_report_learning_features(report: ExecutionReport) -> dict:
+    text = _join_report_text(report)
+    lower = text.lower()
+    return {
+        "pressure_score": _extract_marker_float(text, "pressure_score=", ""),
+        "expansion_prob": _extract_marker_float(text, "expansion_prob=", ""),
+        "participation_score": _extract_marker_float(text, "participation_score=", ""),
+        "followthrough_volume_ratio": _extract_marker_float(text, "followthrough_volume_ratio=", ""),
+        "structure_score": _extract_marker_float(text, "structure_score=", ""),
+        "volume_ratio": _extract_marker_float(text, "volume_ratio=", ""),
+        "spread_bps": _extract_marker_float(text, "spread_bps=", ""),
+        "entry_quality": _extract_marker_float(text, "entry_quality=", ""),
+        "rr_to_tp1_open": _extract_marker_float(text, "rr_to_tp1=", ""),
+        "tp1_move_bps": _extract_marker_float(text, "tp1_move_bps=", ""),
+        "minimum_tp1_move_bps": _extract_marker_float(text, "minimum_tp1_move_bps=", ""),
+        "prearmed_context_override": _extract_marker_bool(text, "prearmed_context_override=", ""),
+        "fresh_breakout_override": _extract_marker_bool(text, "fresh_breakout_override=", ""),
+        "fresh_breakdown_override": _extract_marker_bool(text, "fresh_breakdown_override=", ""),
+        "high_quality_breakout_context": _extract_marker_bool(text, "high_quality_breakout_context=", ""),
+        "planner_bridge": "true" if "planner_prearmed_momentum_context_bridge=true" in lower else "",
+        "adaptive_rr_override": "prearmed_momentum_context" if "adaptive_rr_override=prearmed_momentum_context" in lower else "",
+        "poor_risk_shape_override": "prearmed_momentum_context" if "poor_risk_shape_override=prearmed_momentum_context" in lower else "",
+        "adaptive_tp1_edge_override": "prearmed_momentum_context" if "adaptive_tp1_edge_override=prearmed_momentum_context" in lower else "",
+    }
+
+
 def _trade_quality_from_journal(trade: dict, pnl: float, fees: float = 0.0) -> dict:
     """Score trade quality by process, not by profit alone."""
     score = 0
@@ -356,6 +428,14 @@ class TradePlanCsvLogger:
                         or str(note).startswith("minimum_tp1_move_bps=")
                         or str(note).startswith("strong_continuation_quality=")
                         or str(note).startswith("master_entry_quality_passed=")
+                        or str(note).startswith("prearmed_context_override=")
+                        or str(note).startswith("fresh_breakout_override=")
+                        or str(note).startswith("fresh_breakdown_override=")
+                        or str(note).startswith("structure_score=")
+                        or str(note).startswith("high_quality_breakout_context=")
+                        or str(note).startswith("adaptive_rr_override=")
+                        or str(note).startswith("poor_risk_shape_override=")
+                        or str(note).startswith("adaptive_tp1_edge_override=")
                     ),
                 ])
 
@@ -526,6 +606,7 @@ class TradeDatasetLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append_open(self, report: ExecutionReport) -> None:
+        learning_features = _extract_report_learning_features(report)
         self._append_row({
             "event_type": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -566,6 +647,25 @@ class TradeDatasetLogger:
             "volatility_state": getattr(report, "volatility_state", ""),
             "alignment": getattr(report, "alignment", ""),
             "risk_verdict": getattr(report, "risk_verdict", ""),
+            "pressure_score": learning_features.get("pressure_score", ""),
+            "expansion_prob": learning_features.get("expansion_prob", ""),
+            "participation_score": learning_features.get("participation_score", ""),
+            "followthrough_volume_ratio": learning_features.get("followthrough_volume_ratio", ""),
+            "structure_score": learning_features.get("structure_score", ""),
+            "volume_ratio": learning_features.get("volume_ratio", ""),
+            "spread_bps": learning_features.get("spread_bps", ""),
+            "entry_quality": learning_features.get("entry_quality", ""),
+            "rr_to_tp1_open": learning_features.get("rr_to_tp1_open", ""),
+            "tp1_move_bps": learning_features.get("tp1_move_bps", ""),
+            "minimum_tp1_move_bps": learning_features.get("minimum_tp1_move_bps", ""),
+            "prearmed_context_override": learning_features.get("prearmed_context_override", ""),
+            "fresh_breakout_override": learning_features.get("fresh_breakout_override", ""),
+            "fresh_breakdown_override": learning_features.get("fresh_breakdown_override", ""),
+            "high_quality_breakout_context": learning_features.get("high_quality_breakout_context", ""),
+            "planner_bridge": learning_features.get("planner_bridge", ""),
+            "adaptive_rr_override": learning_features.get("adaptive_rr_override", ""),
+            "poor_risk_shape_override": learning_features.get("poor_risk_shape_override", ""),
+            "adaptive_tp1_edge_override": learning_features.get("adaptive_tp1_edge_override", ""),
             "close_reason": "",
             "message": report.message,
         })
@@ -683,6 +783,25 @@ class TradeDatasetLogger:
             "volatility_state",
             "alignment",
             "risk_verdict",
+            "pressure_score",
+            "expansion_prob",
+            "participation_score",
+            "followthrough_volume_ratio",
+            "structure_score",
+            "volume_ratio",
+            "spread_bps",
+            "entry_quality",
+            "rr_to_tp1_open",
+            "tp1_move_bps",
+            "minimum_tp1_move_bps",
+            "prearmed_context_override",
+            "fresh_breakout_override",
+            "fresh_breakdown_override",
+            "high_quality_breakout_context",
+            "planner_bridge",
+            "adaptive_rr_override",
+            "poor_risk_shape_override",
+            "adaptive_tp1_edge_override",
             "close_reason",
             "message",
         ]
@@ -776,6 +895,7 @@ class TradeDatasetV2Logger:
         ]
 
     def append_open(self, report: ExecutionReport) -> None:
+        learning_features = _extract_report_learning_features(report)
         self._append_row({
             "event_type": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1111,6 +1231,25 @@ class StrategyPerformanceLogger:
             "notes",
         ]
         exists = self.path.exists()
+        if exists and self.path.stat().st_size > 0:
+            try:
+                with self.path.open("r", newline="", encoding="utf-8") as read_handle:
+                    rows = list(csv.DictReader(read_handle))
+                    current_header = list(rows[0].keys()) if rows else []
+                if current_header and current_header != fieldnames:
+                    backup_path = self.path.with_name(
+                        f"{self.path.stem}_schema_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{self.path.suffix}"
+                    )
+                    self.path.replace(backup_path)
+                    with self.path.open("w", newline="", encoding="utf-8") as write_handle:
+                        writer = csv.DictWriter(write_handle, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for existing_row in rows:
+                            writer.writerow({field: existing_row.get(field, "") for field in fieldnames})
+                    exists = True
+            except Exception:
+                pass
+
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
             if not exists:

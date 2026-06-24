@@ -104,9 +104,14 @@ class RiskManager:
 
         trades = int(stats.get("trades", 0) or 0)
         expectancy = float(stats.get("expectancy", 0.0) or 0.0)
-        tp1_hit_rate = float(stats.get("tp1_hit_rate", 0.0) or 0.0)
+        tp1_hit_rate_raw = stats.get("tp1_hit_rate", None)
+        tp1_hit_rate_missing = tp1_hit_rate_raw in (None, "")
+        if tp1_hit_rate_missing:
+            tp1_hit_rate = None
+        else:
+            tp1_hit_rate = float(tp1_hit_rate_raw or 0.0)
         reasons.append(
-            f"strategy weighting source=clean_strategy_expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
+            f"strategy weighting source=clean_strategy_expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f}, tp1={'missing' if tp1_hit_rate is None else f'{tp1_hit_rate:.3f}'})"
         )
 
         if trades < 5:
@@ -117,11 +122,14 @@ class RiskManager:
             reasons.append(f"strategy weighting HARD_BLOCK: negative expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
             return False, reasons
 
-        if tp1_hit_rate < 0.25:
+        if tp1_hit_rate is not None and tp1_hit_rate < 0.25:
             reasons.append(f"strategy weighting HARD_BLOCK: weak TP1 hit-rate ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})")
             return False, reasons
 
-        if expectancy >= 0.15 and tp1_hit_rate >= 0.45:
+        if tp1_hit_rate is None:
+            reasons.append(f"strategy weighting WATCH: tp1_hit_rate missing; using expectancy/winrate only ({strategy_name}, trades={trades})")
+
+        if expectancy >= 0.15 and (tp1_hit_rate is None or tp1_hit_rate >= 0.45):
             reasons.append(f"strategy weighting BOOST: strong expectancy ({strategy_name}, exp={expectancy:.3f})")
         else:
             reasons.append(f"strategy weighting WATCH: neutral expectancy ({strategy_name}, exp={expectancy:.3f})")
@@ -154,7 +162,10 @@ class RiskManager:
             return False
 
         trades = int(stats.get("trades", 0) or 0)
-        tp1_hit_rate = float(stats.get("tp1_hit_rate", 0.0) or 0.0)
+        tp1_hit_rate_raw = stats.get("tp1_hit_rate", None)
+        if tp1_hit_rate_raw in (None, ""):
+            return False
+        tp1_hit_rate = float(tp1_hit_rate_raw or 0.0)
 
         return trades >= 5 and tp1_hit_rate < 0.25
 
@@ -233,16 +244,17 @@ class RiskManager:
                 continue
             trades = int(stats.get("trades", 0) or 0)
             expectancy = float(stats.get("expectancy", 0.0) or 0.0)
-            tp1_hit_rate = float(stats.get("tp1_hit_rate", 0.0) or 0.0)
+            tp1_hit_rate_raw = stats.get("tp1_hit_rate", None)
+            tp1_hit_rate = None if tp1_hit_rate_raw in (None, "") else float(tp1_hit_rate_raw or 0.0)
             lossrate = float(stats.get("lossrate", 0.0) or 0.0)
 
-            if trades >= 3 and (expectancy < 0 or lossrate >= 0.75 or tp1_hit_rate < 0.25):
+            if trades >= 3 and (expectancy < 0 or lossrate >= 0.75 or (tp1_hit_rate is not None and tp1_hit_rate < 0.25)):
                 symbols_to_pause.append(
                     {
                         "symbol": str(symbol).upper(),
                         "trades": trades,
                         "expectancy": round(expectancy, 4),
-                        "tp1_hit_rate": round(tp1_hit_rate, 4),
+                        "tp1_hit_rate": "missing" if tp1_hit_rate is None else round(tp1_hit_rate, 4),
                         "lossrate": round(lossrate, 4),
                         "reason": "negative expectancy / weak TP1 / high lossrate",
                     }
@@ -253,20 +265,21 @@ class RiskManager:
                 continue
             trades = int(stats.get("trades", 0) or 0)
             expectancy = float(stats.get("expectancy", 0.0) or 0.0)
-            tp1_hit_rate = float(stats.get("tp1_hit_rate", 0.0) or 0.0)
+            tp1_hit_rate_raw = stats.get("tp1_hit_rate", None)
+            tp1_hit_rate = None if tp1_hit_rate_raw in (None, "") else float(tp1_hit_rate_raw or 0.0)
             lossrate = float(stats.get("lossrate", 0.0) or 0.0)
 
             payload = {
                 "strategy": str(strategy),
                 "trades": trades,
                 "expectancy": round(expectancy, 4),
-                "tp1_hit_rate": round(tp1_hit_rate, 4),
+                "tp1_hit_rate": "missing" if tp1_hit_rate is None else round(tp1_hit_rate, 4),
                 "lossrate": round(lossrate, 4),
             }
 
-            if trades >= 5 and expectancy >= 0.15 and tp1_hit_rate >= 0.45:
-                strategies_to_boost.append({**payload, "reason": "positive expectancy with acceptable TP1 hit-rate"})
-            elif trades >= 5 and (expectancy < 0 or tp1_hit_rate < 0.25 or lossrate >= 0.75):
+            if trades >= 5 and expectancy >= 0.15 and (tp1_hit_rate is None or tp1_hit_rate >= 0.45):
+                strategies_to_boost.append({**payload, "reason": "positive expectancy with acceptable or missing TP1 hit-rate"})
+            elif trades >= 5 and (expectancy < 0 or (tp1_hit_rate is not None and tp1_hit_rate < 0.25) or lossrate >= 0.75):
                 strategies_to_watch.append({**payload, "reason": "weak expectancy / TP1 / lossrate; consider pause"})
             elif trades > 0:
                 strategies_to_watch.append({**payload, "reason": "insufficient or neutral data; keep watching"})
@@ -445,6 +458,7 @@ class RiskManager:
         confirmation_trend = (candidate.market.confirmation.trend or "").lower()
         strategy_name = (candidate.strategy or "").lower()
         mtf_quality = self._mtf_quality(candidate)
+        prearmed_context_override = RiskManager._prearmed_context_override(candidate)
 
         if alignment == "conflicted":
             if "low_vol_reclaim" in strategy_name and RiskManager._has_mtf_override(candidate):
@@ -462,26 +476,34 @@ class RiskManager:
 
         if direction == "LONG":
             if primary_trend != "bullish":
-                if "low_vol_reclaim" in strategy_name and primary_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
+                if prearmed_context_override and "momentum_breakout" in strategy_name:
+                    reasons.append("watch: long momentum allowed via prearmed context override")
+                elif "low_vol_reclaim" in strategy_name and primary_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
                     reasons.append("watch: long reclaim allowed with mixed/neutral primary via MTF override")
                 else:
                     reasons.append("blocked: long without bullish primary trend")
                     return False, reasons
             if confirmation_trend not in {"bullish", "neutral"}:
-                if "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
+                if prearmed_context_override and "momentum_breakout" in strategy_name:
+                    reasons.append("watch: long momentum allowed with non-bullish confirmation via prearmed context override")
+                elif "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
                     reasons.append("watch: long reclaim allowed with mixed/neutral confirmation via MTF override")
                 else:
                     reasons.append("blocked: long without bullish/neutral confirmation trend")
                     return False, reasons
         elif direction == "SHORT":
             if primary_trend != "bearish":
-                if "low_vol_reclaim" in strategy_name and primary_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
+                if prearmed_context_override and "momentum_breakdown" in strategy_name:
+                    reasons.append("watch: short momentum allowed via prearmed context override")
+                elif "low_vol_reclaim" in strategy_name and primary_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
                     reasons.append("watch: short reclaim allowed with mixed/neutral primary via MTF override")
                 else:
                     reasons.append("blocked: short without bearish primary trend")
                     return False, reasons
             if confirmation_trend not in {"bearish", "neutral"}:
-                if "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
+                if prearmed_context_override and "momentum_breakdown" in strategy_name:
+                    reasons.append("watch: short momentum allowed with non-bearish confirmation via prearmed context override")
+                elif "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
                     reasons.append("watch: short reclaim allowed with mixed/neutral confirmation via MTF override")
                 else:
                     reasons.append("blocked: short without bearish/neutral confirmation trend")
@@ -495,16 +517,16 @@ class RiskManager:
             if direction != "LONG":
                 reasons.append("blocked: momentum breakout must be LONG")
                 return False, reasons
-            if alignment != "aligned_bullish" and not mtf_quality:
-                reasons.append("blocked: momentum breakout requires aligned bullish market or MTF confirmation")
+            if alignment != "aligned_bullish" and not mtf_quality and not prearmed_context_override:
+                reasons.append("blocked: momentum breakout requires aligned bullish market or MTF/prearmed confirmation")
                 return False, reasons
 
         if "momentum_breakdown" in strategy_name:
             if direction != "SHORT":
                 reasons.append("blocked: momentum breakdown must be SHORT")
                 return False, reasons
-            if alignment != "aligned_bearish" and not mtf_quality:
-                reasons.append("blocked: momentum breakdown requires aligned bearish market or MTF confirmation")
+            if alignment != "aligned_bearish" and not mtf_quality and not prearmed_context_override:
+                reasons.append("blocked: momentum breakdown requires aligned bearish market or MTF/prearmed confirmation")
                 return False, reasons
 
         if score.verdict != "GO":
@@ -552,6 +574,29 @@ class RiskManager:
         )
 
     @staticmethod
+    def _prearmed_context_override(candidate: StrategyCandidate) -> bool:
+        note_text = RiskManager._note_text(candidate)
+        pressure_score = RiskManager._mtf_pressure_score(candidate)
+        expansion_prob = RiskManager._mtf_expansion_prob(candidate)
+        participation_score = RiskManager._extract_note_float(candidate, "participation_score=", 0.0)
+        followthrough_volume_ratio = RiskManager._extract_note_float(candidate, "followthrough_volume_ratio=", 0.0)
+        structure_score = RiskManager._extract_note_float(candidate, "structure_score=", 0.0)
+        return (
+            (
+                "prearmed_context_override=true" in note_text
+                or "high_quality_breakout_context=true" in note_text
+                or "mtf_prearmed_override" in note_text
+                or "prearmed_breakout" in note_text
+                or "prearmed_breakdown" in note_text
+            )
+            and pressure_score >= 45.0
+            and expansion_prob >= 70.0
+            and structure_score >= 1.0
+            and participation_score >= 0.55
+            and followthrough_volume_ratio >= 0.25
+        )
+
+    @staticmethod
     def _mtf_pressure_score(candidate: StrategyCandidate) -> float:
         for marker in (
             "mtf_pressure_score=",
@@ -591,6 +636,9 @@ class RiskManager:
         participation_score = RiskManager._extract_note_float(candidate, "participation_score=", 0.0)
         if participation_score == 0.0:
             participation_score = RiskManager._extract_note_float(candidate, "participation_score ", 0.0)
+
+        if RiskManager._prearmed_context_override(candidate):
+            return True
 
         return (
             pressure_score >= 45.0

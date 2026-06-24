@@ -270,67 +270,36 @@ class MomentumBreakoutStrategy:
         prearmed_context_data = locals().get("prearmed_context_data", {"allowed": False})
 
         if breakout_candle is None or breakout_index is None or prev_window is None:
-            if prearmed_context.get("allowed"):
-                candidate_window = candles[-self.lookback - 1 : -1]
+            self._log_rejection(market, "no_fresh_breakout", rejection_reasons)
 
+            if mtf_prearmed_override:
+                logger.warning(
+                    "PREARMED_FRESH_BREAKOUT_OVERRIDE | %s | direction=LONG | reason=no_fresh_breakout | pressure_score=%.2f | expansion_prob=%.1f | alignment=%s | primary=%s | confirmation=%s",
+                    market.symbol,
+                    float(pre_alignment_prearmed_context.get("pressure_score", 0.0)),
+                    float(pre_alignment_prearmed_context.get("expansion_prob", 0.0)),
+                    market.alignment,
+                    primary_trend,
+                    confirmation_trend,
+                )
+                candidate_window = candles[-self.lookback - 1 : -1]
                 if len(candidate_window) >= self.lookback:
                     candidate_prev_high = max(c.high for c in candidate_window)
                     candidate_prev_low = min(c.low for c in candidate_window)
                     candidate_vol_ratio = self._volume_ratio_at(candles, len(candles) - 1)
-                    participation_score = self._participation_score(
-                        candles,
-                        len(candles) - 1,
-                        direction="LONG",
-                    )
-
-                    high_quality_prearmed = bool(
-                        prearmed_context.get("allowed")
-                        and prearmed_context.get("breakout_context_ready")
-                        and prearmed_context.get("has_structure")
-                        and prearmed_context.get("breakout_direction_pressure")
-                        and float(prearmed_context.get("pressure_score", 0.0)) >= self.context_min_pressure_score
-                        and float(prearmed_context.get("expansion_prob", 0.0)) >= self.context_min_expansion_prob
-                    )
-                    required_prearmed_volume = 0.20 if high_quality_prearmed else (0.25 if prearmed_context.get("breakout_context_ready") else self.prearmed_min_volume_ratio)
-                    choppy_window = self._is_choppy(candidate_window)
-
-                    required_prearmed_participation = 0.55 if high_quality_prearmed else 0.75
-                    if (
-                        candidate_vol_ratio >= required_prearmed_volume
-                        and participation_score >= required_prearmed_participation
-                        and (not choppy_window or high_quality_prearmed)
-                    ):
-                        breakout_candle = entry_candle
-                        breakout_index = len(candles) - 1
-                        breakout_pct = 0.0
-                        vol_ratio = candidate_vol_ratio
-                        prev_window = candidate_window
-                        prev_high = candidate_prev_high
-                        prev_low = candidate_prev_low
-                        prearmed_breakout = True
-                        prearmed_context_data = prearmed_context
-
-                        logger.info(
-                            "PREARMED_BREAKOUT_CANDIDATE | %s | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f",
-                            market.symbol,
-                            float(prearmed_context.get("pressure_score", 0.0)),
-                            float(prearmed_context.get("expansion_prob", 0.0)),
-                            candidate_vol_ratio,
-                            participation_score,
-                        )
-
-                        if choppy_window and high_quality_prearmed:
-                            logger.info(
-                                "PREARMED_BREAKOUT_CHOP_OVERRIDE | %s | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f",
-                                market.symbol,
-                                float(prearmed_context.get("pressure_score", 0.0)),
-                                float(prearmed_context.get("expansion_prob", 0.0)),
-                                candidate_vol_ratio,
-                                participation_score,
-                            )
-
-            if breakout_candle is None or breakout_index is None or prev_window is None:
-                self._log_rejection(market, "no_fresh_breakout", rejection_reasons)
+                    breakout_candle = entry_candle
+                    breakout_index = len(candles) - 1
+                    breakout_pct = 0.0
+                    vol_ratio = candidate_vol_ratio
+                    prev_window = candidate_window
+                    prev_high = candidate_prev_high
+                    prev_low = candidate_prev_low
+                    prearmed_breakout = True
+                    prearmed_context_data = pre_alignment_prearmed_context
+                    breakout_reason = "prearmed_fresh_breakout_override"
+                else:
+                    return None
+            else:
                 return None
 
         max_pullback = prev_high * (self.max_pullback_bps / 10_000)
@@ -507,6 +476,7 @@ class MomentumBreakoutStrategy:
                 f"participation_score={self._participation_score(candles, breakout_index, direction='LONG'):.2f}",
                 f"followthrough_volume_ratio={self._volume_ratio_at(candles, len(candles) - 1):.2f}",
                 f"directional_pressure_ok={breakout_pressure_ok}",
+                "fresh_breakout_override=prearmed" if locals().get("breakout_reason") == "prearmed_fresh_breakout_override" else "fresh_breakout_override=false",
                 f"breakout_context_ready={bool(prearmed_context_data.get('breakout_context_ready', False))}",
                 f"prearmed_context_allowed={bool(prearmed_context_data.get('allowed', False))}",
                 f"prearmed_context_override={bool(locals().get('prearmed_context_override', False))}",
@@ -1038,66 +1008,36 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         prearmed_context_data = locals().get("prearmed_context_data", {"allowed": False})
 
         if breakdown_candle is None or breakdown_index is None or prev_window is None:
-            if prearmed_context.get("allowed"):
-                candidate_window = candles[-self.lookback - 1 : -1]
+            self._log_breakdown_rejection(market, "no_fresh_breakdown", rejection_reasons)
 
+            if mtf_prearmed_override:
+                logger.warning(
+                    "PREARMED_FRESH_BREAKDOWN_OVERRIDE | %s | direction=SHORT | reason=no_fresh_breakdown | pressure_score=%.2f | expansion_prob=%.1f | alignment=%s | primary=%s | confirmation=%s",
+                    market.symbol,
+                    float(pre_alignment_prearmed_context.get("pressure_score", 0.0)),
+                    float(pre_alignment_prearmed_context.get("expansion_prob", 0.0)),
+                    market.alignment,
+                    primary_trend,
+                    confirmation_trend,
+                )
+                candidate_window = candles[-self.lookback - 1 : -1]
                 if len(candidate_window) >= self.lookback:
                     candidate_prev_high = max(c.high for c in candidate_window)
                     candidate_prev_low = min(c.low for c in candidate_window)
                     candidate_vol_ratio = self._volume_ratio_at(candles, len(candles) - 1)
-                    participation_score = self._participation_score(
-                        candles,
-                        len(candles) - 1,
-                        direction="SHORT",
-                    )
-
-                    required_prearmed_volume = 0.25 if prearmed_context.get("breakout_context_ready") else self.prearmed_min_volume_ratio
-                    high_quality_prearmed = (
-                        bool(prearmed_context.get("breakout_context_ready"))
-                        and float(prearmed_context.get("pressure_score", 0.0)) >= 60.0
-                        and float(prearmed_context.get("expansion_prob", 0.0)) >= 70.0
-                        and float(candidate_vol_ratio or 0.0) >= 0.75
-                        and float(participation_score or 0.0) >= 0.75
-                    )
-                    choppy_window = self._is_choppy(candidate_window)
-
-                    required_prearmed_participation = 0.55 if high_quality_prearmed else 0.75
-                    if (
-                        candidate_vol_ratio >= required_prearmed_volume
-                        and participation_score >= required_prearmed_participation
-                        and (not choppy_window or high_quality_prearmed)
-                    ):
-                        breakdown_candle = entry_candle
-                        breakdown_index = len(candles) - 1
-                        breakdown_pct = 0.0
-                        vol_ratio = candidate_vol_ratio
-                        prev_window = candidate_window
-                        prev_high = candidate_prev_high
-                        prev_low = candidate_prev_low
-                        prearmed_breakdown = True
-                        prearmed_context_data = prearmed_context
-
-                        logger.info(
-                            "PREARMED_BREAKDOWN_CANDIDATE | %s | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f",
-                            market.symbol,
-                            float(prearmed_context.get("pressure_score", 0.0)),
-                            float(prearmed_context.get("expansion_prob", 0.0)),
-                            candidate_vol_ratio,
-                            participation_score,
-                        )
-
-                        if choppy_window and high_quality_prearmed:
-                            logger.info(
-                                "PREARMED_BREAKDOWN_CHOP_OVERRIDE | %s | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f",
-                                market.symbol,
-                                float(prearmed_context.get("pressure_score", 0.0)),
-                                float(prearmed_context.get("expansion_prob", 0.0)),
-                                candidate_vol_ratio,
-                                participation_score,
-                            )
-
-            if breakdown_candle is None or breakdown_index is None or prev_window is None:
-                self._log_breakdown_rejection(market, "no_fresh_breakdown", rejection_reasons)
+                    breakdown_candle = entry_candle
+                    breakdown_index = len(candles) - 1
+                    breakdown_pct = 0.0
+                    vol_ratio = candidate_vol_ratio
+                    prev_window = candidate_window
+                    prev_high = candidate_prev_high
+                    prev_low = candidate_prev_low
+                    prearmed_breakdown = True
+                    prearmed_context_data = pre_alignment_prearmed_context
+                    breakdown_reason = "prearmed_fresh_breakdown_override"
+                else:
+                    return None
+            else:
                 return None
 
         candles_after_breakdown = candles[breakdown_index + 1 :]
@@ -1266,6 +1206,7 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
                 f"participation_score={self._participation_score(candles, breakdown_index, direction='SHORT'):.2f}",
                 f"followthrough_volume_ratio={self._volume_ratio_at(candles, len(candles) - 1):.2f}",
                 f"directional_pressure_ok={breakdown_pressure_ok}",
+                "fresh_breakdown_override=prearmed" if locals().get("breakdown_reason") == "prearmed_fresh_breakdown_override" else "fresh_breakdown_override=false",
                 f"breakout_context_ready={bool(prearmed_context_data.get('breakout_context_ready', False))}",
                 f"prearmed_context_allowed={bool(prearmed_context_data.get('allowed', False))}",
                 f"prearmed_context_override={bool(locals().get('prearmed_context_override', False))}",

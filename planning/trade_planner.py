@@ -161,21 +161,33 @@ class TradePlanner:
         """
         strategy = str(candidate.strategy or "").lower()
         reasons: list[str] = []
+        prearmed_context_override = (
+            TradePlanner._extract_note_bool(candidate, "prearmed_context_override=", False)
+            or TradePlanner._extract_note_bool(candidate, "high_quality_breakout_context=", False)
+        )
+        structure_score = TradePlanner._extract_note_float(candidate, "structure_score=", 0.0)
+        is_prearmed_momentum_context = (
+            prearmed_context_override
+            and structure_score >= 1.0
+            and ("momentum" in strategy or "breakout" in strategy or "breakdown" in strategy)
+        )
 
-        if entry_quality > 0.0 and entry_quality < 75.0:
+        if entry_quality > 0.0 and entry_quality < 75.0 and not is_prearmed_momentum_context:
             reasons.append(f"entry_quality={entry_quality:.2f}<75")
 
         if pressure_score < 40.0 and expansion_prob < 65.0:
             reasons.append(f"weak_pressure_expansion={pressure_score:.2f}/{expansion_prob:.2f}")
 
-        if participation_score > 0.0 and participation_score < 0.70:
-            reasons.append(f"participation={participation_score:.2f}<0.70")
+        min_participation = 0.55 if is_prearmed_momentum_context else 0.70
+        if participation_score > 0.0 and participation_score < min_participation:
+            reasons.append(f"participation={participation_score:.2f}<{min_participation:.2f}")
 
         if followthrough_volume_ratio > 0.0 and followthrough_volume_ratio < 0.10:
             reasons.append(f"followthrough={followthrough_volume_ratio:.2f}<0.10")
 
-        if volume_ratio > 0.0 and volume_ratio < 0.60:
-            reasons.append(f"volume_ratio={volume_ratio:.2f}<0.60")
+        min_volume_ratio = 0.45 if is_prearmed_momentum_context else 0.60
+        if volume_ratio > 0.0 and volume_ratio < min_volume_ratio:
+            reasons.append(f"volume_ratio={volume_ratio:.2f}<{min_volume_ratio:.2f}")
 
         if "continuation" in strategy:
             if not TradePlanner._extract_note_bool(candidate, "continuation_quality=", False):
@@ -192,10 +204,12 @@ class TradePlanner:
                 reasons.append(f"continuation_participation={participation_score:.2f}<1.00")
 
         if "momentum" in strategy or "breakout" in strategy or "breakdown" in strategy:
-            if expansion_prob < 70.0:
-                reasons.append(f"momentum_expansion={expansion_prob:.2f}<70")
-            if pressure_score < 45.0:
-                reasons.append(f"momentum_pressure={pressure_score:.2f}<45")
+            min_expansion = 65.0 if is_prearmed_momentum_context else 70.0
+            min_pressure = 40.0 if is_prearmed_momentum_context else 45.0
+            if expansion_prob < min_expansion:
+                reasons.append(f"momentum_expansion={expansion_prob:.2f}<{min_expansion:.0f}")
+            if pressure_score < min_pressure:
+                reasons.append(f"momentum_pressure={pressure_score:.2f}<{min_pressure:.0f}")
 
         if "low_vol_reclaim" in strategy:
             if score_total < 72.0:
@@ -342,6 +356,12 @@ class TradePlanner:
                 reasons=reasons,
             )
         is_prearmed_momentum = "prearmed_breakout" in note_text or "prearmed_breakdown" in note_text
+        prearmed_context_override = (
+            self._extract_note_bool(candidate, "prearmed_context_override=", False)
+            or self._extract_note_bool(candidate, "high_quality_breakout_context=", False)
+        )
+        structure_score = self._extract_note_float(candidate, "structure_score=", 0.0)
+        is_prearmed_momentum_context = is_prearmed_momentum and prearmed_context_override and structure_score >= 1.0
         is_short_continuation = "trend_continuation" in strategy_name and str(candidate.direction or "").upper() == "SHORT"
         is_low_vol_reclaim = (
             "low_vol_reclaim" in strategy_name
@@ -401,8 +421,8 @@ class TradePlanner:
             minimum_tp1_move_bps *= 0.75
 
         if is_prearmed_momentum:
-            minimum_tp1_move_bps *= 0.90
-            notes_profile_hint = "prearmed_momentum"
+            minimum_tp1_move_bps *= 0.80 if is_prearmed_momentum_context else 0.90
+            notes_profile_hint = "prearmed_momentum_context" if is_prearmed_momentum_context else "prearmed_momentum"
         elif is_short_continuation:
             minimum_tp1_move_bps *= 0.85
             notes_profile_hint = "short_continuation"
@@ -452,6 +472,9 @@ class TradePlanner:
         notes.append(f"estimated_roundtrip_fee_bps={estimated_roundtrip_fee_bps:.2f}")
         notes.append(f"minimum_tp1_move_bps={minimum_tp1_move_bps:.2f}")
         notes.append(f"strong_continuation_quality={strong_continuation_quality}")
+        notes.append(f"prearmed_context_override={prearmed_context_override}")
+        notes.append(f"structure_score={structure_score:.2f}")
+        notes.append(f"is_prearmed_momentum_context={is_prearmed_momentum_context}")
         notes.append(f"planner_participation_score={participation_score:.2f}")
         notes.append(f"planner_followthrough_volume_ratio={followthrough_volume_ratio:.2f}")
         notes.append(f"planner_volume_ratio={volume_ratio:.2f}")
@@ -516,6 +539,19 @@ class TradePlanner:
                 notes.append("low_vol_reclaim_score_gate=64")
         else:
             verdict = "EXECUTABLE" if rr >= self.settings.planner_min_rr and risk.allowed else "BLOCKED"
+
+        if (
+            verdict == "BLOCKED"
+            and is_prearmed_momentum_context
+            and score.total >= 72.0
+            and risk.allowed
+            and rr_to_tp1 >= 0.80
+            and rr >= 0.90
+            and tp1_move_bps >= (minimum_tp1_move_bps * 0.75)
+        ):
+            verdict = "EXECUTABLE"
+            notes.append("planner_prearmed_momentum_context_bridge=true")
+            notes.append("planner_gate=prearmed_momentum_context_rr_guarded")
         if (
             verdict == "BLOCKED"
             and is_low_vol_reclaim
@@ -533,12 +569,23 @@ class TradePlanner:
             verdict = "BLOCKED"
             notes.append("blocked_reason=day_defensive_low_vol_reclaim_quality_gate")
 
-        if verdict == "EXECUTABLE" and not master_gate_passed:
+        if verdict == "EXECUTABLE" and not master_gate_passed and not is_prearmed_momentum_context:
             verdict = "BLOCKED"
             notes.append("blocked_reason=master_entry_quality_gate")
             notes.append("master_entry_quality_gate_blocked=true")
             logger.warning(
                 "MASTER_ENTRY_QUALITY_BLOCKED | %s | strategy=%s | direction=%s | reasons=%s",
+                candidate.symbol,
+                candidate.strategy,
+                candidate.direction,
+                "|".join(master_gate_reasons) if master_gate_reasons else "unknown",
+            )
+
+        if verdict == "EXECUTABLE" and is_prearmed_momentum_context and not master_gate_passed:
+            notes.append("master_entry_quality_prearmed_context_override=true")
+            notes.append("master_entry_quality_reasons_observed=" + "|".join(master_gate_reasons))
+            logger.warning(
+                "MASTER_ENTRY_QUALITY_PREARMED_CONTEXT_OVERRIDE | %s | strategy=%s | direction=%s | reasons=%s",
                 candidate.symbol,
                 candidate.strategy,
                 candidate.direction,
@@ -602,6 +649,8 @@ class TradePlanner:
         if rr_to_tp1 < min_rr_to_tp1:
             if strong_continuation_quality and rr_to_tp1 >= 0.70:
                 notes.append("adaptive_rr_override=strong_continuation")
+            elif is_prearmed_momentum_context and rr_to_tp1 >= 0.80:
+                notes.append("adaptive_rr_override=prearmed_momentum_context")
             elif a_plus_low_vol_reclaim:
                 notes.append("adaptive_rr_override=a_plus_low_vol_reclaim_1_00")
             else:
@@ -631,11 +680,17 @@ class TradePlanner:
         max_stop_to_tp_ratio = 1.20
 
         if stop_move_bps > (tp1_move_bps * max_stop_to_tp_ratio):
-            verdict = "BLOCKED"
-            reasons.append(
-                f"POOR_RISK_SHAPE stop_bps={stop_move_bps:.2f} tp1_bps={tp1_move_bps:.2f} max_ratio={max_stop_to_tp_ratio:.2f}"
-            )
-            notes.append("blocked_reason=poor_risk_shape_stop_larger_than_target")
+            if is_prearmed_momentum_context and rr_to_tp1 >= 0.80 and score.total >= 72.0 and risk.allowed:
+                notes.append("poor_risk_shape_override=prearmed_momentum_context")
+                notes.append(
+                    f"poor_risk_shape_observed stop_bps={stop_move_bps:.2f} tp1_bps={tp1_move_bps:.2f} max_ratio={max_stop_to_tp_ratio:.2f}"
+                )
+            else:
+                verdict = "BLOCKED"
+                reasons.append(
+                    f"POOR_RISK_SHAPE stop_bps={stop_move_bps:.2f} tp1_bps={tp1_move_bps:.2f} max_ratio={max_stop_to_tp_ratio:.2f}"
+                )
+                notes.append("blocked_reason=poor_risk_shape_stop_larger_than_target")
         if is_low_vol_reclaim and tp1_move_bps > reclaim_tp1_cap_bps:
             verdict = "BLOCKED"
             reasons.append(
@@ -674,6 +729,8 @@ class TradePlanner:
         if tp1_move_bps < minimum_tp1_move_bps:
             if strong_continuation_quality and tp1_move_bps >= (minimum_tp1_move_bps * 0.85):
                 notes.append("adaptive_tp1_edge_override=strong_continuation")
+            elif is_prearmed_momentum_context and tp1_move_bps >= (minimum_tp1_move_bps * 0.65):
+                notes.append("adaptive_tp1_edge_override=prearmed_momentum_context")
             elif is_low_vol_reclaim and tp1_move_bps >= (minimum_tp1_move_bps * 0.70):
                 notes.append("adaptive_tp1_edge_override=low_vol_reclaim_fast_scalp")
             else:
