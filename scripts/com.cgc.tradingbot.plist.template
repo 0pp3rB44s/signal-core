@@ -7,8 +7,9 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>__PROJECT_DIR__/scripts/run_bot_supervised.sh</string>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd __PROJECT_DIR__ &amp;&amp; exec /bin/bash scripts/run_bot_supervised.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
