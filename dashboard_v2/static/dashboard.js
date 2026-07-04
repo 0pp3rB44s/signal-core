@@ -1,8 +1,10 @@
 
+// Initial State
 const POLL_MS = 5000;
 const HARD_REFRESH_MS = 300000;
 let lastHardRefresh = Date.now();
 
+// Utilities
 function readInitialJson(id, fallback) {
   const el = document.getElementById(id);
   if (!el) return fallback;
@@ -27,6 +29,7 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// Rendering
 function renderEquityCurve(points) {
   const svg = document.getElementById("equity-curve-chart");
   if (!svg) return;
@@ -79,6 +82,7 @@ function renderPnlBars(periodicPnl) {
   });
 }
 
+// Navigation
 function activateTab(targetId) {
   document.querySelectorAll(".tab-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.id === targetId);
@@ -137,6 +141,7 @@ function initTabs() {
   }
 }
 
+// Live Refresh
 async function refreshDashboardSnapshot() {
   try {
     document.body.classList.add("loading");
@@ -188,6 +193,7 @@ async function refreshDashboardSnapshot() {
   }
 }
 
+// Bootstrap
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   renderEquityCurve(window.__INITIAL_EQUITY_POINTS__ || []);

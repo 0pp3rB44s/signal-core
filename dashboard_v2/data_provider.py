@@ -5,6 +5,8 @@ import csv
 from datetime import datetime, timezone, timedelta
 import time
 
+from agents_v2.learning.learning_service import learning_service
+
 from app.config import get_settings
 from clients.bitget_rest import BitgetRestClient
 from risk.risk_manager import RiskManager
@@ -14,6 +16,7 @@ LOGS_PATH = BASE_PATH / "logs"
 STATE_PATH = BASE_PATH / "state"
 
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
+AUDIT_REPORT_PATH = BASE_PATH / "agents_v2" / "reports" / "audit.json"
 
 _DASHBOARD_CACHE = {
     "timestamp": 0.0,
@@ -32,6 +35,66 @@ def _read_json(path: Path) -> Any:
             return json.load(f)
     except Exception:
         return None
+
+
+# Audit panel helper
+def _build_audit_panel() -> dict[str, Any]:
+    """Read the latest Audit Engine report for dashboard display."""
+    audit = _read_json(AUDIT_REPORT_PATH)
+    if isinstance(audit, dict):
+        return audit
+
+    return {
+        "overall": {
+            "overall_score": 0,
+            "overall_grade": "UNKNOWN",
+            "primary_risk": "Audit report not available.",
+            "primary_strength": "Run morning_audit.py to generate audit.json.",
+            "weakest_module": "unknown",
+            "strongest_module": "unknown",
+        },
+        "trade_integrity": {},
+        "performance": {},
+        "runtime_health": {},
+    }
+
+
+# Learning panel helper
+def _build_learning_panel() -> dict[str, Any]:
+    """Read the latest Learning Engine summary for dashboard display."""
+    try:
+        learning_service.reload()
+        summary = learning_service.get_summary()
+        if isinstance(summary, dict):
+            return summary
+    except Exception as exc:
+        return {
+            "metadata": {},
+            "diagnosis": {
+                "warnings": [f"Learning Engine unavailable: {exc}"],
+                "recommendations": [],
+                "strengths": [],
+                "weaknesses": [],
+            },
+            "best_strategy": None,
+            "worst_strategy": None,
+            "best_symbol": None,
+            "worst_symbol": None,
+        }
+
+    return {
+        "metadata": {},
+        "diagnosis": {
+            "warnings": ["Learning Engine report not available."],
+            "recommendations": [],
+            "strengths": [],
+            "weaknesses": [],
+        },
+        "best_strategy": None,
+        "worst_strategy": None,
+        "best_symbol": None,
+        "worst_symbol": None,
+    }
 
 
 # Inserted function as requested
@@ -1909,6 +1972,8 @@ def get_dashboard_data() -> dict[str, Any]:
     edge_panel = _build_edge_panel()
     cooldown_panel = _build_cooldown_panel()
     live_source = _build_live_source_panel(wallet, positions, live_errors)
+    audit_panel = _build_audit_panel()
+    learning_panel = _build_learning_panel()
 
     protection_summary = {
         "open_positions": len(positions),
@@ -1992,6 +2057,8 @@ def get_dashboard_data() -> dict[str, Any]:
         "cooldown_panel": cooldown_panel,
         "live_source": live_source,
         "dashboard_v4": dashboard_v4,
+        "audit": audit_panel,
+        "learning": learning_panel,
     }
 
     _DASHBOARD_CACHE["timestamp"] = now

@@ -20,6 +20,7 @@ from execution.state_store import JsonStateStore
 from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
 from risk.cooldown_manager import SymbolCooldownManager
+from agents_v2.learning.coach_rules import run as run_coach_rules
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
 from strategies.strategies.continuation import detect_continuation
@@ -443,6 +444,15 @@ class StartupRunner:
             except BlockingIOError:
                 self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
                 return
+
+            try:
+                agent_report = run_coach_rules()
+                self.log.info(
+                    "AI_AGENT_DECISIONS_REFRESHED | decision_count=%s",
+                    agent_report.get("decision_count", 0),
+                )
+            except Exception as exc:
+                self.log.warning("AI_AGENT_DECISIONS_REFRESH_FAILED | error=%s", exc)
 
             contracts = self.fetcher.fetch_contracts(force_refresh=False)
             symbols = get_watchlist(self.settings, contracts=contracts)

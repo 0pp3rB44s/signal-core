@@ -9,7 +9,7 @@
 </head>
 <body>
 <div class="dashboard-loading-bar" id="dashboard-loading-bar"></div>
-{% from 'Components' import executive_hero, market_spark_card, execution_event, strategy_heatmap_cell %}
+{% from 'Components' import executive_hero, morning_briefing, market_spark_card, execution_event, strategy_heatmap_cell %}
   
 <aside class="v3-sidebar">
   <div class="sidebar-brand">
@@ -42,6 +42,66 @@
         <p class="subtitle">Realtime dashboard for positions, candidates, protection, market data quality and runtime health.</p>
       </section>
 
+      <section class="panel executive-kpi-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Executive KPI Command Row</h2>
+            <small>Core operational metrics</small>
+          </div>
+          <span class="badge">KPI COMMAND</span>
+        </div>
+
+        <div class="executive-kpi-grid">
+          <article class="executive-kpi-card performance">
+            <div class="kpi-card-head">
+              <span>Performance</span>
+              <strong>{{ data.audit.performance.profit_factor if data.audit else '-' }}</strong>
+            </div>
+            <div class="kpi-mini-list">
+              <div><span>Winrate</span><strong>{{ data.audit.performance.winrate if data.audit else '-' }}%</strong></div>
+              <div><span>PF</span><strong>{{ data.audit.performance.profit_factor if data.audit else '-' }}</strong></div>
+              <div><span>Expectancy</span><strong>{{ data.audit.performance.expectancy if data.audit else '-' }}</strong></div>
+            </div>
+          </article>
+
+          <article class="executive-kpi-card runtime">
+            <div class="kpi-card-head">
+              <span>Runtime</span>
+              <strong>{{ data.audit.runtime_health.score if data.audit else '-' }}/100</strong>
+            </div>
+            <div class="kpi-mini-list">
+              <div><span>Grade</span><strong>{{ data.audit.runtime_health.grade if data.audit else '-' }}</strong></div>
+              <div><span>Issue</span><strong>{{ data.audit.runtime_health.dominant_issue if data.audit else '-' }}</strong></div>
+              <div><span>Incidents</span><strong>{{ data.audit.runtime_health.incident_types | length if data.audit and data.audit.runtime_health.incident_types else 0 }}</strong></div>
+            </div>
+          </article>
+
+          <article class="executive-kpi-card integrity">
+            <div class="kpi-card-head">
+              <span>Trade Integrity</span>
+              <strong>{{ data.audit.trade_integrity.score if data.audit else '-' }}/100</strong>
+            </div>
+            <div class="kpi-mini-list">
+              <div><span>Grade</span><strong>{{ data.audit.trade_integrity.grade if data.audit else '-' }}</strong></div>
+              <div><span>Dataset</span><strong>{{ data.audit.trade_integrity.dataset_type if data.audit else '-' }}</strong></div>
+              <div><span>Rows</span><strong>{{ data.audit.trade_integrity.production_rows_analyzed if data.audit else '-' }}</strong></div>
+            </div>
+          </article>
+
+          <article class="executive-kpi-card bot-control">
+            <div class="kpi-card-head">
+              <span>Bot Control</span>
+              <strong>{{ data.bot.status }}</strong>
+            </div>
+            <div class="kpi-mini-list">
+              <div><span>Risk</span><strong>{{ data.live_risk.risk_state if data.live_risk else 'UNKNOWN' }}</strong></div>
+              <div><span>Open</span><strong>{{ data.positions | length }}</strong></div>
+              <div><span>Protection</span><strong>{{ 'ATTENTION' if data.position_protection else 'OK' }}</strong></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
       <section class="status-cluster">
         <div class="status-card">
           <span>Bot</span>
@@ -69,7 +129,81 @@
     </header>
 
     <section id="overview" class="v4-overview-shell v3-section tab-panel active">
+      <!-- Executive Hero -->
       {{ executive_hero(data.dashboard_v4.executive if data.dashboard_v4 else none) }}
+
+      <!-- Morning Briefing -->
+      {{ morning_briefing(data) }}
+
+      <!-- Learning Engine -->
+      <section class="panel learning-engine-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Learning Engine</h2>
+            <small>Insights extracted from closed trades</small>
+          </div>
+          <span class="badge">AI LEARNING</span>
+        </div>
+
+        <div class="priority-grid">
+          <article class="priority-card success">
+            <span>Best Strategy</span>
+            <strong>{{ data.learning.best_strategy.name if data.learning.best_strategy else '-' }}</strong>
+            <small>{{ data.learning.best_strategy.stats.expectancy if data.learning.best_strategy else '-' }} expectancy</small>
+          </article>
+
+          <article class="priority-card danger">
+            <span>Worst Strategy</span>
+            <strong>{{ data.learning.worst_strategy.name if data.learning.worst_strategy else '-' }}</strong>
+            <small>{{ data.learning.worst_strategy.stats.expectancy if data.learning.worst_strategy else '-' }} expectancy</small>
+          </article>
+
+          <article class="priority-card info">
+            <span>Learning Status</span>
+            <strong>{{ data.learning.metadata.closed_trades_used if data.learning.metadata else '-' }} Trades</strong>
+            <small>{{ data.learning.metadata.rows_loaded if data.learning.metadata else '-' }} rows analysed</small>
+          </article>
+        </div>
+        <ul class="learning-summary-list">
+          {% for item in data.learning.diagnosis.recommendations[:3] %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No active recommendations.</li>
+          {% endfor %}
+        </ul>
+      </section>
+
+      <!-- Today's Priorities -->
+      <section class="panel executive-priorities-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Today's Priorities</h2>
+            <small>Highest-impact actions for today</small>
+          </div>
+          <span class="badge">COMMAND CENTER</span>
+        </div>
+
+        <div class="priority-grid">
+          <article class="priority-card danger">
+            <span>Priority 1</span>
+            <strong>{{ data.audit.overall.primary_risk if data.audit else 'Unknown' }}</strong>
+            <small>Highest impact issue</small>
+          </article>
+
+          <article class="priority-card warning">
+            <span>Priority 2</span>
+            <strong>{{ data.audit.overall.weakest_module if data.audit else '-' }}</strong>
+            <small>Weakest audit module</small>
+          </article>
+
+          <article class="priority-card success">
+            <span>Priority 3</span>
+            <strong>{{ data.audit.overall.primary_strength if data.audit else 'Unknown' }}</strong>
+            <small>Protect this strength</small>
+          </article>
+        </div>
+      </section>
+      <!-- Live Status -->
       <section class="v4-live-strip">
         <article class="v4-strip-card {{ 'good' if data.bot.status == 'RUNNING' else 'danger' }}">
           <span>Bot Status</span>
@@ -96,6 +230,8 @@
         </article>
       </section>
 
+      <!-- Financial Snapshot -->
+      <!-- Wallet Overview -->
       <div class="wallet-grid v4-kpi-grid">
         <article class="wallet-card primary">
           <span>Wallet Balance</span>
@@ -114,31 +250,97 @@
           <strong id="wallet-used-margin">{{ data.dashboard_v4.executive.used_margin if data.dashboard_v4 else data.wallet.used_margin }}</strong>
         </article>
       </div>
+    </section>
 
-      <section class="panel roadmap-focus-panel">
-        <div class="panel-header compact">
-          <h2>Current Mission</h2>
-          <span class="badge">P3.9 ACTIVE</span>
+    <section id="open-trades" class="panel v3-section tab-panel live-positions-panel">
+      <div class="tab-hero compact-hero">
+        <div>
+          <span>Live Positions</span>
+          <h2>Position Safety Control</h2>
+          <p>Open exposure, SL/TP protection, break-even state and risk guard in one clean view.</p>
         </div>
+      </div>
 
-        <div class="position-metrics">
-          <div>
-            <span>Focus</span>
-            <strong>Sweep Evolution Engine</strong>
-            <small>Collect reject analytics before tuning.</small>
-          </div>
+      <div class="panel-header">
+        <div>
+          <h2>Open Positions</h2>
+          <small>Question: are my active trades safe and correctly protected?</small>
+        </div>
+        <span class="badge">{{ data.positions | length }} OPEN</span>
+      </div>
 
-          <div>
-            <span>Rule</span>
-            <strong>Safety &gt; Truth &gt; Expectancy &gt; Alpha</strong>
-            <small>No TP/SL tuning without MFE/MAE evidence.</small>
-          </div>
+      <div class="position-list compact-position-list">
+        {% for p in data.positions %}
+          <article class="trade-cockpit-card {{ 'danger-border' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'good-border' }}">
+            <header class="trade-cockpit-head">
+              <div class="trade-title-stack">
+                <div class="trade-symbol-row">
+                  <strong>{{ p.symbol or '-' }}</strong>
+                  <span class="direction-pill {{ 'short' if (p.direction or '')|lower == 'short' else 'long' if (p.direction or '')|lower == 'long' else '' }}">
+                    {{ p.direction or '-' }}
+                  </span>
+                </div>
+                <small>Exchange protection is source of truth</small>
+              </div>
 
-          <div>
-            <span>Status</span>
-            <strong>Learning Mode</strong>
-            <small>Gathering reject-count data.</small>
+              <div class="trade-pnl-box {{ 'good' if p.pnl|float >= 0 else 'danger' }}">
+                <strong>{{ p.pnl }} USDT</strong>
+                <span>{{ p.pnl_pct }}%</span>
+              </div>
+            </header>
+
+            <section class="trade-lifecycle">
+              <div class="lifecycle-step {{ 'good' if p.tp1_hit else 'pending' }}">
+                <span>TP1</span>
+                <strong>{{ 'HIT' if p.tp1_hit else 'WAIT' }}</strong>
+              </div>
+              <div class="lifecycle-step {{ 'good' if p.break_even_active else 'pending' }}">
+                <span>BE</span>
+                <strong>{{ 'ON' if p.break_even_active else 'OFF' }}</strong>
+              </div>
+              <div class="lifecycle-step {{ 'good' if p.tp2_hit else 'pending' }}">
+                <span>TP2</span>
+                <strong>{{ 'HIT' if p.tp2_hit else 'WAIT' }}</strong>
+              </div>
+              <div class="lifecycle-step {{ 'good' if p.tp3_hit else 'pending' }}">
+                <span>TP3</span>
+                <strong>{{ 'HIT' if p.tp3_hit else 'WAIT' }}</strong>
+              </div>
+            </section>
+
+            {% set telemetry = (data.dashboard_v4.positions.telemetry | selectattr('symbol', 'equalto', p.symbol) | list | first) %}
+            <section class="trade-cockpit-grid">
+              <div><span>Entry</span><strong>{{ p.entry or '-' }}</strong></div>
+              <div><span>Live Price</span><strong>{{ p.price or '-' }}</strong></div>
+              <div><span>Size</span><strong>{{ p.size or '-' }}</strong></div>
+              <div><span>Stop Loss</span><strong class="{{ 'danger' if p.sl == 'MISSING' else 'good' }}">{{ p.sl }}</strong></div>
+              <div><span>Take Profit</span><strong class="{{ 'danger' if p.tp == 'MISSING' else 'good' }}">{{ p.tp }}</strong></div>
+              <div><span>Protection</span><strong class="{{ 'danger' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'good' }}">{{ 'MISSING' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'CLEAN' }}</strong></div>
+              <div><span>Live RR</span><strong>{{ telemetry.live_rr if telemetry else '-' }}</strong></div>
+              <div><span>Distance to SL</span><strong>{{ telemetry.distance_to_sl_pct if telemetry else '-' }}%</strong></div>
+              <div><span>Notional</span><strong>{{ telemetry.notional if telemetry else '-' }}</strong></div>
+            </section>
+          </article>
+        {% else %}
+          <div class="empty-state">
+            <strong>No open positions</strong>
+            <span>Bot is scanning. No active exposure in dashboard state.</span>
           </div>
+        {% endfor %}
+      </div>
+
+      <section class="panel inner-panel">
+        <div class="panel-header compact">
+          <h2>Risk Guard</h2>
+          <span class="badge {{ data.live_risk.level if data.live_risk else '' }}">{{ data.live_risk.risk_state if data.live_risk else 'UNKNOWN' }}</span>
+        </div>
+        <div class="risk-list">
+          <div><span>Open Positions</span><strong>{{ data.live_risk.open_positions if data.live_risk else 0 }} / {{ data.live_risk.max_positions if data.live_risk else 0 }}</strong></div>
+          <div><span>Risk/Trade</span><strong>{{ data.live_risk.risk_pct if data.live_risk else '-' }}%</strong></div>
+          <div><span>Exposure</span><strong>{{ data.live_risk.exposure if data.live_risk else '-' }} · {{ data.live_risk.exposure_pct if data.live_risk else '-' }}%</strong></div>
+          <div><span>Open Trade Risk</span><strong>{{ data.live_risk.open_trade_risk if data.live_risk else '-' }} · {{ data.live_risk.open_trade_risk_pct if data.live_risk else '-' }}%</strong></div>
+          <div><span>Daily PnL</span><strong>{{ data.live_risk.daily_pnl if data.live_risk else '-' }}</strong></div>
+          <div><span>Max Drawdown</span><strong>{{ data.live_risk.max_drawdown if data.live_risk else '-' }}%</strong></div>
         </div>
       </section>
     </section>
@@ -146,21 +348,47 @@
     <section id="candidate-scanner" class="panel v3-section market-overview-panel tab-panel">
       <div class="tab-hero compact-hero">
         <div>
-          <span>Live Markets</span>
-          <h2>Market Radar</h2>
-          <p>Realtime snapshots, active-position context and scanner-ready market structure.</p>
+          <span>Candidate Scanner</span>
+          <h2>Setup Radar</h2>
+          <p>Question: which setups are interesting right now?</p>
         </div>
       </div>
+
       <div class="panel-header">
         <div>
-          <h2>Live Markets</h2>
-          <small>Realtime market snapshots · V4 sparkline intelligence from scanner context</small>
+          <h2>Live Setups</h2>
+          <small>Symbol, direction, strategy, verdict, entry and invalidation only.</small>
         </div>
-        <span class="badge">REALTIME READY</span>
+        <span class="badge">{{ data.candidate_board | length if data.candidate_board else 0 }} CANDIDATES</span>
+      </div>
+
+      <div class="candidate-grid">
+        {% for c in data.candidate_board[:12] %}
+          <article class="candidate-card {{ c.level }}">
+            <div class="candidate-head">
+              <strong>{{ c.symbol }}</strong>
+              <span class="badge {{ c.level }}">{{ c.level }}</span>
+            </div>
+            <p>{{ c.summary }}</p>
+          </article>
+        {% else %}
+          <div class="empty-state">
+            <strong>No candidates</strong>
+            <span>No scanner candidates are active right now.</span>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="panel-header compact strategy-subheader">
+        <div>
+          <h2>Market Snapshots</h2>
+          <small>Context only. Use candidates above for execution attention.</small>
+        </div>
+        <span class="badge">{{ data.dashboard_v4.markets.snapshots | length if data.dashboard_v4 else 0 }} MARKETS</span>
       </div>
 
       <div class="mini-market-grid" id="market-snapshot-grid">
-        {% for market in data.dashboard_v4.markets.snapshots %}
+        {% for market in data.dashboard_v4.markets.snapshots[:12] %}
           {% set spark = (data.dashboard_v4.markets.sparklines | selectattr('symbol', 'equalto', market.symbol) | list | first) %}
           {{ market_spark_card(market, spark) }}
         {% else %}
@@ -175,197 +403,6 @@
       </div>
     </section>
 
-    <div class="overview-extra active" data-overview-extra>
-
-
-
-
-    {% if data.position_protection %}
-      <section class="panel">
-        <div class="panel-header">
-          <span class="badge danger">ACTION REQUIRED</span>
-          <h2>Protection Command Center</h2>
-        </div>
-        <div class="position-metrics protection-summary-grid">
-          <div>
-            <span>Protection State</span>
-            <strong class="danger">ATTENTION</strong>
-            <small>Exchange protection mismatch detected</small>
-          </div>
-
-          <div>
-            <span>Open Issues</span>
-            <strong>{{ data.position_protection | length }}</strong>
-            <small>Needs verification</small>
-          </div>
-
-          <div>
-            <span>Mission</span>
-            <strong>P1.1 Lifecycle Proof</strong>
-            <small>Protection before alpha</small>
-          </div>
-        </div>
-        <div class="log-list">
-          {% for row in data.position_protection %}
-            <code class="{{ row.level }}">{{ row.symbol }} | {{ row.direction }} | {{ row.status }}</code>
-          {% endfor %}
-        </div>
-      </section>
-    {% endif %}
-
-    <section class="main-grid">
-
-      {% if data.candidate_board %}
-        <article class="panel candidate-board-panel v4-candidate-board">
-          <div class="panel-header">
-            <div>
-              <h2>Candidate Board</h2>
-              <small>Latest scanner candidates summarized for fast decision support.</small>
-            </div>
-            <span class="badge">{{ data.candidate_board | length }} scans</span>
-          </div>
-          <div class="candidate-grid">
-            {% for c in data.candidate_board[:6] %}
-              <article class="candidate-card {{ c.level }} v4-candidate-card">
-                <div class="candidate-head">
-                  <strong>{{ c.symbol }}</strong>
-                  <span class="badge {{ c.level }}">{{ c.level }}</span>
-                </div>
-                <p>{{ c.summary }}</p>
-              </article>
-            {% endfor %}
-          </div>
-        </article>
-      {% endif %}
-
-      <article id="open-trades" class="panel positions-panel mobile-priority-positions priority-panel v3-section tab-panel">
-        <div class="tab-hero compact-hero">
-          <div>
-            <span>Open Trades</span>
-            <h2>Position Control</h2>
-            <p>Entry, price, SL, TP lifecycle, break-even status and live exposure per position.</p>
-          </div>
-        </div>
-        <div class="panel-header">
-          <div>
-            <h2>Open Positions</h2>
-          </div>
-          <span id="open-positions-count" class="badge">{{ data.positions | length }} open</span>
-        </div>
-
-        <div class="position-list compact-position-list">
-          {% for p in data.positions %}
-            <article class="trade-cockpit-card {{ 'danger-border' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'good-border' }}">
-              <header class="trade-cockpit-head">
-                <div class="trade-title-stack">
-                  <div class="trade-symbol-row">
-                    <strong>{{ p.symbol or '-' }}</strong>
-                    <span class="direction-pill {{ 'short' if (p.direction or '')|lower == 'short' else 'long' if (p.direction or '')|lower == 'long' else '' }}">
-                      {{ p.direction or '-' }}
-                    </span>
-                  </div>
-                  <small>Live position · exchange protection source of truth</small>
-                </div>
-
-                <div class="trade-pnl-box {{ 'good' if p.pnl|float >= 0 else 'danger' }}">
-                  <strong>{{ p.pnl }} USDT</strong>
-                  <span>{{ p.pnl_pct }}%</span>
-                </div>
-              </header>
-
-              <section class="trade-lifecycle">
-                <div class="lifecycle-step {{ 'good' if p.tp1_hit else 'pending' }}">
-                  <span>TP1</span>
-                  <strong>{{ 'HIT' if p.tp1_hit else 'WAIT' }}</strong>
-                </div>
-                <div class="lifecycle-step {{ 'good' if p.break_even_active else 'pending' }}">
-                  <span>BE</span>
-                  <strong>{{ 'ON' if p.break_even_active else 'OFF' }}</strong>
-                </div>
-                <div class="lifecycle-step {{ 'good' if p.tp2_hit else 'pending' }}">
-                  <span>TP2</span>
-                  <strong>{{ 'HIT' if p.tp2_hit else 'WAIT' }}</strong>
-                </div>
-                <div class="lifecycle-step {{ 'good' if p.tp3_hit else 'pending' }}">
-                  <span>TP3</span>
-                  <strong>{{ 'HIT' if p.tp3_hit else 'WAIT' }}</strong>
-                </div>
-              </section>
-
-              {% set telemetry = (data.dashboard_v4.positions.telemetry | selectattr('symbol', 'equalto', p.symbol) | list | first) %}
-              <section class="trade-cockpit-grid">
-                <div><span>Entry</span><strong>{{ p.entry or '-' }}</strong></div>
-                <div><span>Live Price</span><strong>{{ p.price or '-' }}</strong></div>
-                <div><span>Size</span><strong>{{ p.size or '-' }}</strong></div>
-                <div><span>Stop Loss</span><strong class="{{ 'danger' if p.sl == 'MISSING' else 'good' }}">{{ p.sl }}</strong></div>
-                <div><span>Take Profit</span><strong class="{{ 'danger' if p.tp == 'MISSING' else 'good' }}">{{ p.tp }}</strong></div>
-                <div><span>Protection</span><strong class="{{ 'danger' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'good' }}">{{ 'MISSING' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'CLEAN' }}</strong></div>
-                <div><span>Live RR</span><strong>{{ telemetry.live_rr if telemetry else '-' }}</strong></div>
-                <div><span>Distance to SL</span><strong>{{ telemetry.distance_to_sl_pct if telemetry else '-' }}%</strong></div>
-                <div><span>Notional</span><strong>{{ telemetry.notional if telemetry else '-' }}</strong></div>
-              </section>
-            </article>
-          {% else %}
-            <div class="empty-state">
-              <strong>No open positions</strong>
-              <span>Bot is scanning. No active exposure in dashboard state.</span>
-            </div>
-          {% endfor %}
-        </div>
-      </article>
-
-      <aside class="side-stack">
-        <article class="panel risk-panel mobile-priority-risk priority-panel v4-risk-guard">
-          <div class="panel-header compact">
-            <h2>Risk Guard</h2>
-            <span class="badge">ACTIVE</span>
-          </div>
-          <div class="risk-list">
-            <div><span>Risk State</span><strong class="{{ data.live_risk.level if data.live_risk else '' }}">{{ data.live_risk.risk_state if data.live_risk else 'UNKNOWN' }}</strong></div>
-            <div><span>Open Positions</span><strong>{{ data.live_risk.open_positions if data.live_risk else 0 }} / {{ data.live_risk.max_positions if data.live_risk else 0 }}</strong></div>
-            <div><span>Risk/Trade</span><strong>{{ data.live_risk.risk_pct if data.live_risk else '-' }}%</strong></div>
-            <div><span>Risk Budget</span><strong>{{ data.live_risk.risk_budget if data.live_risk else '-' }}</strong></div>
-            <div><span>Exposure</span><strong>{{ data.live_risk.exposure if data.live_risk else '-' }} · {{ data.live_risk.exposure_pct if data.live_risk else '-' }}%</strong></div>
-            <div><span>Open Trade Risk</span><strong>{{ data.live_risk.open_trade_risk if data.live_risk else '-' }} · {{ data.live_risk.open_trade_risk_pct if data.live_risk else '-' }}%</strong></div>
-            <div><span>Daily PnL / Loss</span><strong>{{ data.live_risk.daily_pnl if data.live_risk else '-' }} · {{ data.live_risk.daily_loss_pct if data.live_risk else '-' }}%</strong></div>
-            <div><span>Weekly PnL / Loss</span><strong>{{ data.live_risk.weekly_pnl if data.live_risk else '-' }} · {{ data.live_risk.weekly_loss_pct if data.live_risk else '-' }}%</strong></div>
-            <div><span>Max Drawdown</span><strong>{{ data.live_risk.max_drawdown if data.live_risk else '-' }}%</strong></div>
-            <div><span>Daily Limits</span><strong>{{ data.live_risk.max_daily_loss_pct if data.live_risk else '-' }}% / {{ data.live_risk.hard_daily_stop_pct if data.live_risk else '-' }}%</strong></div>
-          </div>
-        </article>
-
-
-        {% if data.bot_health %}
-          <article class="panel">
-            <div class="panel-header compact">
-              <h2>Bot Health</h2>
-              <span class="badge {{ data.bot_health.level }}">{{ data.bot_health.level }}</span>
-            </div>
-            <div class="log-list">
-              <code>{{ data.bot_health.latest_summary }}</code>
-              <code>{{ data.bot_health.latest_setup }}</code>
-            </div>
-          </article>
-        {% endif %}
-
-        <article class="panel alpha-panel">
-          <div class="panel-header compact">
-            <h2>Alpha Engine</h2>
-            <span class="badge">SAFE MODE</span>
-          </div>
-           <div class="alpha-rules">
-            <span>Strategy Isolation Mode Active</span>
-            <span>Primary Strategy: Liquidity Sweep</span>
-            <span>Reject Analytics Enabled</span>
-            <span>Late Entry Killer Active</span>
-            <span>Reclaim Quality Scoring Active</span>
-            <span>Learning Before Optimization</span>
-          </div>
-        </article>
-      </aside>
-    </section>
-
-    </div>
 
     <!-- PERFORMANCE STATS -->
     <section id="strategy-health" class="panel v3-section performance-dashboard-panel tab-panel">

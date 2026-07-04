@@ -35,6 +35,44 @@
 
 
 {# ======================= #}
+{# MORNING BRIEFING       #}
+{# ======================= #}
+{% macro morning_briefing(data) %}
+<section class="panel audit-command-center">
+  <div class="panel-header">
+    <div>
+      <h2>Morning Briefing</h2>
+      <small>Daily AI audit summary and priorities</small>
+    </div>
+    <span class="badge">AUDIT V3</span>
+  </div>
+
+  <div class="command-center">
+    <article class="command-card primary-command">
+      <span>Overall Health</span>
+      <strong>{{ data.audit.overall.overall_score if data.audit else '--' }}/100</strong>
+      <small>{{ data.audit.overall.overall_grade if data.audit else 'UNKNOWN' }}</small>
+    </article>
+
+    <article class="command-card">
+      <span>Primary Risk</span>
+      <strong>{{ data.audit.overall.primary_risk if data.audit else 'Unknown' }}</strong>
+    </article>
+
+    <article class="command-card">
+      <span>Primary Strength</span>
+      <strong>{{ data.audit.overall.primary_strength if data.audit else 'Unknown' }}</strong>
+    </article>
+
+    <article class="command-card">
+      <span>Weakest Module</span>
+      <strong>{{ data.audit.overall.weakest_module if data.audit else '-' }}</strong>
+    </article>
+  </div>
+</section>
+{% endmacro %}
+
+{# ======================= #}
 {# MARKET SPARK COMPONENT #}
 {# ======================= #}
 {% macro market_spark_card(market, spark) %}

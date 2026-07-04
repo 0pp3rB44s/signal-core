@@ -9,6 +9,7 @@ from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
+AGENT_DECISIONS_PATH = BASE_PATH / "agents_v2" / "reports" / "coach_decisions.json"
 logger = logging.getLogger("risk_manager")
 
 BETA_CLUSTERS = {
@@ -27,6 +28,75 @@ class RiskManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
+    @staticmethod
+    def _latest_agent_decisions() -> dict:
+        """Read Learning/Coach decisions. Safe fallback: no decisions."""
+        if not AGENT_DECISIONS_PATH.exists():
+            return {}
+
+        try:
+            with open(AGENT_DECISIONS_PATH, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            logger.warning("AI_AGENT_DECISIONS_UNAVAILABLE | error=%s", exc)
+            return {}
+
+        return payload if isinstance(payload, dict) else {}
+
+    def _ai_agent_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+        """Apply Learning Agent decisions as a live risk gate."""
+        reasons: list[str] = []
+        payload = self._latest_agent_decisions()
+        decisions = payload.get("decisions") or []
+
+        if not decisions:
+            reasons.append("ai-agent: no active decisions")
+            return True, reasons
+
+        strategy_name = str(candidate.strategy or "").strip().lower()
+        symbol = str(candidate.symbol or "").strip().upper()
+
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                continue
+
+            action = str(decision.get("action") or "").strip()
+            target = str(decision.get("target") or "").strip()
+            target_lower = target.lower()
+            target_upper = target.upper()
+            reason = str(decision.get("reason") or "")
+
+            if action == "reduce_strategy_exposure" and target_lower and target_lower in strategy_name:
+                reasons.append(f"ai-agent HARD_BLOCK: strategy reduced by coach ({target}) | {reason}")
+                logger.warning(
+                    "AI_AGENT_STRATEGY_BLOCK | symbol=%s | strategy=%s | target=%s | reason=%s",
+                    symbol,
+                    candidate.strategy,
+                    target,
+                    reason,
+                )
+                return False, reasons
+
+            if action == "avoid_symbol_until_improved" and target_upper and target_upper == symbol:
+                reasons.append(f"ai-agent HARD_BLOCK: symbol avoided by coach ({target}) | {reason}")
+                logger.warning(
+                    "AI_AGENT_SYMBOL_BLOCK | symbol=%s | strategy=%s | target=%s | reason=%s",
+                    symbol,
+                    candidate.strategy,
+                    target,
+                    reason,
+                )
+                return False, reasons
+
+        reasons.append(f"ai-agent: passed ({len(decisions)} decisions checked)")
+        logger.info(
+            "AI_AGENT_GATE_PASSED | symbol=%s | strategy=%s | decisions=%s",
+            symbol,
+            candidate.strategy,
+            len(decisions),
+        )
+        return True, reasons
 
     def _kill_switch_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
         reasons: list[str] = []
@@ -794,6 +864,11 @@ class RiskManager:
             strategy_weight_allowed, strategy_weight_reasons = self._strategy_weighting_gate(candidate)
             reasons.extend(strategy_weight_reasons)
             if not strategy_weight_allowed:
+                allowed = False
+
+            ai_agent_allowed, ai_agent_reasons = self._ai_agent_gate(candidate)
+            reasons.extend(ai_agent_reasons)
+            if not ai_agent_allowed:
                 allowed = False
 
         cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)

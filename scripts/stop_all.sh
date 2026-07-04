@@ -31,6 +31,11 @@ stop_pid_file() {
 
 STOP_REASON="${1:-manual_stop}"
 
+# If the launchd supervisor (scripts/install_launchd.sh) is managing the
+# bot, a plain kill below would just get restarted by KeepAlive. Bootout
+# the job first so the stop actually sticks.
+launchctl bootout "gui/$(id -u)/com.cgc.tradingbot" >/dev/null 2>&1 || true
+
 stop_pid_file "bot" "state/bot.pid"
 stop_pid_file "dashboard" "state/dashboard.pid"
 

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cgc.tradingbot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__PROJECT_DIR__/scripts/run_bot_supervised.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <!-- Restarts the bot if it crashes or exits for any reason. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Does NOT start the bot when this job is loaded/on login by itself;
+         RunAtLoad only takes effect once you explicitly load the job with
+         scripts/install_launchd.sh. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Avoid a rapid crash-restart loop; wait at least 30s between attempts. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/logs/bot.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/logs/bot.out</string>
+</dict>
+</plist>
