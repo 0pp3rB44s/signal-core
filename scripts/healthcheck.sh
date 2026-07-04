@@ -37,12 +37,16 @@ if [ -f state/bot.pid ] && ps -p "$(cat state/bot.pid)" > /dev/null 2>&1; then
   BOT_STATUS="running"
 fi
 
-# The launchd-supervised bot (scripts/install_launchd.sh) execs python3
-# directly and never writes state/bot.pid (launchd-spawned shells can't
-# write files under ~/Desktop themselves), so fall back to asking launchd.
-if [ "$BOT_STATUS" != "running" ] && launchctl print "gui/$(id -u)/com.cgc.tradingbot" 2>/dev/null | grep -q "state = running"; then
+# scripts/install_launchd.sh runs a periodic watchdog (via pgrep, every
+# ~5 min) rather than keeping the bot directly under launchd -- so the
+# watchdog job itself is short-lived and its own launchd state isn't a
+# useful signal. state/bot.pid also won't exist if the watchdog was the
+# one that (re)started the bot, since it can't write files under
+# ~/Desktop itself. Fall back to pgrep, which works regardless of how
+# the process was started.
+if [ "$BOT_STATUS" != "running" ] && pgrep -f "app.main" > /dev/null 2>&1; then
   BOT_STATUS="running"
-  BOT_SUPERVISOR=" (launchd)"
+  BOT_SUPERVISOR=" (pid file stale, matched via pgrep)"
 fi
 
 if [ -f state/dashboard.pid ] && ps -p "$(cat state/dashboard.pid)" > /dev/null 2>&1; then

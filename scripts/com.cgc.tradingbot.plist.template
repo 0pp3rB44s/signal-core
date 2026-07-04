@@ -5,41 +5,46 @@
     <key>Label</key>
     <string>com.cgc.tradingbot</string>
 
-    <!-- macOS blocks a launchd-spawned zsh/bash from opening ANY file it has
-         to read/write/exec/source itself when that file physically lives
-         under ~/Desktop ("Operation not permitted") -- confirmed for a
-         separate .sh script, `source .venv/bin/activate`, `grep .env`, and
-         even a plain `>> logs/runtime.log` append. The only things that do
-         work: launchd's own pre-opened StandardOutPath/StandardErrorPath
-         fds, `cd` (no file open), and exec-ing .venv/bin/python3 itself
-         (its binary resolves outside Desktop via a symlink chain). Once
-         python is actually running it reads/writes Desktop-resident files
-         fine (confirmed via the working com.cgc.daily-learning-report job).
-         So: no separate script, no `source activate`, no shell-level
-         logging/pid-file writes here -- just cd + exec python3 directly. -->
+    <!-- This is a watchdog, not a direct supervisor: it runs briefly every
+         few minutes, checks (via pgrep, no file access needed) whether
+         `app.main` is already running, and if not, launches it once in the
+         background. It does NOT keep the bot itself under launchd's
+         KeepAlive -- an earlier attempt at that (exec .venv/bin/python3 -m
+         app.main directly under KeepAlive) failed with EX_CONFIG somewhere
+         deep inside the live scan cycle for reasons that couldn't be
+         isolated without risking the live account, even though every other
+         piece (imports, config, real authenticated API calls, the coach
+         gate, the watchlist) worked fine in isolation. Running the bot via
+         a plain backgrounded process (matching scripts/start_bot.sh, which
+         is proven to work) and only using launchd to periodically check on
+         it sidesteps that unresolved issue entirely.
+
+         Also note: a launchd-spawned zsh/bash cannot open (read/write/exec)
+         any file that physically lives under ~/Desktop itself ("Operation
+         not permitted") -- confirmed for scripts, `source activate`, `grep
+         .env`, and even a plain `>> file` append. So this can't just call
+         scripts/start_bot.sh directly; everything has to be inlined here,
+         and the restarted bot inherits this job's own StandardOutPath
+         (opened by launchd itself, which does work) instead of doing its
+         own shell-level redirect. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
         <string>-lc</string>
-        <string>cd __PROJECT_DIR__ &amp;&amp; exec .venv/bin/python3 -u -m app.main</string>
+        <string>cd __PROJECT_DIR__ &amp;&amp; (pgrep -f "app.main" &gt;/dev/null 2&gt;&amp;1 || (nohup .venv/bin/python3 -u -m app.main &amp;))</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>__PROJECT_DIR__</string>
 
-    <!-- Restarts the bot if it crashes or exits for any reason. -->
-    <key>KeepAlive</key>
-    <true/>
+    <!-- Check every 5 minutes, plus once immediately when the job is
+         loaded via scripts/install_launchd.sh (a no-op if the bot is
+         already running -- pgrep just finds it and does nothing). -->
+    <key>StartInterval</key>
+    <integer>300</integer>
 
-    <!-- Does NOT start the bot when this job is loaded/on login by itself;
-         RunAtLoad only takes effect once you explicitly load the job with
-         scripts/install_launchd.sh. -->
     <key>RunAtLoad</key>
     <true/>
-
-    <!-- Avoid a rapid crash-restart loop; wait at least 30s between attempts. -->
-    <key>ThrottleInterval</key>
-    <integer>30</integer>
 
     <key>StandardOutPath</key>
     <string>__PROJECT_DIR__/logs/bot.out</string>

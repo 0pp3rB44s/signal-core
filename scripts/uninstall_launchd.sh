@@ -1,8 +1,8 @@
 #!/bin/bash
-# Removes the launchd auto-restart supervisor installed by
-# scripts/install_launchd.sh. Use this (not just scripts/stop_all.sh) to
-# actually stop the bot for good, since launchd will otherwise restart it
-# a moment after a plain `kill`.
+# Removes the launchd watchdog installed by scripts/install_launchd.sh.
+# Use this (not just scripts/stop_all.sh) to actually stop the bot for
+# good, since the watchdog will otherwise notice it's gone and restart
+# it again within ~5 minutes.
 set -euo pipefail
 
 LABEL="com.cgc.tradingbot"
