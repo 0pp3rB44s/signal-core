@@ -123,9 +123,23 @@ class RiskManager:
         daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
         consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
 
-        if daily_realized_pnl <= -10.0:
+        # Daily loss kill-switch as a % of account equity, matching the
+        # HARD_DAILY_STOP_PCT the rest of the system (dashboard_v2) already
+        # surfaces -- previously this was a flat -10.0 USD figure that didn't
+        # scale with account size.
+        account_equity = float(getattr(self.settings, "account_equity_usdt", 0.0) or 0.0)
+        hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
+        daily_loss_pct = (
+            abs(daily_realized_pnl) / account_equity * 100.0
+            if account_equity > 0 and daily_realized_pnl < 0
+            else 0.0
+        )
+
+        if hard_daily_stop_pct and daily_loss_pct >= hard_daily_stop_pct:
             reasons.append(
-                f"kill-switch: daily defensive mode active (daily_pnl={daily_realized_pnl:.2f})"
+                f"kill-switch: daily defensive mode active "
+                f"(daily_pnl={daily_realized_pnl:.2f}, daily_loss_pct={daily_loss_pct:.2f}%, "
+                f"hard_daily_stop_pct={hard_daily_stop_pct:.2f}%)"
             )
 
         if consecutive_losses >= 3:

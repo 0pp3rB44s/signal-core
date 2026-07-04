@@ -65,7 +65,7 @@ class Settings(BaseSettings):
 
     account_equity_usdt: float = Field(default=1000.0, alias="ACCOUNT_EQUITY_USDT")
     account_balance_usdt: float = Field(default=0.0, alias="ACCOUNT_BALANCE_USDT")
-    account_risk_per_trade_pct: float = Field(default=1.0, alias="ACCOUNT_RISK_PER_TRADE_PCT")
+    account_risk_per_trade_pct: float = Field(default=0.75, alias="ACCOUNT_RISK_PER_TRADE_PCT")
     default_leverage: float = Field(default=5.0, alias="DEFAULT_LEVERAGE")
     max_leverage: float = Field(default=5.0, alias="MAX_LEVERAGE")
     max_open_positions: int = Field(default=2, alias="MAX_OPEN_POSITIONS")
@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     planner_max_notional_pct_of_equity: float = Field(default=35.0, alias="PLANNER_MAX_NOTIONAL_PCT_OF_EQUITY")
     planner_max_notional_per_trade_usdt: float = Field(default=35.0, alias="PLANNER_MAX_NOTIONAL_PER_TRADE_USDT")
     planner_min_live_notional_usdt: float = Field(default=10.0, alias="PLANNER_MIN_LIVE_NOTIONAL_USDT")
-    symbol_cooldown_minutes: int = Field(default=45, alias="SYMBOL_COOLDOWN_MINUTES")
+    symbol_cooldown_minutes: int = Field(default=30, alias="SYMBOL_COOLDOWN_MINUTES")
     break_even_fee_buffer_pct: float = Field(default=0.10, alias="BREAK_EVEN_FEE_BUFFER_PCT")
 
     execution_enabled: bool = Field(default=False, alias="EXECUTION_ENABLED")
