@@ -7,6 +7,7 @@ cd "$PROJECT_DIR"
 mkdir -p logs state
 
 BOT_STATUS="stopped"
+BOT_SUPERVISOR=""
 DASH_STATUS="stopped"
 PORT_STATUS="closed"
 HTTP_STATUS="down"
@@ -34,6 +35,14 @@ fi
 
 if [ -f state/bot.pid ] && ps -p "$(cat state/bot.pid)" > /dev/null 2>&1; then
   BOT_STATUS="running"
+fi
+
+# The launchd-supervised bot (scripts/install_launchd.sh) execs python3
+# directly and never writes state/bot.pid (launchd-spawned shells can't
+# write files under ~/Desktop themselves), so fall back to asking launchd.
+if [ "$BOT_STATUS" != "running" ] && launchctl print "gui/$(id -u)/com.cgc.tradingbot" 2>/dev/null | grep -q "state = running"; then
+  BOT_STATUS="running"
+  BOT_SUPERVISOR=" (launchd)"
 fi
 
 if [ -f state/dashboard.pid ] && ps -p "$(cat state/dashboard.pid)" > /dev/null 2>&1; then
@@ -81,7 +90,7 @@ echo "env: $ENV_STATUS"
 echo "app env: $APP_ENV_VALUE"
 echo "app mode: $APP_MODE_VALUE"
 echo "execution mode: $EXECUTION_MODE_VALUE"
-echo "bot: $BOT_STATUS"
+echo "bot: $BOT_STATUS$BOT_SUPERVISOR"
 echo "dashboard pid: $DASH_STATUS"
 echo "dashboard port $DASHBOARD_PORT: $PORT_STATUS"
 echo "dashboard http: $HTTP_STATUS"

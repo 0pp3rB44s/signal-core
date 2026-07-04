@@ -5,11 +5,23 @@
     <key>Label</key>
     <string>com.cgc.tradingbot</string>
 
+    <!-- macOS blocks a launchd-spawned zsh/bash from opening ANY file it has
+         to read/write/exec/source itself when that file physically lives
+         under ~/Desktop ("Operation not permitted") -- confirmed for a
+         separate .sh script, `source .venv/bin/activate`, `grep .env`, and
+         even a plain `>> logs/runtime.log` append. The only things that do
+         work: launchd's own pre-opened StandardOutPath/StandardErrorPath
+         fds, `cd` (no file open), and exec-ing .venv/bin/python3 itself
+         (its binary resolves outside Desktop via a symlink chain). Once
+         python is actually running it reads/writes Desktop-resident files
+         fine (confirmed via the working com.cgc.daily-learning-report job).
+         So: no separate script, no `source activate`, no shell-level
+         logging/pid-file writes here -- just cd + exec python3 directly. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
         <string>-lc</string>
-        <string>cd __PROJECT_DIR__ &amp;&amp; exec /bin/bash scripts/run_bot_supervised.sh</string>
+        <string>cd __PROJECT_DIR__ &amp;&amp; exec .venv/bin/python3 -u -m app.main</string>
     </array>
 
     <key>WorkingDirectory</key>
