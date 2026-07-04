@@ -5,41 +5,42 @@
     <key>Label</key>
     <string>com.cgc.tradingbot</string>
 
-    <!-- This is a watchdog, not a direct supervisor: it runs briefly every
-         few minutes, checks (via pgrep, no file access needed) whether
-         `app.main` is already running, and if not, launches it once in the
-         background. It does NOT keep the bot itself under launchd's
-         KeepAlive -- an earlier attempt at that (exec .venv/bin/python3 -m
-         app.main directly under KeepAlive) failed with EX_CONFIG somewhere
-         deep inside the live scan cycle for reasons that couldn't be
-         isolated without risking the live account, even though every other
-         piece (imports, config, real authenticated API calls, the coach
-         gate, the watchlist) worked fine in isolation. Running the bot via
-         a plain backgrounded process (matching scripts/start_bot.sh, which
-         is proven to work) and only using launchd to periodically check on
-         it sidesteps that unresolved issue entirely.
+    <!-- Notification-only watchdog, NOT an auto-restarter. It runs
+         briefly every 5 minutes, checks via pgrep (no file access
+         needed) whether `app.main` is running, and if not, shows a
+         macOS notification -- it never tries to (re)start the bot
+         itself.
 
-         Also note: a launchd-spawned zsh/bash cannot open (read/write/exec)
-         any file that physically lives under ~/Desktop itself ("Operation
-         not permitted") -- confirmed for scripts, `source activate`, `grep
-         .env`, and even a plain `>> file` append. So this can't just call
-         scripts/start_bot.sh directly; everything has to be inlined here,
-         and the restarted bot inherits this job's own StandardOutPath
-         (opened by launchd itself, which does work) instead of doing its
-         own shell-level redirect. -->
+         Two earlier approaches were tried and both failed:
+         1. Keeping the bot directly under launchd (KeepAlive, execing
+            .venv/bin/python3 -m app.main): failed with EX_CONFIG deep
+            inside the live scan cycle for reasons that couldn't be
+            isolated without risking the live account, even though
+            every other piece (imports, config, a real authenticated
+            Bitget API call, the coach gate, get_watchlist()) worked
+            fine in isolation via ~15 throwaway probe jobs.
+         2. A periodic watchdog that backgrounds a new bot process
+            (`nohup .venv/bin/python3 -u -m app.main &`) when the bot
+            isn't running: the backgrounded child gets killed the
+            instant the launchd-spawned checker shell exits, regardless
+            of `nohup` or `setsid` -- confirmed directly. This is macOS
+            process-coalition cleanup, not something a shell trick can
+            route around.
+
+         So restarting is left to you: run scripts/start_bot.sh (proven
+         reliable, used for months) when this notifies you the bot is
+         down. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
         <string>-lc</string>
-        <string>cd __PROJECT_DIR__ &amp;&amp; (pgrep -f "app.main" &gt;/dev/null 2&gt;&amp;1 || (nohup .venv/bin/python3 -u -m app.main &amp;))</string>
+        <string>cd __PROJECT_DIR__ &amp;&amp; pgrep -f "app.main" &gt;/dev/null 2&gt;&amp;1 || osascript -e 'display notification "Run scripts/start_bot.sh from a terminal." with title "CGC trading bot is DOWN" sound name "Basso"'</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>__PROJECT_DIR__</string>
 
-    <!-- Check every 5 minutes, plus once immediately when the job is
-         loaded via scripts/install_launchd.sh (a no-op if the bot is
-         already running -- pgrep just finds it and does nothing). -->
+    <!-- Check every 5 minutes, plus once immediately when loaded. -->
     <key>StartInterval</key>
     <integer>300</integer>
 
@@ -47,9 +48,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>__PROJECT_DIR__/logs/bot.out</string>
+    <string>__PROJECT_DIR__/logs/watchdog.out</string>
 
     <key>StandardErrorPath</key>
-    <string>__PROJECT_DIR__/logs/bot.out</string>
+    <string>__PROJECT_DIR__/logs/watchdog.out</string>
 </dict>
 </plist>
