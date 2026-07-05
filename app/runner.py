@@ -3,6 +3,8 @@ from pathlib import Path
 import json
 import fcntl
 import os
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone, timedelta
 from collections import Counter
@@ -318,6 +320,50 @@ class StartupRunner:
         self._last_continuation_reject_log = {}
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
+        self._learning_refresh_proc: subprocess.Popen | None = None
+
+    def _maybe_refresh_learning_reports(self) -> None:
+        """Regenerate the daily learning/expectancy reports when they go stale.
+
+        The launchd job that used to do this gets blocked by macOS TCC (launchd
+        children may not write inside ~/Desktop), so the bot — started from a
+        terminal that does have that access — refreshes its own learning input.
+        Runs as a background subprocess so the scan loop never stalls on it.
+        """
+        if self._learning_refresh_proc is not None:
+            if self._learning_refresh_proc.poll() is None:
+                return
+            exit_code = self._learning_refresh_proc.returncode
+            self._learning_refresh_proc = None
+            if exit_code == 0:
+                self.log.info("LEARNING_REFRESH_OK | strategy_expectancy.json regenerated")
+            else:
+                self.log.warning("LEARNING_REFRESH_FAILED | exit_code=%s", exit_code)
+
+        report_path = Path("reports/backtests/strategy_expectancy.json")
+        try:
+            age_hours = (time.time() - report_path.stat().st_mtime) / 3600.0
+        except OSError:
+            age_hours = float("inf")
+
+        if age_hours < 24.0:
+            return
+
+        chain = (
+            "import subprocess, sys;"
+            "subprocess.run([sys.executable, '-m', 'telemetry.dataset_builder'], check=False);"
+            "subprocess.run([sys.executable, 'scripts/run_backtest.py', '--validation-only'], check=True)"
+        )
+        try:
+            with open("logs/daily_learning_report.log", "a", encoding="utf-8") as log_handle:
+                self._learning_refresh_proc = subprocess.Popen(
+                    [sys.executable, "-c", chain],
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            self.log.info("LEARNING_REFRESH_STARTED | report_age_hours=%.1f", age_hours)
+        except Exception as exc:
+            self.log.warning("LEARNING_REFRESH_SPAWN_FAILED | error=%s", exc)
 
     def _is_network_resolution_error(self, exc: Exception) -> bool:
         error_text = str(exc).lower()
@@ -453,6 +499,8 @@ class StartupRunner:
                 )
             except Exception as exc:
                 self.log.warning("AI_AGENT_DECISIONS_REFRESH_FAILED | error=%s", exc)
+
+            self._maybe_refresh_learning_reports()
 
             contracts = self.fetcher.fetch_contracts(force_refresh=False)
             symbols = get_watchlist(self.settings, contracts=contracts)
