@@ -13,8 +13,15 @@ def ask(prompt: str, model: str = DEFAULT_MODEL) -> str:
         "prompt": prompt,
         "stream": False,
         "format": "json",
+        "options": {
+            # Ollama's default context window (often 4096 tokens) silently
+            # truncates the audit prompt, which made the model refuse. The
+            # full audit context is ~10-15K tokens.
+            "num_ctx": 16384,
+            "temperature": 0.2,
+        },
     }
-    response = requests.post(OLLAMA_URL, json=data, timeout=180)
+    response = requests.post(OLLAMA_URL, json=data, timeout=300)
     response.raise_for_status()
     payload = response.json()
     if isinstance(payload.get("response"), str):

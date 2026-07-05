@@ -4,6 +4,28 @@ from pathlib import Path
 
 from agents_v2.shared.file_loader import load_existing_files
 
+
+def _load_csv_head_and_tail(paths: list[Path], tail_rows: int = 40) -> dict[str, str]:
+    """CSV context as header + most recent rows.
+
+    Dumping whole datasets blew the prompt past the local model's context
+    window (the model then answered with refusals); the header plus a recent
+    tail is what the audit actually needs.
+    """
+    loaded: dict[str, str] = {}
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        if not lines:
+            continue
+        header, rows = lines[0], lines[1:]
+        loaded[path.name] = "\n".join([header] + rows[-tail_rows:])
+    return loaded
+
 LOG_FILES = [
     Path("logs/runtime.log"),
     Path("logs/agent.log"),
@@ -41,9 +63,6 @@ def build_context() -> dict[str, dict[str, str]]:
         "logs": load_existing_files(LOG_FILES, max_chars=4000),
         "roadmap": load_existing_files(ROADMAP_FILES, max_chars=3000),
         "code": load_existing_files(CODE_FILES, max_chars=3500),
-        # The trade dataset must include its CSV header for parsing.
-        # Use a much larger limit so the header is preserved instead of
-        # truncating into the middle of the file.
-        "dataset": load_existing_files(DATASET_FILES, max_chars=250000),
+        "dataset": _load_csv_head_and_tail(DATASET_FILES, tail_rows=40),
         "settings": load_existing_files(SETTINGS_FILES, max_chars=3000),
     }
