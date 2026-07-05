@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard_v2",
+      "runtimeExecutable": ".venv/bin/python3",
+      "runtimeArgs": ["-m", "dashboard_v2.app"],
+      "port": 8501
+    }
+  ]
+}

@@ -1,169 +1,39 @@
+{# Dashboard v2 — small set of genuinely reused Jinja macros. #}
 
-
-{# ========================================================= #}
-{# CGC DASHBOARD V4 COMPONENT REGISTRY                       #}
-{# Institutional component architecture layer                #}
-{# ========================================================= #}
-
-{# ========================= #}
-{# EXECUTIVE HERO COMPONENT #}
-{# ========================= #}
-{% macro executive_hero(executive) %}
-<article id="v4-executive-hero" class="v4-executive-hero {{ executive.level if executive else '' }}">
-  <div>
-    <span>Executive Status</span>
-    <h2 id="v4-executive-status">{{ executive.status if executive else 'UNKNOWN' }}</h2>
-    <p id="v4-executive-summary">
-      Risk {{ executive.risk_state if executive else 'UNKNOWN' }} ·
-      {{ executive.open_positions if executive else 0 }} open ·
-      source {{ executive.data_source if executive else 'UNKNOWN' }}
-    </p>
-  </div>
-
-  <div class="v4-hero-pnl">
-    <span>Total PnL</span>
-    <strong id="v4-total-pnl" class="{{ executive.level if executive else '' }}">
-      {{ executive.total_pnl if executive else 0 }}
-    </strong>
-    <small id="v4-pnl-summary">
-      Daily {{ executive.daily_pnl if executive else 0 }} ·
-      Weekly {{ executive.weekly_pnl if executive else 0 }}
-    </small>
-  </div>
-</article>
+{% macro level_badge(level, text) %}
+<span class="badge {{ level }}">{{ text }}</span>
 {% endmacro %}
 
-
-{# ======================= #}
-{# MORNING BRIEFING       #}
-{# ======================= #}
-{% macro morning_briefing(data) %}
-<section class="panel audit-command-center">
-  <div class="panel-header">
+{% macro position_card(p, protection) %}
+<article class="position-card {{ 'danger-border' if p.sl == 'MISSING' or p.tp == 'MISSING' else 'good-border' }}">
+  <header class="position-card-head">
     <div>
-      <h2>Morning Briefing</h2>
-      <small>Daily AI audit summary and priorities</small>
+      <strong>{{ p.symbol }}</strong>
+      <span class="direction-pill {{ 'short' if (p.direction or '')|lower == 'short' else 'long' }}">{{ p.direction }}</span>
     </div>
-    <span class="badge">AUDIT V3</span>
+    <div class="position-pnl {{ 'good' if p.pnl >= 0 else 'danger' }}">
+      <strong>{{ p.pnl }} USDT</strong>
+      <span>{{ p.pnl_pct }}%</span>
+    </div>
+  </header>
+
+  <div class="position-lifecycle">
+    <div class="lifecycle-step {{ 'good' if p.tp1_hit else 'pending' }}"><span>TP1</span><strong>{{ 'HIT' if p.tp1_hit else 'WAIT' }}</strong></div>
+    <div class="lifecycle-step {{ 'good' if p.break_even_active else 'pending' }}"><span>BE</span><strong>{{ 'ON' if p.break_even_active else 'OFF' }}</strong></div>
+    <div class="lifecycle-step {{ 'good' if p.tp2_hit else 'pending' }}"><span>TP2</span><strong>{{ 'HIT' if p.tp2_hit else 'WAIT' }}</strong></div>
+    <div class="lifecycle-step {{ 'good' if p.tp3_hit else 'pending' }}"><span>TP3</span><strong>{{ 'HIT' if p.tp3_hit else 'WAIT' }}</strong></div>
   </div>
 
-  <div class="command-center">
-    <article class="command-card primary-command">
-      <span>Overall Health</span>
-      <strong>{{ data.audit.overall.overall_score if data.audit else '--' }}/100</strong>
-      <small>{{ data.audit.overall.overall_grade if data.audit else 'UNKNOWN' }}</small>
-    </article>
-
-    <article class="command-card">
-      <span>Primary Risk</span>
-      <strong>{{ data.audit.overall.primary_risk if data.audit else 'Unknown' }}</strong>
-    </article>
-
-    <article class="command-card">
-      <span>Primary Strength</span>
-      <strong>{{ data.audit.overall.primary_strength if data.audit else 'Unknown' }}</strong>
-    </article>
-
-    <article class="command-card">
-      <span>Weakest Module</span>
-      <strong>{{ data.audit.overall.weakest_module if data.audit else '-' }}</strong>
-    </article>
-  </div>
-</section>
-{% endmacro %}
-
-{# ======================= #}
-{# MARKET SPARK COMPONENT #}
-{# ======================= #}
-{% macro market_spark_card(market, spark) %}
-<article class="mini-market-card market-card-live {{ market.level }}">
-  <div>
-    <span>{{ market.symbol }}</span>
-    <strong>{{ market.regime }}</strong>
-  </div>
-
-  <div class="sparkline-track">
-    {% if spark %}
-      {% for point in spark.points %}
-        <span style="height: {{ point }}%"></span>
-      {% endfor %}
-    {% else %}
-      <span style="height: 25%"></span>
-      <span style="height: 35%"></span>
-      <span style="height: 45%"></span>
-      <span style="height: 40%"></span>
-      <span style="height: 55%"></span>
-      <span style="height: 50%"></span>
-    {% endif %}
-  </div>
-
-  <div class="market-meta-row">
-    <small>{{ market.direction }} · pnl {{ market.pnl_pct }}%</small>
-    {% if spark %}
-      <small>score {{ spark.score_hint }} · vol {{ spark.volatility_rank }}</small>
-    {% endif %}
+  <div class="position-grid">
+    <div><span>Entry</span><strong>{{ p.entry }}</strong></div>
+    <div><span>Live Price</span><strong>{{ p.price }}</strong></div>
+    <div><span>Size</span><strong>{{ p.size }}</strong></div>
+    <div><span>Stop Loss</span><strong class="{{ 'danger' if p.sl == 'MISSING' else '' }}">{{ p.sl }}</strong></div>
+    <div><span>Take Profit</span><strong class="{{ 'danger' if p.tp == 'MISSING' else '' }}">{{ p.tp }}</strong></div>
+    <div><span>Protection</span><strong class="{{ protection.level if protection else 'warning' }}">{{ protection.status if protection else 'UNKNOWN' }}</strong></div>
+    <div><span>Live RR</span><strong>{{ p.live_rr }}</strong></div>
+    <div><span>Distance to SL</span><strong>{{ p.distance_to_sl_pct }}%</strong></div>
+    <div><span>Notional</span><strong>{{ p.notional }}</strong></div>
   </div>
 </article>
 {% endmacro %}
-
-
-{# ======================= #}
-{# EXECUTION TIMELINE     #}
-{# ======================= #}
-{% macro execution_event(event) %}
-<article class="timeline-event {{ event.level }}">
-  <span>{{ event.event_type }}</span>
-  <strong>{{ event.summary }}</strong>
-  <small>
-    {{ event.timestamp }} ·
-    {{ event.strategy }} ·
-    pnl {{ event.net_pnl }}
-  </small>
-</article>
-{% endmacro %}
-
-
-{# ======================= #}
-{# STRATEGY HEATMAP CELL  #}
-{# ======================= #}
-{% macro strategy_heatmap_cell(cell) %}
-<article class="heatmap-cell {{ cell.level }}">
-  <span>{{ cell.x }}</span>
-  <strong>{{ cell.y }}</strong>
-  <small>exp {{ cell.value }} · {{ cell.status }}</small>
-</article>
-{% endmacro %}
-
-
-{# ======================= #}
-{# POSITION TELEMETRY     #}
-{# ======================= #}
-{% macro telemetry_row(telemetry) %}
-<div class="telemetry-mini-grid">
-  <div>
-    <span>Live RR</span>
-    <strong>{{ telemetry.live_rr }}</strong>
-  </div>
-  <div>
-    <span>Distance SL</span>
-    <strong>{{ telemetry.distance_to_sl_pct }}%</strong>
-  </div>
-  <div>
-    <span>Notional</span>
-    <strong>{{ telemetry.notional }}</strong>
-  </div>
-</div>
-{% endmacro %}
-
-
-{# ======================= #}
-{# PROTECTION ALERT ITEM  #}
-{# ======================= #}
-{% macro protection_alert(alert) %}
-<code class="{{ alert.level }}">{{ alert.message }}</code>
-{% endmacro %}
-
-
-{# ========================================================= #}
-{# END COMPONENT REGISTRY                                    #}
-{# ========================================================= #}
