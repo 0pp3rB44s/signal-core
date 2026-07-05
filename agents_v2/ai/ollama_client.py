@@ -21,7 +21,7 @@ def ask(prompt: str, model: str = DEFAULT_MODEL) -> str:
             "temperature": 0.2,
         },
     }
-    response = requests.post(OLLAMA_URL, json=data, timeout=300)
+    response = requests.post(OLLAMA_URL, json=data, timeout=600)
     response.raise_for_status()
     payload = response.json()
     if isinstance(payload.get("response"), str):

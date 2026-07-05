@@ -9,7 +9,13 @@ from agents_v2.shared.report_writer import write_reports
 
 def run(context_text: str, allowed_files: set[str]) -> dict:
     prompt = build_prompt(context_text)
-    raw = ask(prompt)
+    try:
+        raw = ask(prompt)
+    except Exception as exc:
+        # A dead/slow Ollama must degrade to the rule-based fallback,
+        # not crash the whole morning audit without writing any report.
+        raw = ""
+        print(f"AI backend unavailable ({type(exc).__name__}: {exc}); using rule-based fallback.")
     if not raw.strip():
         raw = "{}"
     debug_dir = Path("agents_v2/reports")
