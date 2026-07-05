@@ -22,6 +22,7 @@ def _candidate(strategy: str = "low_vol_reclaim", symbol: str = "BTCUSDT") -> Ma
     candidate = MagicMock()
     candidate.strategy = strategy
     candidate.symbol = symbol
+    candidate.notes = []
     return candidate
 
 
@@ -46,3 +47,40 @@ def test_kill_switch_does_not_use_flat_dollar_threshold():
     allowed, reasons = rm._kill_switch_gate(_candidate())
     assert allowed
     assert not any("kill-switch: daily" in r for r in reasons)
+
+
+def _make_weighting_risk_manager(strategies: dict) -> RiskManager:
+    rm = RiskManager(settings=MagicMock())
+    rm._latest_strategy_expectancy = lambda: {"strategies": strategies}
+    return rm
+
+
+def test_strategy_weighting_missing_tp1_hit_rate_does_not_hard_block():
+    # reports/backtests/strategy_expectancy.json can explicitly mark
+    # tp1_hit_rate as null ("missing_not_zero") when the backfill hasn't run
+    # yet. That must not be treated as a genuine 0% hit-rate.
+    rm = _make_weighting_risk_manager({
+        "low_vol_reclaim": {"trades": 28, "expectancy": 0.0663, "tp1_hit_rate": None},
+    })
+    allowed, reasons = rm._strategy_weighting_gate(_candidate(strategy="low_vol_reclaim"))
+    assert allowed
+    assert not any("HARD_BLOCK: weak TP1" in r for r in reasons)
+    assert any("tp1_hit_rate data missing, not treated as zero" in r for r in reasons)
+
+
+def test_strategy_weighting_genuine_low_tp1_hit_rate_still_hard_blocks():
+    rm = _make_weighting_risk_manager({
+        "momentum_breakout": {"trades": 10, "expectancy": 0.1, "tp1_hit_rate": 0.1},
+    })
+    allowed, reasons = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert not allowed
+    assert any("HARD_BLOCK: weak TP1 hit-rate" in r for r in reasons)
+
+
+def test_strategy_weighting_negative_expectancy_still_hard_blocks():
+    rm = _make_weighting_risk_manager({
+        "momentum_breakout": {"trades": 10, "expectancy": -0.5, "tp1_hit_rate": None},
+    })
+    allowed, reasons = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert not allowed
+    assert any("HARD_BLOCK: negative expectancy" in r for r in reasons)

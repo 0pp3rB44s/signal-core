@@ -188,7 +188,14 @@ class RiskManager:
 
         trades = int(stats.get("trades", 0) or 0)
         expectancy = float(stats.get("expectancy", 0.0) or 0.0)
-        tp1_hit_rate = float(stats.get("tp1_hit_rate", 0.0) or 0.0)
+        raw_tp1_hit_rate = stats.get("tp1_hit_rate")
+        # The dataset explicitly distinguishes "missing" (tp1_hit_rate_status
+        # == "missing_not_zero") from a genuine 0% hit-rate. Coercing a missing
+        # value to 0.0 here previously hard-blocked strategies with excellent
+        # real performance (e.g. low_vol_reclaim: 82% winrate, +expectancy)
+        # purely because TP1 tracking data hadn't been backfilled yet.
+        tp1_hit_rate_missing = raw_tp1_hit_rate is None
+        tp1_hit_rate = float(raw_tp1_hit_rate) if raw_tp1_hit_rate is not None else 0.0
         reasons.append(
             f"strategy weighting source=clean_strategy_expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
         )
@@ -201,7 +208,9 @@ class RiskManager:
             reasons.append(f"strategy weighting HARD_BLOCK: negative expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
             return False, reasons
 
-        if tp1_hit_rate < 0.25:
+        if tp1_hit_rate_missing:
+            reasons.append(f"strategy weighting WATCH: tp1_hit_rate data missing, not treated as zero ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
+        elif tp1_hit_rate < 0.25:
             reasons.append(f"strategy weighting HARD_BLOCK: weak TP1 hit-rate ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})")
             return False, reasons
 
