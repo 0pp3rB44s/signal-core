@@ -5,7 +5,7 @@ import argparse
 import csv
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from app.config import get_settings
 from backtesting.backtest_engine import BacktestEngine
 from clients.schemas import Candle
+from telemetry.csv_rotation import rotated_segments
 
 
 DATA_PATH = Path("data/backtests")
@@ -167,14 +168,15 @@ def _write_reports(result: dict[str, Any]) -> dict[str, Path]:
     }
 
 def _load_csv_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
-    except Exception:
-        return []
+    """Read `path`, concatenating any rotated backups (oldest-first) so history survives rotation."""
+    rows: list[dict[str, Any]] = []
+    for segment in rotated_segments(path):
+        try:
+            with open(segment, "r", encoding="utf-8") as f:
+                rows.extend(csv.DictReader(f))
+        except Exception:
+            continue
+    return rows
 
 
 def _extract_reasons(row: dict[str, Any]) -> list[str]:
@@ -855,12 +857,32 @@ def _build_daily_validation() -> dict[str, Any]:
     }
 
 
-def _build_strategy_expectancy(trades: list[dict[str, Any]]) -> dict[str, Any]:
+EXPECTANCY_WINDOW_DAYS = 30
+
+
+def _trade_close_timestamp(trade: dict[str, Any]) -> str:
+    return str(trade.get("closed_at") or trade.get("timestamp") or trade.get("created_at") or "")
+
+
+def _build_strategy_expectancy(trades: list[dict[str, Any]], window_days: int = EXPECTANCY_WINDOW_DAYS) -> dict[str, Any]:
     strategy_buckets: dict[str, list[dict[str, Any]]] = {}
     recovery_buckets: dict[str, list[dict[str, Any]]] = {}
 
+    # Rolling window: gate live strategies on *recent* behavior. All-time
+    # expectancy both hides fresh degradation behind old profits and blocks a
+    # fixed strategy forever behind old losses; a window lets bad history age
+    # out so a strategy can re-qualify (trades < 5 in window -> WATCH probe).
+    window_cutoff = ""
+    if window_days > 0:
+        window_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=window_days)
+        ).isoformat(timespec="seconds")
+
     for trade in trades:
         if not _is_closed_trade(trade):
+            continue
+
+        if window_cutoff and _trade_close_timestamp(trade)[:19] < window_cutoff[:19]:
             continue
 
         strategy = str(trade.get("strategy") or trade.get("setup_strategy") or "unknown")
@@ -874,6 +896,7 @@ def _build_strategy_expectancy(trades: list[dict[str, Any]]) -> dict[str, Any]:
 
     output: dict[str, Any] = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "expectancy_window_days": window_days,
         "strategies": {},
         "recovery_events": {},
         "summary": {

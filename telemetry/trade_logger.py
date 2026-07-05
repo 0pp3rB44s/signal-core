@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan
+from telemetry.csv_rotation import rotate_if_needed
 
 
 # --- Trade Quality/Grade helpers ---
@@ -278,6 +279,7 @@ class MarketScanCsvLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append_rows(self, snapshots: list[MarketSnapshot]) -> None:
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -303,6 +305,7 @@ class StrategyCandidateCsvLogger:
     def append_rows(self, rows: list[tuple[StrategyCandidate, StrategyScore]]) -> None:
         if not rows:
             return
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -331,6 +334,7 @@ class TradePlanCsvLogger:
     def append_rows(self, plans: list[TradePlan]) -> None:
         if not plans:
             return
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -367,6 +371,7 @@ class TradeDecisionSnapshotLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append_plan(self, plan: TradePlan, opened_at: str | None = None) -> str:
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -451,6 +456,7 @@ class ExecutionCsvLogger:
     def append_rows(self, reports: list[ExecutionReport]) -> None:
         if not reports:
             return
+        rotate_if_needed(self.path)
         self._ensure_header()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -480,6 +486,7 @@ class PositionUpdateCsvLogger:
     def append_rows(self, updates: list[PositionUpdate]) -> None:
         if not updates:
             return
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -686,6 +693,7 @@ class TradeDatasetLogger:
             "close_reason",
             "message",
         ]
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -933,6 +941,7 @@ class TradeDatasetV2Logger:
 
     def _append_row(self, row: dict) -> None:
         fieldnames = self._fieldnames()
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -986,6 +995,7 @@ class ValidationEventLogger:
             "message",
             "details",
         ]
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -1110,6 +1120,7 @@ class StrategyPerformanceLogger:
             "reasons",
             "notes",
         ]
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")

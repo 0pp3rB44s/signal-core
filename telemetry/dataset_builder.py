@@ -15,6 +15,7 @@ if str(BASE_PATH) not in sys.path:
     sys.path.insert(0, str(BASE_PATH))
 
 from execution.execution_service import _safe_float
+from telemetry.csv_rotation import rotated_segments
 from telemetry.trade_logger import _safe_bool
 
 LOGS_PATH = BASE_PATH / "logs"
@@ -28,13 +29,15 @@ def _now() -> str:
 
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            return list(csv.DictReader(handle))
-    except Exception:
-        return []
+    """Read `path`, concatenating any rotated backups (oldest-first) so history survives rotation."""
+    rows: list[dict[str, Any]] = []
+    for segment in rotated_segments(path):
+        try:
+            with segment.open("r", encoding="utf-8", newline="") as handle:
+                rows.extend(csv.DictReader(handle))
+        except Exception:
+            continue
+    return rows
 
 
 def _read_json(path: Path, default: Any) -> Any:
