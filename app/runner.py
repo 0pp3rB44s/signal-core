@@ -352,7 +352,8 @@ class StartupRunner:
         chain = (
             "import subprocess, sys;"
             "subprocess.run([sys.executable, '-m', 'telemetry.dataset_builder'], check=False);"
-            "subprocess.run([sys.executable, 'scripts/run_backtest.py', '--validation-only'], check=True)"
+            "subprocess.run([sys.executable, 'scripts/run_backtest.py', '--validation-only'], check=True);"
+            "subprocess.run([sys.executable, 'morning_audit.py'], check=False)"
         )
         try:
             with open("logs/daily_learning_report.log", "a", encoding="utf-8") as log_handle:
