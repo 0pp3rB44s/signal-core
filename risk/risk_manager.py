@@ -25,6 +25,24 @@ class RiskManager:
     # Probe mode: a strategy flagged by the expectancy report or the coach
     # keeps trading at this fraction of normal risk so it can re-qualify.
     PROBE_RISK_MULTIPLIER = 0.5
+
+    # Last known allocation state per strategy, to log promotion/demotion
+    # transitions (roadmap N3). Class-level so all gate paths share it.
+    _allocation_states: dict[str, str] = {}
+
+    def _log_allocation_transition(self, strategy: str, state: str) -> None:
+        strategy_key = str(strategy or "unknown").lower()
+        previous = self._allocation_states.get(strategy_key)
+        if previous == state:
+            return
+        self._allocation_states[strategy_key] = state
+        if previous is not None:
+            logger.warning(
+                "ALLOCATION_CHANGED | strategy=%s | %s -> %s",
+                strategy_key,
+                previous,
+                state,
+            )
     SAFE_ALPHA_MIN_SCORE = 60
     SAFE_MOMENTUM_MIN_SCORE = 72
     SAFE_CONTINUATION_MIN_SCORE = 78
@@ -981,6 +999,11 @@ class RiskManager:
             if not ai_agent_allowed:
                 allowed = False
             probe_mode = probe_mode or ai_agent_probe
+
+            self._log_allocation_transition(
+                candidate.strategy,
+                "PROBE" if probe_mode else ("FULL" if (kill_allowed and strategy_weight_allowed and ai_agent_allowed) else "BLOCKED"),
+            )
 
         cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)
         reasons.extend(cluster_reasons)

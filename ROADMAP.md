@@ -199,8 +199,12 @@ NIEUWE PUNTEN — 2026-07-06
 ═══════════════════════════════════
 
 N1 — REGIME EXECUTION PROOF (prioriteit 1)
-[ ] Bewijzen dat alle 4 strategieën nu daadwerkelijk executies halen
-[ ] Per strategie: candidates → plans → executions funnel-rapport per dag
+[x] Funnel-rapport per dag: reports/backtests/strategy_funnel.json
+    (candidates → GO → plans → EXECUTABLE → EXECUTED/SKIPPED per strategie,
+    plus regime_coverage_verdict). Timestamps toegevoegd aan candidates/plans/
+    executions CSV's (schema-safe rotatie bij header-wijziging).
+[ ] Bewijzen dat alle 4 strategieën daadwerkelijk executies halen
+    (verdict moet ALL_REGIMES_EXECUTING worden — data verzamelen)
 [ ] Na 2 weken: eerste expectancy-lezing per strategie op verse data
 
 N2 — SESSIE-VENSTER VALIDATIE
@@ -209,15 +213,18 @@ N2 — SESSIE-VENSTER VALIDATIE
 [ ] Vensters automatisch bijstellen zodra n per uur ≥ 15
 
 N3 — PROBE→FULL PROMOTIE-REGELS
-[ ] Expliciete promotieregel: probe → full size bij expectancy > 0 over ≥ 10
-    verse trades in window
-[ ] Demotie: full → probe zodra window-expectancy < 0 bij ≥ 5 trades
-[ ] Promotie/demotie events loggen (ALLOCATION_CHANGED)
+[x] Promotie/demotie gebeurt inherent per scan-cyclus: window-expectancy ≥ 0
+    → FULL, < 0 (bij ≥ 5 trades) → PROBE; kill-switch → BLOCKED
+[x] Transities gelogd: ALLOCATION_CHANGED | strategy | oud -> nieuw
+[ ] Evaluatie na 2 weken of een expliciete ≥10-trades promotiedrempel nodig is
+    (nu: zelfde drempel als demotie; hysterese toevoegen indien flip-flop zichtbaar)
 
 N4 — TP1-HIT-RATE HERSTELMETING (reclaim 1,30R)
-[ ] tp1_hit_rate op verse 1,30R-trades apart rapporteren
-[ ] Beslisregel: als tp1_hit_rate < 20% na 15 verse trades → reclaim TP-model
-    herzien richting liquidity/origin targets (P0.5-punt)
+[x] fresh_since_geometry_fix per strategie in strategy_expectancy.json
+    (cutoff 2026-07-05T13:00Z = deploy 1,30R): trades, tp1_hit_rate,
+    expectancy, winrate op uitsluitend verse trades
+[ ] Beslisregel uitvoeren: als fresh tp1_hit_rate < 20% na 15 verse trades →
+    reclaim TP-model herzien richting liquidity/origin targets (P0.5-punt)
 
 N5 — AI-AUDIT MODELKEUZE
 [ ] Lokale modellen (qwen2.5-coder:14b, gemma4) leveren geen valide audit-JSON

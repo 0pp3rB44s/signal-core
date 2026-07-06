@@ -629,6 +629,66 @@ def _top_near_missing(lines: list[str], limit: int = 12) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit])
 
 
+CANDIDATES_PATH = Path("logs/strategy_candidates.csv")
+PLANS_PATH = Path("logs/trade_plans.csv")
+EXECUTIONS_PATH = Path("logs/executions.csv")
+
+
+def _build_strategy_funnel(day_utc: str | None = None) -> dict[str, Any]:
+    """Per-strategy candidates -> plans -> executions funnel for one UTC day (roadmap N1).
+
+    Proves whether every regime strategy actually reaches execution, and where
+    the others die. Rows without a timestamp (pre-schema-change segments) are
+    ignored — the funnel only ever claims what it can date.
+    """
+    day = day_utc or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _day_rows(path: Path) -> list[dict[str, Any]]:
+        return [r for r in _load_csv_rows(path) if str(r.get("timestamp") or "").startswith(day)]
+
+    funnel: dict[str, dict[str, int]] = {}
+
+    def _bucket(strategy: str) -> dict[str, int]:
+        return funnel.setdefault(str(strategy or "unknown").lower(), {
+            "candidates": 0, "candidates_go": 0,
+            "plans": 0, "plans_executable": 0,
+            "executions_executed": 0, "executions_skipped": 0,
+        })
+
+    for row in _day_rows(CANDIDATES_PATH):
+        b = _bucket(row.get("strategy"))
+        b["candidates"] += 1
+        if str(row.get("verdict") or "").upper() == "GO":
+            b["candidates_go"] += 1
+
+    for row in _day_rows(PLANS_PATH):
+        b = _bucket(row.get("strategy"))
+        b["plans"] += 1
+        if str(row.get("verdict") or "").upper() == "EXECUTABLE":
+            b["plans_executable"] += 1
+
+    for row in _day_rows(EXECUTIONS_PATH):
+        b = _bucket(row.get("strategy"))
+        status = str(row.get("status") or "").upper()
+        if status == "EXECUTED":
+            b["executions_executed"] += 1
+        elif status == "SKIPPED":
+            b["executions_skipped"] += 1
+
+    strategies_with_execution = [s for s, b in funnel.items() if b["executions_executed"] > 0]
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "day_utc": day,
+        "strategies": funnel,
+        "strategies_with_execution": sorted(strategies_with_execution),
+        "regime_coverage_verdict": (
+            "ALL_REGIMES_EXECUTING" if len(strategies_with_execution) >= 4
+            else "PARTIAL_COVERAGE" if strategies_with_execution
+            else "NO_EXECUTIONS"
+        ),
+    }
+
+
 def _build_daily_validation() -> dict[str, Any]:
     trade_rows = _load_csv_rows(TRADE_DATASET_PATH)
     strategy_rows = _load_csv_rows(STRATEGY_DATASET_PATH)
@@ -870,6 +930,10 @@ def _build_daily_validation() -> dict[str, Any]:
 
 
 EXPECTANCY_WINDOW_DAYS = 30
+# Reclaim TP geometry moved from 1.00R to 1.30R on this date (roadmap N4);
+# trades before it measured a different TP model and must not dilute the
+# fresh-geometry TP1 hit-rate reading.
+GEOMETRY_FIX_CUTOFF_UTC = "2026-07-05T13:00:00"
 
 
 def _trade_close_timestamp(trade: dict[str, Any]) -> str:
@@ -946,7 +1010,20 @@ def _build_strategy_expectancy(trades: list[dict[str, Any]], window_days: int = 
         }
 
     for strategy, rows in strategy_buckets.items():
-        output["strategies"][strategy] = _bucket_payload(rows)
+        payload = _bucket_payload(rows)
+        fresh_rows = [
+            row for row in rows
+            if _trade_close_timestamp(row)[:19] >= GEOMETRY_FIX_CUTOFF_UTC
+        ]
+        fresh_stats = _expectancy_stats(fresh_rows)
+        payload["fresh_since_geometry_fix"] = {
+            "cutoff_utc": GEOMETRY_FIX_CUTOFF_UTC,
+            "trades": fresh_stats["trades"],
+            "tp1_hit_rate": fresh_stats["tp1_hit_rate"],
+            "expectancy": fresh_stats["expectancy"],
+            "winrate": fresh_stats["winrate"],
+        }
+        output["strategies"][strategy] = payload
 
     for strategy, rows in recovery_buckets.items():
         payload = _bucket_payload(rows)
@@ -974,17 +1051,21 @@ def main() -> None:
         daily_validation = _build_daily_validation()
         live_trade_rows = _load_csv_rows(TRADE_DATASET_PATH)
         strategy_expectancy = _build_strategy_expectancy(live_trade_rows)
+        strategy_funnel = _build_strategy_funnel()
 
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         with open(DAILY_VALIDATION_PATH, "w", encoding="utf-8") as f:
             json.dump(daily_validation, f, indent=2)
         with open(STRATEGY_EXPECTANCY_PATH, "w", encoding="utf-8") as f:
             json.dump(strategy_expectancy, f, indent=2)
+        with open(REPORT_DIR / "strategy_funnel.json", "w", encoding="utf-8") as f:
+            json.dump(strategy_funnel, f, indent=2)
 
     if args.validation_only:
         print("Validation complete")
         print(f"Daily validation saved to: {DAILY_VALIDATION_PATH}")
         print(f"Strategy expectancy saved to: {STRATEGY_EXPECTANCY_PATH}")
+        print(f"Strategy funnel saved to: {REPORT_DIR / 'strategy_funnel.json'}")
         return
 
     engine = BacktestEngine(settings=settings)
