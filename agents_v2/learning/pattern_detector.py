@@ -13,7 +13,9 @@ LEARNING_PATH = BASE_PATH / "agents_v2" / "reports" / "learning.json"
 OUTPUT_PATH = BASE_PATH / "agents_v2" / "reports" / "patterns.json"
 
 # Candidate filtering constants
-MIN_TRADES = 3
+# Below ~5 closed trades an expectancy estimate is statistical noise;
+# don't let the coach downgrade a strategy's allocation on it.
+MIN_TRADES = 5
 EXCLUDED_STRATEGIES = {"dataset_write_test"}
 EXCLUDED_SYMBOLS = {"TESTUSDT"}
 

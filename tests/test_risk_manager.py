@@ -55,32 +55,47 @@ def _make_weighting_risk_manager(strategies: dict) -> RiskManager:
     return rm
 
 
-def test_strategy_weighting_missing_tp1_hit_rate_does_not_hard_block():
+def test_strategy_weighting_missing_tp1_hit_rate_does_not_probe():
     # reports/backtests/strategy_expectancy.json can explicitly mark
     # tp1_hit_rate as null ("missing_not_zero") when the backfill hasn't run
     # yet. That must not be treated as a genuine 0% hit-rate.
     rm = _make_weighting_risk_manager({
         "low_vol_reclaim": {"trades": 28, "expectancy": 0.0663, "tp1_hit_rate": None},
     })
-    allowed, reasons = rm._strategy_weighting_gate(_candidate(strategy="low_vol_reclaim"))
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="low_vol_reclaim"))
     assert allowed
-    assert not any("HARD_BLOCK: weak TP1" in r for r in reasons)
+    assert not probe
     assert any("tp1_hit_rate data missing, not treated as zero" in r for r in reasons)
 
 
-def test_strategy_weighting_genuine_low_tp1_hit_rate_still_hard_blocks():
+def test_strategy_weighting_genuine_low_tp1_hit_rate_probes_at_reduced_size():
     rm = _make_weighting_risk_manager({
         "momentum_breakout": {"trades": 10, "expectancy": 0.1, "tp1_hit_rate": 0.1},
     })
-    allowed, reasons = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
-    assert not allowed
-    assert any("HARD_BLOCK: weak TP1 hit-rate" in r for r in reasons)
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert allowed
+    assert probe
+    assert any("PROBE: weak TP1 hit-rate" in r for r in reasons)
 
 
-def test_strategy_weighting_negative_expectancy_still_hard_blocks():
+def test_strategy_weighting_negative_expectancy_probes_at_reduced_size():
+    # Hedge-fund style allocation: negative recent expectancy shrinks the
+    # allocation instead of freezing the strategy out (a frozen strategy can
+    # never generate the fresh data needed to re-qualify).
     rm = _make_weighting_risk_manager({
         "momentum_breakout": {"trades": 10, "expectancy": -0.5, "tp1_hit_rate": None},
     })
-    allowed, reasons = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
-    assert not allowed
-    assert any("HARD_BLOCK: negative expectancy" in r for r in reasons)
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert allowed
+    assert probe
+    assert any("PROBE: negative expectancy" in r for r in reasons)
+
+
+def test_strategy_weighting_insufficient_sample_does_not_probe():
+    rm = _make_weighting_risk_manager({
+        "momentum_breakout": {"trades": 3, "expectancy": -0.8, "tp1_hit_rate": None},
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert allowed
+    assert not probe
+    assert any("insufficient data" in r for r in reasons)

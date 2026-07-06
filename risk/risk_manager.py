@@ -21,6 +21,9 @@ BETA_CLUSTERS = {
 class RiskManager:
     SAFE_ALPHA_MAX_LEVERAGE = 8
     SAFE_ALPHA_MAX_RISK_PCT = 0.75
+    # Probe mode: a strategy flagged by the expectancy report or the coach
+    # keeps trading at this fraction of normal risk so it can re-qualify.
+    PROBE_RISK_MULTIPLIER = 0.5
     SAFE_ALPHA_MIN_SCORE = 60
     SAFE_MOMENTUM_MIN_SCORE = 72
     SAFE_CONTINUATION_MIN_SCORE = 78
@@ -44,15 +47,20 @@ class RiskManager:
 
         return payload if isinstance(payload, dict) else {}
 
-    def _ai_agent_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
-        """Apply Learning Agent decisions as a live risk gate."""
+    def _ai_agent_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Apply Learning Agent decisions as a live risk gate.
+
+        Returns (allowed, reasons, probe). A coach "reduce_strategy_exposure"
+        now does what it says — reduce size — instead of hard-blocking; only
+        symbol-level avoidance stays a hard block.
+        """
         reasons: list[str] = []
         payload = self._latest_agent_decisions()
         decisions = payload.get("decisions") or []
 
         if not decisions:
             reasons.append("ai-agent: no active decisions")
-            return True, reasons
+            return True, reasons, False
 
         strategy_name = str(candidate.strategy or "").strip().lower()
         symbol = str(candidate.symbol or "").strip().upper()
@@ -68,15 +76,15 @@ class RiskManager:
             reason = str(decision.get("reason") or "")
 
             if action == "reduce_strategy_exposure" and target_lower and target_lower in strategy_name:
-                reasons.append(f"ai-agent HARD_BLOCK: strategy reduced by coach ({target}) | {reason}")
-                logger.warning(
-                    "AI_AGENT_STRATEGY_BLOCK | symbol=%s | strategy=%s | target=%s | reason=%s",
+                reasons.append(f"ai-agent PROBE: strategy exposure reduced by coach ({target}) | {reason}")
+                logger.info(
+                    "AI_AGENT_STRATEGY_PROBE | symbol=%s | strategy=%s | target=%s | reason=%s",
                     symbol,
                     candidate.strategy,
                     target,
                     reason,
                 )
-                return False, reasons
+                return True, reasons, True
 
             if action == "avoid_symbol_until_improved" and target_upper and target_upper == symbol:
                 reasons.append(f"ai-agent HARD_BLOCK: symbol avoided by coach ({target}) | {reason}")
@@ -87,7 +95,7 @@ class RiskManager:
                     target,
                     reason,
                 )
-                return False, reasons
+                return False, reasons, False
 
         reasons.append(f"ai-agent: passed ({len(decisions)} decisions checked)")
         logger.info(
@@ -96,7 +104,7 @@ class RiskManager:
             candidate.strategy,
             len(decisions),
         )
-        return True, reasons
+        return True, reasons, False
 
     def _kill_switch_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
         reasons: list[str] = []
@@ -162,11 +170,19 @@ class RiskManager:
         ]
         return not hard_reasons, reasons
 
-    def _strategy_weighting_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _strategy_weighting_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Returns (allowed, reasons, probe).
+
+        probe=True means: keep trading, but at reduced size (hedge-fund style
+        dynamic allocation). A strategy with negative recent expectancy earns
+        its full allocation back through fresh results instead of being frozen
+        out entirely — a hard freeze can never re-qualify because it generates
+        no new data.
+        """
         reasons: list[str] = []
         strategy_expectancy = self._latest_strategy_expectancy()
         if not strategy_expectancy:
-            return True, reasons
+            return True, reasons, False
 
         strategy_name = (candidate.strategy or "").lower()
         note_text = self._note_text(candidate)
@@ -184,7 +200,7 @@ class RiskManager:
         stats = clean_strategies.get(strategy_name) or {}
         if not isinstance(stats, dict):
             reasons.append(f"strategy weighting WATCH: no clean expectancy data ({strategy_name})")
-            return True, reasons
+            return True, reasons, False
 
         trades = int(stats.get("trades", 0) or 0)
         expectancy = float(stats.get("expectancy", 0.0) or 0.0)
@@ -202,24 +218,28 @@ class RiskManager:
 
         if trades < 5:
             reasons.append(f"strategy weighting WATCH: insufficient data ({strategy_name}, trades={trades})")
-            return True, reasons
+            return True, reasons, False
 
         if expectancy < 0:
-            reasons.append(f"strategy weighting HARD_BLOCK: negative expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
-            return False, reasons
+            reasons.append(
+                f"strategy weighting PROBE: negative expectancy, trading at reduced size ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
+            )
+            return True, reasons, True
 
         if tp1_hit_rate_missing:
             reasons.append(f"strategy weighting WATCH: tp1_hit_rate data missing, not treated as zero ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
         elif tp1_hit_rate < 0.25:
-            reasons.append(f"strategy weighting HARD_BLOCK: weak TP1 hit-rate ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})")
-            return False, reasons
+            reasons.append(
+                f"strategy weighting PROBE: weak TP1 hit-rate, trading at reduced size ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})"
+            )
+            return True, reasons, True
 
         if expectancy >= 0.15 and tp1_hit_rate >= 0.45:
             reasons.append(f"strategy weighting BOOST: strong expectancy ({strategy_name}, exp={expectancy:.3f})")
         else:
             reasons.append(f"strategy weighting WATCH: neutral expectancy ({strategy_name}, exp={expectancy:.3f})")
 
-        return True, reasons
+        return True, reasons, False
 
     @staticmethod
     def _stats_should_pause(stats: dict, min_trades: int) -> bool:
@@ -876,6 +896,7 @@ class RiskManager:
             allowed = False
             reasons.append(f"Safe Mode blocks unsupported strategy: {candidate.strategy}")
 
+        probe_mode = False
         if self._is_backtest_candidate(candidate):
             reasons.append("backtest mode: adaptive kill-switch/strategy-weighting disabled")
         else:
@@ -884,15 +905,17 @@ class RiskManager:
             if not kill_allowed:
                 allowed = False
 
-            strategy_weight_allowed, strategy_weight_reasons = self._strategy_weighting_gate(candidate)
+            strategy_weight_allowed, strategy_weight_reasons, strategy_probe = self._strategy_weighting_gate(candidate)
             reasons.extend(strategy_weight_reasons)
             if not strategy_weight_allowed:
                 allowed = False
+            probe_mode = probe_mode or strategy_probe
 
-            ai_agent_allowed, ai_agent_reasons = self._ai_agent_gate(candidate)
+            ai_agent_allowed, ai_agent_reasons, ai_agent_probe = self._ai_agent_gate(candidate)
             reasons.extend(ai_agent_reasons)
             if not ai_agent_allowed:
                 allowed = False
+            probe_mode = probe_mode or ai_agent_probe
 
         cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)
         reasons.extend(cluster_reasons)
@@ -961,6 +984,11 @@ class RiskManager:
         elif not reasons:
             reasons.append("risk checks failed")
         account_risk_pct = min(self.settings.account_risk_per_trade_pct, self.SAFE_ALPHA_MAX_RISK_PCT)
+        if probe_mode and allowed:
+            account_risk_pct = round(account_risk_pct * self.PROBE_RISK_MULTIPLIER, 4)
+            reasons.append(
+                f"probe mode: risk reduced to {account_risk_pct:.2f}% until strategy re-qualifies on fresh data"
+            )
         return RiskVerdict(
             allowed=allowed,
             status=status,

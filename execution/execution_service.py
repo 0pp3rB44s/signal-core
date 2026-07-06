@@ -34,6 +34,10 @@ def _deep_get(payload: dict | None, *keys: str):
 
 
 class ExecutionService:
+    # Regime diversification cap: with MAX_OPEN_POSITIONS total slots, no
+    # single strategy may hold more than this many at once.
+    MAX_OPEN_POSITIONS_PER_STRATEGY = 2
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.log = logging.getLogger(self.__class__.__name__)
@@ -203,6 +207,29 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message="position already open for symbol",
+                        avg_entry=avg_entry,
+                        notional=min(plan.position_notional_usdt, hard_cap_notional),
+                        leverage=plan.leverage,
+                    )
+                )
+                continue
+
+            # Regime diversification: one strategy may never occupy the whole
+            # book again (low_vol_reclaim previously monopolised both slots and
+            # starved the other regimes out of 1000+ executable plans).
+            open_for_strategy = sum(
+                1
+                for row in existing
+                if row.get("status") == "OPEN"
+                and str(row.get("strategy") or "").lower() == str(plan.strategy or "").lower()
+                and row.get("symbol") in open_symbols
+            )
+            if open_for_strategy >= self.MAX_OPEN_POSITIONS_PER_STRATEGY:
+                reports.append(
+                    self._report(
+                        plan=plan,
+                        status="SKIPPED",
+                        message=f"max open positions for strategy reached: {open_for_strategy}/{self.MAX_OPEN_POSITIONS_PER_STRATEGY} ({plan.strategy})",
                         avg_entry=avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
