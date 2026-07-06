@@ -147,6 +147,10 @@ class RiskManager:
 
         # --- Defensive daily status checks ---
         daily_status = self._daily_defensive_status()
+        if daily_status.get("daily_status_unreadable"):
+            reasons.append(
+                "kill-switch: daily learning report unreadable; failing closed until it is restored"
+            )
         daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
         consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
 
@@ -377,6 +381,10 @@ class RiskManager:
 
     @staticmethod
     def _daily_defensive_status() -> dict:
+        """Fail-closed nuance: a MISSING report is a normal fresh state (no
+        defensive data -> no block), but an UNREADABLE/corrupt report means the
+        daily kill-switch would be silently disabled — that must block instead.
+        """
         path = BASE_PATH / "data_store" / "trades" / "daily_learning_report.json"
         if not path.exists():
             return {}
@@ -384,10 +392,15 @@ class RiskManager:
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except Exception:
-            return {}
+        except Exception as exc:
+            logger.error("DAILY_DEFENSIVE_STATUS_UNREADABLE | fail-closed | error=%s", exc)
+            return {"daily_status_unreadable": True}
 
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            logger.error("DAILY_DEFENSIVE_STATUS_MALFORMED | fail-closed | type=%s", type(payload).__name__)
+            return {"daily_status_unreadable": True}
+
+        return payload
 
     def optimization_advice(self) -> dict:
         """Read-only advisory layer. Never mutates settings or trading state."""

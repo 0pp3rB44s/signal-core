@@ -132,3 +132,18 @@ def test_session_multiplier_midnight_wrap_window():
 def test_session_multiplier_disabled_when_no_windows():
     rm = _make_session_risk_manager("")
     assert rm._session_risk_multiplier(now_hour_utc=9)[0] == 1.0
+
+
+def test_kill_switch_fails_closed_on_unreadable_daily_report():
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    rm._daily_defensive_status = lambda: {"daily_status_unreadable": True}
+    allowed, reasons = rm._kill_switch_gate(_candidate())
+    assert not allowed
+    assert any("daily learning report unreadable" in r for r in reasons)
+
+
+def test_kill_switch_missing_daily_report_is_not_a_block():
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    rm._daily_defensive_status = lambda: {}
+    allowed, _ = rm._kill_switch_gate(_candidate())
+    assert allowed
