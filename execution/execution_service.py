@@ -182,13 +182,16 @@ class ExecutionService:
 
             # HYBRID SAFE MODE: live execution gate.
             # Allowed: liquidity sweep reversals + momentum breakout/breakdown + strict trend-continuation entries + low_vol_reclaim/reclaim.
-            # Blocked: all unsupported strategies.
+            # Blocked: all unsupported strategies. When ENABLED_STRATEGIES is set
+            # in .env it is the explicit allow-list (same rule as risk_manager).
             strategy_name = str(plan.strategy or "").lower()
             is_sweep = "sweep" in strategy_name
             is_momentum = "momentum" in strategy_name or "breakout" in strategy_name or "breakdown" in strategy_name
             is_continuation = "continuation" in strategy_name
             is_low_vol_reclaim = "low_vol_reclaim" in strategy_name or "reclaim" in strategy_name
-            if not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim:
+            enabled_set = self.settings.enabled_strategy_set
+            env_allowed = (not enabled_set) or any(name in strategy_name for name in enabled_set)
+            if (not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim) or not env_allowed:
                 reports.append(
                     self._report(
                         plan=plan,
@@ -303,6 +306,14 @@ class ExecutionService:
                 )
                 continue
 
+            self.log.info(
+                "EXECUTABLE_TRADE_CAPS | %s | strategy=%s | notional=%.2f | hard_cap_notional=%.2f | leverage=%.2f",
+                plan.symbol,
+                plan.strategy,
+                min(plan.position_notional_usdt, hard_cap_notional),
+                hard_cap_notional,
+                plan.leverage,
+            )
             live_order_payload = None
             live_order_id = None
             leverage_payload = None

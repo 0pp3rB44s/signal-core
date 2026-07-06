@@ -710,6 +710,41 @@ class TradeDatasetV2Logger:
     def __init__(self, path: str | Path = "logs/trade_dataset_v2.csv") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._seen_close_keys: set[tuple] | None = None
+
+    def _close_key(self, symbol: str, direction: str, closed_at: str, pnl) -> tuple:
+        return (
+            str(symbol or "").upper(),
+            str(direction or "").upper(),
+            str(closed_at or "")[:19],
+            f"{_safe_float(pnl):.6f}",
+        )
+
+    def _is_duplicate_close(self, key: tuple) -> bool:
+        """Duplicate closes (re-syncs, replays) poison expectancy; block them.
+
+        Keys are seeded from the on-disk tail once per process so duplicates
+        are also caught across restarts.
+        """
+        if self._seen_close_keys is None:
+            self._seen_close_keys = set()
+            if self.path.exists():
+                try:
+                    with self.path.open("r", newline="", encoding="utf-8") as handle:
+                        rows = list(csv.DictReader(handle))
+                    for row in rows[-500:]:
+                        if str(row.get("event_type") or "").upper() in ("CLOSE", "POSITION_CLOSED"):
+                            self._seen_close_keys.add(self._close_key(
+                                row.get("symbol"), row.get("direction"),
+                                row.get("closed_at") or row.get("timestamp"), row.get("pnl"),
+                            ))
+                except Exception:
+                    pass
+
+        if key in self._seen_close_keys:
+            return True
+        self._seen_close_keys.add(key)
+        return False
 
     def _fieldnames(self) -> list[str]:
         return [
@@ -868,6 +903,10 @@ class TradeDatasetV2Logger:
             net_pnl = pnl - abs(fees)
 
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
+        closed_at = trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        close_key = self._close_key(trade.get("symbol"), trade.get("direction"), closed_at, pnl)
+        if self._is_duplicate_close(close_key):
+            return
         self._append_row({
             "event_type": "CLOSE",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -877,7 +916,7 @@ class TradeDatasetV2Logger:
             "status": "CLOSED",
             "result": result,
             "opened_at": trade.get("opened_at", ""),
-            "closed_at": trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            "closed_at": closed_at,
             "entry": trade.get("entry", ""),
             "expected_entry": trade.get("expected_entry", ""),
             "actual_entry": trade.get("actual_entry", ""),

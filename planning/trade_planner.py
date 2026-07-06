@@ -335,7 +335,9 @@ class TradePlanner:
         tp1_move_bps = self._target_move_bps(entry, tp1)
         stop_move_bps = self._target_move_bps(entry, stop)
         atr_pct = float(getattr(candidate.market.primary, "atr_percent", 0.0) or 0.0)
-        spread_bps = self._extract_note_float(candidate, "spread ", 0.0)
+        # Market fetcher writes "spread_bps=X"; older note formats used "spread X bps".
+        # Parsing only the old format made the planner price the edge with spread=0.
+        spread_bps = self._extract_note_float_any(candidate, ["spread_bps=", "spread "], 0.0)
         estimated_roundtrip_fee_bps = float(getattr(self.settings, "planner_estimated_roundtrip_fee_bps", 12.0))
         minimum_net_edge_buffer_bps = float(getattr(self.settings, "planner_minimum_net_edge_buffer_bps", 4.0))
         minimum_tp1_move_bps = spread_bps + estimated_roundtrip_fee_bps + minimum_net_edge_buffer_bps

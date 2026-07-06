@@ -503,6 +503,18 @@ class StartupRunner:
 
             self._maybe_refresh_learning_reports()
 
+            try:
+                day_mode = self.risk_manager.day_mode()
+                self.log.info(
+                    "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s",
+                    day_mode["mode"],
+                    day_mode["daily_realized_pnl"],
+                    day_mode["daily_loss_pct"],
+                    day_mode["consecutive_losses"],
+                )
+            except Exception as exc:
+                self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
+
             contracts = self.fetcher.fetch_contracts(force_refresh=False)
             symbols = get_watchlist(self.settings, contracts=contracts)
 

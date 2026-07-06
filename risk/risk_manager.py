@@ -242,6 +242,34 @@ class RiskManager:
 
         return True, reasons, False
 
+    def day_mode(self) -> dict:
+        """RED/GREEN day verdict for the daily defensive layer (roadmap P0.8).
+
+        RED = capital-protection mode: the hard daily stop distance is more
+        than half consumed, or 3+ consecutive losses. Logged once per scan
+        cycle by the runner so every day has an auditable mode trail.
+        """
+        daily_status = self._daily_defensive_status()
+        daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
+        consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
+        account_equity = float(getattr(self.settings, "account_equity_usdt", 0.0) or 0.0)
+        hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
+        daily_loss_pct = (
+            abs(daily_realized_pnl) / account_equity * 100.0
+            if account_equity > 0 and daily_realized_pnl < 0
+            else 0.0
+        )
+        red = (
+            (hard_daily_stop_pct > 0 and daily_loss_pct >= hard_daily_stop_pct * 0.5)
+            or consecutive_losses >= 3
+        )
+        return {
+            "mode": "RED" if red else "GREEN",
+            "daily_realized_pnl": round(daily_realized_pnl, 4),
+            "daily_loss_pct": round(daily_loss_pct, 4),
+            "consecutive_losses": consecutive_losses,
+        }
+
     def _session_risk_multiplier(self, now_hour_utc: int | None = None) -> tuple[float, str]:
         """Size down (never up) inside UTC hour windows with negative live history.
 
@@ -925,6 +953,13 @@ class RiskManager:
         if not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim:
             allowed = False
             reasons.append(f"Safe Mode blocks unsupported strategy: {candidate.strategy}")
+
+        # Same explicit allow-list rule as execution_service's hybrid gate,
+        # so risk and execution can never disagree about supported strategies.
+        enabled_set = self.settings.enabled_strategy_set
+        if enabled_set and not any(name in strategy_name for name in enabled_set):
+            allowed = False
+            reasons.append(f"strategy not in ENABLED_STRATEGIES allow-list: {candidate.strategy}")
 
         probe_mode = False
         if self._is_backtest_candidate(candidate):

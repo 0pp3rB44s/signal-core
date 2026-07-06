@@ -719,18 +719,20 @@ class LowVolReclaimStrategy:
     @staticmethod
     def _extract_spread_bps(notes: list[str], default: float = 99.0) -> float:
         note_text = " ".join(str(note).lower() for note in (notes or []))
-        marker = "spread "
 
-        if marker not in note_text:
-            return default
+        # Market fetcher writes "spread_bps=X"; older notes used "spread X bps".
+        for marker in ("spread_bps=", "spread "):
+            if marker not in note_text:
+                continue
+            try:
+                section = note_text.split(marker, 1)[1]
+                raw = section.split()[0].strip(";|,")
+                raw = raw.replace("bps", "")
+                return float(raw)
+            except Exception:
+                continue
 
-        try:
-            section = note_text.split(marker, 1)[1]
-            raw = section.split()[0].strip(";|,")
-            raw = raw.replace("bps", "")
-            return float(raw)
-        except Exception:
-            return default
+        return default
 
 
 def detect_low_vol_reclaim(market: MarketSnapshot) -> StrategyCandidate | None:
