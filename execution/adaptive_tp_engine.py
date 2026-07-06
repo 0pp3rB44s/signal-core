@@ -126,6 +126,20 @@ class AdaptiveTPEngine:
             tp2_rr = min(tp2_rr, 1.30)
             tp3_rr = min(tp3_rr, 1.50)
 
+        # The planner hard-gates rr_to_tp1 >= 1.00 and stop <= 1.2x TP1 distance.
+        # A TP1 below 1.0R therefore produces plans that are mathematically
+        # guaranteed to be rejected (observed live: 94 rr_to_tp1-blocks and 93
+        # risk-shape-blocks in one day, all from the 0.9R default minus regime
+        # multipliers). Build at >= 1.05R so valid setups pass their own gates.
+        MIN_TP1_RR_FOR_PLANNER_GATES = 1.05
+        if tp1_rr < MIN_TP1_RR_FOR_PLANNER_GATES:
+            reasoning.append(
+                f"tp1 raised {tp1_rr:.2f}R -> {MIN_TP1_RR_FOR_PLANNER_GATES:.2f}R (planner gate floor)"
+            )
+            tp1_rr = MIN_TP1_RR_FOR_PLANNER_GATES
+        if tp2_size_pct > 0:
+            tp2_rr = max(tp2_rr, tp1_rr + 0.10)
+
         tp1_rr = self._clamp_rr(tp1_rr)
         tp2_rr = self._clamp_rr(tp2_rr)
         tp3_rr = self._clamp_rr(tp3_rr)
