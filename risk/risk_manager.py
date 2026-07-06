@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import Settings
@@ -240,6 +241,35 @@ class RiskManager:
             reasons.append(f"strategy weighting WATCH: neutral expectancy ({strategy_name}, exp={expectancy:.3f})")
 
         return True, reasons, False
+
+    def _session_risk_multiplier(self, now_hour_utc: int | None = None) -> tuple[float, str]:
+        """Size down (never up) inside UTC hour windows with negative live history.
+
+        Live data (2026-06/07): 08-11 UTC (EU morning chop) and 23-00 UTC
+        (post-US dead zone) were consistently red; US session hours were green.
+        """
+        raw_windows = str(getattr(self.settings, "session_risk_reduction_windows_utc", "") or "")
+        multiplier = float(getattr(self.settings, "session_risk_multiplier", 0.5) or 0.5)
+        multiplier = min(max(multiplier, 0.1), 1.0)
+        if not raw_windows or multiplier >= 1.0:
+            return 1.0, ""
+
+        if now_hour_utc is None:
+            now_hour_utc = datetime.now(timezone.utc).hour
+
+        for window in raw_windows.split(","):
+            window = window.strip()
+            if "-" not in window:
+                continue
+            try:
+                start, end = (int(part) % 24 for part in window.split("-", 1))
+            except ValueError:
+                continue
+            in_window = start <= now_hour_utc < end if start < end else (now_hour_utc >= start or now_hour_utc < end)
+            if in_window:
+                return multiplier, f"session risk window {window} UTC active: risk x{multiplier:.2f}"
+
+        return 1.0, ""
 
     @staticmethod
     def _stats_should_pause(stats: dict, min_trades: int) -> bool:
@@ -989,6 +1019,11 @@ class RiskManager:
             reasons.append(
                 f"probe mode: risk reduced to {account_risk_pct:.2f}% until strategy re-qualifies on fresh data"
             )
+        if allowed and not self._is_backtest_candidate(candidate):
+            session_multiplier, session_reason = self._session_risk_multiplier()
+            if session_multiplier < 1.0:
+                account_risk_pct = round(account_risk_pct * session_multiplier, 4)
+                reasons.append(session_reason)
         return RiskVerdict(
             allowed=allowed,
             status=status,

@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     planner_min_live_notional_usdt: float = Field(default=10.0, alias="PLANNER_MIN_LIVE_NOTIONAL_USDT")
     symbol_cooldown_minutes: int = Field(default=30, alias="SYMBOL_COOLDOWN_MINUTES")
     break_even_fee_buffer_pct: float = Field(default=0.10, alias="BREAK_EVEN_FEE_BUFFER_PCT")
+    # UTC hour windows where live results are historically negative; risk is
+    # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
+    session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
+    session_risk_multiplier: float = Field(default=0.5, alias="SESSION_RISK_MULTIPLIER")
 
     execution_enabled: bool = Field(default=False, alias="EXECUTION_ENABLED")
     execution_mode: str = Field(default="DRY_RUN", alias="EXECUTION_MODE")

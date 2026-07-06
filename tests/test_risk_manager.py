@@ -99,3 +99,36 @@ def test_strategy_weighting_insufficient_sample_does_not_probe():
     assert allowed
     assert not probe
     assert any("insufficient data" in r for r in reasons)
+
+
+def _make_session_risk_manager(windows: str, multiplier: float = 0.5) -> RiskManager:
+    settings = MagicMock()
+    settings.session_risk_reduction_windows_utc = windows
+    settings.session_risk_multiplier = multiplier
+    return RiskManager(settings=settings)
+
+
+def test_session_multiplier_inside_simple_window():
+    rm = _make_session_risk_manager("08-12,23-01")
+    multiplier, reason = rm._session_risk_multiplier(now_hour_utc=9)
+    assert multiplier == 0.5
+    assert "08-12" in reason
+
+
+def test_session_multiplier_outside_windows_is_full_size():
+    rm = _make_session_risk_manager("08-12,23-01")
+    multiplier, reason = rm._session_risk_multiplier(now_hour_utc=17)
+    assert multiplier == 1.0
+    assert reason == ""
+
+
+def test_session_multiplier_midnight_wrap_window():
+    rm = _make_session_risk_manager("08-12,23-01")
+    assert rm._session_risk_multiplier(now_hour_utc=23)[0] == 0.5
+    assert rm._session_risk_multiplier(now_hour_utc=0)[0] == 0.5
+    assert rm._session_risk_multiplier(now_hour_utc=1)[0] == 1.0
+
+
+def test_session_multiplier_disabled_when_no_windows():
+    rm = _make_session_risk_manager("")
+    assert rm._session_risk_multiplier(now_hour_utc=9)[0] == 1.0

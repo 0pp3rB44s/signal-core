@@ -415,6 +415,8 @@ def _expectancy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total_pnl = 0.0
     winning_trades = []
     losing_trades = []
+    tp1_tracked = 0
+    tp1_hits = 0
 
     for row in rows:
         pnl = _trade_pnl(row)
@@ -428,6 +430,13 @@ def _expectancy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             losing_trades.append(pnl)
         else:
             breakeven += 1
+
+        raw_tp1 = str(row.get("tp1_hit") or "").strip().lower()
+        if raw_tp1 in {"true", "1", "yes", "hit"}:
+            tp1_tracked += 1
+            tp1_hits += 1
+        elif raw_tp1 in {"false", "0", "no"}:
+            tp1_tracked += 1
 
     total_trades = wins + losses + breakeven
     gross_profit = sum(winning_trades)
@@ -446,6 +455,9 @@ def _expectancy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_pnl": round(total_pnl, 4),
         "expectancy": round(total_pnl / total_trades, 4) if total_trades else 0.0,
         "winrate": round(wins / total_trades, 4) if total_trades else 0.0,
+        # None (not 0.0) when no row carries tp1 tracking, so downstream gates
+        # can distinguish "missing data" from a genuine 0% hit-rate.
+        "tp1_hit_rate": round(tp1_hits / tp1_tracked, 4) if tp1_tracked else None,
         "avg_win": round(avg_win, 4),
         "avg_loss": round(avg_loss, 4),
         "largest_win": round(largest_win, 4),
@@ -922,6 +934,7 @@ def _build_strategy_expectancy(trades: list[dict[str, Any]], window_days: int = 
             "losses": stats["losses"],
             "breakeven": stats["breakeven"],
             "winrate": stats["winrate"],
+            "tp1_hit_rate": stats["tp1_hit_rate"],
             "total_pnl": stats["total_pnl"],
             "expectancy": stats["expectancy"],
             "avg_win": stats["avg_win"],
