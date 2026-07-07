@@ -382,3 +382,52 @@ def test_failed_sl_move_keeps_previous_stop():
     assert saved["tp1_hit"] is True
     assert saved["stop_loss"] == 99.0  # niet stilletjes op BE gezet zonder exchange-bevestiging
     assert saved["protection_integrity"] == "FAILED"
+
+
+# --- 11. Mislukte failed-continuation tighten wordt elke cyclus opnieuw geprobeerd ---
+
+
+def test_failed_tighten_sets_pending_and_retries_next_cycle_without_detection():
+    """Live 2026-07-07 (FILUSDT): eerste tighten faalde, retry kwam pas na 28
+    minuten omdat de detectie-condities (pressure/near-TP) moesten her-alignen.
+    De pending-vlag maakt de retry-intentie persistent: cyclus 2 moet de stop
+    verplaatsen ZONDER dat de detectie opnieuw vuurt."""
+    live = _live_payload(size=1.0)
+    manager = _manager([live])
+
+    position = _position(
+        failed_continuation_tighten_pending=True,
+        failed_continuation_protection_failed=True,
+    )
+    manager.store.save([position])
+
+    # Detectie mag niet opnieuw vuren (pressure hersteld): patch should-check uit.
+    manager._should_tighten_failed_continuation = lambda **kwargs: (False, 0.0, {"reason": "pressure_not_failed"})
+
+    manager.sync([_snapshot(price=100.6)])  # in winst; target stop komt boven oude 99.0
+
+    saved = manager.store.save.call_args[0][0] if hasattr(manager.store.save, "call_args") else manager.store.load(default=[])
+    row = saved[0] if isinstance(saved, list) else position
+    assert row["failed_continuation_protection_active"] is True
+    assert row["failed_continuation_tighten_pending"] is False
+    assert row["stop_loss"] > 99.0  # aangescherpt, tighter-only
+    assert manager.client.move_futures_stop_loss.called or manager.client.verify_active_stop_loss.called
+
+
+def test_pending_retry_never_loosens_stop():
+    live = _live_payload(size=1.0)
+    manager = _manager([live])
+
+    # Stop staat al strak boven de retry-target: pending mag NIET verruimen.
+    position = _position(
+        stop=100.5,
+        failed_continuation_tighten_pending=True,
+    )
+    manager.store.save([position])
+    manager._should_tighten_failed_continuation = lambda **kwargs: (False, 0.0, {"reason": "pressure_not_failed"})
+
+    manager.sync([_snapshot(price=100.2)])
+
+    rows = manager.store.load(default=[])
+    row = rows[0] if isinstance(rows, list) and rows else position
+    assert float(row["stop_loss"]) >= 100.5

@@ -31,6 +31,10 @@ stop_pid_file() {
 
 STOP_REASON="${1:-manual_stop}"
 
+# Laat een eventuele supervisor (scripts/run_supervised.sh) netjes stoppen
+# in plaats van de bot direct te herstarten.
+touch state/supervisor.stop
+
 # The launchd notifier (scripts/install_launchd.sh) doesn't restart the
 # bot, but bootout it anyway so a deliberate stop doesn't get a "bot is
 # down" notification 5 minutes later.

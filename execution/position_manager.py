@@ -981,6 +981,38 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     else:
                         note_parts.append("TP3 hit; configured partial TP3 close applied")
 
+            # A failed tighten leaves a pending intent that retries every cycle
+            # until the exchange accepts it. Without this, retries only happened
+            # when the detection conditions happened to re-align — observed live
+            # as a 28-minute unprotected gap on FILUSDT (2026-07-07).
+            if (
+                position.get("failed_continuation_tighten_pending")
+                and not position.get("failed_continuation_protection_active")
+            ):
+                pending_stop = self._failed_continuation_target_stop(direction, entry, current_price)
+                pending_current_stop = float(position.get("stop_loss") or 0.0)
+                pending_tighter = (
+                    (direction == "LONG" and pending_stop > pending_current_stop)
+                    or (direction == "SHORT" and (pending_current_stop <= 0 or pending_stop < pending_current_stop))
+                )
+                if pending_tighter and self._move_exchange_stop_loss_with_retries(
+                    position, pending_stop, "FAILED_CONTINUATION_PROTECTION_RETRY"
+                ):
+                    position["stop_loss"] = pending_stop
+                    position["exchange_stop_loss"] = pending_stop
+                    position["break_even_active"] = True
+                    position["tp1_locked_stop_active"] = True
+                    position["failed_continuation_protection_active"] = True
+                    position["failed_continuation_tighten_pending"] = False
+                    position["last_sl_move_reason"] = "FAILED_CONTINUATION_PROTECTION"
+                    position["old_stop_loss_removed"] = True
+                    note_parts.append(f"FAILED_CONTINUATION_SL_TIGHTENED_RETRY @ {pending_stop:.8f}")
+                    self.log.warning(
+                        "FAILED_CONTINUATION_SL_TIGHTENED_RETRY | %s | new_stop=%s",
+                        symbol,
+                        pending_stop,
+                    )
+
             should_tighten_failed, failed_continuation_stop, failed_continuation_context = self._should_tighten_failed_continuation(
                 position=position,
                 snapshot=snapshot_map.get(symbol),
@@ -1024,6 +1056,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     position["break_even_active"] = True
                     position["tp1_locked_stop_active"] = True
                     position["failed_continuation_protection_active"] = True
+                    position["failed_continuation_tighten_pending"] = False
                     position["failed_continuation_context"] = failed_continuation_context
                     position["last_sl_move_reason"] = "FAILED_CONTINUATION_PROTECTION"
                     position["old_stop_loss_removed"] = True
@@ -1037,6 +1070,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     )
                 else:
                     position["failed_continuation_protection_failed"] = True
+                    position["failed_continuation_tighten_pending"] = True
                     position["failed_continuation_context"] = failed_continuation_context
                     note_parts.append("WARNING: failed continuation detected but SL tighten failed")
                     self.log.error(
