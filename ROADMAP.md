@@ -126,10 +126,15 @@ PHASE 1 — STABILITEIT & BESCHERMING
 P1.1 — PROTECTION LIFECYCLE: ongewijzigd open; bewijs verzamelen nu de bot
 op nieuwe allocatie draait.
 
-P1.1A — NEAR-TP PROTECTION ENGINE — DATA IS ER NU:
-De TP1-analyse (61% WR na TP1 vs 43,6% zonder) ondersteunt eerdere protectie.
-Volgende stap: histogram 80/85/90-trigger bouwen op verse 1,30R-trades en
-simuleren hoeveel SL's voorkomen waren. Daarna pas activeren.
+P1.1A — NEAR-TP PROTECTION ENGINE — GEACTIVEERD OP BEWIJS (2026-07-07):
+[x] Excursie-analyse op 15 verse closes: mediaan piek 50-64% van TP1,
+    MAE ≈ 0 (max 0,35R), daarna omkeer naar verlies. DOGE-bewijs: trade
+    met near-TP-protectie (+0,43) vs trade zonder (55% van TP bereikt,
+    alles teruggegeven, −0,32).
+[x] PROFIT_LOCK_BE geïmplementeerd: bij MFE ≥ 60% van TP1-afstand gaat SL
+    naar fee-adjusted break-even (PROFIT_LOCK_TP1_FRACTION, default 0.60).
+    Nooit verruimend (tighter-only), idempotent, 5 tests.
+[ ] Na 2 weken: giveback-reductie meten en 50/60/70-trigger vergelijken.
 
 P1.4 — RUNTIME RELIABILITY — DEELS:
 [x] Watchdog (notificatie-only) geladen; meldt bot-down via macOS-notificatie

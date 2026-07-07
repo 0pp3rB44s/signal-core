@@ -34,6 +34,7 @@ def _settings() -> MagicMock:
     settings.break_even_fee_buffer_pct = BE_FEE_BUFFER_PCT
     settings.symbol_cooldown_minutes = 30
     settings.account_equity_usdt = 100.0
+    settings.profit_lock_tp1_fraction = 0.60
     return settings
 
 
@@ -302,6 +303,70 @@ def test_local_stop_touch_with_exchange_still_open_does_not_close():
     assert saved["status"] == "OPEN"  # exchange truth boven local truth
     manager.client.close_futures_position_full.assert_not_called()
     assert len(_v2_close_rows()) == 0
+
+
+# --- 11. Profit-lock (P1.1A): 60% van TP1 bereikt -> SL naar fee-adjusted BE ---
+
+def test_profit_lock_arms_at_60pct_of_tp1_long():
+    manager = _manager([_live_payload(size=1.0)])
+    manager.store.save([_position()])  # entry 100, tp1 101 -> 60% = 100.60
+
+    manager.sync([_snapshot(price=100.65, high=100.65, low=100.2)])
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["profit_lock_active"] is True
+    assert not saved.get("tp1_hit")  # TP1 zelf niet geraakt
+    expected_be = 100.0 * (1.0 + BE_FEE_BUFFER_PCT / 100.0)
+    assert saved["stop_loss"] == expected_be
+    assert saved["break_even_active"] is True
+
+
+def test_profit_lock_arms_symmetrically_for_short():
+    manager = _manager([_live_payload(size=1.0, hold_side="short")])
+    manager.store.save([
+        _position(direction="SHORT", entry=100.0, stop=101.0, tps=(99.0, 98.0, 97.0))
+    ])  # tp1-afstand 1.0 -> 60% = 99.40
+
+    manager.sync([_snapshot(price=99.35, high=99.8, low=99.35)])
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["profit_lock_active"] is True
+    expected_be = 100.0 * (1.0 - BE_FEE_BUFFER_PCT / 100.0)
+    assert saved["stop_loss"] == expected_be
+
+
+def test_profit_lock_does_not_arm_below_threshold():
+    manager = _manager([_live_payload(size=1.0)])
+    manager.store.save([_position()])
+
+    manager.sync([_snapshot(price=100.40, high=100.45, low=100.1)])  # 40-45% van TP1
+
+    saved = manager.store.load(default=[])[0]
+    assert not saved.get("profit_lock_active")
+    assert saved["stop_loss"] == 99.0
+
+
+def test_profit_lock_never_loosens_a_tighter_stop():
+    manager = _manager([_live_payload(size=1.0)])
+    # stop staat al strakker dan BE (bv. door failed-continuation tighten)
+    manager.store.save([_position(stop=100.5, break_even_active=False)])
+
+    manager.sync([_snapshot(price=100.65, high=100.65, low=100.55)])
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["stop_loss"] == 100.5  # niet terug naar 100.1 gezet
+    assert not saved.get("profit_lock_active")
+
+
+def test_profit_lock_arms_only_once():
+    manager = _manager([_live_payload(size=1.0)])
+    manager.store.save([_position()])
+
+    manager.sync([_snapshot(price=100.65, high=100.65, low=100.2)])
+    calls_after_first = manager.client.move_futures_stop_loss.call_count
+    manager.sync([_snapshot(price=100.70, high=100.70, low=100.5)])
+
+    assert manager.client.move_futures_stop_loss.call_count == calls_after_first
 
 
 # --- 10b. SL-verplaatsing faalt -> lokale SL blijft op oude waarde (fail closed) ---

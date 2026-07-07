@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
     session_risk_multiplier: float = Field(default=0.5, alias="SESSION_RISK_MULTIPLIER")
+    # Profit-lock (P1.1A): once MFE reaches this fraction of the TP1 distance,
+    # move SL to fee-adjusted break-even. Evidence 2026-07-07: median trade
+    # peaked at 50-64% of TP1 with ~zero MAE, then reversed into a loss.
+    profit_lock_tp1_fraction: float = Field(default=0.60, alias="PROFIT_LOCK_TP1_FRACTION")
 
     execution_enabled: bool = Field(default=False, alias="EXECUTION_ENABLED")
     execution_mode: str = Field(default="DRY_RUN", alias="EXECUTION_MODE")

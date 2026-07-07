@@ -721,6 +721,7 @@ class TradeDatasetLogger:
             "message",
         ]
         rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -1008,6 +1009,10 @@ class TradeDatasetV2Logger:
     def _append_row(self, row: dict) -> None:
         fieldnames = self._fieldnames()
         rotate_if_needed(self.path)
+        # Appending 68-column rows into a file whose header still has an older
+        # 59-column schema silently shifts every value into the wrong column
+        # (observed live 2026-07-07: trade_grade landed in close_reason).
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -1062,6 +1067,7 @@ class ValidationEventLogger:
             "details",
         ]
         rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -1187,6 +1193,7 @@ class StrategyPerformanceLogger:
             "notes",
         ]
         rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")

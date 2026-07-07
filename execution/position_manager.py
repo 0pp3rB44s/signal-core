@@ -775,6 +775,49 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     position["near_tp_latest_target"] = next_target
                     position["near_tp_distance_pct"] = round(distance_to_next_tp_pct, 4)
                     note_parts.append(f"NEAR_TP_SEEN distance={distance_to_next_tp_pct:.4f}% target={next_target:.8f}")
+
+            # Profit-lock (P1.1A): between entry and ~82% of TP1 there used to be
+            # zero profit protection; live data (2026-07-07, 15 closes) shows the
+            # median trade peaks at 50-64% of TP1 with near-zero MAE and then
+            # reverses into a loss. Once MFE covers the configured fraction of
+            # the TP1 distance, lock the trade at fee-adjusted break-even.
+            profit_lock_fraction = float(getattr(self.settings, "profit_lock_tp1_fraction", 0.60) or 0.0)
+            if (
+                profit_lock_fraction > 0
+                and tps
+                and entry > 0
+                and position.get("status") == "OPEN"
+                and not position.get("tp1_hit")
+                and not position.get("profit_lock_active")
+                and not position.get("break_even_active")
+            ):
+                tp1_distance_pct = abs(float(tps[0]) - entry) / entry * 100.0
+                mfe_pct = float(position.get("max_favorable_excursion_pct") or 0.0)
+                if tp1_distance_pct > 0 and mfe_pct >= profit_lock_fraction * tp1_distance_pct:
+                    fee_adjusted_be = self._fee_adjusted_break_even(direction, entry)
+                    current_stop_value = float(position.get("stop_loss") or 0.0)
+                    be_is_tighter = (
+                        fee_adjusted_be > current_stop_value
+                        if direction == "LONG"
+                        else (fee_adjusted_be < current_stop_value or current_stop_value <= 0)
+                    )
+                    if be_is_tighter and self._protect_after_tp_fill(
+                        position=position,
+                        target_stop=fee_adjusted_be,
+                        reason="PROFIT_LOCK_BE",
+                        note_parts=note_parts,
+                    ):
+                        position["profit_lock_active"] = True
+                        position["profit_lock_mfe_pct"] = round(mfe_pct, 4)
+                        self.log.warning(
+                            "PROFIT_LOCK_BE_ARMED | %s | mfe_pct=%.4f | tp1_distance_pct=%.4f | fraction=%.2f | new_stop=%s",
+                            symbol,
+                            mfe_pct,
+                            tp1_distance_pct,
+                            profit_lock_fraction,
+                            fee_adjusted_be,
+                        )
+
             tp1_size_inferred = (
                 not position.get("tp1_hit")
                 and current_remaining_pct <= (100.0 - float(self.settings.tp1_close_pct) + 5.0)
