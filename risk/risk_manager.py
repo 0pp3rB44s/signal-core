@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import csv
 import json
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import Settings
+from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
 
 BASE_PATH = Path(__file__).resolve().parents[1]
@@ -158,7 +161,7 @@ class RiskManager:
         # HARD_DAILY_STOP_PCT the rest of the system (dashboard_v2) already
         # surfaces -- previously this was a flat -10.0 USD figure that didn't
         # scale with account size.
-        account_equity = float(getattr(self.settings, "account_equity_usdt", 0.0) or 0.0)
+        account_equity, _equity_source = resolve_account_equity(self.settings)
         hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
         daily_loss_pct = (
             abs(daily_realized_pnl) / account_equity * 100.0
@@ -177,6 +180,17 @@ class RiskManager:
             reasons.append(
                 f"kill-switch: consecutive loss limit reached ({consecutive_losses})"
             )
+
+        weekly_freeze_pct = float(getattr(self.settings, "weekly_freeze_loss_pct", 0.0) or 0.0)
+        if weekly_freeze_pct and account_equity > 0:
+            weekly_pnl = self._weekly_realized_pnl()
+            weekly_loss_pct = abs(weekly_pnl) / account_equity * 100.0 if weekly_pnl < 0 else 0.0
+            if weekly_loss_pct >= weekly_freeze_pct:
+                reasons.append(
+                    f"kill-switch: weekly freeze active "
+                    f"(weekly_pnl={weekly_pnl:.2f}, weekly_loss_pct={weekly_loss_pct:.2f}%, "
+                    f"weekly_freeze_loss_pct={weekly_freeze_pct:.2f}%)"
+                )
 
         if self._stats_should_pause(strategy_stats, min_trades=5):
             reasons.append(f"expectancy-watch: strategy weak but not hard-paused ({strategy_name})")
@@ -264,6 +278,47 @@ class RiskManager:
 
         return True, reasons, False
 
+    _weekly_pnl_cache: tuple[float, float] | None = None  # (monotonic_ts, value)
+    WEEKLY_PNL_CACHE_SECONDS = 60.0
+
+    def _weekly_realized_pnl(self) -> float:
+        """Rolling 7-day realized net PnL from the v2 close dataset.
+
+        Backs the WEEKLY_FREEZE_LOSS_PCT kill-switch, which was configured in
+        .env since the start but never enforced anywhere. Cached 60s; a read
+        failure returns 0.0 (the daily stop and consecutive-loss switches
+        remain the primary intraday brakes).
+        """
+        now = time.monotonic()
+        if self._weekly_pnl_cache and (now - self._weekly_pnl_cache[0]) < self.WEEKLY_PNL_CACHE_SECONDS:
+            return self._weekly_pnl_cache[1]
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        total = 0.0
+        try:
+            dataset_path = BASE_PATH / "logs" / "trade_dataset_v2.csv"
+            for path in (dataset_path.with_name(dataset_path.name + ".1"), dataset_path):
+                if not path.exists():
+                    continue
+                with path.open("r", newline="", encoding="utf-8") as handle:
+                    for row in csv.DictReader(handle):
+                        if str(row.get("event_type") or "").upper() not in ("CLOSE", "POSITION_CLOSED"):
+                            continue
+                        closed_at = str(row.get("closed_at") or row.get("timestamp") or "")
+                        if closed_at < cutoff:
+                            continue
+                        raw = row.get("net_pnl") or row.get("pnl") or 0
+                        try:
+                            total += float(raw)
+                        except (TypeError, ValueError):
+                            continue
+        except Exception as exc:
+            logger.warning("WEEKLY_PNL_READ_FAILED | error=%s", exc)
+            total = 0.0
+
+        self._weekly_pnl_cache = (now, total)
+        return total
+
     def day_mode(self) -> dict:
         """RED/GREEN day verdict for the daily defensive layer (roadmap P0.8).
 
@@ -274,22 +329,30 @@ class RiskManager:
         daily_status = self._daily_defensive_status()
         daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
         consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
-        account_equity = float(getattr(self.settings, "account_equity_usdt", 0.0) or 0.0)
+        account_equity, equity_source = resolve_account_equity(self.settings)
         hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
         daily_loss_pct = (
             abs(daily_realized_pnl) / account_equity * 100.0
             if account_equity > 0 and daily_realized_pnl < 0
             else 0.0
         )
+        weekly_pnl = self._weekly_realized_pnl()
+        weekly_freeze_pct = float(getattr(self.settings, "weekly_freeze_loss_pct", 0.0) or 0.0)
+        weekly_loss_pct = abs(weekly_pnl) / account_equity * 100.0 if account_equity > 0 and weekly_pnl < 0 else 0.0
         red = (
             (hard_daily_stop_pct > 0 and daily_loss_pct >= hard_daily_stop_pct * 0.5)
             or consecutive_losses >= 3
+            or (weekly_freeze_pct > 0 and weekly_loss_pct >= weekly_freeze_pct)
         )
         return {
             "mode": "RED" if red else "GREEN",
             "daily_realized_pnl": round(daily_realized_pnl, 4),
             "daily_loss_pct": round(daily_loss_pct, 4),
             "consecutive_losses": consecutive_losses,
+            "weekly_realized_pnl": round(weekly_pnl, 4),
+            "weekly_loss_pct": round(weekly_loss_pct, 4),
+            "account_equity": round(account_equity, 2),
+            "equity_source": equity_source,
         }
 
     def _session_risk_multiplier(self, now_hour_utc: int | None = None) -> tuple[float, str]:

@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
 from app.config import Settings
+from app.equity import resolve_account_equity
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, TradePlan
 from execution.state_store import JsonStateStore
@@ -100,7 +101,7 @@ class ExecutionService:
             open_symbols = set(local_open_symbols)
 
         max_open_positions = int(self.settings.max_open_positions)
-        hard_cap_notional = float(self.settings.account_equity_usdt) * float(self.settings.max_leverage)
+        hard_cap_notional = resolve_account_equity(self.settings)[0] * float(self.settings.max_leverage)
 
         executable: list[TradePlan] = []
         seen_symbols: set[str] = set()
@@ -336,7 +337,7 @@ class ExecutionService:
 
                 # Conservative live notional cap for small-account protection.
                 # Prevent repeated Bitget 40762 "order amount exceeds balance" failures before order-send.
-                account_equity = float(getattr(self.settings, "account_equity_usdt", 0.0) or 0.0)
+                account_equity, _equity_source = resolve_account_equity(self.settings)
                 configured_notional_cap = float(
                     getattr(
                         self.settings,

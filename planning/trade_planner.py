@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 from app.config import Settings
+from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore, TradePlan
 from execution.adaptive_tp_engine import AdaptiveTPContext, AdaptiveTPEngine
 
@@ -478,7 +479,7 @@ class TradePlanner:
             notes.append("adaptive_tp_reason=" + "; ".join(adaptive_tp.reasoning))
         notes.extend(sizing_notes)
         notes.append(f"position_notional_usdt={position_notional:.2f}")
-        notes.append(f"max_loss_budget_usdt={self.settings.account_equity_usdt * (risk.account_risk_pct / 100):.2f}")
+        notes.append(f"max_loss_budget_usdt={resolve_account_equity(self.settings)[0] * (risk.account_risk_pct / 100):.2f}")
         notes.append(f"rr_to_tp2={rr:.2f}")
         notes.append(f"rr_to_tp1={rr_to_tp1:.2f}")
         notes.append(f"tp1_move_bps={tp1_move_bps:.2f}")
@@ -945,12 +946,10 @@ class TradePlanner:
 
     def _position_notional(self, entry: float, stop: float, account_risk_pct: float, leverage: float) -> tuple[float, list[str]]:
         notes: list[str] = []
-        account_equity = max(
-            float(self.settings.account_equity_usdt),
-            float(getattr(self.settings, "account_balance_usdt", self.settings.account_equity_usdt)),
-        )
+        account_equity, equity_source = resolve_account_equity(self.settings)
         risk_budget = account_equity * (account_risk_pct / 100)
         notes.append("dynamic_compounding_enabled=true")
+        notes.append(f"equity_source={equity_source}")
         risk_per_unit = abs(entry - stop)
 
         notes.append(f"account_equity_usdt={account_equity:.2f}")

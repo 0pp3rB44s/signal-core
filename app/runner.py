@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from collections import Counter
 
 from app.config import Settings
+from app.equity import write_equity_snapshot
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
 from data.market_fetcher import MarketFetcher
@@ -503,14 +504,36 @@ class StartupRunner:
 
             self._maybe_refresh_learning_reports()
 
+            if self.client.has_credentials:
+                try:
+                    accounts_payload = self.client.get_accounts()
+                    for account in accounts_payload.get("data") or []:
+                        if str(account.get("marginCoin", "")).upper() != "USDT":
+                            continue
+                        live_equity = float(
+                            account.get("accountEquity")
+                            or account.get("usdtEquity")
+                            or account.get("equity")
+                            or 0.0
+                        )
+                        if live_equity > 0:
+                            write_equity_snapshot(live_equity)
+                        break
+                except Exception as exc:
+                    self.log.warning("EQUITY_SNAPSHOT_FAILED | error=%s", exc)
+
             try:
                 day_mode = self.risk_manager.day_mode()
                 self.log.info(
-                    "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s",
+                    "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s | weekly_pnl=%.2f | weekly_loss_pct=%.2f | equity=%.2f (%s)",
                     day_mode["mode"],
                     day_mode["daily_realized_pnl"],
                     day_mode["daily_loss_pct"],
                     day_mode["consecutive_losses"],
+                    day_mode["weekly_realized_pnl"],
+                    day_mode["weekly_loss_pct"],
+                    day_mode["account_equity"],
+                    day_mode["equity_source"],
                 )
             except Exception as exc:
                 self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
