@@ -1010,6 +1010,77 @@ class StartupRunner:
             if snapshots:
                 self._emit_summary(snapshots)
                 self.scan_logger.append_rows(snapshots)
+
+            # --- FAST LANE (eigenaar 2026-07-07): 5m-entries op de sterkste
+            # symbolen van de basisscan. Zelfde detectoren, zelfde scorer,
+            # zelfde risk gates, zelfde planner — frequentie komt uit meer
+            # detectiekansen (12 verse 5m-candles/uur i.p.v. 4 op 15m), NIET
+            # uit lossere poorten. Volledig omkapseld: kan de basisscan en
+            # executie nooit breken. Cooldowns/positie-guards dwingt de
+            # execution-laag zelf af.
+            if bool(getattr(self.settings, "fast_lane_enabled", True)):
+                try:
+                    min_hint = float(getattr(self.settings, "fast_lane_min_score_hint", 50.0))
+                    lane_limit = int(getattr(self.settings, "fast_lane_symbols", 8))
+                    ranked = sorted(
+                        (s for s in snapshots if s.score_hint >= min_hint),
+                        key=lambda s: s.score_hint,
+                        reverse=True,
+                    )[:lane_limit]
+                    lane_primary = str(getattr(self.settings, "fast_lane_granularity", "5m"))
+                    lane_confirm = str(getattr(self.settings, "fast_lane_confirmation_granularity", "15m"))
+                    fast_plans = 0
+                    for base_snapshot in ranked:
+                        try:
+                            snap_fast = self.fetcher.build_market_snapshot(
+                                base_snapshot.symbol,
+                                primary_granularity=lane_primary,
+                                confirmation_granularity=lane_confirm,
+                            )
+                            detected: list = []
+                            for detector in (
+                                self.strategy.detect,
+                                self.momentum_strategy.detect,
+                                self.momentum_breakdown_strategy.detect,
+                                detect_continuation,
+                                detect_low_vol_reclaim,
+                            ):
+                                try:
+                                    fast_candidate = detector(snap_fast)
+                                    if fast_candidate is not None:
+                                        detected.append(fast_candidate)
+                                except Exception:
+                                    continue
+                            for fast_candidate in detected:
+                                fast_candidate.notes.append("fast_lane=true")
+                                fast_candidate.notes.append(f"fast_lane_granularity={lane_primary}")
+                                fast_score = self.scorer.score(fast_candidate)
+                                candidates.append((fast_candidate, fast_score))
+                                fast_risk = self.risk_manager.evaluate(fast_candidate, fast_score)
+                                fast_plan = self.trade_planner.build(fast_candidate, fast_score, fast_risk)
+                                plans.append(fast_plan)
+                                fast_plans += 1
+                                self.log.info(
+                                    "FAST_LANE_PLAN | %s | strategy=%s | direction=%s | verdict=%s | score=%.1f",
+                                    fast_plan.symbol,
+                                    fast_plan.strategy,
+                                    fast_plan.direction,
+                                    fast_plan.verdict,
+                                    float(fast_score.total),
+                                )
+                        except Exception as lane_exc:
+                            self.log.warning("FAST_LANE_SYMBOL_FAILED | %s | error=%s", base_snapshot.symbol, lane_exc)
+                    if ranked:
+                        self.log.info(
+                            "FAST_LANE_SCAN | symbols=%s | granularity=%s/%s | plans=%s",
+                            len(ranked),
+                            lane_primary,
+                            lane_confirm,
+                            fast_plans,
+                        )
+                except Exception as lane_exc:
+                    self.log.warning("FAST_LANE_FAILED | error=%s", lane_exc)
+
             if candidates:
                 self._emit_candidate_summary(candidates)
                 self.candidate_logger.append_rows(candidates)

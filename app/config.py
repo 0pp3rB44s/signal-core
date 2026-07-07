@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
     session_risk_multiplier: float = Field(default=0.5, alias="SESSION_RISK_MULTIPLIER")
+    # Fast lane: 5m-entry detectie op de sterkste symbolen van de basisscan.
+    # Frequentie komt uit meer detectiekansen; alle kwaliteits- en fee-poorten
+    # blijven identiek gelden.
+    fast_lane_enabled: bool = Field(default=True, alias="FAST_LANE_ENABLED")
+    fast_lane_symbols: int = Field(default=8, alias="FAST_LANE_SYMBOLS")
+    fast_lane_min_score_hint: float = Field(default=50.0, alias="FAST_LANE_MIN_SCORE_HINT")
+    fast_lane_granularity: str = Field(default="5m", alias="FAST_LANE_GRANULARITY")
+    fast_lane_confirmation_granularity: str = Field(default="15m", alias="FAST_LANE_CONFIRMATION_GRANULARITY")
     # Dead-trade timeout: a flat trade past its window occupies a slot another
     # setup could use. 0 disables. Only fires on flat trades (|pnl| below the
     # max) that never hit TP1, with verified live exchange state.

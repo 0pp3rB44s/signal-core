@@ -88,5 +88,10 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   −0,15R — eerste statistische edge-kaart; bevestigt de HTF-gate en wijst naar consensus-only
   trading als volgende kandidaat (besluit na live vergelijking)
 
+- PATCH-043 | 2026-07-07 | FAST LANE: 5m-entry detectie op de top-8 symbolen van de basisscan
+  (5m primair / 15m confirmatie), zelfde detectoren+scorer+gates+planner; HTF 1D/4H-regime geldt
+  onverkort. Frequentie uit meer detectiekansen, niet uit lossere poorten; fee-vloer beslist per
+  setup. Volledig omkapseld (kan basisscan nooit breken); FAST_LANE_* env-instellingen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).

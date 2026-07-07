@@ -704,10 +704,15 @@ class MarketFetcher:
 
         return notes
 
-    def build_market_snapshot(self, symbol: str) -> MarketSnapshot:
+    def build_market_snapshot(
+        self,
+        symbol: str,
+        primary_granularity: str | None = None,
+        confirmation_granularity: str | None = None,
+    ) -> MarketSnapshot:
         contract = self.fetch_contract_meta(symbol)
-        primary_raw = self.fetch_snapshot(symbol, self.settings.bitget_default_granularity)
-        confirmation_raw = self.fetch_snapshot(symbol, self.settings.bitget_confirmation_granularity)
+        primary_raw = self.fetch_snapshot(symbol, primary_granularity or self.settings.bitget_default_granularity)
+        confirmation_raw = self.fetch_snapshot(symbol, confirmation_granularity or self.settings.bitget_confirmation_granularity)
 
         primary = self.build_timeframe_snapshot(primary_raw)
         confirmation = self.build_timeframe_snapshot(confirmation_raw)
