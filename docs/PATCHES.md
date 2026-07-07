@@ -81,5 +81,12 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
 
 ## Vanaf hier
 
+- PATCH-041 | 2026-07-07 | HTF regime-laag (1D/4H, 30-min cache): beide HTF's tegen richting →
+  hard block, één → probe; testsuite voor het eerst 100% groen (80/80); .env equity-fallback → 60
+- PATCH-042 | 2026-07-07 | Validatie-motor v1 + 90d candle-archief (12 symbolen, 105k candles,
+  13.855 gesimuleerde entries): MET HTF-consensus +0,071R/trade, TEGEN −0,33R, zonder consensus
+  −0,15R — eerste statistische edge-kaart; bevestigt de HTF-gate en wijst naar consensus-only
+  trading als volgende kandidaat (besluit na live vergelijking)
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
