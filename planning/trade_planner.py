@@ -776,12 +776,17 @@ class TradePlanner:
                 tp1_move_bps,
                 position_notional,
             )
+        # Single-TP mode must use the REACHABLE tp1, not tp2. Live excursion
+        # data (2026-07-07): median favorable move = 0.5-1.0R while tp2 sits at
+        # 1.5-1.7R -> the target almost never filled and every reversal closed
+        # red. tp1 (>=1.05R) is the fee-viable target the TP engine designs and
+        # the profit-lock (60% of tp1) is calibrated against.
         if is_low_vol_reclaim:
             single_tp = tp1
             notes.append("single_tp_source=tp1_reclaim_profile")
         else:
-            single_tp = tp2
-            notes.append("single_tp_source=tp2_standard_profile")
+            single_tp = tp1
+            notes.append("single_tp_source=tp1_reachable_profile")
 
         notes.append("execution_profile=single_tp_full_close")
         notes.append(f"single_tp_target={single_tp:.8f}")
