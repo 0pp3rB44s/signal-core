@@ -305,7 +305,15 @@ class TradePlanner:
         )
 
     def build(self, candidate: StrategyCandidate, score: StrategyScore, risk: RiskVerdict) -> TradePlan:
-        entry = candidate.detection.entry_hint
+        # Geometry must be priced from where the market order will actually
+        # fill (current price), not from the detection's retest level. Live
+        # audit 2026-07-07: every fill sat a median 30bps past the planned
+        # entry, so the real stop was ~30bps (noise floor) and the real TP
+        # 2.6-3.8R away instead of the designed 1.05-1.30R — gates were
+        # approving trades that were never actually available.
+        detection_entry = float(candidate.detection.entry_hint or 0.0)
+        market_price = float(getattr(candidate.market.primary, "latest_close", 0.0) or 0.0)
+        entry = market_price if market_price > 0 else detection_entry
         stop = self._build_stop(candidate)
         entries = self._build_entries(candidate, entry)
         risk_per_unit = abs(entry - stop)
@@ -482,6 +490,9 @@ class TradePlanner:
         notes.append(f"max_loss_budget_usdt={resolve_account_equity(self.settings)[0] * (risk.account_risk_pct / 100):.2f}")
         notes.append(f"rr_to_tp2={rr:.2f}")
         notes.append(f"rr_to_tp1={rr_to_tp1:.2f}")
+        notes.append("geometry_anchor=market_price")
+        if detection_entry > 0 and entry > 0:
+            notes.append(f"detection_entry_drift_bps={abs(entry - detection_entry) / entry * 10000:.1f}")
         notes.append(f"tp1_move_bps={tp1_move_bps:.2f}")
         notes.append(f"stop_move_bps={stop_move_bps:.2f}")
         if is_low_vol_reclaim:
@@ -881,7 +892,11 @@ class TradePlanner:
 
     def _build_stop(self, candidate: StrategyCandidate) -> float:
         raw_stop = candidate.detection.invalidation
-        entry = float(candidate.detection.entry_hint or 0.0)
+        # Same market-price anchor as build(): the stop-cap must be measured
+        # from where the order fills, not from the detection retest level.
+        entry = float(getattr(candidate.market.primary, "latest_close", 0.0) or 0.0)
+        if entry <= 0:
+            entry = float(candidate.detection.entry_hint or 0.0)
         buffer = raw_stop * (self.settings.planner_stop_buffer_bps / 10_000)
 
         strategy_name = str(candidate.strategy or "").lower()
