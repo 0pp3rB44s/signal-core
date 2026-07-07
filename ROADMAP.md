@@ -165,11 +165,43 @@ PHASE 4 — LEARNING ENGINE
 [ ] L5 TP/SL-kalibratie per regime — NU met schone geometrie meetbaar
 
 ═══════════════════════════════════
-PHASE 5 — ENTRY ALPHA — open
+PHASE 5 — ENTRY ALPHA — GESTART (2026-07-07 avond)
 ═══════════════════════════════════
 
-Late Entry Killer deels actief (exhaustion-block bewezen live).
-Entry-verbetering v.a. nu meetbaar via detection_entry_drift_bps in plans.
+FUNNEL-BALANS AUDIT (eigenaar-vraag "zitten we dichtgetimmerd?"):
+Nee — van 43 geblokkeerde plannen stierf er 1 aan een enkele poort; de rest
+faalde op 2-3 onafhankelijke kwaliteitschecks tegelijk (gem. 2,4/plan).
+Poorten versoepelen laat alleen slechtere trades door. De bottleneck was
+setup-TIMING: alle momentum-kandidaten waren al "prearmed" maar arriveerden
+ná de expansie → 38/40 exhaustion-blocks.
+
+FORWARD-RETURN STUDIE (12 symbolen × 1000 candles, 331 gesimuleerde
+entries, echte BreakoutEngine):
+  COIL (pre-breakout) na expansie:  +0.198R/trade, 61.5% TP1 (n=26) ← beste
+  COIL zonder expansie:             -0.065R, 40.4% TP1 (n=151)
+  CHASE (post-breakout) zonder exp: -0.121R, 30.8% TP1 (n=107)
+  CHASE na expansie:                -0.065R, 25.5% TP1, 48.9% timeout (n=47)
+Conclusie: pre-breakout coils > post-breakout chases over de hele linie;
+de exhaustion-gate had gelijk voor chases maar blokkeerde óók de beste
+bucket (coil-na-expansie = "push meeliften").
+
+GEÏMPLEMENTEERD:
+[x] Coil-detectie: prearmed kandidaat die opgerold binnen 0,20% van het
+    triggerniveau zit met pressure >= 55 krijgt entry_model=pre_breakout_coil
+    (+coil_distance_pct), long/short symmetrisch, per-detect reset
+[x] Exhaustion-gate: coil-na-expansie → PROBE-size i.p.v. hard block
+    (n=26 is klein; leerloop moet promotie verdienen); chases blijven hard
+[x] master_entry_quality gedemoteerd naar observability
+    (raakte 43/43, was 1x sole blocker; note master_entry_quality_would_
+    have_blocked=true bewaart het bewijs voor eventuele her-promotie)
+[x] 3 gate-tests (coil-probe, chase-block, coil-vol-size)
+
+OPEN:
+[ ] Coil-performance volgen in funnel/expectancy (aparte bucket zichtbaar
+    via entry_model note) — promotie naar volle size op >= 15 verse trades
+[ ] Score-drempel overlap (kandidaat GO>=70 vs risk-minima 74-82):
+    gedocumenteerd, bewust NIET samengevoegd (gedragswijziging zonder nood)
+[ ] Late Entry Killer versie 2: origin_distance/freshness op coil-niveau
 
 ═══════════════════════════════════
 OPEN PUNTEN — 2026-07-07

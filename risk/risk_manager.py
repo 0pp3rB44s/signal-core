@@ -1002,9 +1002,22 @@ class RiskManager:
         )
 
         if "move already expanded" in note_text or expansion_exhaustion_score >= 85.0:
-            reasons.append(
-                f"momentum-quality blocked: exhaustion/expanded move warning (exhaustion={expansion_exhaustion_score:.2f})"
-            )
+            is_coil = "entry_model=pre_breakout_coil" in note_text
+            if is_coil:
+                # Forward-return studie 2026-07-07 (12 symbolen, 331 entries):
+                # een verse coil NA een geexpandeerde move was de enige
+                # netto-positieve bucket (+0.198R, 61.5% TP1, n=26) — dat is
+                # het "push meeliften"-setup. Chases na expansie blijven hard
+                # geblokkeerd (25.5% TP1, 48.9% timeout). n is klein, dus
+                # coils draaien op probe-size tot de leerloop ze bewijst.
+                momentum_probe = True
+                reasons.append(
+                    f"momentum-quality PROBE: coil after expansion, reduced size (exhaustion={expansion_exhaustion_score:.2f})"
+                )
+            else:
+                reasons.append(
+                    f"momentum-quality blocked: exhaustion/expanded move warning (exhaustion={expansion_exhaustion_score:.2f})"
+                )
 
         hard_blocks = [r for r in reasons if "momentum-quality blocked" in r]
         return not hard_blocks, reasons, momentum_probe and not hard_blocks

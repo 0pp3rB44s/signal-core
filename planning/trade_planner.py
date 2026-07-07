@@ -583,11 +583,16 @@ class TradePlanner:
             notes.append("blocked_reason=day_defensive_low_vol_reclaim_quality_gate")
 
         if verdict == "EXECUTABLE" and not master_gate_passed:
-            verdict = "BLOCKED"
-            notes.append("blocked_reason=master_entry_quality_gate")
-            notes.append("master_entry_quality_gate_blocked=true")
-            logger.warning(
-                "MASTER_ENTRY_QUALITY_BLOCKED | %s | strategy=%s | direction=%s | reasons=%s",
+            # Gedemoteerd naar observability (funnel-audit 2026-07-07): de
+            # master gate raakte 43/43 geblokkeerde plannen maar was slechts
+            # 1x de enige blokker — alles wat hij vangt, vangen de specifieke
+            # kwaliteitspoorten (score, exhaustion, volume, edge) ook. Als de
+            # dagelijkse funnel ooit laat zien dat hij als enige zou moeten
+            # blokkeren, is die ene note hieronder het bewijs om hem terug te
+            # promoveren.
+            notes.append("master_entry_quality_would_have_blocked=true")
+            logger.info(
+                "MASTER_ENTRY_QUALITY_OBSERVE | %s | strategy=%s | direction=%s | reasons=%s",
                 candidate.symbol,
                 candidate.strategy,
                 candidate.direction,

@@ -61,6 +61,11 @@ class MomentumBreakoutStrategy:
         if len(candles) < self.lookback + 5:
             return None
 
+        # Reset per detect-call: coil-status mag nooit van een vorig symbool
+        # blijven hangen (instance wordt hergebruikt over de hele watchlist).
+        self._coil_candidate = False
+        self._coil_distance_pct = 0.0
+
         entry_candle = candles[-1]
 
         primary_trend = (market.primary.trend or "").lower()
@@ -310,6 +315,25 @@ class MomentumBreakoutStrategy:
                         prearmed_breakout = True
                         prearmed_context_data = prearmed_context
 
+                        # Pre-breakout coil: prijs zit opgerold vlak ONDER het
+                        # triggerniveau (nog geen uitbraak) met hoge druk.
+                        # Forward-return studie 2026-07-07 (12 symbolen, 331
+                        # entries): coils halen TP1 vaker dan post-breakout
+                        # chases; de coil-na-expansie bucket was zelfs de enige
+                        # netto-positieve (+0.198R, 61.5% TP1, n=26). De
+                        # exhaustion-gate behandelt coil-kandidaten daarom als
+                        # probe i.p.v. hard block.
+                        coil_distance_pct = (
+                            (candidate_prev_high - entry_candle.close) / candidate_prev_high * 100
+                            if candidate_prev_high
+                            else 999.0
+                        )
+                        if 0.0 <= coil_distance_pct <= 0.20 and float(prearmed_context.get("pressure_score", 0.0)) >= 55.0:
+                            self._coil_candidate = True
+                            self._coil_distance_pct = round(coil_distance_pct, 4)
+                        else:
+                            self._coil_candidate = False
+
                         logger.info(
                             "PREARMED_BREAKOUT_CANDIDATE | %s | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f",
                             market.symbol,
@@ -512,7 +536,15 @@ class MomentumBreakoutStrategy:
                 f"prearmed_context_override={bool(locals().get('prearmed_context_override', False))}",
                 f"structure_score={prearmed_context_data.get('structure_score', 0)}",
                 f"high_quality_breakout_context={bool(prearmed_context_data.get('high_quality_breakout_context', False))}",
-            ],
+            ]
+            + (
+                [
+                    "entry_model=pre_breakout_coil",
+                    f"coil_distance_pct={getattr(self, '_coil_distance_pct', 0.0):.4f}",
+                ]
+                if getattr(self, "_coil_candidate", False)
+                else []
+            ),
         )
 
     def _prearmed_context(self, market: "MarketSnapshot", direction: str) -> dict[str, float | bool | str]:
@@ -849,6 +881,10 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         if len(candles) < self.lookback + 5:
             return None
 
+        # Zelfde reset als de LONG-kant: geen coil-status van vorig symbool.
+        self._coil_candidate = False
+        self._coil_distance_pct = 0.0
+
         entry_candle = candles[-1]
 
         primary_trend = (market.primary.trend or "").lower()
@@ -1077,6 +1113,19 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
                         prearmed_breakdown = True
                         prearmed_context_data = prearmed_context
 
+                        # Spiegel van de LONG-coil: opgerold vlak BOVEN het
+                        # trigger-level (prev_low), nog geen uitbraak omlaag.
+                        coil_distance_pct = (
+                            (entry_candle.close - candidate_prev_low) / candidate_prev_low * 100
+                            if candidate_prev_low
+                            else 999.0
+                        )
+                        if 0.0 <= coil_distance_pct <= 0.20 and float(prearmed_context.get("pressure_score", 0.0)) >= 55.0:
+                            self._coil_candidate = True
+                            self._coil_distance_pct = round(coil_distance_pct, 4)
+                        else:
+                            self._coil_candidate = False
+
                         logger.info(
                             "PREARMED_BREAKDOWN_CANDIDATE | %s | pressure_score=%.2f | expansion_prob=%.1f | volume_ratio=%.2f | participation_score=%.2f",
                             market.symbol,
@@ -1271,7 +1320,15 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
                 f"prearmed_context_override={bool(locals().get('prearmed_context_override', False))}",
                 f"structure_score={prearmed_context_data.get('structure_score', 0)}",
                 f"high_quality_breakout_context={bool(prearmed_context_data.get('high_quality_breakout_context', False))}",
-            ],
+            ]
+            + (
+                [
+                    "entry_model=pre_breakout_coil",
+                    f"coil_distance_pct={getattr(self, '_coil_distance_pct', 0.0):.4f}",
+                ]
+                if getattr(self, "_coil_candidate", False)
+                else []
+            ),
         )
     def _log_breakdown_rejection(self, market: MarketSnapshot, reason: str, details: list[str]) -> None:
         raw_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT")
