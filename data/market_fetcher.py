@@ -14,6 +14,7 @@ from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ContractSpec, MarketSnapshot, SymbolSnapshot, TimeframeSnapshot
 from data.cache import TTLCache
 from data.normalizer import normalize_candles, normalize_contracts
+from market_data.htf_regime import classify_htf_regime
 from market_data.liquidity_heatmap import build_liquidity_heatmap
 from market_data.orderbook_analyzer import OrderbookAnalyzer
 from market_data.entry_quality import EntryQualityAnalyzer
@@ -199,7 +200,8 @@ class MarketFetcher:
         return round(max(0.0, min(100.0, score)), 1)
 
 
-    def _ema(self, values: list[float], period: int) -> float:
+    @staticmethod
+    def _ema(values: list[float], period: int) -> float:
         if not values:
             return 0.0
         if period <= 1:
@@ -225,6 +227,28 @@ class MarketFetcher:
         self.entry_quality_analyzer = EntryQualityAnalyzer()
         self.volatility_engine = VolatilityEngine()
         self.breakout_engine = BreakoutEngine()
+
+    _htf_regime_cache: dict[str, tuple[float, dict]] = {}
+    HTF_REGIME_TTL_SECONDS = 1800.0  # 4H/1D veranderen traag; 30 min cache
+
+    def _htf_regime_for(self, symbol: str) -> dict:
+        """1D+4H regime met lange cache; fail-open naar neutral bij API-falen."""
+        cached = self._htf_regime_cache.get(symbol)
+        now = time.monotonic()
+        if cached and (now - cached[0]) < self.HTF_REGIME_TTL_SECONDS:
+            return cached[1]
+
+        try:
+            product = self.settings.bitget_product_type
+            candles_4h = (self.client.get_candles(symbol=symbol, product_type=product, granularity="4H", limit=60).get("data") or [])
+            candles_1d = (self.client.get_candles(symbol=symbol, product_type=product, granularity="1D", limit=40).get("data") or [])
+            regime = classify_htf_regime(candles_4h, candles_1d)
+        except Exception as exc:
+            self.log.warning("HTF_REGIME_FETCH_FAILED | %s | error=%s", symbol, exc)
+            regime = {"regime_1d": "neutral", "regime_4h": "neutral", "htf_regime": "neutral"}
+
+        self._htf_regime_cache[symbol] = (now, regime)
+        return regime
 
     _liquidity_heatmap_state: dict[str, dict] = {}
 
@@ -770,6 +794,16 @@ class MarketFetcher:
                 self._persist_liquidity_heatmap(symbol, heatmap)
             except Exception as heatmap_exc:
                 self.log.debug("LIQUIDITY_HEATMAP_SKIPPED | %s | error=%s", symbol, heatmap_exc)
+
+            # HTF-regime (1D+4H, 30-min cache): risk gate leest deze notes
+            # om counter-trend entries te blokkeren/degraderen.
+            try:
+                htf = self._htf_regime_for(symbol)
+                notes.append(f"htf_regime_1d={htf['regime_1d']}")
+                notes.append(f"htf_regime_4h={htf['regime_4h']}")
+                notes.append(f"htf_regime={htf['htf_regime']}")
+            except Exception as htf_exc:
+                self.log.debug("HTF_REGIME_SKIPPED | %s | error=%s", symbol, htf_exc)
             if not orderbook_liquidity_ok:
                 notes.append("risk_off_reason=orderbook_spread_or_depth")
                 self.log.warning(

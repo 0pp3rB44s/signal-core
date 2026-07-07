@@ -9,9 +9,13 @@ def test_ema_returns_float() -> None:
     assert ema > 0
 
 
-def test_trend_label_bullish() -> None:
-    label = MarketFetcher._trend_label(price=110, ema20=105, ema50=100)
-    assert label == "bullish"
+def test_alignment_labels() -> None:
+    # _trend_label bestaat niet meer; alignment is de huidige trend-API.
+    assert MarketFetcher._alignment("bullish", "bullish") == "aligned_bullish"
+    assert MarketFetcher._alignment("bearish", "bearish") == "aligned_bearish"
+    assert MarketFetcher._alignment("bullish", "bearish") == "conflicted"
+    assert MarketFetcher._alignment("neutral", "bullish") == "mixed"
+    assert MarketFetcher._alignment(None, None) == "mixed"
 
 
 def test_score_hint_stays_bounded() -> None:

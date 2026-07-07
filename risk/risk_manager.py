@@ -1155,6 +1155,29 @@ class RiskManager:
             allowed = False
             reasons.append("HTF alignment opposes short setup")
 
+        # 1D/4H regime-laag (timeframe-uitbreiding 2026-07-07): beide HTF's
+        # tegen de richting → hard block ("nooit tegen de dagtrend in");
+        # één van beide tegen → probe-size. Geen data → neutraal, geen block.
+        opposition_count = 0
+        opposition_hits: list[str] = []
+        opposing_regime = "bearish" if candidate.direction == "LONG" else "bullish"
+        if f"htf_regime_1d={opposing_regime}" in note_text:
+            opposition_count += 1
+            opposition_hits.append(f"1D={opposing_regime}")
+        if f"htf_regime_4h={opposing_regime}" in note_text:
+            opposition_count += 1
+            opposition_hits.append(f"4H={opposing_regime}")
+        if opposition_count >= 2:
+            allowed = False
+            reasons.append(
+                f"HTF regime blocks {candidate.direction}: {', '.join(opposition_hits)} (1D+4H beide tegen)"
+            )
+        elif opposition_count == 1:
+            probe_mode = True
+            reasons.append(
+                f"HTF regime PROBE: {', '.join(opposition_hits)} tegen {candidate.direction}, halve size"
+            )
+
         if is_sweep:
             bars_since_sweep = getattr(candidate.detection, "bars_since_sweep", 999)
             if bars_since_sweep > self.SAFE_ALPHA_MAX_BARS_SINCE_SWEEP:
