@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
@@ -677,38 +678,52 @@ class ExecutionService:
                     order_detail_payload = None
                     detailed_fill_metrics: dict[str, object] = {}
 
+                    # NB: extract_fill_metrics levert de canonieke sleutels
+                    # avg_price/fee/pnl/state (zoals de reconciler ze ook leest).
+                    # Deze laag las jarenlang niet-bestaande aliassen, waardoor
+                    # elke fill terugviel op het plan-gemiddelde en slippage
+                    # altijd 0.0000 was (N8, roadmap 2026-07-07).
                     fill_metrics = self.client.extract_fill_metrics(live_order_payload)
 
-                    extracted_actual_entry = _safe_float(fill_metrics.get("avg_fill_price"), 0.0)
+                    extracted_actual_entry = _safe_float(fill_metrics.get("avg_price"), 0.0)
                     if extracted_actual_entry > 0:
                         actual_entry = round(extracted_actual_entry, 8)
                     else:
                         actual_entry = avg_entry
 
-                    fees_paid = abs(_safe_float(fill_metrics.get("fee_paid"), 0.0))
-                    realized_pnl = _safe_float(fill_metrics.get("realized_pnl"), 0.0)
+                    fees_paid = abs(_safe_float(fill_metrics.get("fee"), 0.0))
+                    realized_pnl = _safe_float(fill_metrics.get("pnl"), 0.0)
 
                     if exchange_order_id:
                         try:
-                            order_detail_payload = self.client.get_order_detail(
-                                symbol=plan.symbol,
-                                order_id=exchange_order_id,
-                            )
-                            detailed_fill_metrics = self.client.extract_fill_metrics(order_detail_payload)
+                            detailed_fill_metrics = {}
+                            # Marktorders registreren hun fill soms pas een
+                            # fractie later; probeer kort opnieuw tot er een
+                            # echte fill-prijs staat.
+                            for detail_attempt in range(3):
+                                order_detail_payload = self.client.get_order_detail(
+                                    symbol=plan.symbol,
+                                    order_id=exchange_order_id,
+                                )
+                                detailed_fill_metrics = self.client.extract_fill_metrics(order_detail_payload)
+                                if _safe_float(detailed_fill_metrics.get("avg_price"), 0.0) > 0:
+                                    break
+                                time.sleep(0.5)
 
                             detailed_actual_entry = _safe_float(
-                                detailed_fill_metrics.get("avg_fill_price"),
+                                detailed_fill_metrics.get("avg_price"),
                                 0.0,
                             )
                             if detailed_actual_entry > 0:
                                 actual_entry = round(detailed_actual_entry, 8)
+                                extracted_actual_entry = detailed_actual_entry
 
-                            detailed_fees = abs(_safe_float(detailed_fill_metrics.get("fee_paid"), 0.0))
+                            detailed_fees = abs(_safe_float(detailed_fill_metrics.get("fee"), 0.0))
                             if detailed_fees > 0:
                                 fees_paid = detailed_fees
 
                             detailed_realized_pnl = _safe_float(
-                                detailed_fill_metrics.get("realized_pnl"),
+                                detailed_fill_metrics.get("pnl"),
                                 0.0,
                             )
                             if detailed_realized_pnl != 0:
@@ -721,7 +736,7 @@ class ExecutionService:
                                 actual_entry,
                                 fees_paid,
                                 realized_pnl,
-                                detailed_fill_metrics.get("raw_order_state"),
+                                detailed_fill_metrics.get("state"),
                             )
                         except Exception as detail_exc:
                             self.log.warning(
