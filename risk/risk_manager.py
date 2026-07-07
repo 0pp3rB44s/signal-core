@@ -863,15 +863,22 @@ class RiskManager:
 
         return not reasons, reasons
 
-    def _momentum_quality_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _momentum_quality_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Returns (allowed, reasons, probe).
+
+        Volume slightly below the requirement (>= 75% of it) trades at probe
+        size instead of being hard-blocked: 74 push-candidates in one day died
+        solely on this gate while the market kept running. Extension/lateness
+        blocks stay hard — chasing a vertical move is not a size question.
+        """
         reasons: list[str] = []
         strategy_name = (candidate.strategy or "").lower()
         if "momentum" not in strategy_name and "breakout" not in strategy_name and "breakdown" not in strategy_name:
-            return True, reasons
+            return True, reasons, False
 
         if strategy_name == "adaptive_momentum_continuation":
             reasons.append("momentum-quality watch: adaptive fallback skips legacy breakout/breakdown age gate")
-            return True, reasons
+            return True, reasons, False
 
         note_text = self._note_text(candidate)
         symbol = (candidate.symbol or "").upper()
@@ -895,10 +902,17 @@ class RiskManager:
         max_clean_breakout_pct = 0.70 if mtf_quality else (0.55 if symbol in major_symbols else 0.45)
         hard_extension_pct = 1.05 if mtf_quality else (0.85 if symbol in major_symbols else 0.70)
 
+        momentum_probe = False
         if volume_ratio and volume_ratio < min_volume_ratio:
-            reasons.append(
-                f"momentum-quality blocked: volume ratio too weak ({volume_ratio:.2f} < {min_volume_ratio:.2f})"
-            )
+            if volume_ratio >= min_volume_ratio * 0.75:
+                momentum_probe = True
+                reasons.append(
+                    f"momentum-quality PROBE: volume below requirement, reduced size ({volume_ratio:.2f} < {min_volume_ratio:.2f})"
+                )
+            else:
+                reasons.append(
+                    f"momentum-quality blocked: volume ratio too weak ({volume_ratio:.2f} < {min_volume_ratio:.2f})"
+                )
 
         if move_pct >= hard_extension_pct:
             reasons.append(
@@ -929,7 +943,8 @@ class RiskManager:
                 f"momentum-quality blocked: exhaustion/expanded move warning (exhaustion={expansion_exhaustion_score:.2f})"
             )
 
-        return not reasons, reasons
+        hard_blocks = [r for r in reasons if "momentum-quality blocked" in r]
+        return not hard_blocks, reasons, momentum_probe and not hard_blocks
 
     def evaluate(self, candidate: StrategyCandidate, score: StrategyScore) -> RiskVerdict:
         reasons: list[str] = []
@@ -1028,10 +1043,11 @@ class RiskManager:
         if not execution_cost_allowed:
             allowed = False
 
-        momentum_quality_allowed, momentum_quality_reasons = self._momentum_quality_gate(candidate)
+        momentum_quality_allowed, momentum_quality_reasons, momentum_quality_probe = self._momentum_quality_gate(candidate)
         reasons.extend(momentum_quality_reasons)
         if not momentum_quality_allowed:
             allowed = False
+        probe_mode = probe_mode or momentum_quality_probe
 
         if is_adaptive_fallback:
             required_score = 74
