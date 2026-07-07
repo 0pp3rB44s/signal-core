@@ -1088,6 +1088,71 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         failed_continuation_stop,
                         failed_continuation_context,
                     )
+            # Dead-trade timeout (P0.5): a flat trade past its window occupies
+            # one of the 4 slots a fresh setup could use. Fail-safe conditions:
+            # only with verified live exchange state, never on trades that hit
+            # TP1 or are meaningfully in profit/loss (protections manage those).
+            if position.get("status") == "OPEN":
+                dead_timeout_minutes = float(
+                    getattr(self.settings, "dead_trade_timeout_reclaim_minutes", 90.0)
+                    if "reclaim" in str(position.get("strategy") or "").lower()
+                    else getattr(self.settings, "dead_trade_timeout_default_minutes", 240.0)
+                    or 0.0
+                )
+                dead_max_abs_pnl = float(getattr(self.settings, "dead_trade_max_abs_pnl_pct", 0.20) or 0.0)
+                position_age_minutes = self._position_age_minutes(position)
+                if (
+                    dead_timeout_minutes > 0
+                    and position_age_minutes >= dead_timeout_minutes
+                    and not position.get("tp1_hit")
+                    and abs(pnl_pct) < dead_max_abs_pnl
+                    and bitget_sync_ok
+                    and symbol in bitget_open_symbols
+                    and live_size > 0
+                ):
+                    try:
+                        dead_close_result = self.client.close_futures_position_full(
+                            symbol=symbol,
+                            direction=direction,
+                            reason="dead_trade_timeout",
+                            cleanup_tpsl=True,
+                        )
+                    except Exception as exc:
+                        dead_close_result = {"status": "CLOSE_FAILED", "error": str(exc)}
+                    if str(dead_close_result.get("status") or "").upper() not in {"CLOSE_FAILED"}:
+                        position["dead_trade_close_result"] = dead_close_result
+                        position["remaining_size_pct"] = 0.0
+                        position["status"] = "CLOSED"
+                        position["closed_reason"] = "dead_trade_timeout"
+                        position["closed_at"] = datetime.now(timezone.utc).isoformat()
+                        position["stale_tpsl_cleanup_done"] = True
+                        note_parts.append(
+                            f"DEAD_TRADE_TIMEOUT close after {position_age_minutes:.0f}min flat"
+                        )
+                        self.log.warning(
+                            "DEAD_TRADE_TIMEOUT_CLOSED | %s | strategy=%s | age_min=%.0f | pnl_pct=%.4f | timeout_min=%.0f",
+                            symbol,
+                            position.get("strategy"),
+                            position_age_minutes,
+                            pnl_pct,
+                            dead_timeout_minutes,
+                        )
+                        self._sync_journal_close(symbol, "dead_trade_timeout", pnl_pct)
+                        self._append_closed_trade_dataset_row(
+                            position=position,
+                            close_reason="dead_trade_timeout",
+                            exit_price=current_price,
+                            pnl_pct=pnl_pct,
+                            extra={"close_source": "dead_trade_timeout", "age_minutes": round(position_age_minutes, 1)},
+                        )
+                        self._register_symbol_cooldown(symbol, "dead_trade_timeout", pnl_pct)
+                    else:
+                        self.log.error(
+                            "DEAD_TRADE_TIMEOUT_CLOSE_FAILED | %s | result=%s",
+                            symbol,
+                            dead_close_result,
+                        )
+
             current_stop = float(position["stop_loss"])
             stop_hit = self._stop_hit_range(direction, current_high, current_low, current_stop)
             exchange_live_position_open_after_stop = (

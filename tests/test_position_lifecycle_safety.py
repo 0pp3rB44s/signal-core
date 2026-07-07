@@ -35,6 +35,9 @@ def _settings() -> MagicMock:
     settings.symbol_cooldown_minutes = 30
     settings.account_equity_usdt = 100.0
     settings.profit_lock_tp1_fraction = 0.60
+    settings.dead_trade_timeout_reclaim_minutes = 90.0
+    settings.dead_trade_timeout_default_minutes = 240.0
+    settings.dead_trade_max_abs_pnl_pct = 0.20
     return settings
 
 
@@ -431,3 +434,67 @@ def test_pending_retry_never_loosens_stop():
     rows = manager.store.load(default=[])
     row = rows[0] if isinstance(rows, list) and rows else position
     assert float(row["stop_loss"]) >= 100.5
+
+
+# --- 12. Dead-trade timeout ---
+
+
+def _iso_minutes_ago(minutes: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+def test_dead_flat_reclaim_trade_closes_after_timeout():
+    live = _live_payload(size=1.0)
+    manager = _manager([live])
+    position = _position(
+        strategy="low_vol_reclaim",
+        opened_at=_iso_minutes_ago(120),  # > 90 min reclaim timeout
+    )
+    manager.store.save([position])
+
+    manager.sync([_snapshot(price=100.05)])  # vlak: +0.05%
+
+    rows = manager.store.load(default=[])
+    row = rows[0]
+    assert row["status"] == "CLOSED"
+    assert row["closed_reason"] == "dead_trade_timeout"
+    manager.client.close_futures_position_full.assert_called()
+
+
+def test_young_flat_trade_is_left_alone():
+    live = _live_payload(size=1.0)
+    manager = _manager([live])
+    position = _position(strategy="low_vol_reclaim", opened_at=_iso_minutes_ago(30))
+    manager.store.save([position])
+
+    manager.sync([_snapshot(price=100.05)])
+
+    rows = manager.store.load(default=[])
+    assert rows[0]["status"] == "OPEN"
+
+
+def test_old_trade_in_profit_is_not_dead():
+    live = _live_payload(size=1.0)
+    manager = _manager([live])
+    position = _position(strategy="low_vol_reclaim", opened_at=_iso_minutes_ago(120))
+    manager.store.save([position])
+
+    manager.sync([_snapshot(price=100.5)])  # +0.5% > 0.20 band -> protecties beheren dit
+
+    rows = manager.store.load(default=[])
+    assert rows[0]["status"] == "OPEN"
+    assert rows[0].get("closed_reason") != "dead_trade_timeout"
+
+
+def test_dead_timeout_requires_exchange_sync():
+    manager = _manager([])
+    manager.client.get_all_positions.side_effect = Exception("bitget down")
+    position = _position(strategy="low_vol_reclaim", opened_at=_iso_minutes_ago(300))
+    manager.store.save([position])
+
+    manager.sync([_snapshot(price=100.05)])
+
+    rows = manager.store.load(default=[])
+    assert rows[0]["status"] == "OPEN"  # fail-safe: geen close zonder exchange truth
+    manager.client.close_futures_position_full.assert_not_called()

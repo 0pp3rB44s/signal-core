@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
     session_risk_multiplier: float = Field(default=0.5, alias="SESSION_RISK_MULTIPLIER")
+    # Dead-trade timeout: a flat trade past its window occupies a slot another
+    # setup could use. 0 disables. Only fires on flat trades (|pnl| below the
+    # max) that never hit TP1, with verified live exchange state.
+    dead_trade_timeout_reclaim_minutes: float = Field(default=90.0, alias="DEAD_TRADE_TIMEOUT_RECLAIM_MINUTES")
+    dead_trade_timeout_default_minutes: float = Field(default=240.0, alias="DEAD_TRADE_TIMEOUT_DEFAULT_MINUTES")
+    dead_trade_max_abs_pnl_pct: float = Field(default=0.20, alias="DEAD_TRADE_MAX_ABS_PNL_PCT")
     # Profit-lock (P1.1A): once MFE reaches this fraction of the TP1 distance,
     # move SL to fee-adjusted break-even. Evidence 2026-07-07: median trade
     # peaked at 50-64% of TP1 with ~zero MAE, then reversed into a loss.

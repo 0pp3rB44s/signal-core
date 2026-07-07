@@ -83,6 +83,21 @@ NOG TE BEWIJZEN (logs):
 [ ] Geen 4+ correlated shorts tegelijk — bewijs nodig
 [ ] Bot draait stabiel door de nacht op nieuwe allocatie — bewijs verzamelen
 
+NIEUW — 2026-07-07 GAP-AUDIT (alle vijf dezelfde dag gebouwd + getest):
+
+[x] WEEKLY_FREEZE_LOSS_PCT was een dode knop → nu afgedwongen in kill-switch
+    (7d rolling net PnL, 60s cache) + zichtbaar in DAY_MODE en day_mode()
+[x] Statische equity (€100) → live Bitget-equity: runner snapshot elke cyclus
+    naar state/account_equity.json; risk/planner/execution lezen via
+    app/equity.py (fail-closed: stale → min(snapshot, configured))
+[x] Auto-herstel na crash: scripts/run_supervised.sh (tmux/terminal, backoff,
+    max 5 snelle crashes → stop + notificatie; stop_all.sh zet stop-flag)
+[x] 28-min tighten-gap (FILUSDT live): mislukte SL-tighten zet nu een
+    persistente pending-vlag → retry elke 10s-cyclus, tighter-only
+[x] Dead-trade timeout: vlakke trade zonder TP1 na 90 min (reclaim) / 240 min
+    (overig) → reduce-only close, alleen met verified exchange-state
+[x] Slippage-meetregel in strategy_funnel.json (P2.3 eerste stap)
+
 P0.5 — WINSTREALISATIE — GEDEELTELIJK AFGEROND:
 
 [x] Kernvraag beantwoord met data: trades die TP1 halen zijn +0,083/trade (61% WR),
@@ -90,8 +105,8 @@ P0.5 — WINSTREALISATIE — GEDEELTELIJK AFGEROND:
 [x] Fees/slippage impact: fees waren groter dan de bruto edge (reclaim: gross −3,89, fees 4,57)
 [x] Realized PnL per dag uit exchange truth
 [ ] Time-to-profit meting → zie entry-context backfill sessie
-[ ] Dead trade timeout engine
-[ ] Max trade duration per strategy
+[x] Dead trade timeout engine (2026-07-07)
+[x] Max trade duration per strategy (reclaim 90m / default 240m, .env)
 [ ] Reclaim target op liquidity/origin i.p.v. vaste RR — NA bewijs uit verse 1,30R-data
 
 P0.7 — EXECUTION EXPECTANCY AUDIT — GROTENDEELS AFGEROND:

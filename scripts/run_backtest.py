@@ -667,11 +667,16 @@ def _build_strategy_funnel(day_utc: str | None = None) -> dict[str, Any]:
         if str(row.get("verdict") or "").upper() == "EXECUTABLE":
             b["plans_executable"] += 1
 
+    slippages: list[float] = []
     for row in _day_rows(EXECUTIONS_PATH):
         b = _bucket(row.get("strategy"))
         status = str(row.get("status") or "").upper()
         if status == "EXECUTED":
             b["executions_executed"] += 1
+            try:
+                slippages.append(abs(float(row.get("slippage_pct") or 0.0)))
+            except (TypeError, ValueError):
+                pass
         elif status == "SKIPPED":
             b["executions_skipped"] += 1
 
@@ -686,6 +691,12 @@ def _build_strategy_funnel(day_utc: str | None = None) -> dict[str, Any]:
             else "PARTIAL_COVERAGE" if strategies_with_execution
             else "NO_EXECUTIONS"
         ),
+        # P2.3 eerste meetregel: kost de market-entry ons meetbaar edge?
+        "execution_slippage": {
+            "fills": len(slippages),
+            "avg_abs_slippage_pct": round(sum(slippages) / len(slippages), 5) if slippages else None,
+            "worst_abs_slippage_pct": round(max(slippages), 5) if slippages else None,
+        },
     }
 
 
