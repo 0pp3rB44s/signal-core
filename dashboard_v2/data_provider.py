@@ -1052,6 +1052,34 @@ def _build_audit_panel() -> dict[str, Any]:
     }
 
 
+def _build_liquidity_heatmap_panel() -> dict[str, Any]:
+    """Read-only weergave van state/liquidity_heatmap.json (geen behavior)."""
+    path = STATE_PATH / "liquidity_heatmap.json"
+    try:
+        payload = json.loads(path.read_text())
+        stale = (time.time() - path.stat().st_mtime) > 300
+    except Exception:
+        return {"available": False, "symbols": []}
+
+    symbols = []
+    for symbol, h in sorted(payload.items()):
+        if not isinstance(h, dict) or not h.get("data_ok"):
+            continue
+        symbols.append({
+            "symbol": symbol,
+            "liquidity_above": h.get("liquidity_above_score"),
+            "liquidity_below": h.get("liquidity_below_score"),
+            "nearest_bid_wall": h.get("nearest_bid_wall_price"),
+            "nearest_ask_wall": h.get("nearest_ask_wall_price"),
+            "bid_wall_strength": h.get("bid_wall_strength"),
+            "ask_wall_strength": h.get("ask_wall_strength"),
+            "magnet_direction": h.get("liquidity_magnet_direction"),
+            "risk_zone": bool(h.get("liquidity_risk_zone")),
+            "spread_bps": h.get("spread_bps"),
+        })
+    return {"available": bool(symbols), "stale": stale, "symbols": symbols}
+
+
 def _build_learning_panel() -> dict[str, Any]:
     try:
         learning_service.reload()
@@ -1184,6 +1212,7 @@ def get_dashboard_data() -> dict[str, Any]:
         "backtest_reference": _build_backtest_reference(),
         "audit": _build_audit_panel(),
         "learning": _build_learning_panel(),
+        "liquidity_heatmap": _build_liquidity_heatmap_panel(),
     }
 
     _DASHBOARD_CACHE["timestamp"] = now

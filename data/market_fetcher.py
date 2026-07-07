@@ -14,6 +14,7 @@ from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ContractSpec, MarketSnapshot, SymbolSnapshot, TimeframeSnapshot
 from data.cache import TTLCache
 from data.normalizer import normalize_candles, normalize_contracts
+from market_data.liquidity_heatmap import build_liquidity_heatmap
 from market_data.orderbook_analyzer import OrderbookAnalyzer
 from market_data.entry_quality import EntryQualityAnalyzer
 from market_data.volatility_engine import VolatilityEngine
@@ -224,6 +225,18 @@ class MarketFetcher:
         self.entry_quality_analyzer = EntryQualityAnalyzer()
         self.volatility_engine = VolatilityEngine()
         self.breakout_engine = BreakoutEngine()
+
+    _liquidity_heatmap_state: dict[str, dict] = {}
+
+    def _persist_liquidity_heatmap(self, symbol: str, heatmap: dict) -> None:
+        """Read-only snapshot per symbool voor het dashboard; nooit fataal."""
+        try:
+            self._liquidity_heatmap_state[str(symbol).upper()] = heatmap
+            path = Path("state/liquidity_heatmap.json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._liquidity_heatmap_state, indent=1))
+        except Exception:
+            pass
 
     def _fetch_with_retry(self, label: str, fetch_fn: Callable[[], T], *, attempts: int = 2) -> T:
         last_exception: Exception | None = None
@@ -739,6 +752,24 @@ class MarketFetcher:
             notes.append(f"orderbook_total_depth_usdt={total_depth:.2f}")
             notes.append(f"orderbook_imbalance={float(orderbook_analysis.get('imbalance', 0.0)):+.3f}")
             notes.append(f"orderbook_bias={orderbook_analysis.get('continuation_bias', 'neutral')}")
+
+            # Read-only liquidity heatmap (eigenaar 2026-07-07): alleen
+            # notes/snapshot voor dashboard en latere backtest-analyse —
+            # geen gate- of score-invloed.
+            try:
+                heatmap = build_liquidity_heatmap(orderbook)
+                if heatmap.get("data_ok"):
+                    notes.append(f"liq_above_score={heatmap['liquidity_above_score']:.1f}")
+                    notes.append(f"liq_below_score={heatmap['liquidity_below_score']:.1f}")
+                    notes.append(f"liq_magnet={heatmap['liquidity_magnet_direction']}")
+                    notes.append(f"liq_risk_zone={str(heatmap['liquidity_risk_zone']).lower()}")
+                    if heatmap["nearest_bid_wall_price"] > 0:
+                        notes.append(f"liq_bid_wall={heatmap['nearest_bid_wall_price']:.8f}x{heatmap['bid_wall_strength']:.1f}")
+                    if heatmap["nearest_ask_wall_price"] > 0:
+                        notes.append(f"liq_ask_wall={heatmap['nearest_ask_wall_price']:.8f}x{heatmap['ask_wall_strength']:.1f}")
+                self._persist_liquidity_heatmap(symbol, heatmap)
+            except Exception as heatmap_exc:
+                self.log.debug("LIQUIDITY_HEATMAP_SKIPPED | %s | error=%s", symbol, heatmap_exc)
             if not orderbook_liquidity_ok:
                 notes.append("risk_off_reason=orderbook_spread_or_depth")
                 self.log.warning(

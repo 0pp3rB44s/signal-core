@@ -189,6 +189,25 @@
       {% endfor %}
     </div>
 
+    <div class="panel-header compact">
+      <h2>Liquidity Heatmap <small>(read-only)</small></h2>
+    </div>
+    <div class="stat-list" id="liquidity-heatmap-list">
+      {% if data.liquidity_heatmap and data.liquidity_heatmap.available %}
+        {% for row in data.liquidity_heatmap.symbols %}
+          <div>
+            <span>{{ row.symbol }}{% if row.risk_zone %} · ⚠ risk zone{% endif %}</span>
+            <strong>boven {{ row.liquidity_above }} / onder {{ row.liquidity_below }} · magneet {{ row.magnet_direction }}</strong>
+            <small>bid wall {{ row.nearest_bid_wall }}{% if row.bid_wall_strength %} (x{{ row.bid_wall_strength }}){% endif %}
+              · ask wall {{ row.nearest_ask_wall }}{% if row.ask_wall_strength %} (x{{ row.ask_wall_strength }}){% endif %}
+              · spread {{ row.spread_bps }} bps</small>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div><span>Nog geen liquidity-data</span></div>
+      {% endif %}
+    </div>
+
     {% if data.cooldowns %}
       <div class="panel-header compact">
         <h2>Symbol Cooldowns</h2>
