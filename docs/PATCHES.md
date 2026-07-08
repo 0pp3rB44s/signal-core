@@ -100,5 +100,12 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   houdt de in-regime edge op volle size). TP-afstand ongewijzigd (bewezen optimaal). Test-isolatie
   van equity-snapshot gefixt (deterministisch). 82/82 groen.
 
+- PATCH-045 | 2026-07-08 | FUNDAMENTELE FIX (grondige audit): SL/TP werden op vaste plan-niveaus
+  geplaatst (geankerd op latest_close) terwijl de market-order op de live prijs vult - structureel
+  0,1-0,4% verderop, altijd richting de stop. Stopafstand verschrompelde 30-90% (rr tot 22:1) ->
+  uitgestopt op ruis vóór TP. Dé verklaring voor lage winrate ondanks correcte richting. Fix:
+  TradePlan.geometry_entry + execution herankert stop/TP op de echte fill (zelfde prijs-ratio's).
+  85/85 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
