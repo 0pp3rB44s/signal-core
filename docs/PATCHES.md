@@ -107,5 +107,12 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   TradePlan.geometry_entry + execution herankert stop/TP op de echte fill (zelfde prijs-ratio's).
   85/85 groen.
 
+- PATCH-046 | 2026-07-08 | Maker-entry infrastructuur (fees=197% van bruto-edge). Post-only limit-
+  entry (client: place_futures_limit_order + cancel_futures_order), execution/maker_entry.py met
+  place/poll/cancel: vult de limit niet in het venster -> annuleren en SKIP (geen taker-fallback).
+  Achter MAKER_ENTRY_ENABLED, STANDAARD UIT tot bewaakte validatie. Leverage bewust op 3x gehouden
+  (rekensom: positie is ge-capt op 35%-equity notional = eur21,88 bij zowel 3x als 5x; leverage
+  raakt de cap niet). 6 tests, 91/91 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
