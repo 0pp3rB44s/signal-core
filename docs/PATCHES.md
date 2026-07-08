@@ -114,5 +114,11 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   (rekensom: positie is ge-capt op 35%-equity notional = eur21,88 bij zowel 3x als 5x; leverage
   raakt de cap niet). 6 tests, 91/91 groen.
 
+- PATCH-047 | 2026-07-08 | Maker-entry LIVE gezet (bewaakt) + cancel-race safety net: als de
+  post-only limit vult tussen laatste poll en cancel (cancel faalt 43001), verifieert de bot nu
+  get_all_positions en beschermt de positie i.p.v. hem te skippen (MAKER_ENTRY_FILLED_DURING_CANCEL).
+  Eerste live-observatie: 3x UNFILLED op XLM shorts (fill-rate laag bij momentum weg-lopende move),
+  0 posities/0 recovery. 93/93 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
