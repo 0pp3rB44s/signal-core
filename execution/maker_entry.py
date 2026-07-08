@@ -95,11 +95,47 @@ def attempt_maker_entry(client, settings, symbol, direction, size, anchor_price,
         except Exception as exc:
             log.warning("MAKER_ENTRY_POLL_FAILED | %s | order_id=%s | error=%s", symbol, order_id, exc)
 
-    # Niet (volledig) gevuld binnen het venster -> annuleren en skippen.
+    # Niet (volledig) gevuld binnen het venster -> annuleren.
     try:
         client.cancel_futures_order(symbol=symbol, order_id=order_id)
         log.warning("MAKER_ENTRY_UNFILLED_CANCELLED | %s | order_id=%s | wait_s=%.1f", symbol, order_id, wait_s)
     except Exception as exc:
+        # Cancel kan falen (bv. code 43001 'order bestaat niet') als de order
+        # net vulde in de race tussen laatste poll en cancel. Dan staat er een
+        # ONBESCHERMDE positie open -> die MOETEN we beschermen, niet skippen.
         log.warning("MAKER_ENTRY_CANCEL_FAILED | %s | order_id=%s | error=%s", symbol, order_id, exc)
+
+    # Safety-net: verifieer altijd of er tóch een positie is ontstaan.
+    try:
+        positions = (client.get_all_positions().get("data") or [])
+        for p in positions:
+            if str(p.get("symbol") or "") != str(symbol):
+                continue
+            live_size = 0.0
+            for k in ("total", "size", "available", "holdVol", "positionSize"):
+                try:
+                    live_size = float(p.get(k) or 0.0)
+                except (TypeError, ValueError):
+                    live_size = 0.0
+                if live_size > 0:
+                    break
+            if live_size > 0:
+                fill_entry = 0.0
+                for k in ("openPriceAvg", "averageOpenPrice", "openAvgPrice", "avgOpenPrice", "openPrice"):
+                    try:
+                        fill_entry = float(p.get(k) or 0.0)
+                    except (TypeError, ValueError):
+                        fill_entry = 0.0
+                    if fill_entry > 0:
+                        break
+                log.critical(
+                    "MAKER_ENTRY_FILLED_DURING_CANCEL | %s | order_id=%s | size=%s | avg=%s -> beschermen i.p.v. skippen",
+                    symbol, order_id, live_size, fill_entry,
+                )
+                result.update(status="FILLED", filled_qty=live_size, fill_entry=fill_entry)
+                return result
+    except Exception as exc:
+        log.warning("MAKER_ENTRY_POSTCANCEL_VERIFY_FAILED | %s | error=%s", symbol, exc)
+
     result["status"] = "UNFILLED_CANCELLED"
     return result

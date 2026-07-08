@@ -54,6 +54,35 @@ def test_maker_unfilled_cancels_and_skips():
     client.cancel_futures_order.assert_called_once()
 
 
+def test_cancel_race_detects_filled_position_and_protects():
+    # De order vult in de race tussen laatste poll en cancel: cancel faalt
+    # (43001), maar er staat een positie open -> MOET FILLED teruggeven zodat
+    # execution hem beschermt, niet skippen.
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "9"}}
+    client.extract_order_id.return_value = "9"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.cancel_futures_order.side_effect = RuntimeError('43001 order not found')
+    client.get_all_positions.return_value = {"data": [
+        {"symbol": "BTCUSDT", "total": 5.0, "openPriceAvg": 100.05, "holdSide": "short"}
+    ]}
+    r = attempt_maker_entry(client, _settings(), "BTCUSDT", "SHORT", 5.0, 100.0, "short", _log())
+    assert r["status"] == "FILLED", "onbeschermde positie na cancel-race moet beschermd worden"
+    assert r["fill_entry"] == 100.05
+
+
+def test_cancel_success_no_position_is_unfilled():
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "10"}}
+    client.extract_order_id.return_value = "10"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.get_all_positions.return_value = {"data": []}
+    r = attempt_maker_entry(client, _settings(), "BTCUSDT", "SHORT", 5.0, 100.0, "short", _log())
+    assert r["status"] == "UNFILLED_CANCELLED"
+
+
 def test_maker_place_failure_is_error_no_position():
     client = MagicMock()
     client.place_futures_limit_order.side_effect = RuntimeError("400 post_only rejected")
