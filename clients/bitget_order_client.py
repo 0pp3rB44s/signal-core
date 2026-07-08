@@ -163,6 +163,91 @@ class BitgetOrderClientMixin:
             private=True,
         )
 
+    def place_futures_limit_order(
+        self,
+        symbol: str,
+        direction: str,
+        size: float,
+        price: float,
+        margin_mode: str = "isolated",
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+        client_oid: str | None = None,
+        post_only: bool = True,
+        **_: Any,
+    ) -> dict[str, Any]:
+        """Place a futures LIMIT entry. post_only=True forces maker-only:
+        Bitget rejects/adjusts the order if it would cross the spread, so we
+        never pay taker fees (maker-entry experiment, 2026-07-08)."""
+        direction_upper = str(direction).upper()
+        if direction_upper not in {"LONG", "SHORT"}:
+            raise ValueError(f"Unsupported futures direction: {direction}")
+
+        side = "buy" if direction_upper == "LONG" else "sell"
+        hold_side = "long" if direction_upper == "LONG" else "short"
+        formatted_size = self._format_size(symbol, float(size))
+        formatted_price = self._format_trigger_price(symbol, float(price))
+
+        if formatted_size < self._min_size(symbol):
+            raise ValueError(
+                f"Order size below minimum for {symbol}: size={formatted_size} min={self._min_size(symbol)}"
+            )
+        if formatted_price <= 0:
+            raise ValueError(f"Invalid limit price for {symbol}: {formatted_price}")
+
+        body: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "marginCoin": margin_coin.upper(),
+            "marginMode": margin_mode,
+            "size": str(formatted_size),
+            "price": str(formatted_price),
+            "side": side,
+            "tradeSide": "open",
+            "orderType": "limit",
+            "force": "post_only" if post_only else "gtc",
+            "holdSide": hold_side,
+        }
+        if client_oid:
+            body["clientOid"] = client_oid
+
+        self._validate_futures_order_flags(body)
+        self.log.warning(
+            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s",
+            symbol.upper(), direction_upper, side, formatted_size, formatted_price, post_only,
+        )
+        return self._request(
+            method="POST",
+            path="/api/v2/mix/order/place-order",
+            body=body,
+            private=True,
+        )
+
+    def cancel_futures_order(
+        self,
+        symbol: str,
+        order_id: str | None = None,
+        client_oid: str | None = None,
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+    ) -> dict[str, Any]:
+        """Cancel an open futures order (used when a maker limit doesn't fill in time)."""
+        body: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "marginCoin": margin_coin.upper(),
+        }
+        if order_id:
+            body["orderId"] = str(order_id)
+        if client_oid:
+            body["clientOid"] = str(client_oid)
+        return self._request(
+            method="POST",
+            path="/api/v2/mix/order/cancel-order",
+            body=body,
+            private=True,
+        )
+
     def _verify_reduce_only_close_body(
         self,
         body: dict[str, Any],

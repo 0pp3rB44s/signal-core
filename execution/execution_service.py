@@ -486,15 +486,39 @@ class ExecutionService:
                         len(plan.take_profits or []),
                     )
 
-                    live_order_payload = self.client.place_futures_market_order(
-                        symbol=plan.symbol,
-                        size=order_size,
-                        side=side,
-                        trade_side=trade_side,
-                        margin_mode="isolated",
-                    )
-
-                    live_order_id = self.client.extract_order_id(live_order_payload)
+                    # Maker-entry: post-only limit i.p.v. market (fee-experiment,
+                    # standaard uit). Vult hij niet -> trade skippen, geen taker.
+                    if bool(getattr(self.settings, "maker_entry_enabled", False)):
+                        from execution.maker_entry import attempt_maker_entry
+                        maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or avg_entry
+                        maker_result = attempt_maker_entry(
+                            client=self.client, settings=self.settings, symbol=plan.symbol,
+                            direction=plan.direction, size=order_size, anchor_price=maker_anchor,
+                            hold_side=hold_side, log=self.log,
+                        )
+                        if maker_result["status"] != "FILLED":
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"maker entry {maker_result['status'].lower()} (geen taker-fallback)",
+                                    avg_entry=avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
+                        live_order_payload = maker_result["payload"]
+                        live_order_id = maker_result["order_id"]
+                    else:
+                        live_order_payload = self.client.place_futures_market_order(
+                            symbol=plan.symbol,
+                            size=order_size,
+                            side=side,
+                            trade_side=trade_side,
+                            margin_mode="isolated",
+                        )
+                        live_order_id = self.client.extract_order_id(live_order_payload)
 
                     if not live_order_id:
                         raise RuntimeError(
