@@ -168,6 +168,10 @@ class ExecutionService:
             avg_entry = round(sum(plan.entry_prices) / len(plan.entry_prices), 8)
             expected_entry = avg_entry
             actual_entry = avg_entry
+            # Standaard = plan-niveaus; de live-tak herankert deze op de echte
+            # fill (bug 2026-07-08) en overschrijft ze vóór opslag.
+            protect_stop_loss = plan.stop_loss
+            protect_take_profits = list(plan.take_profits or [])
             slippage_pct = 0.0
             fees_paid = 0.0
             realized_pnl = 0.0
@@ -510,6 +514,7 @@ class ExecutionService:
                     verification_positions = verification_payload.get("data") or []
 
                     exchange_position_found = False
+                    live_fill_entry = 0.0
 
                     for position in verification_positions:
                         if str(position.get("symbol") or "") != plan.symbol:
@@ -529,6 +534,15 @@ class ExecutionService:
 
                         if live_size > 0:
                             exchange_position_found = True
+                            live_fill_entry = _safe_float(
+                                position.get("openPriceAvg")
+                                or position.get("averageOpenPrice")
+                                or position.get("openAvgPrice")
+                                or position.get("avgOpenPrice")
+                                or position.get("openPrice")
+                                or 0.0,
+                                0.0,
+                            )
                             break
 
                     if not exchange_position_found:
@@ -548,6 +562,34 @@ class ExecutionService:
                     )
 
 
+                    # --- SL/TP herankeren op de ECHTE fill (bug 2026-07-08) ---
+                    # De planner berekent stop/TP vanaf latest_close, maar de
+                    # market-order vult op de live prijs (structureel 0,1-0,4%
+                    # verderop). Zonder herankering verschrompelt de stopafstand
+                    # met 30-90% -> mini-stops -> uitgestopt vóór TP. We behouden
+                    # de ontworpen prijs-RATIO's t.o.v. de echte fill.
+                    ref_entry = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0)
+                    if live_fill_entry > 0 and ref_entry > 0:
+                        scale = live_fill_entry / ref_entry
+                        reanchored_stop = round(plan.stop_loss * scale, 8)
+                        reanchored_tps = [round(tp * scale, 8) for tp in protect_take_profits]
+                        old_stop_bps = abs(plan.stop_loss - ref_entry) / ref_entry * 10000
+                        new_stop_bps = abs(reanchored_stop - live_fill_entry) / live_fill_entry * 10000
+                        self.log.warning(
+                            "SLTP_REANCHORED | %s | ref_entry=%.8f | fill=%.8f | drift_bps=%.1f | "
+                            "stop %.8f->%.8f | intended_stop_bps=%.1f | actual_now_stop_bps=%.1f",
+                            plan.symbol,
+                            ref_entry,
+                            live_fill_entry,
+                            (live_fill_entry - ref_entry) / ref_entry * 10000,
+                            plan.stop_loss,
+                            reanchored_stop,
+                            old_stop_bps,
+                            new_stop_bps,
+                        )
+                        protect_stop_loss = reanchored_stop
+                        protect_take_profits = reanchored_tps
+
                     # Place protection with stronger validation and retry.
                     protection_payload = None
                     has_sl = False
@@ -561,8 +603,8 @@ class ExecutionService:
                                 direction=plan.direction,
                                 hold_side=hold_side,
                                 size=order_size,
-                                stop_loss=plan.stop_loss,
-                                take_profits=plan.take_profits,
+                                stop_loss=protect_stop_loss,
+                                take_profits=protect_take_profits,
                                 margin_mode="isolated",
                             )
                         except Exception as protection_exc:
@@ -851,9 +893,9 @@ class ExecutionService:
                 "slippage_pct": slippage_pct,
                 "fees_paid": fees_paid,
                 "entry_prices": plan.entry_prices,
-                "stop_loss": plan.stop_loss,
-                "initial_stop_loss": plan.stop_loss,
-                "take_profits": plan.take_profits,
+                "stop_loss": protect_stop_loss,
+                "initial_stop_loss": protect_stop_loss,
+                "take_profits": protect_take_profits,
                 "tp1_hit": False,
                 "tp2_hit": False,
                 "tp3_hit": False,
@@ -897,6 +939,8 @@ class ExecutionService:
                 fees_paid=fees_paid,
                 realized_pnl=realized_pnl,
                 exchange_order_id=exchange_order_id,
+                stop_loss=protect_stop_loss,
+                take_profits=protect_take_profits,
             )
             reports.append(report)
 
@@ -1127,6 +1171,8 @@ class ExecutionService:
         fees_paid: float = 0.0,
         realized_pnl: float = 0.0,
         exchange_order_id: str = "",
+        stop_loss: float | None = None,
+        take_profits: list[float] | None = None,
     ) -> ExecutionReport:
         return ExecutionReport(
             symbol=plan.symbol,
@@ -1136,8 +1182,8 @@ class ExecutionService:
             status=status,
             message=message,
             avg_entry=avg_entry,
-            stop_loss=plan.stop_loss,
-            take_profits=plan.take_profits,
+            stop_loss=plan.stop_loss if stop_loss is None else stop_loss,
+            take_profits=plan.take_profits if take_profits is None else take_profits,
             position_notional_usdt=notional,
             leverage=leverage,
             expected_entry=expected_entry or avg_entry,

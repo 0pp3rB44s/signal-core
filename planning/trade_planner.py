@@ -824,6 +824,7 @@ class TradePlanner:
             position_notional_usdt=position_notional,
             notes=notes,
             reasons=reasons,
+            geometry_entry=entry,
         )
 
     def _build_adaptive_tp(self, candidate: StrategyCandidate, entry: float, stop: float):
