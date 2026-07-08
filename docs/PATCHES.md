@@ -120,5 +120,11 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   Eerste live-observatie: 3x UNFILLED op XLM shorts (fill-rate laag bij momentum weg-lopende move),
   0 posities/0 recovery. 93/93 groen.
 
+- PATCH-048 | 2026-07-08 | Hybride maker-entry: maker-fill-rate was 0/6 live (post-only vult zelden
+  in 4s) -> bot trade te weinig. Nu: eerst maker-limit proberen, vult hij niet -> alsnog market
+  (taker) i.p.v. skippen (MAKER_ENTRY_FALLBACK_MARKET, default True). Nooit een trade missen + fee
+  besparen waar het kan. entry_via gelogd + in state (maker / maker_then_market_fallback / market)
+  voor de maker-vs-taker meting. 93/93 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
