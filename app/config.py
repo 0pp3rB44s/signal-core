@@ -104,6 +104,16 @@ class Settings(BaseSettings):
     fast_lane_min_score_hint: float = Field(default=50.0, alias="FAST_LANE_MIN_SCORE_HINT")
     fast_lane_granularity: str = Field(default="5m", alias="FAST_LANE_GRANULARITY")
     fast_lane_confirmation_granularity: str = Field(default="15m", alias="FAST_LANE_CONFIRMATION_GRANULARITY")
+    # Maker-entry experiment (fees zijn 197% van de bruto-edge). Post-only
+    # limit-entry i.p.v. market -> maker-fee i.p.v. taker. STANDAARD UIT tot
+    # gevalideerd in een bewaakt venster. Vult de limit niet binnen het
+    # wachtvenster -> annuleren en trade skippen (geen taker-fallback).
+    maker_entry_enabled: bool = Field(default=False, alias="MAKER_ENTRY_ENABLED")
+    maker_entry_wait_seconds: float = Field(default=4.0, alias="MAKER_ENTRY_WAIT_SECONDS")
+    maker_entry_poll_seconds: float = Field(default=1.0, alias="MAKER_ENTRY_POLL_SECONDS")
+    # Limit iets binnen de markt zetten (bps) zodat hij snel als maker vult
+    # zonder de spread te kruisen. 0 = precies op de marktprijs-anker.
+    maker_entry_offset_bps: float = Field(default=1.0, alias="MAKER_ENTRY_OFFSET_BPS")
     # Dead-trade timeout: a flat trade past its window occupies a slot another
     # setup could use. 0 disables. Only fires on flat trades (|pnl| below the
     # max) that never hit TP1, with verified live exchange state.
