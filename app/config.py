@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     # gevalideerd in een bewaakt venster. Vult de limit niet binnen het
     # wachtvenster -> annuleren en trade skippen (geen taker-fallback).
     maker_entry_enabled: bool = Field(default=False, alias="MAKER_ENTRY_ENABLED")
+    # Hybride: vult de maker-limit niet, dan alsnog een market-order (taker)
+    # i.p.v. de trade skippen. True = nooit een trade missen + fee besparen waar
+    # het kan; False = pure maker (skip bij niet-vullen). Live-data 2026-07-08:
+    # maker-fill-rate ~0% bij 4s -> hybride nodig om te blijven traden.
+    maker_entry_fallback_market: bool = Field(default=True, alias="MAKER_ENTRY_FALLBACK_MARKET")
     maker_entry_wait_seconds: float = Field(default=4.0, alias="MAKER_ENTRY_WAIT_SECONDS")
     maker_entry_poll_seconds: float = Field(default=1.0, alias="MAKER_ENTRY_POLL_SECONDS")
     # Limit iets binnen de markt zetten (bps) zodat hij snel als maker vult
