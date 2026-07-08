@@ -93,5 +93,12 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   onverkort. Frequentie uit meer detectiekansen, niet uit lossere poorten; fee-vloer beslist per
   setup. Volledig omkapseld (kan basisscan nooit breken); FAST_LANE_* env-instellingen.
 
+- PATCH-044 | 2026-07-08 | Ochtend-audit (25 nacht-trades, break-even +0,27): reclaim (mean-reversion)
+  verdient alleen edge MET HTF-consensus. 90d-sweep bevestigde: consensus +0,071R (1,30R optimaal),
+  geen consensus -0,15R (56% van volume, waar de bot 's nachts draaide), tegen -0,35R. Patch:
+  reclaim zonder volledige 1D+4H-consensus in de richting -> probe-size (halveert de chop-drag,
+  houdt de in-regime edge op volle size). TP-afstand ongewijzigd (bewezen optimaal). Test-isolatie
+  van equity-snapshot gefixt (deterministisch). 82/82 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).

@@ -81,3 +81,44 @@ def test_gate_probes_when_one_htf_opposes():
 def test_gate_neutral_without_htf_notes():
     blocked, probed, _ = _gate_probe_and_block("SHORT", ["volume_ratio=2.0"])
     assert not blocked and not probed
+
+
+def _reclaim_reasons(direction: str, notes: list[str]) -> list[str]:
+    rm = RiskManager(settings=MagicMock(
+        account_risk_per_trade_pct=0.5, default_leverage=3, max_leverage=3,
+        max_open_positions=4, session_risk_reduction_windows_utc="", session_risk_multiplier=1.0,
+    ))
+    rm._latest_backtest_summary = lambda: {}
+    rm._latest_strategy_expectancy = lambda: {}
+    rm._latest_agent_decisions = lambda: {}
+    rm._daily_defensive_status = lambda: {"report_readable": True}
+    rm._weekly_realized_pnl = lambda: 0.0
+
+    candidate = MagicMock()
+    candidate.strategy = "low_vol_reclaim"
+    candidate.symbol = "TESTUSDT"
+    candidate.direction = direction
+    candidate.notes = notes
+    candidate.market.notes = []
+    candidate.market.alignment = "mixed"
+    candidate.market.primary.volume_ratio_20 = 2.0
+    candidate.detection.bars_since_sweep = 0
+
+    score = MagicMock(); score.total = 90.0; score.verdict = "GO"; score.reasons = []
+    return rm.evaluate(candidate, score).reasons
+
+
+def test_reclaim_probes_without_full_consensus():
+    # Reclaim SHORT zonder bearish consensus -> probe (mean-reversion zonder trendrug).
+    reasons = _reclaim_reasons("SHORT", [
+        "htf_regime_1d=neutral", "htf_regime_4h=bearish", "volume_ratio=2.0",
+    ])
+    assert any("reclaim PROBE" in r for r in reasons)
+
+
+def test_reclaim_full_size_with_full_consensus():
+    # Reclaim SHORT met volledige bearish consensus -> geen reclaim-probe.
+    reasons = _reclaim_reasons("SHORT", [
+        "htf_regime_1d=bearish", "htf_regime_4h=bearish", "volume_ratio=2.0",
+    ])
+    assert not any("reclaim PROBE" in r for r in reasons)

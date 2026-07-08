@@ -1,19 +1,34 @@
 from unittest.mock import MagicMock
 
+import pytest
+
+import app.equity as equity_mod
 from risk.risk_manager import RiskManager
+
+
+@pytest.fixture(autouse=True)
+def _isolate_equity_snapshot(tmp_path, monkeypatch):
+    # Zonder isolatie leest resolve_account_equity de LIVE snapshot van de
+    # draaiende bot (state/account_equity.json), waardoor deze equity-tests
+    # niet-deterministisch worden. Wijs naar een niet-bestaand pad zodat de
+    # resolver terugvalt op settings.account_equity_usdt.
+    monkeypatch.setattr(equity_mod, "EQUITY_SNAPSHOT_PATH", tmp_path / "no_equity.json")
 
 
 def _make_risk_manager(equity: float, hard_daily_stop_pct: float, daily_pnl: float) -> RiskManager:
     settings = MagicMock()
     settings.account_equity_usdt = equity
     settings.hard_daily_stop_pct = hard_daily_stop_pct
+    settings.weekly_freeze_loss_pct = 0.0
 
     rm = RiskManager(settings=settings)
     rm._latest_backtest_summary = lambda: {"by_strategy": {}, "by_symbol": {}}
     rm._latest_strategy_expectancy = lambda: {}
+    rm._weekly_realized_pnl = lambda: 0.0
     rm._daily_defensive_status = lambda: {
         "daily_total_net_pnl": daily_pnl,
         "consecutive_losses": 0,
+        "report_readable": True,
     }
     return rm
 

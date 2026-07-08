@@ -1178,6 +1178,27 @@ class RiskManager:
                 f"HTF regime PROBE: {', '.join(opposition_hits)} tegen {candidate.direction}, halve size"
             )
 
+        # Reclaim = mean-reversion; verdient alleen edge MET trend-consensus.
+        # 90d-validatie (10.814 reclaim-setups): met 1D+4H consensus +0,071R,
+        # geen consensus -0,15R (56% van het volume), tegen -0,35R. De
+        # ochtend-audit 2026-07-08 bevestigde dit live: 20 chop-reclaims
+        # verdunden de winst van 32 in-regime trades naar break-even. Zonder
+        # volledige consensus in de richting: probe-size.
+        if is_low_vol_reclaim and opposition_count == 0:
+            full_consensus = (
+                (candidate.direction == "LONG"
+                 and "htf_regime_1d=bullish" in note_text
+                 and "htf_regime_4h=bullish" in note_text)
+                or (candidate.direction == "SHORT"
+                    and "htf_regime_1d=bearish" in note_text
+                    and "htf_regime_4h=bearish" in note_text)
+            )
+            if not full_consensus:
+                probe_mode = True
+                reasons.append(
+                    "reclaim PROBE: geen volledige HTF-consensus (mean-reversion zonder trendrug), halve size"
+                )
+
         if is_sweep:
             bars_since_sweep = getattr(candidate.detection, "bars_since_sweep", 999)
             if bars_since_sweep > self.SAFE_ALPHA_MAX_BARS_SINCE_SWEEP:
