@@ -172,6 +172,7 @@ class ExecutionService:
             # fill (bug 2026-07-08) en overschrijft ze vóór opslag.
             protect_stop_loss = plan.stop_loss
             protect_take_profits = list(plan.take_profits or [])
+            entry_via = "market"
             slippage_pct = 0.0
             fees_paid = 0.0
             realized_pnl = 0.0
@@ -486,8 +487,13 @@ class ExecutionService:
                         len(plan.take_profits or []),
                     )
 
-                    # Maker-entry: post-only limit i.p.v. market (fee-experiment,
-                    # standaard uit). Vult hij niet -> trade skippen, geen taker.
+                    # Hybride maker-entry: probeer eerst een post-only limit
+                    # (maker-fee). Vult hij niet binnen het venster, dan alsnog
+                    # een market-order (taker) tenzij fallback uitstaat. Zo
+                    # missen we nooit een trade en besparen we fee waar het kan.
+                    live_order_payload = None
+                    live_order_id = None
+                    entry_via = "market"
                     if bool(getattr(self.settings, "maker_entry_enabled", False)):
                         from execution.maker_entry import attempt_maker_entry
                         maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or avg_entry
@@ -496,7 +502,12 @@ class ExecutionService:
                             direction=plan.direction, size=order_size, anchor_price=maker_anchor,
                             hold_side=hold_side, log=self.log,
                         )
-                        if maker_result["status"] != "FILLED":
+                        if maker_result["status"] == "FILLED":
+                            live_order_payload = maker_result["payload"]
+                            live_order_id = maker_result["order_id"]
+                            entry_via = "maker"
+                        elif not bool(getattr(self.settings, "maker_entry_fallback_market", True)):
+                            # Pure maker-modus: niet gevuld -> skippen, geen taker.
                             reports.append(
                                 self._report(
                                     plan=plan,
@@ -508,9 +519,10 @@ class ExecutionService:
                                 )
                             )
                             continue
-                        live_order_payload = maker_result["payload"]
-                        live_order_id = maker_result["order_id"]
-                    else:
+                        else:
+                            entry_via = "maker_then_market_fallback"
+
+                    if live_order_id is None:
                         live_order_payload = self.client.place_futures_market_order(
                             symbol=plan.symbol,
                             size=order_size,
@@ -519,6 +531,8 @@ class ExecutionService:
                             margin_mode="isolated",
                         )
                         live_order_id = self.client.extract_order_id(live_order_payload)
+
+                    self.log.warning("ENTRY_VIA | %s | %s", plan.symbol, entry_via)
 
                     if not live_order_id:
                         raise RuntimeError(
@@ -917,6 +931,7 @@ class ExecutionService:
                 "slippage_pct": slippage_pct,
                 "fees_paid": fees_paid,
                 "entry_prices": plan.entry_prices,
+                "entry_via": entry_via,
                 "stop_loss": protect_stop_loss,
                 "initial_stop_loss": protect_stop_loss,
                 "take_profits": protect_take_profits,
