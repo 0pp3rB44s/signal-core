@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from agents_v3.core.tools_registry import describe_tools, execute_tool
+from agents_v3.core.tools_registry import TOOLS, describe_tools, execute_tool
 from agents_v3.llm.json_normalizer import normalize_json_text
 from agents_v3.llm.llm_client import ask_model
 from agents_v3.llm.model_router import choose_model
@@ -106,6 +106,12 @@ def run_agent_loop(task: str, index: RepoIndex, verbose: bool = True) -> AgentLo
             continue
 
         action = str(payload.get("action") or "")
+        # Small local models often put the tool name directly in "action"
+        # ({"action": "read_file", ...}) or omit action when "tool" is set;
+        # accept those instead of burning steps on protocol errors.
+        if action not in ("tool", "final") and (action in TOOLS or payload.get("tool")):
+            payload.setdefault("tool", action)
+            action = "tool"
         if verbose:
             thought = str(payload.get("thought") or "")[:200]
             print(f"[step {step}] action={action or '?'} {('| ' + thought) if thought else ''}")

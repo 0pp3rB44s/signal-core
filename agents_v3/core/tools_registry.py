@@ -38,7 +38,10 @@ def tool_read_file(path: str = "", start_line: int = 1, max_lines: int = 120) ->
         return f"ERROR: {blocked}"
     file = Path(path)
     if not file.exists() or not file.is_file():
-        return f"ERROR: file not found: {path}"
+        return (
+            f"ERROR: file not found: {path}. "
+            "Use search_code or list_files to find the exact path (e.g. strategy files live under strategies/strategies/)."
+        )
     lines = file.read_text(errors="replace").splitlines()
     start = max(1, int(start_line))
     end = min(len(lines), start + max(1, int(max_lines)) - 1)

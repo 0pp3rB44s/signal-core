@@ -51,6 +51,30 @@ def test_tools_registry_reads_repo_files():
     assert "core/" in listing
 
 
+def test_agent_loop_accepts_tool_name_as_action(monkeypatch):
+    # Small models reply {"action": "read_file"} instead of
+    # {"action": "tool", "tool": "read_file"}; the loop must accept both
+    # and still execute the tool.
+    import agents_v3.core.agent_loop as loop_mod
+    from agents_v3.llm.llm_client import LLMResponse
+
+    replies = iter([
+        '{"thought": "x", "action": "read_file", "args": {"path": "agents_v3/README.md", "max_lines": 3}}',
+        '{"thought": "x", "action": "final", "result": {"summary": "done", "root_cause": "", "files_to_modify": [], "tests_to_run": [], "risk": "LOW", "diff": "", "edit_plan": {"operation": "", "file_path": "", "old_text": "", "new_text": ""}, "approval_required": false}}',
+    ])
+    monkeypatch.setattr(
+        loop_mod, "ask_model",
+        lambda provider, model, prompt: LLMResponse(True, next(replies), provider, model),
+    )
+
+    from agents_v3.repository.repo_indexer import build_repo_index
+    result = loop_mod.run_agent_loop("test task", build_repo_index("."), verbose=False)
+    assert result.success
+    assert result.steps_used == 2
+    # The first step's tool must actually have run and produced an observation.
+    assert any("CGC Agent V3" in entry for entry in result.transcript)
+
+
 def test_agent_loop_parse_and_trim():
     assert _parse_step('{"action": "final", "result": {}}')["action"] == "final"
     assert _parse_step("not json") is None
