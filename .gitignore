@@ -20,3 +20,6 @@ project_inventory.txt
 *.save
 0
 archive/
+
+# CGCAgent transient artifacts
+.cgcagent_pending.patch
