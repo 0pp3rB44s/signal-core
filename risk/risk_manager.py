@@ -257,6 +257,18 @@ class RiskManager:
             reasons.append(f"strategy weighting WATCH: insufficient data ({strategy_name}, trades={trades})")
             return True, reasons, False
 
+        # A PAUSE verdict from the learning report with a solid sample is a
+        # hard stop, not a probe. Probe-mode kept low_vol_reclaim trading 106
+        # times after its own report said PAUSE (-2.90 USDT, 24.5% winrate);
+        # data collection at that fee cost is worse than no data. The pause
+        # lifts automatically when a newer report drops the PAUSE status.
+        report_status = str(stats.get("status") or "").upper()
+        if report_status == "PAUSE" and trades >= 30:
+            reasons.append(
+                f"strategy weighting HARD-PAUSE: learning report status=PAUSE ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
+            )
+            return False, reasons, False
+
         if expectancy < 0:
             reasons.append(
                 f"strategy weighting PROBE: negative expectancy, trading at reduced size ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
@@ -910,11 +922,43 @@ class RiskManager:
                 f"execution-cost blocked: spread {spread_bps:.2f}bps with weak entry quality {entry_quality:.1f}"
             )
 
+        # A liquidity-sweep reversal closes near its extreme by design: the
+        # reclaim candle sweeps the level and closes strong. This gate blocked
+        # 15 of 22 sweep plans on exactly that signature (observed 2026-07),
+        # making the strategy dead on arrival. Allow the extreme close when
+        # the reclaim shows real participation; weak sweeps stay blocked.
+        is_sweep_reversal = "liquidity_sweep" in (candidate.strategy or "").lower()
+        sweep_participation = self._extract_note_float(candidate, "participation_score=", 0.0)
+        sweep_followthrough = self._extract_note_float(candidate, "followthrough_volume_ratio=", 0.0)
+        strong_sweep_reclaim = (
+            is_sweep_reversal
+            and sweep_participation >= 1.0
+            and sweep_followthrough >= 0.60
+        )
+
         if direction == "LONG" and close_pos >= (0.94 if mtf_quality else 0.90):
-            reasons.append(f"execution-cost blocked: long entry too high in candle (close_pos={close_pos:.3f})")
+            if strong_sweep_reclaim:
+                logger.info(
+                    "SWEEP_RECLAIM_CLOSE_POS_ALLOWED | %s | direction=LONG | close_pos=%.3f | participation=%.2f | followthrough=%.2f",
+                    symbol,
+                    close_pos,
+                    sweep_participation,
+                    sweep_followthrough,
+                )
+            else:
+                reasons.append(f"execution-cost blocked: long entry too high in candle (close_pos={close_pos:.3f})")
 
         if direction == "SHORT" and close_pos <= (0.06 if mtf_quality else 0.10):
-            reasons.append(f"execution-cost blocked: short entry too low in candle (close_pos={close_pos:.3f})")
+            if strong_sweep_reclaim:
+                logger.info(
+                    "SWEEP_RECLAIM_CLOSE_POS_ALLOWED | %s | direction=SHORT | close_pos=%.3f | participation=%.2f | followthrough=%.2f",
+                    symbol,
+                    close_pos,
+                    sweep_participation,
+                    sweep_followthrough,
+                )
+            else:
+                reasons.append(f"execution-cost blocked: short entry too low in candle (close_pos={close_pos:.3f})")
 
         if "vertical extension risk" in note_text:
             reasons.append("execution-cost blocked: vertical extension risk")

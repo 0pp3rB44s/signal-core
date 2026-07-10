@@ -106,6 +106,66 @@ def test_strategy_weighting_negative_expectancy_probes_at_reduced_size():
     assert any("PROBE: negative expectancy" in r for r in reasons)
 
 
+def test_strategy_weighting_pause_status_hard_blocks():
+    # A PAUSE verdict from the learning report with a solid sample must stop
+    # the strategy completely; probe-mode data collection at live fee cost
+    # is what bled low_vol_reclaim in July 2026.
+    rm = _make_weighting_risk_manager({
+        "low_vol_reclaim": {"trades": 234, "expectancy": -0.0265, "tp1_hit_rate": 0.10, "status": "PAUSE"},
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="low_vol_reclaim"))
+    assert not allowed
+    assert not probe
+    assert any("HARD-PAUSE" in r for r in reasons)
+
+
+def test_strategy_weighting_pause_status_small_sample_still_probes():
+    # With a thin sample a PAUSE verdict is not statistically trustworthy;
+    # fall through to the regular probe path instead of hard-blocking.
+    rm = _make_weighting_risk_manager({
+        "momentum_breakdown": {"trades": 14, "expectancy": -0.05, "tp1_hit_rate": None, "status": "PAUSE"},
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakdown"))
+    assert allowed
+    assert probe
+
+
+def _sweep_candidate(close_pos: float, participation: float, followthrough: float, direction: str = "LONG") -> MagicMock:
+    candidate = _candidate(strategy="liquidity_sweep_reversal")
+    candidate.direction = direction
+    candidate.notes = [
+        f"close_pos={close_pos}",
+        f"participation_score={participation}",
+        f"followthrough_volume_ratio={followthrough}",
+    ]
+    return candidate
+
+
+def test_execution_cost_gate_allows_strong_sweep_reclaim_at_extreme_close():
+    # A sweep reversal closes near its extreme by design; with strong
+    # participation the close-position block must not fire.
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    allowed, reasons = rm._execution_cost_gate(_sweep_candidate(0.95, 1.10, 0.80))
+    assert allowed, reasons
+
+
+def test_execution_cost_gate_still_blocks_weak_sweep_at_extreme_close():
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    allowed, reasons = rm._execution_cost_gate(_sweep_candidate(0.95, 0.40, 0.20))
+    assert not allowed
+    assert any("entry too high in candle" in r for r in reasons)
+
+
+def test_execution_cost_gate_still_blocks_non_sweep_at_extreme_close():
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    candidate = _candidate(strategy="momentum_breakout")
+    candidate.direction = "LONG"
+    candidate.notes = ["close_pos=0.95", "participation_score=1.50", "followthrough_volume_ratio=1.00"]
+    allowed, reasons = rm._execution_cost_gate(candidate)
+    assert not allowed
+    assert any("entry too high in candle" in r for r in reasons)
+
+
 def test_strategy_weighting_insufficient_sample_does_not_probe():
     rm = _make_weighting_risk_manager({
         "momentum_breakout": {"trades": 3, "expectancy": -0.8, "tp1_hit_rate": None},
