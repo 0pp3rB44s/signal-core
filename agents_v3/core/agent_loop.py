@@ -35,6 +35,7 @@ To finish with your final answer/proposal:
 
 Rules:
 - Explore before proposing: read the relevant files first with tools.
+- files_to_modify and edit_plan.file_path must be exact paths you confirmed exist in THIS session via list_files, search_code or read_file. Never guess a path.
 - old_text must be copied EXACTLY from read_file output (without the line-number prefixes) and occur only once in the file.
 - Never touch .env or secrets. Never weaken stop-loss/take-profit protection. Never increase leverage or position size.
 - Strategy tightening (stricter filters, fewer low-quality entries) is allowed; risk-increasing changes require approval_required=true.
