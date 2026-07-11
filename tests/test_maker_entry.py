@@ -27,6 +27,62 @@ def _settings():
                            maker_entry_poll_seconds=0.25)
 
 
+def _settings_extended(extended_enabled, extended_seconds, base_wait):
+    return SimpleNamespace(
+        maker_entry_offset_bps=1.0,
+        maker_entry_wait_seconds=base_wait,
+        maker_entry_poll_seconds=0.25,
+        maker_entry_extended_wait_enabled=extended_enabled,
+        maker_entry_extended_wait_seconds=extended_seconds,
+    )
+
+
+def _outcome_logged(log):
+    return any(
+        call.args and "MAKER_ENTRY_OUTCOME" in str(call.args[0])
+        for call in log.warning.call_args_list
+    )
+
+
+def test_extended_wait_used_when_enabled():
+    # base wait 99s would hang if used; extended 0.05s means it completes fast,
+    # proving the extended window is the one in effect.
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "9"}}
+    client.extract_order_id.return_value = "9"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.get_all_positions.return_value = {"data": []}
+    log = _log()
+    r = attempt_maker_entry(client, _settings_extended(True, 0.05, 99.0), "BTCUSDT", "LONG", 5.0, 100.0, "long", log)
+    assert r["status"] == "UNFILLED_CANCELLED"
+    assert _outcome_logged(log)
+
+
+def test_base_wait_used_when_extended_disabled():
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "10"}}
+    client.extract_order_id.return_value = "10"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.get_all_positions.return_value = {"data": []}
+    r = attempt_maker_entry(client, _settings_extended(False, 99.0, 0.05), "BTCUSDT", "LONG", 5.0, 100.0, "long", _log())
+    assert r["status"] == "UNFILLED_CANCELLED"  # base 0.05s used, not extended 99s
+
+
+def test_outcome_line_logged_on_fill_with_latency():
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "11"}}
+    client.extract_order_id.return_value = "11"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 5.0, "state": "filled", "avg_price": 99.9}
+    log = _log()
+    r = attempt_maker_entry(client, _settings_extended(True, 0.05, 4.0), "BTCUSDT", "LONG", 5.0, 100.0, "long", log)
+    assert r["status"] == "FILLED"
+    assert _outcome_logged(log)
+    assert any("fill_latency_s" in str(c.args[0]) for c in log.warning.call_args_list if c.args)
+
+
 def _log():
     return MagicMock()
 

@@ -125,6 +125,14 @@ class Settings(BaseSettings):
     # Limit iets binnen de markt zetten (bps) zodat hij snel als maker vult
     # zonder de spread te kruisen. 0 = precies op de marktprijs-anker.
     maker_entry_offset_bps: float = Field(default=1.0, alias="MAKER_ENTRY_OFFSET_BPS")
+    # Maker-fill meet-experiment (2026-07-11). .env pint MAKER_ENTRY_WAIT_SECONDS
+    # op 4.0s -- te kort om te zien of een post-only limit op onze retest-entries
+    # vult. Deze code-beheerde override (NIET in .env, dus default is leidend)
+    # verlengt het venster en laat maker_entry de fill-latency loggen, zodat we
+    # met data kunnen beslissen of maker-entry haalbaar is. Zet
+    # MAKER_ENTRY_EXTENDED_WAIT_ENABLED=false om terug te vallen op de .env-wait.
+    maker_entry_extended_wait_enabled: bool = Field(default=True, alias="MAKER_ENTRY_EXTENDED_WAIT_ENABLED")
+    maker_entry_extended_wait_seconds: float = Field(default=30.0, alias="MAKER_ENTRY_EXTENDED_WAIT_SECONDS")
     # Dead-trade timeout: a flat trade past its window occupies a slot another
     # setup could use. 0 disables. Only fires on flat trades (|pnl| below the
     # max) that never hit TP1, with verified live exchange state.

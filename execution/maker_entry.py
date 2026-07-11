@@ -49,7 +49,15 @@ def attempt_maker_entry(client, settings, symbol, direction, size, anchor_price,
     status in {'FILLED','UNFILLED_CANCELLED','ERROR'}.
     """
     offset_bps = float(getattr(settings, "maker_entry_offset_bps", 1.0))
-    wait_s = float(getattr(settings, "maker_entry_wait_seconds", 4.0))
+    # Measurement experiment: use the extended wait window (code default 30s)
+    # so we can observe whether/when a post-only limit fills, instead of the
+    # .env-pinned 4s that is too short to see fills. Reverts to the base wait
+    # when MAKER_ENTRY_EXTENDED_WAIT_ENABLED=false.
+    base_wait_s = float(getattr(settings, "maker_entry_wait_seconds", 4.0))
+    if bool(getattr(settings, "maker_entry_extended_wait_enabled", False)):
+        wait_s = float(getattr(settings, "maker_entry_extended_wait_seconds", 30.0))
+    else:
+        wait_s = base_wait_s
     poll_s = max(0.25, float(getattr(settings, "maker_entry_poll_seconds", 1.0)))
     limit_price = compute_limit_price(direction, anchor_price, offset_bps)
 
@@ -73,7 +81,8 @@ def attempt_maker_entry(client, settings, symbol, direction, size, anchor_price,
         log.warning("MAKER_ENTRY_PLACE_FAILED | %s | error=%s", symbol, exc)
         return result
 
-    deadline = time.monotonic() + wait_s
+    start = time.monotonic()
+    deadline = start + wait_s
     while time.monotonic() < deadline:
         time.sleep(poll_s)
         try:
@@ -86,9 +95,15 @@ def attempt_maker_entry(client, settings, symbol, direction, size, anchor_price,
                     fill_entry = float(metrics.get("avg_price") or 0.0)
                 except (TypeError, ValueError):
                     fill_entry = 0.0
+                fill_latency_s = time.monotonic() - start
                 log.warning(
-                    "MAKER_ENTRY_FILLED | %s | order_id=%s | qty=%s | avg_price=%s | state=%s",
-                    symbol, order_id, qty, fill_entry, state,
+                    "MAKER_ENTRY_FILLED | %s | order_id=%s | qty=%s | avg_price=%s | state=%s | fill_latency_s=%.2f",
+                    symbol, order_id, qty, fill_entry, state, fill_latency_s,
+                )
+                # Structured line for measuring the fill-rate/latency distribution.
+                log.warning(
+                    "MAKER_ENTRY_OUTCOME | %s | direction=%s | outcome=FILLED | fill_latency_s=%.2f | wait_s=%.1f",
+                    symbol, str(direction).upper(), fill_latency_s, wait_s,
                 )
                 result.update(status="FILLED", filled_qty=qty, fill_entry=fill_entry)
                 return result
@@ -137,5 +152,9 @@ def attempt_maker_entry(client, settings, symbol, direction, size, anchor_price,
     except Exception as exc:
         log.warning("MAKER_ENTRY_POSTCANCEL_VERIFY_FAILED | %s | error=%s", symbol, exc)
 
+    log.warning(
+        "MAKER_ENTRY_OUTCOME | %s | direction=%s | outcome=UNFILLED | fill_latency_s=%.2f | wait_s=%.1f",
+        symbol, str(direction).upper(), wait_s, wait_s,
+    )
     result["status"] = "UNFILLED_CANCELLED"
     return result
