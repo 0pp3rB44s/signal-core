@@ -1,8 +1,36 @@
 # CGC BOT V5 — MASTER ROADMAP HERSTRUCTUREERD
 
-VERSIE: 2026-07-07 (EOD)
+VERSIE: 2026-07-11 (EOD)
 STATUS: ACTIEF
-VORIGE VERSIE: 2026-07-06
+VORIGE VERSIE: 2026-07-07 (EOD)
+
+═══════════════════════════════════
+UPDATE — 2026-07-11 EOD (nieuwste bovenop; detail-historie hieronder)
+═══════════════════════════════════
+
+PORTFOLIO: low_vol_reclaim HARD-PAUSE'd (bewezen verliezer, 24,5% WR),
+momentum_breakout actief op negative-expectancy PROBE, liquidity_sweep als
+2e strategie geactiveerd (nog 0 afgesloten trades = geen track record).
+Regel: geen nieuwe strategieën tot de basis winstgevend is.
+
+DEZE FASE OPGELOST (PATCH-049 t/m 063, zie docs/PATCHES.md):
+[x] Break-even-geometrie coherent: fee-adjusted BE-floor (0,16%), momentum-
+    stop op ATR gecapt (TP1 bereikbaar), BE berekend op de ECHTE fill
+[x] Entry chase-limit: breakout >15bps voorbij het plan → skip i.p.v. chasen
+[x] momentum_breakout close_pos false-positive gefixt (blokkeerde alle
+    breakout-trades)
+[x] 1m/5m early-trigger-laag (vang breakouts ~1 min i.p.v. tot 15 min laat)
+[x] liquidity_sweep gerepareerd + geactiveerd
+[x] live_trade_journal.json gereconcilieerd (28 stale OPEN → CLOSED tegen
+    exchange truth); journal is analytics-only, positie-gate leest exchange
+
+ACTIEVE AANDACHTSPUNTEN (2026-07-11):
+[ ] Edge blijft dun: fee-drag > edge; recent ~1 trade/dag, kleine verliezen
+[ ] Fee-margin-filter op <30m churn (<30m avg +$0.02 vs >4h +$0.63) — mét
+    backtest, niet blind live
+[ ] Journal-drift root-cause: exchange-sync-close moet ook de journal sluiten
+    (loopt als aparte taak)
+[ ] liquidity_sweep eerste ~10-20 setups afwachten vóór meer ruimte
 
 ═══════════════════════════════════
 NORTH STAR (ongewijzigd)

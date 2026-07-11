@@ -126,5 +126,43 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   besparen waar het kan. entry_via gelogd + in state (maker / maker_then_market_fallback / market)
   voor de maker-vs-taker meting. 93/93 groen.
 
+## 2026-07-10 — CGCAgent v3 & strategie-audit (retroactief genummerd)
+
+- PATCH-049 | 2026-07-10 | CGCAgent v3: autonome patch-agent met tool-loop, trade-analyse en
+  guardrails (agents_v3/). Verplichte pad-verificatie + coulante actie-parsing in de agent-loop
+  (commits d211c44, 7934723, a94a6f5)
+- PATCH-050 | 2026-07-10 | CGCAgent-patch: low_vol_reclaim MIN_BODY_PCT 0.04 -> 0.08 (fb63b91)
+- PATCH-051 | 2026-07-10 | Strategie-audit besluiten (eigenaar Bryon): low_vol_reclaim HARD-PAUSE via
+  leerrapport-status, momentum_breakout houden, breakdown/continuation op probe, liquidity_sweep
+  close-pos gate gerepareerd, geen nieuwe strategieën tot de basis winstgevend is (3b9f7fc)
+
+## 2026-07-11 — Early-trigger, BE-geometrie & sweep-reactivatie (retroactief genummerd)
+
+- PATCH-052 | 2026-07-11 | Fix: momentum_breakout close_pos false-positive blokkeerde ALLE
+  breakout-trades (1186304)
+- PATCH-053 | 2026-07-11 | 1m early-trigger layer: vang snelle breakouts ~1 min i.p.v. tot 15 min
+  te laat; additief, feature-flag EARLY_TRIGGER_1M (99f251a)
+- PATCH-054 | 2026-07-11 | Early-trigger AAN: 5m-bevestiging, cache-hergebruik, probe-size (89497de)
+- PATCH-055 | 2026-07-11 | Weekly-freeze op hold gezet (WEEKLY_FREEZE_ENABLED, default false) op
+  verzoek eigenaar (927089f)
+- PATCH-056 | 2026-07-11 | Maker-fill meet-experiment: fill-venster verlengd naar 30s + fill-latency
+  logging, om de lage maker-fill-rate te meten (c47882c)
+- PATCH-057 | 2026-07-11 | BE-stop dekt nu fees + marge (0.16%) i.p.v. 0.10% -> stopt de trage
+  break-even-leegloop (8f45d7e)
+- PATCH-058 | 2026-07-11 | Momentum ATR stop-geometrie: cap de stop op ATR zodat TP1 bereikbaar
+  wordt (9f6bbde)
+- PATCH-059 | 2026-07-11 | BE-floor: elke break-even-actieve stop staat gegarandeerd op >=
+  fee-adjusted BE (321421e)
+- PATCH-060 | 2026-07-11 | liquidity_sweep gerepareerd + geactiveerd als 2e strategie
+  (reversal-aspect); ENABLED_STRATEGIES uitgebreid (4cfeeaf)
+- PATCH-061 | 2026-07-11 | Fix: BE berekend met de ECHTE fill i.p.v. de geplande entry (SL stond
+  onder breakeven) (83365b9)
+- PATCH-062 | 2026-07-11 | Entry chase-limit: skip i.p.v. een wegrennende breakout chasen; cap op
+  hoeveel de markt voorbij het plan mag lopen (15bps) (a665957)
+- PATCH-063 | 2026-07-11 | State-fix (geen code): live_trade_journal.json gereconcilieerd — 28 stale
+  OPEN-rijen (mei-juni) gesloten tegen exchange truth (4 met echte pnl, 24 pnl-onbekend). Journal is
+  analytics-only; positie-gate leest exchange truth, dus geen trading-impact. Root-cause (journal
+  wordt niet gesloten bij exchange-sync-close) staat als aparte taak open
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).

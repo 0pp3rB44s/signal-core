@@ -272,3 +272,142 @@ VOLGENDE FASE
 Start success: True
 Running: True
 10656 /Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python -u -m app.main
+
+═══════════════════════════════════
+34. De Fill-Waarheid & Maker-Fees (2026-07-08)
+═══════════════════════════════════
+
+BESTANDEN / MODULES
+
+planning/trade_planner.py, execution/execution_service.py
+execution/maker_entry.py, clients/bitget_order_client.py
+
+WAT ER GEBEURDE
+
+Ochtend-audit (25 nacht-trades, break-even +0,27): reclaim (mean-reversion)
+verdient alleen edge MÉT HTF-consensus. De 90d-sweep bevestigde het:
+consensus +0,071R, geen consensus −0,15R — en juist zonder consensus draaide
+de bot 's nachts (56% van het volume). Reclaim zonder volledige 1D+4H-consensus
+ging naar probe-size.
+
+Daarna een fundamentele fix: SL/TP werden op vaste plan-niveaus geplaatst
+(geankerd op latest_close) terwijl de market-order op de live prijs vult —
+structureel 0,1-0,4% verderop, altijd richting de stop. De stopafstand
+verschrompelde 30-90% (rr tot 22:1) → uitgestopt op ruis vóór TP. Dé
+verklaring voor de lage winrate ondanks correcte richting.
+
+En de fees bleken 197% van de bruto-edge. Maker-entry-infrastructuur gebouwd
+(post-only limit), eerst default UIT, daarna live bewaakt. Maar de maker-
+fill-rate was 0/6 (post-only vult zelden in 4s) → hybride model: eerst maker
+proberen, niet gevuld → alsnog market. Nooit een trade missen, fee besparen
+waar het kan.
+
+FIXES
+
+- reclaim vereist HTF-consensus (anders probe)
+- TradePlan.geometry_entry: stop/TP herankerd op de echte fill
+- maker-entry met market-fallback + cancel-race safety net
+
+BELANGRIJKSTE LES
+
+De richting klopte al maanden; de prijs waartegen we hem vertaalden niet.
+Fee-drag en fill-drift vraten de edge die de strategie wél had.
+
+═══════════════════════════════════
+35. De Autonome Patcher & de Portfolio-Snoei (2026-07-10)
+═══════════════════════════════════
+
+BESTANDEN / MODULES
+
+agents_v3/ (CGCAgent v3), strategies/strategies/low_vol_reclaim.py
+leerrapport-keten, .env
+
+WAT ER GEBEURDE
+
+CGCAgent v3 kwam online: een autonome patch-agent met tool-loop, trade-analyse
+en guardrails (verplichte pad-verificatie, coulante actie-parsing). Zijn eerste
+echte werk: low_vol_reclaim MIN_BODY_PCT 0,04 → 0,08.
+
+Daarna een strategie-audit met portfoliobesluiten van de eigenaar:
+low_vol_reclaim — de grootste volumebron — bleek een structurele verliezer
+(24,5% WR) en ging in echte HARD-PAUSE via leerrapport-status. momentum_breakout
+blijft, breakdown/continuation op probe, liquidity_sweep's close-pos gate
+gerepareerd. Regel: geen nieuwe strategieën tot de basis winstgevend is.
+
+BELANGRIJKSTE LES
+
+Een strategie pauzeren die 73% van je volume levert voelt als stilvallen,
+maar het is het tegenovergestelde: je stopt met betalen om te verliezen.
+
+═══════════════════════════════════
+36. Break-Even-Geometrie & de Tweede Strategie (2026-07-11)
+═══════════════════════════════════
+
+BESTANDEN / MODULES
+
+strategies/momentum_breakout.py, strategies/liquidity_sweep.py
+strategies/early_breakout_trigger.py, execution/ (BE/stop-lifecycle)
+state/live_trade_journal.json
+
+WAT ER GEBEURDE
+
+Eerst een blokkade-bug: een close_pos false-positive keurde ÁLLE
+breakout-trades af. Gefixt. Daarna een early-trigger-laag (1m/5m) om snelle
+breakouts ~1 min te vangen i.p.v. tot 15 min te laat, met 5m-bevestiging en
+probe-size.
+
+De rode draad van de dag was break-even-geometrie. Drie samenhangende fixes:
+de BE-stop dekt nu fees + marge (0,16% i.p.v. 0,10%), de momentum-stop wordt
+op ATR gecapt zodat TP1 überhaupt bereikbaar is, en er ligt een BE-floor —
+elke break-even-actieve stop staat gegarandeerd op ≥ fee-adjusted BE. Ook werd
+de BE voortaan op de ECHTE fill berekend i.p.v. de geplande entry (de SL stond
+eronder). En een entry chase-limit: een breakout die >15bps voorbij het plan
+is weggelopen wordt geskipt i.p.v. achterna gejaagd.
+
+liquidity_sweep werd gerepareerd en als tweede strategie geactiveerd
+(reversal-aspect).
+
+'S AVONDS — DE JOURNAL-SCHOONMAAK & EEN EERLIJKE VERWACHTING
+
+Eigenaar-vraag: "2 strategieën — hoeveel trades/dag en hoeveel winst?"
+Meting op de echte data legde bloot dat de .env níet 2 maar 5 strategieën
+enabled had, dat liquidity_sweep 0 kandidaten vuurt (no_sweep_reclaim, een
+zeldzaam patroon — geen bug), dat low_vol_reclaim 100% HARD-PAUSE'd wordt en
+momentum_breakout op negative-expectancy PROBE staat. Frequentie recent ~1
+trade/dag; de daling kwam doordat de verliezers gepauzeerd zijn, niet doordat
+er iets kapot dichtzat.
+
+Vervolgvraag: "zitten we dichtgeblokkeerd?" De blokkade-analyse toonde dat de
+positie-gate exchange truth leest (execution_service.py:125), niet de journal.
+Maar de journal zelf bleek vervuild: 28 rijen stonden nog op OPEN terwijl
+executed_trades.json (365 CLOSED_SYNCED, 0 open) bewees dat álles dicht was.
+Gereconcilieerd tegen exchange truth: 4 recente met echte pnl, 24 oude
+(geroteerd uit alle state-files) eerlijk als pnl-onbekend i.p.v. verzonnen.
+Root-cause — de journal wordt niet gesloten bij een exchange-sync-close —
+staat als aparte taak open zodat het niet terugkomt.
+
+BELANGRIJKSTE LES
+
+Een break-even-stop die de fees niet dekt, is een verliesstop met een mooie
+naam. En een journal die closed trades als open blijft tonen, liegt niet tegen
+de bot (die leest de exchange) maar tegen jou. Meet vóór je een knop omzet:
+de meeste "blokkades" waren het vangnet dat werkte.
+
+═══════════════════════════════════
+HUIDIGE STATUS — 2026-07-11 EOD
+═══════════════════════════════════
+
+✅ low_vol_reclaim HARD-PAUSE'd (bewezen verliezer, 24,5% WR)
+✅ momentum_breakout actief op negative-expectancy PROBE (getthrottled)
+✅ liquidity_sweep als 2e strategie geactiveerd (wacht op eerste setups)
+✅ BE-geometrie coherent: fee-adjusted floor, ATR-cap, echte-fill-anker
+✅ live_trade_journal.json gereconcilieerd (0 stale OPEN-rijen)
+✅ PATCHES/JOURNAL bijgewerkt t/m PATCH-063
+
+AANDACHTSPUNTEN
+
+- Edge blijft dun: fee-drag > edge; recent ~1 trade/dag, kleine verliezen
+- liquidity_sweep heeft 0 afgesloten trades → geen live track record
+- Journal-drift root-cause loopt als aparte taak (exchange-sync-close → journal-close)
+- Volgende verdedigbare stap: fee-margin-filter op <30m churn (mét backtest,
+  niet blind live)
