@@ -542,3 +542,41 @@ def test_profit_lock_raises_below_be_stop_even_when_be_flag_set():
     assert saved["stop_loss"] >= expected_be - 1e-9, (
         f"stop {saved['stop_loss']} niet opgetild naar fee-BE {expected_be} ondanks be_active"
     )
+
+
+# --- avg_entry reconciliation: BE must use the REAL fill, not the planned price ---
+
+def test_avg_entry_reconciled_to_real_fill_and_be_raised_above_true_breakeven():
+    # Recorded avg_entry is the planned 99.8, but the real fill (exchange
+    # averageOpenPrice) is 100.0. A BE computed from 99.8 would sit BELOW the
+    # true break-even. After reconcile, BE is computed from 100.0 and the stop
+    # is raised to >= 100.0 * (1 + 0.16%).
+    manager = _manager([_live_payload(size=1.0)])  # averageOpenPrice = 100.0
+    pos = _position(entry=99.8, stop=99.5)
+    pos["actual_entry"] = 100.0
+    pos["max_favorable_excursion_pct"] = 0.9
+    pos["break_even_active"] = True
+    pos["profit_lock_active"] = True  # already armed with the WRONG entry
+    manager.store.save([pos])
+
+    manager.sync([_snapshot(price=100.50, high=100.60, low=100.45)])
+
+    saved = manager.store.load(default=[])[0]
+    assert abs(saved["avg_entry"] - 100.0) < 1e-6, "avg_entry niet gereconcilieerd naar echte fill"
+    expected_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)
+    assert saved["stop_loss"] >= expected_be - 1e-9, (
+        f"stop {saved['stop_loss']} onder de echte break-even {expected_be}"
+    )
+
+
+def test_correct_avg_entry_not_reconciled():
+    # avg_entry already matches the real fill -> no reconcile, no spurious change.
+    manager = _manager([_live_payload(size=1.0)])  # averageOpenPrice = 100.0
+    pos = _position(entry=100.0, stop=99.5)
+    pos["actual_entry"] = 100.0
+    manager.store.save([pos])
+
+    manager.sync([_snapshot(price=100.10, high=100.15, low=100.05)])
+
+    saved = manager.store.load(default=[])[0]
+    assert abs(saved["avg_entry"] - 100.0) < 1e-6

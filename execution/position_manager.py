@@ -347,6 +347,32 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             position["exchange_live_size"] = live_size
             position["exchange_remaining_pct"] = round(current_remaining_pct, 6)
             position["last_price"] = current_price
+
+            # Reconcile avg_entry to the REAL average fill. It was historically the
+            # planned ladder average, not the actual fill, so the fee-adjusted
+            # break-even (computed from avg_entry) could land BELOW the true
+            # break-even -> a "protected" stop-out still booked a loss. Prefer
+            # exchange truth (openPriceAvg), then the recorded actual fill.
+            real_entry = 0.0
+            if live_position:
+                for _k in ("openPriceAvg", "averageOpenPrice", "avgOpenPrice", "openAvgPrice", "openPrice"):
+                    real_entry = self._safe_float(live_position.get(_k), 0.0)
+                    if real_entry > 0:
+                        break
+            if real_entry <= 0:
+                real_entry = self._safe_float(position.get("actual_entry"), 0.0)
+            recorded_avg = self._safe_float(position.get("avg_entry"), 0.0)
+            if real_entry > 0 and recorded_avg > 0 and abs(real_entry - recorded_avg) / recorded_avg > 0.0005:
+                self.log.warning(
+                    "AVG_ENTRY_RECONCILED | %s | recorded=%s -> real_fill=%s | re-arming BE to true break-even",
+                    symbol, recorded_avg, real_entry,
+                )
+                position["avg_entry"] = round(real_entry, 8)
+                # Let the BE protection re-evaluate against the corrected entry so
+                # a stop parked below the true break-even gets raised (raise-only,
+                # guarded by be_is_tighter downstream).
+                position["profit_lock_active"] = False
+
             entry = float(position["avg_entry"])
             stop = float(position["stop_loss"])
             direction = position["direction"]

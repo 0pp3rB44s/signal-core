@@ -768,6 +768,12 @@ class ExecutionService:
                     extracted_actual_entry = _safe_float(fill_metrics.get("avg_price"), 0.0)
                     if extracted_actual_entry > 0:
                         actual_entry = round(extracted_actual_entry, 8)
+                        # avg_entry must be the REAL average fill, not the planned
+                        # ladder average -- the position manager computes the
+                        # fee-adjusted break-even from avg_entry, so a stale plan
+                        # price puts the BE stop below the true break-even (a
+                        # "protected" stop-out then still books a loss).
+                        avg_entry = actual_entry
                     else:
                         actual_entry = avg_entry
 
