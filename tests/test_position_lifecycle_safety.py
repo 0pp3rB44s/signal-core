@@ -505,3 +505,40 @@ def test_dead_timeout_requires_exchange_sync():
     rows = manager.store.load(default=[])
     assert rows[0]["status"] == "OPEN"  # fail-safe: geen close zonder exchange truth
     manager.client.close_futures_position_full.assert_not_called()
+
+
+# --- BE-floor: elke BE-actieve stop staat op >= fee-adjusted break-even ---
+
+def test_near_tp_protection_locks_at_fee_be_not_smaller_buffer():
+    # Reach ~90% of TP1 without hitting it; the near-TP lock must sit at the
+    # fee-adjusted BE (>=0.16%), not the old standalone 0.08% (net-loss) buffer.
+    manager = _manager([_live_payload(size=1.0)])
+    pos = _position(stop=99.0)
+    pos["max_favorable_excursion_pct"] = 0.9  # reached 90% of the 1% TP1 distance
+    manager.store.save([pos])
+    manager.settings.profit_lock_tp1_fraction = 0.99  # isolate: profit-lock won't arm yet
+
+    manager.sync([_snapshot(price=100.50, high=100.90, low=100.40)])
+
+    saved = manager.store.load(default=[])[0]
+    expected_min_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)  # 100.16
+    assert saved["stop_loss"] >= expected_min_be - 1e-9, (
+        f"near-TP lock op {saved['stop_loss']}, moet >= fee-BE {expected_min_be}"
+    )
+
+
+def test_profit_lock_raises_below_be_stop_even_when_be_flag_set():
+    # The ATOM situation: break_even_active already True but the stop is parked
+    # below entry. The profit-lock must still raise it to the fee-adjusted BE.
+    manager = _manager([_live_payload(size=1.0)])
+    pos = _position(stop=99.98, break_even_active=True)  # below entry 100
+    pos["max_favorable_excursion_pct"] = 0.9  # reached 90% of the 1% TP1 distance
+    manager.store.save([pos])
+
+    manager.sync([_snapshot(price=100.50, high=100.60, low=100.45)])
+
+    saved = manager.store.load(default=[])[0]
+    expected_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)
+    assert saved["stop_loss"] >= expected_be - 1e-9, (
+        f"stop {saved['stop_loss']} niet opgetild naar fee-BE {expected_be} ondanks be_active"
+    )

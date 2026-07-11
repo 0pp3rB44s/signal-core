@@ -432,11 +432,17 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 position["tp1_reach_pct"] = round(tp_reach_pct, 2)
 
                 if tp_reach_pct >= self.near_tp_protection_trigger_pct and not bool(position.get("near_tp_protection_active", False)):
+                    # Lock at least at the fee-adjusted break-even, not the older
+                    # standalone near_tp_be_fee_buffer_pct (0.08%) which sits BELOW
+                    # the ~0.12% roundtrip fee -> a "protected" stop-out still books
+                    # a net loss. Floor at _fee_adjusted_break_even so a near-TP
+                    # lock is flat-to-green like every other BE path.
+                    fee_be = self._fee_adjusted_break_even(direction, entry)
                     if direction == "LONG":
-                        protective_stop = round(entry * (1.0 + self.near_tp_be_fee_buffer_pct / 100.0), 8)
+                        protective_stop = round(max(entry * (1.0 + self.near_tp_be_fee_buffer_pct / 100.0), fee_be), 8)
                         should_move_stop = protective_stop > stop and protective_stop < current_price
                     else:
-                        protective_stop = round(entry * (1.0 - self.near_tp_be_fee_buffer_pct / 100.0), 8)
+                        protective_stop = round(min(entry * (1.0 - self.near_tp_be_fee_buffer_pct / 100.0), fee_be), 8)
                         should_move_stop = protective_stop < stop and protective_stop > current_price
 
                     position["near_tp_seen"] = True
@@ -782,6 +788,11 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             # reverses into a loss. Once MFE covers the configured fraction of
             # the TP1 distance, lock the trade at fee-adjusted break-even.
             profit_lock_fraction = float(getattr(self.settings, "profit_lock_tp1_fraction", 0.60) or 0.0)
+            # NOTE: intentionally NOT gated on `not break_even_active`. If an
+            # earlier protection (e.g. NEAR_TP) set the BE flag with a stop below
+            # the fee-adjusted break-even, this still raises the stop up to it.
+            # The be_is_tighter check below guarantees it only ever tightens, so
+            # it can never loosen a legitimately tighter stop.
             if (
                 profit_lock_fraction > 0
                 and tps
@@ -789,7 +800,6 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 and position.get("status") == "OPEN"
                 and not position.get("tp1_hit")
                 and not position.get("profit_lock_active")
-                and not position.get("break_even_active")
             ):
                 tp1_distance_pct = abs(float(tps[0]) - entry) / entry * 100.0
                 mfe_pct = float(position.get("max_favorable_excursion_pct") or 0.0)
