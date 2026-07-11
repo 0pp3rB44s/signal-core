@@ -996,6 +996,20 @@ class MarketFetcher:
                 f"Market snapshot build failed for {symbol}: primary={primary} confirmation={confirmation}"
             )
 
+        # 1m early-trigger layer (docs/EARLY_TRIGGER_1M.md). Flag-gated and
+        # fail-open: when disabled no 1m call is made; a fetch failure logs and
+        # the scan proceeds exactly as before (candles_1m stays None).
+        candles_1m = None
+        if bool(getattr(self.settings, "early_trigger_1m_enabled", False)):
+            try:
+                candles_1m = self.fetch_snapshot(
+                    symbol,
+                    getattr(self.settings, "early_trigger_1m_granularity", "1m"),
+                ).candles
+            except Exception as exc:
+                self.log.warning("EARLY_TRIGGER_1M_FETCH_FAILED | %s | error=%s", symbol.upper(), exc)
+                candles_1m = None
+
         return MarketSnapshot(
             symbol=symbol.upper(),
             contract=contract,
@@ -1008,6 +1022,7 @@ class MarketFetcher:
             context={
                 "volatility": volatility_context,
                 "breakout": breakout_context,
+                "candles_1m": candles_1m,
             },
             origin_distance_score=round(float(origin_distance_score or 0.0), 2),
             impulse_freshness_score=round(float(impulse_freshness_score or 100.0), 2),

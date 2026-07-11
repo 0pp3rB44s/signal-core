@@ -26,6 +26,7 @@ from risk.cooldown_manager import SymbolCooldownManager
 from agents_v2.learning.coach_rules import run as run_coach_rules
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
+from strategies.early_breakout_trigger import EarlyBreakoutTrigger
 from strategies.strategies.continuation import detect_continuation
 from strategies.strategies.low_vol_reclaim import detect_low_vol_reclaim
 from strategies.strategies.selector import select_best_candidate
@@ -300,6 +301,7 @@ class StartupRunner:
         self.strategy = LiquiditySweepStrategy(settings=settings)
         self.momentum_strategy = MomentumBreakoutStrategy(settings=settings)
         self.momentum_breakdown_strategy = MomentumBreakdownStrategy(settings=settings)
+        self.early_trigger = EarlyBreakoutTrigger(settings=settings)
         self.scorer = StrategyScorer(settings=settings)
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
@@ -632,6 +634,23 @@ class StartupRunner:
                     sweep_candidate = self.strategy.detect(snapshot)
                     momentum_candidate = self.momentum_strategy.detect(snapshot)
                     momentum_breakdown_candidate = self.momentum_breakdown_strategy.detect(snapshot)
+
+                    # 1m early-trigger layer (docs/EARLY_TRIGGER_1M.md). Additive
+                    # only: fills a momentum/breakdown slot solely when the normal
+                    # 15m detection produced nothing, plugging the 0-15m latency
+                    # gap. No-op unless EARLY_TRIGGER_1M_ENABLED is set.
+                    if momentum_candidate is None and momentum_breakdown_candidate is None:
+                        try:
+                            early_candidate = self.early_trigger.detect(snapshot)
+                        except Exception as exc:
+                            self.log.warning("EARLY_TRIGGER_1M_ERROR | %s | error=%s", snapshot.symbol, exc)
+                            early_candidate = None
+                        if early_candidate is not None:
+                            if early_candidate.direction == "LONG":
+                                momentum_candidate = early_candidate
+                            else:
+                                momentum_breakdown_candidate = early_candidate
+
                     continuation_candidate = None
                     low_vol_reclaim_candidate = None
 

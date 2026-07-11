@@ -1023,8 +1023,16 @@ class RiskManager:
         max_clean_breakout_pct = 0.70 if mtf_quality else (0.55 if symbol in major_symbols else 0.45)
         hard_extension_pct = 1.05 if mtf_quality else (0.85 if symbol in major_symbols else 0.70)
 
+        # The 1m early-trigger layer already volume-confirmed the breakout on the
+        # 1m timeframe (trigger_1m_volume_ratio, enforced in the detector). The
+        # 15m volume_ratio thresholds below are calibrated for post-breakout 15m
+        # volume, a different scale, and would wrongly block a fresh 1m breakout
+        # firing from a quiet 15m base. Skip the 15m volume block for these; all
+        # other momentum gates (extension, exhaustion, close_pos) stay active.
+        is_early_trigger_1m = "entry_trigger=1m_early" in note_text
+
         momentum_probe = False
-        if volume_ratio and volume_ratio < min_volume_ratio:
+        if not is_early_trigger_1m and volume_ratio and volume_ratio < min_volume_ratio:
             if volume_ratio >= min_volume_ratio * 0.75:
                 momentum_probe = True
                 reasons.append(
