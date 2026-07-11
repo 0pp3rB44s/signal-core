@@ -159,6 +159,13 @@ class Settings(BaseSettings):
     # MAKER_ENTRY_EXTENDED_WAIT_ENABLED=false om terug te vallen op de .env-wait.
     maker_entry_extended_wait_enabled: bool = Field(default=True, alias="MAKER_ENTRY_EXTENDED_WAIT_ENABLED")
     maker_entry_extended_wait_seconds: float = Field(default=30.0, alias="MAKER_ENTRY_EXTENDED_WAIT_SECONDS")
+    # Entry chase-limit (2026-07-11). Entries are laddered below market (a long
+    # waits for a pullback). When the breakout runs away instead, the maker limit
+    # doesn't fill and the bot market-buys at the higher price -> adverse
+    # selection (measured: fills >15bps past plan lose ~5x more per trade). Skip
+    # the trade instead of chasing when the market has run more than this many bps
+    # past the planned entry. 0 disables the cap.
+    max_entry_slippage_bps: float = Field(default=15.0, alias="MAX_ENTRY_SLIPPAGE_BPS")
     # Dead-trade timeout: a flat trade past its window occupies a slot another
     # setup could use. 0 disables. Only fires on flat trades (|pnl| below the
     # max) that never hit TP1, with verified live exchange state.

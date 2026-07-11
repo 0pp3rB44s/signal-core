@@ -523,6 +523,38 @@ class ExecutionService:
                             entry_via = "maker_then_market_fallback"
 
                     if live_order_id is None:
+                        # Chase-limit: if the market has run past the planned entry
+                        # by more than max_entry_slippage_bps, skip rather than
+                        # market-buy into an exhausted move. The SL/TP re-anchoring
+                        # keeps the geometry sound, but a chased entry is adverse
+                        # selection. Fail-open: proceed if the price check fails so
+                        # a transient orderbook error never blocks trading.
+                        max_slip_bps = float(getattr(self.settings, "max_entry_slippage_bps", 15.0) or 0.0)
+                        ref_entry = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or avg_entry
+                        if max_slip_bps > 0 and ref_entry > 0:
+                            market_now = self._current_market_price(plan.symbol, plan.direction)
+                            if market_now > 0:
+                                if str(plan.direction).upper() == "LONG":
+                                    chase_bps = (market_now - ref_entry) / ref_entry * 10000.0
+                                else:
+                                    chase_bps = (ref_entry - market_now) / ref_entry * 10000.0
+                                if chase_bps > max_slip_bps:
+                                    self.log.warning(
+                                        "ENTRY_CHASE_ABORTED | %s | dir=%s | planned=%.8f | market=%.8f | chase_bps=%.1f > cap=%.1f",
+                                        plan.symbol, plan.direction, ref_entry, market_now, chase_bps, max_slip_bps,
+                                    )
+                                    reports.append(
+                                        self._report(
+                                            plan=plan,
+                                            status="SKIPPED",
+                                            message=f"entry skipped: market ran {chase_bps:.1f}bps past plan (cap {max_slip_bps:.0f}bps)",
+                                            avg_entry=avg_entry,
+                                            notional=live_notional,
+                                            leverage=effective_leverage,
+                                        )
+                                    )
+                                    continue
+
                         live_order_payload = self.client.place_futures_market_order(
                             symbol=plan.symbol,
                             size=order_size,
@@ -1201,6 +1233,22 @@ class ExecutionService:
                 reason,
                 exc,
             )
+
+    def _current_market_price(self, symbol: str, direction: str) -> float:
+        """Best executable taker price: best ask for a long buy, best bid for a
+        short sell. Returns 0.0 if the orderbook can't be read (caller fails
+        open and proceeds with the market order)."""
+        try:
+            ob = self.client.get_orderbook(symbol) or {}
+            asks = ob.get("asks") or []
+            bids = ob.get("bids") or []
+            if str(direction).upper() == "LONG" and asks:
+                return _safe_float(asks[0].get("price"), 0.0)
+            if str(direction).upper() == "SHORT" and bids:
+                return _safe_float(bids[0].get("price"), 0.0)
+        except Exception as exc:
+            self.log.warning("CHASE_CHECK_PRICE_FETCH_FAILED | %s | error=%s", symbol, exc)
+        return 0.0
 
     def _report(
         self,
