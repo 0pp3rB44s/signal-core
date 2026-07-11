@@ -697,6 +697,21 @@ class TradePlanner:
             )
             notes.append("blocked_reason=reclaim_target_too_far")
 
+        # liquidity_sweep reachability: a deep sweep (wide wick stop) gives a far,
+        # unreachable TP1 -> BE drift. Only take sweeps where TP1 sits within a
+        # reachable multiple of ATR. The wick stop itself is left intact (a sweep
+        # must invalidate below its wick), so this filters bad-shape sweeps rather
+        # than tightening the stop into the noise.
+        is_sweep = "sweep" in strategy_name or "liquidity" in strategy_name
+        if is_sweep and atr_pct > 0:
+            sweep_tp1_cap_bps = float(getattr(self.settings, "sweep_tp1_atr_mult", 1.2)) * atr_pct * 100.0
+            if sweep_tp1_cap_bps > 0 and tp1_move_bps > sweep_tp1_cap_bps:
+                verdict = "BLOCKED"
+                reasons.append(
+                    f"SWEEP_TARGET_TOO_FAR {tp1_move_bps:.2f}bps > {sweep_tp1_cap_bps:.2f}bps (ATR-reachability)"
+                )
+                notes.append("blocked_reason=sweep_target_unreachable")
+
         # Reality Guard: block trades with unrealistic stop distance for low-vol reclaim
         if is_low_vol_reclaim and stop_move_bps > max(reclaim_tp1_cap_bps * 1.50, 220.0):
             verdict = "BLOCKED"

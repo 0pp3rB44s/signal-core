@@ -655,6 +655,9 @@ class LiquiditySweepStrategy:
         notes.append(f"sweep volume ratio {detection.volume_ratio_on_sweep:.2f}")
         notes.append("entry_model=sweep_reclaim_first")
         notes.append("score_profile=liquidity_sweep_reversal")
+        # Never traded before today (0 closed trades in the full history); trade
+        # at probe size until it earns a track record, like the 1m early-trigger.
+        notes.append("force_probe=true")
         for flag in detection.reason_flags:
             if "participation_score=" in flag or "followthrough_volume_ratio=" in flag:
                 notes.append(flag)

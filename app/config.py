@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     momentum_stop_atr_mult: float = Field(default=1.0, alias="MOMENTUM_STOP_ATR_MULT")
     momentum_stop_min_bps: float = Field(default=15.0, alias="MOMENTUM_STOP_MIN_BPS")
     momentum_stop_max_bps: float = Field(default=80.0, alias="MOMENTUM_STOP_MAX_BPS")
+    # liquidity_sweep_reversal reachability filter (2026-07-11). Sweep stops sit
+    # below the sweep wick (the strategy thesis), so a DEEP sweep gives a far,
+    # unreachable TP1 (e.g. ETH wick 0.74% -> TP1 1.18% vs ~0.35% typical move) ->
+    # drift to BE, the same trap that sank low_vol_reclaim. Block sweeps whose TP1
+    # is further than this multiple of ATR: only trade sweeps where the reversion
+    # can realistically reach a fee-clearing target. Keeps the wick stop intact.
+    sweep_tp1_atr_mult: float = Field(default=1.2, alias="SWEEP_TP1_ATR_MULT")
     # UTC hour windows where live results are historically negative; risk is
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")

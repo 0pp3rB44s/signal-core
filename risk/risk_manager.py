@@ -1198,12 +1198,13 @@ class RiskManager:
             allowed = False
         probe_mode = probe_mode or momentum_quality_probe
 
-        # 1m early-trigger trades (docs/EARLY_TRIGGER_1M.md) trade at probe size
-        # until the layer proves itself on live data, regardless of the momentum
-        # profile's own probe decision.
-        if "early_trigger_probe=true" in note_text:
+        # Unproven strategies trade at probe size until they earn a track record,
+        # regardless of any profile's own probe decision. Covers the 1m
+        # early-trigger (docs/EARLY_TRIGGER_1M.md) and liquidity_sweep_reversal
+        # (which had never traded and is being activated fresh).
+        if "early_trigger_probe=true" in note_text or "force_probe=true" in note_text:
             probe_mode = True
-            reasons.append("early-trigger 1m: probe size until proven")
+            reasons.append("unproven strategy: probe size until proven")
 
         if is_adaptive_fallback:
             required_score = 74

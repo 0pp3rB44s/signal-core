@@ -26,6 +26,7 @@ def _settings() -> MagicMock:
     s.account_equity_usdt = 100.0
     s.planner_adaptive_fallback_min_rr_to_tp1 = 0.70
     s.planner_strong_continuation_min_rr_to_tp1 = 0.75
+    s.sweep_tp1_atr_mult = 1.2
     return s
 
 
@@ -152,3 +153,35 @@ def test_reclaim_unaffected_by_momentum_branch():
     stop = planner._build_stop(c)
     dist_bps = (100.0 - stop) / 100.0 * 10000
     assert dist_bps >= 30, f"reclaim gebruikt eigen clamp (min 30bps), kreeg {dist_bps:.1f}bps"
+
+
+# --- liquidity_sweep reachability filter (2026-07-11) ---
+
+def _sweep_candidate(direction, invalidation, atr_pct):
+    c = _candidate("liquidity_sweep_reversal", direction)
+    c.detection.invalidation = invalidation
+    c.detection.sweep_extreme = invalidation
+    c.market.primary.latest_close = 100.0
+    c.market.primary.atr_percent = atr_pct
+    return c
+
+
+def test_sweep_deep_target_blocked_as_unreachable():
+    # 1% wick stop with 0.3% ATR -> TP1 (~1R) lands far beyond 1.2xATR -> block.
+    planner = TradePlanner(settings=_settings())
+    plan = planner.build(_sweep_candidate("LONG", invalidation=99.0, atr_pct=0.3), _score(), _risk())
+    assert plan.verdict == "BLOCKED"
+    assert any("sweep_target_unreachable" in str(n) for n in plan.notes)
+
+
+def test_sweep_shallow_target_not_flagged_unreachable():
+    # 0.3% wick with 0.5% ATR -> TP1 within 1.2xATR -> reachability guard passes.
+    planner = TradePlanner(settings=_settings())
+    plan = planner.build(_sweep_candidate("LONG", invalidation=99.70, atr_pct=0.5), _score(), _risk())
+    assert not any("sweep_target_unreachable" in str(n) for n in plan.notes)
+
+
+def test_momentum_unaffected_by_sweep_reachability_guard():
+    planner = TradePlanner(settings=_settings())
+    plan = planner.build(_candidate("momentum_breakout", "LONG"), _score(), _risk())
+    assert not any("sweep_target_unreachable" in str(n) for n in plan.notes)
