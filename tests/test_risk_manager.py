@@ -156,9 +156,35 @@ def test_execution_cost_gate_still_blocks_weak_sweep_at_extreme_close():
     assert any("entry too high in candle" in r for r in reasons)
 
 
-def test_execution_cost_gate_still_blocks_non_sweep_at_extreme_close():
+def test_execution_cost_gate_allows_strong_breakout_at_extreme_close():
+    # A momentum breakout closes at its high by design and is filled by a
+    # limit ladder below the close (PLANNER_LADDER_STEPS=3), so a high
+    # close_pos is not a bad fill. Strong participation must pass this gate
+    # (e.g. ENAUSDT LONG score=99 that was blocked solely on close_pos).
     rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
     candidate = _candidate(strategy="momentum_breakout")
+    candidate.direction = "LONG"
+    candidate.notes = ["close_pos=1.000", "participation_score=3.25", "followthrough_volume_ratio=4.97"]
+    allowed, reasons = rm._execution_cost_gate(candidate)
+    assert allowed, reasons
+
+
+def test_execution_cost_gate_still_blocks_weak_breakout_at_extreme_close():
+    # A breakout with no real participation stays blocked at the extreme close.
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    candidate = _candidate(strategy="momentum_breakout")
+    candidate.direction = "LONG"
+    candidate.notes = ["close_pos=0.95", "participation_score=0.40", "followthrough_volume_ratio=0.20"]
+    allowed, reasons = rm._execution_cost_gate(candidate)
+    assert not allowed
+    assert any("entry too high in candle" in r for r in reasons)
+
+
+def test_execution_cost_gate_still_blocks_unrelated_strategy_at_extreme_close():
+    # Strategies that do NOT close at their extreme by design (e.g. a pullback
+    # continuation) keep the close_pos protection regardless of participation.
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    candidate = _candidate(strategy="trend_continuation")
     candidate.direction = "LONG"
     candidate.notes = ["close_pos=0.95", "participation_score=1.50", "followthrough_volume_ratio=1.00"]
     allowed, reasons = rm._execution_cost_gate(candidate)

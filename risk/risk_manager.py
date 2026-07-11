@@ -922,40 +922,54 @@ class RiskManager:
                 f"execution-cost blocked: spread {spread_bps:.2f}bps with weak entry quality {entry_quality:.1f}"
             )
 
-        # A liquidity-sweep reversal closes near its extreme by design: the
-        # reclaim candle sweeps the level and closes strong. This gate blocked
-        # 15 of 22 sweep plans on exactly that signature (observed 2026-07),
-        # making the strategy dead on arrival. Allow the extreme close when
-        # the reclaim shows real participation; weak sweeps stay blocked.
-        is_sweep_reversal = "liquidity_sweep" in (candidate.strategy or "").lower()
-        sweep_participation = self._extract_note_float(candidate, "participation_score=", 0.0)
-        sweep_followthrough = self._extract_note_float(candidate, "followthrough_volume_ratio=", 0.0)
-        strong_sweep_reclaim = (
-            is_sweep_reversal
-            and sweep_participation >= 1.0
-            and sweep_followthrough >= 0.60
+        # A liquidity-sweep reversal AND a momentum breakout/breakdown both close
+        # near their candle extreme by design (the reclaim/breakout candle closes
+        # strong) and the planner fills them with a limit ladder placed BELOW the
+        # close for longs / ABOVE for shorts (PLANNER_LADDER_STEPS=3). A high
+        # close_pos therefore does NOT mean a bad fill for these strategies -- it
+        # measures where the candle closed, not where the bot actually fills.
+        # This gate blocked 15/22 sweep plans and ~11 breakout plans/night on
+        # exactly that signature (e.g. ENAUSDT LONG score=99, volume_ratio=4.97,
+        # participation=3.25, blocked solely by close_pos=1.000). Allow the
+        # extreme close when the move shows real participation and follow-through;
+        # weak candidates stay blocked, and exhaustion/extension remain hard
+        # blocks in the separate momentum-quality gate.
+        strategy_lower = (candidate.strategy or "").lower()
+        closes_at_extreme_by_design = (
+            "liquidity_sweep" in strategy_lower
+            or "breakout" in strategy_lower
+            or "breakdown" in strategy_lower
+        )
+        reclaim_participation = self._extract_note_float(candidate, "participation_score=", 0.0)
+        reclaim_followthrough = self._extract_note_float(candidate, "followthrough_volume_ratio=", 0.0)
+        strong_directional_reclaim = (
+            closes_at_extreme_by_design
+            and reclaim_participation >= 1.0
+            and reclaim_followthrough >= 0.60
         )
 
         if direction == "LONG" and close_pos >= (0.94 if mtf_quality else 0.90):
-            if strong_sweep_reclaim:
+            if strong_directional_reclaim:
                 logger.info(
-                    "SWEEP_RECLAIM_CLOSE_POS_ALLOWED | %s | direction=LONG | close_pos=%.3f | participation=%.2f | followthrough=%.2f",
+                    "STRONG_DIRECTIONAL_CLOSE_POS_ALLOWED | %s | strategy=%s | direction=LONG | close_pos=%.3f | participation=%.2f | followthrough=%.2f",
                     symbol,
+                    candidate.strategy,
                     close_pos,
-                    sweep_participation,
-                    sweep_followthrough,
+                    reclaim_participation,
+                    reclaim_followthrough,
                 )
             else:
                 reasons.append(f"execution-cost blocked: long entry too high in candle (close_pos={close_pos:.3f})")
 
         if direction == "SHORT" and close_pos <= (0.06 if mtf_quality else 0.10):
-            if strong_sweep_reclaim:
+            if strong_directional_reclaim:
                 logger.info(
-                    "SWEEP_RECLAIM_CLOSE_POS_ALLOWED | %s | direction=SHORT | close_pos=%.3f | participation=%.2f | followthrough=%.2f",
+                    "STRONG_DIRECTIONAL_CLOSE_POS_ALLOWED | %s | strategy=%s | direction=SHORT | close_pos=%.3f | participation=%.2f | followthrough=%.2f",
                     symbol,
+                    candidate.strategy,
                     close_pos,
-                    sweep_participation,
-                    sweep_followthrough,
+                    reclaim_participation,
+                    reclaim_followthrough,
                 )
             else:
                 reasons.append(f"execution-cost blocked: short entry too low in candle (close_pos={close_pos:.3f})")
