@@ -920,10 +920,37 @@ class TradePlanner:
         else:
             stop = raw_stop + buffer
 
+        atr_pct = float(getattr(candidate.market.primary, "atr_percent", 0.0) or 0.0)
+
+        # Momentum breakout/breakdown: cap the stop distance to ATR so the risk
+        # shape fits the actual move. Structural swing stops (0.47-0.68% observed)
+        # were far wider than the follow-through (~0.35% MFE), pushing TP1 out of
+        # reach. Tightening the stop here automatically pulls TP1/2/3 (built as
+        # RR x risk_per_unit downstream) into a reachable range while preserving
+        # RR; the fee gate still blocks setups whose reachable TP1 can't clear
+        # fees. Tighten only, never widen.
+        is_momentum = (
+            "momentum" in strategy_name or "breakout" in strategy_name or "breakdown" in strategy_name
+        )
+        if is_momentum and entry > 0 and atr_pct > 0:
+            try:
+                if bool(getattr(self.settings, "momentum_atr_geometry_enabled", True)):
+                    atr_mult = float(getattr(self.settings, "momentum_stop_atr_mult", 1.0))
+                    min_bps = float(getattr(self.settings, "momentum_stop_min_bps", 15.0))
+                    max_bps = float(getattr(self.settings, "momentum_stop_max_bps", 80.0))
+                    capped_stop_bps = min(max(atr_pct * 100.0 * atr_mult, min_bps), max_bps)
+                    if candidate.direction == "LONG":
+                        stop = max(stop, entry * (1.0 - (capped_stop_bps / 10000.0)))
+                    else:
+                        stop = min(stop, entry * (1.0 + (capped_stop_bps / 10000.0)))
+                    return round(stop, 8)
+            except (TypeError, ValueError):
+                # Non-numeric settings (e.g. MagicMock in unit tests) -> fall
+                # back to the structural stop rather than crash the planner.
+                pass
+
         if not is_low_vol_reclaim or entry <= 0:
             return stop
-
-        atr_pct = float(getattr(candidate.market.primary, "atr_percent", 0.0) or 0.0)
 
         if atr_pct <= 0:
             return stop

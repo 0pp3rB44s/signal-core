@@ -87,3 +87,68 @@ def test_single_tp_is_tp1_for_reclaim():
     plan = planner.build(_candidate("low_vol_reclaim", "LONG"), _score(), _risk())
     assert len(plan.take_profits) == 1
     assert any("single_tp_source=tp1_reclaim_profile" in str(n) for n in plan.notes)
+
+
+# --- Momentum ATR stop-geometrie (2026-07-11) ---
+
+def _atr_settings():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        planner_stop_buffer_bps=8.0,
+        momentum_atr_geometry_enabled=True,
+        momentum_stop_atr_mult=1.0,
+        momentum_stop_min_bps=15.0,
+        momentum_stop_max_bps=80.0,
+    )
+
+
+def _atr_candidate(strategy, direction, entry, invalidation, atr_pct):
+    from types import SimpleNamespace
+    detection = SimpleNamespace(invalidation=invalidation, entry_hint=entry, reason_flags=[])
+    primary = SimpleNamespace(latest_close=entry, atr_percent=atr_pct)
+    market = SimpleNamespace(primary=primary, notes=[])
+    return SimpleNamespace(strategy=strategy, direction=direction, detection=detection, market=market, notes=[])
+
+
+def test_momentum_wide_structural_stop_capped_to_atr():
+    # structural stop 0.60% wide, ATR 0.40% -> stop tightened to ~0.40% (40bps).
+    planner = TradePlanner(settings=_atr_settings())
+    c = _atr_candidate("momentum_breakout", "LONG", entry=100.0, invalidation=99.40, atr_pct=0.40)
+    stop = planner._build_stop(c)
+    dist_bps = (100.0 - stop) / 100.0 * 10000
+    assert 39 <= dist_bps <= 41, f"stop {dist_bps:.1f}bps, verwacht ~40bps (ATR-cap)"
+
+
+def test_momentum_already_tight_structural_stop_not_widened():
+    # structural stop 0.20% (tighter than 0.40% ATR) must be kept (never widened).
+    planner = TradePlanner(settings=_atr_settings())
+    c = _atr_candidate("momentum_breakout", "LONG", entry=100.0, invalidation=99.80, atr_pct=0.40)
+    stop = planner._build_stop(c)
+    dist_bps = (100.0 - stop) / 100.0 * 10000
+    assert dist_bps < 30, f"strakke structurele stop mag niet verbreed worden (kreeg {dist_bps:.1f}bps)"
+
+
+def test_momentum_atr_cap_disabled_keeps_structural():
+    s = _atr_settings(); s.momentum_atr_geometry_enabled = False
+    planner = TradePlanner(settings=s)
+    c = _atr_candidate("momentum_breakout", "LONG", entry=100.0, invalidation=99.40, atr_pct=0.40)
+    stop = planner._build_stop(c)
+    dist_bps = (100.0 - stop) / 100.0 * 10000
+    assert dist_bps > 55, f"met flag uit moet de brede structurele stop blijven (kreeg {dist_bps:.1f}bps)"
+
+
+def test_momentum_short_stop_capped_to_atr():
+    planner = TradePlanner(settings=_atr_settings())
+    c = _atr_candidate("momentum_breakdown", "SHORT", entry=100.0, invalidation=100.60, atr_pct=0.40)
+    stop = planner._build_stop(c)
+    dist_bps = (stop - 100.0) / 100.0 * 10000
+    assert 39 <= dist_bps <= 41, f"short stop {dist_bps:.1f}bps, verwacht ~40bps"
+
+
+def test_reclaim_unaffected_by_momentum_branch():
+    # low_vol_reclaim keeps its own ATR clamp (30-85bps), not the momentum one.
+    planner = TradePlanner(settings=_atr_settings())
+    c = _atr_candidate("low_vol_reclaim", "LONG", entry=100.0, invalidation=99.40, atr_pct=0.40)
+    stop = planner._build_stop(c)
+    dist_bps = (100.0 - stop) / 100.0 * 10000
+    assert dist_bps >= 30, f"reclaim gebruikt eigen clamp (min 30bps), kreeg {dist_bps:.1f}bps"

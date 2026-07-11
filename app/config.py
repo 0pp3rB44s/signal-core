@@ -106,6 +106,17 @@ class Settings(BaseSettings):
     # guarantees a BE stop-out is flat-to-slightly-green. Not in .env (code-
     # controlled). 0.04% keeps the BE stop well below TP1 (~0.4-0.5%).
     break_even_extra_margin_pct: float = Field(default=0.04, alias="BREAK_EVEN_EXTRA_MARGIN_PCT")
+    # Momentum ATR geometry (2026-07-11). Structural swing stops on momentum
+    # breakouts were 0.47-0.68% wide while the actual follow-through was only
+    # ~0.35% (MFE), so TP1 (= RR x stop distance) landed beyond reach and trades
+    # drifted back to BE. Cap the momentum stop distance to ATR so TP1 follows
+    # into a reachable range while RR is preserved; the fee gate still blocks
+    # setups whose ATR-reachable TP1 cannot clear fees. low_vol_reclaim already
+    # has its own ATR clamp. Set MOMENTUM_ATR_GEOMETRY_ENABLED=false to revert.
+    momentum_atr_geometry_enabled: bool = Field(default=True, alias="MOMENTUM_ATR_GEOMETRY_ENABLED")
+    momentum_stop_atr_mult: float = Field(default=1.0, alias="MOMENTUM_STOP_ATR_MULT")
+    momentum_stop_min_bps: float = Field(default=15.0, alias="MOMENTUM_STOP_MIN_BPS")
+    momentum_stop_max_bps: float = Field(default=80.0, alias="MOMENTUM_STOP_MAX_BPS")
     # UTC hour windows where live results are historically negative; risk is
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
