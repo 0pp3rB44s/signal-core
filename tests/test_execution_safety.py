@@ -58,13 +58,36 @@ def test_duplicate_open_trade_is_prevented(tmp_path) -> None:
     assert closed[0]["status"] == "CLOSED"
 
 
-def test_fee_adjusted_break_even_buffer_math() -> None:
-    entry = 100.0
-    fee_buffer_pct = 0.12
+def _be_stub(configured=0.10, fee_bps=12.0, margin=0.04):
+    from types import SimpleNamespace
+    from execution.tp_sl_lifecycle import TpSlLifecycleMixin
 
-    break_even = entry * (1 + (fee_buffer_pct / 100))
+    stub = TpSlLifecycleMixin.__new__(TpSlLifecycleMixin)
+    stub.settings = SimpleNamespace(
+        break_even_fee_buffer_pct=configured,
+        planner_estimated_roundtrip_fee_bps=fee_bps,
+        break_even_extra_margin_pct=margin,
+    )
+    return stub
 
-    assert round(break_even, 4) == 100.12
+
+def test_fee_adjusted_break_even_covers_fees_plus_margin() -> None:
+    # BE buffer must be max(configured, roundtrip_fee + margin). With the .env
+    # 0.10% (below the 0.12% roundtrip fee) the effective buffer becomes
+    # 0.12 + 0.04 = 0.16%, so a BE stop-out is flat-to-green, not a fee loss.
+    stub = _be_stub(configured=0.10, fee_bps=12.0, margin=0.04)
+    be_long = stub._fee_adjusted_break_even("LONG", 100.0)
+    be_short = stub._fee_adjusted_break_even("SHORT", 100.0)
+    assert round(be_long, 4) == 100.16
+    assert round(be_short, 4) == 99.84
+    # The buffer now exceeds the roundtrip fee, so the net after fees is positive.
+    assert (be_long - 100.0) / 100.0 * 100.0 > 12.0 / 100.0
+
+
+def test_fee_adjusted_break_even_respects_higher_configured_buffer() -> None:
+    # An explicitly larger configured buffer still wins the max().
+    stub = _be_stub(configured=0.30, fee_bps=12.0, margin=0.04)
+    assert round(stub._fee_adjusted_break_even("LONG", 100.0), 4) == 100.30
 
 
 def test_dynamic_precision_rounding() -> None:

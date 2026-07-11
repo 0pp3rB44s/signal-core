@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     planner_min_live_notional_usdt: float = Field(default=10.0, alias="PLANNER_MIN_LIVE_NOTIONAL_USDT")
     symbol_cooldown_minutes: int = Field(default=30, alias="SYMBOL_COOLDOWN_MINUTES")
     break_even_fee_buffer_pct: float = Field(default=0.10, alias="BREAK_EVEN_FEE_BUFFER_PCT")
+    # Extra margin ON TOP of the roundtrip fees for the break-even stop. Without
+    # this the BE buffer (.env 0.10%) is BELOW the ~0.12% roundtrip taker fee, so
+    # a trade that runs up then returns to "break-even" still books a small net
+    # loss -- a slow bleed. The effective BE buffer is therefore
+    # max(break_even_fee_buffer_pct, roundtrip_fee_pct + this margin), which
+    # guarantees a BE stop-out is flat-to-slightly-green. Not in .env (code-
+    # controlled). 0.04% keeps the BE stop well below TP1 (~0.4-0.5%).
+    break_even_extra_margin_pct: float = Field(default=0.04, alias="BREAK_EVEN_EXTRA_MARGIN_PCT")
     # UTC hour windows where live results are historically negative; risk is
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")

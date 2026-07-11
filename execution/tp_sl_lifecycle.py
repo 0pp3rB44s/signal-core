@@ -637,7 +637,21 @@ class TpSlLifecycleMixin:
             return False
 
     def _fee_adjusted_break_even(self, direction: str, entry: float) -> float:
-        buffer_pct = float(getattr(self.settings, "break_even_fee_buffer_pct", 0.10) or 0.10)
+        def _sf(name: str, default: float) -> float:
+            try:
+                return float(getattr(self.settings, name, default))
+            except (TypeError, ValueError):
+                return default
+
+        # The BE stop must clear the FULL roundtrip fees plus a small margin, or
+        # a stop-out at "break-even" still books a net loss (the slow bleed on
+        # trades that run up then return to BE). Tie it to the planner's own fee
+        # estimate so it self-corrects, and never drop below the configured
+        # buffer. e.g. max(0.10, 0.12 + 0.04) = 0.16%.
+        configured = _sf("break_even_fee_buffer_pct", 0.10)
+        roundtrip_fee_pct = _sf("planner_estimated_roundtrip_fee_bps", 12.0) / 100.0
+        extra_margin_pct = _sf("break_even_extra_margin_pct", 0.04)
+        buffer_pct = max(configured, roundtrip_fee_pct + extra_margin_pct)
         buffer = buffer_pct / 100.0
         if direction.upper() == "LONG":
             return entry * (1.0 + buffer)

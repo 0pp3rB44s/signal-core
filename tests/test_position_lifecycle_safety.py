@@ -22,6 +22,11 @@ from execution.position_manager import PositionManager
 TP1_CLOSE_PCT = 40.0
 TP2_CLOSE_PCT = 30.0
 BE_FEE_BUFFER_PCT = 0.10
+ROUNDTRIP_FEE_BPS = 12.0
+BE_EXTRA_MARGIN_PCT = 0.04
+# Effective BE buffer must clear the full roundtrip fees + margin (see
+# _fee_adjusted_break_even), so a BE stop-out is flat-to-green, not a fee loss.
+EFFECTIVE_BE_BUFFER_PCT = max(BE_FEE_BUFFER_PCT, ROUNDTRIP_FEE_BPS / 100.0 + BE_EXTRA_MARGIN_PCT)
 
 
 def _settings() -> MagicMock:
@@ -32,6 +37,8 @@ def _settings() -> MagicMock:
     settings.move_stop_to_be_after_tp1 = True
     settings.tp3_close_all_remainder = True
     settings.break_even_fee_buffer_pct = BE_FEE_BUFFER_PCT
+    settings.planner_estimated_roundtrip_fee_bps = ROUNDTRIP_FEE_BPS
+    settings.break_even_extra_margin_pct = BE_EXTRA_MARGIN_PCT
     settings.symbol_cooldown_minutes = 30
     settings.account_equity_usdt = 100.0
     settings.profit_lock_tp1_fraction = 0.60
@@ -139,7 +146,7 @@ def test_tp1_hit_moves_sl_to_exact_fee_adjusted_break_even():
 
     saved = manager.store.load(default=[])[0]
     assert saved["tp1_hit"] is True
-    expected_be = 100.0 * (1.0 + BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)
     assert saved["stop_loss"] == expected_be
     assert saved["break_even_active"] is True
     assert saved["remaining_size_pct"] == 100.0 - TP1_CLOSE_PCT
@@ -281,7 +288,7 @@ def test_short_tp1_hit_moves_sl_to_fee_adjusted_break_even_below_entry():
 
     saved = manager.store.load(default=[])[0]
     assert saved["tp1_hit"] is True
-    expected_be = 100.0 * (1.0 - BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 100.0 * (1.0 - EFFECTIVE_BE_BUFFER_PCT / 100.0)
     assert saved["stop_loss"] == expected_be
 
 
@@ -319,7 +326,7 @@ def test_profit_lock_arms_at_60pct_of_tp1_long():
     saved = manager.store.load(default=[])[0]
     assert saved["profit_lock_active"] is True
     assert not saved.get("tp1_hit")  # TP1 zelf niet geraakt
-    expected_be = 100.0 * (1.0 + BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)
     assert saved["stop_loss"] == expected_be
     assert saved["break_even_active"] is True
 
@@ -334,7 +341,7 @@ def test_profit_lock_arms_symmetrically_for_short():
 
     saved = manager.store.load(default=[])[0]
     assert saved["profit_lock_active"] is True
-    expected_be = 100.0 * (1.0 - BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 100.0 * (1.0 - EFFECTIVE_BE_BUFFER_PCT / 100.0)
     assert saved["stop_loss"] == expected_be
 
 
