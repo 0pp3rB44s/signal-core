@@ -124,20 +124,20 @@ class Settings(BaseSettings):
     # max) that never hit TP1, with verified live exchange state.
     dead_trade_timeout_reclaim_minutes: float = Field(default=90.0, alias="DEAD_TRADE_TIMEOUT_RECLAIM_MINUTES")
     # 1m early-trigger layer (docs/EARLY_TRIGGER_1M.md). Cuts the 0-15min
-    # breakout-detection latency by catching a fresh 1m breakout, confirmed by
-    # volume/body and 15m/1H trend alignment, and routing it through the normal
-    # momentum_breakout pipeline with a STRUCTURAL 15m stop (hold for the move,
-    # not a 1m scalp). STANDAARD UIT: with the flag off no 1m data is fetched and
-    # the scan is byte-for-byte unchanged. Enable only on probe size after the
-    # breakout close_pos fix has proven green.
-    early_trigger_1m_enabled: bool = Field(default=False, alias="EARLY_TRIGGER_1M_ENABLED")
-    early_trigger_1m_granularity: str = Field(default="1m", alias="EARLY_TRIGGER_1M_GRANULARITY")
+    # breakout-detection latency: catches a fresh 1m breakout, confirmed on the
+    # 5m and aligned with the 15m/1H trend, and routes it through the normal
+    # momentum_breakout pipeline with a STRUCTURAL 15m stop, at PROBE size until
+    # proven. 1m/5m data is reused from the multi_tf_cache (no extra API calls).
+    # Timeframe stack: context 1H -> setup 15m -> confirm 5m -> trigger 1m.
+    # Enabled per Bryon 2026-07-11; set EARLY_TRIGGER_1M_ENABLED=false in .env to
+    # disable. Trades are probe-sized and tagged entry_trigger=1m_early.
+    early_trigger_1m_enabled: bool = Field(default=True, alias="EARLY_TRIGGER_1M_ENABLED")
+    early_trigger_5m_confirm_enabled: bool = Field(default=True, alias="EARLY_TRIGGER_5M_CONFIRM_ENABLED")
     early_trigger_1m_lookback: int = Field(default=20, alias="EARLY_TRIGGER_1M_LOOKBACK")
     early_trigger_1m_min_volume_ratio: float = Field(default=2.0, alias="EARLY_TRIGGER_1M_MIN_VOLUME_RATIO")
     early_trigger_1m_min_body_pct: float = Field(default=0.5, alias="EARLY_TRIGGER_1M_MIN_BODY_PCT")
     early_trigger_1m_max_displacement_pct: float = Field(default=0.5, alias="EARLY_TRIGGER_1M_MAX_DISPLACEMENT_PCT")
     early_trigger_1m_structural_stop_lookback_15m: int = Field(default=4, alias="EARLY_TRIGGER_1M_STRUCTURAL_STOP_LOOKBACK_15M")
-    early_trigger_1m_candle_limit: int = Field(default=60, alias="EARLY_TRIGGER_1M_CANDLE_LIMIT")
     dead_trade_timeout_default_minutes: float = Field(default=240.0, alias="DEAD_TRADE_TIMEOUT_DEFAULT_MINUTES")
     dead_trade_max_abs_pnl_pct: float = Field(default=0.20, alias="DEAD_TRADE_MAX_ABS_PNL_PCT")
     # Profit-lock (P1.1A): once MFE reaches this fraction of the TP1 distance,

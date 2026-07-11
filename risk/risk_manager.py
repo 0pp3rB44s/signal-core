@@ -1191,6 +1191,13 @@ class RiskManager:
             allowed = False
         probe_mode = probe_mode or momentum_quality_probe
 
+        # 1m early-trigger trades (docs/EARLY_TRIGGER_1M.md) trade at probe size
+        # until the layer proves itself on live data, regardless of the momentum
+        # profile's own probe decision.
+        if "early_trigger_probe=true" in note_text:
+            probe_mode = True
+            reasons.append("early-trigger 1m: probe size until proven")
+
         if is_adaptive_fallback:
             required_score = 74
         elif is_momentum:

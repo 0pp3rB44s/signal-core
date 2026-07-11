@@ -1,14 +1,19 @@
-"""1-minute early-trigger layer (docs/EARLY_TRIGGER_1M.md).
+"""1-minute early-trigger layer with 5m confirmation (docs/EARLY_TRIGGER_1M.md).
 
-Catches a momentum breakout AS it forms on the 1m timeframe, ~1 minute after it
-starts instead of waiting up to 15 minutes for the 15m candle to close. The 1m
-data is only a SIGNAL: the emitted candidate reuses the momentum_breakout /
-momentum_breakdown identity, flows through the normal scoring/risk/planner
-pipeline, and gets a STRUCTURAL 15m stop so the trade holds for the bigger move
-instead of scalping the 1m.
+Catches a momentum breakout AS it forms on the 1m timeframe (~1 min late instead
+of up to 15) and confirms it on the 5m before firing, so a lone 1m spike against
+a stalling 5m is filtered out. The multi-timeframe stack:
 
-Feature-flagged (settings.early_trigger_1m_enabled). When off, detect() returns
-None immediately and nothing is fetched or emitted.
+    context 1H  ->  setup 15m  ->  confirm 5m  ->  trigger 1m
+
+The 1m/5m data is reused from the already-populated multi_tf_cache (no extra API
+calls). The emitted candidate reuses the momentum_breakout / momentum_breakdown
+identity, flows through the normal scoring/risk/planner pipeline with a
+STRUCTURAL 15m stop, and is tagged to trade at PROBE size until proven. 1m/5m are
+SIGNAL timeframes only; the trade is held for the bigger 15m/1H move (not a
+1m scalp — scalps lose to fees).
+
+Feature-flagged (settings.early_trigger_1m_enabled).
 """
 
 from __future__ import annotations
@@ -19,6 +24,32 @@ from clients.schemas import Candle, MarketSnapshot, StrategyCandidate
 from strategies.momentum_breakout import BreakoutDetection
 
 logger = logging.getLogger("StartupRunner")
+
+
+def candles_from_cache_rows(rows) -> list[Candle]:
+    """Convert multi_tf_cache dict rows -> Candle objects, sorted oldest->newest.
+    The cache preserves raw Bitget order (not guaranteed ascending), so we sort
+    explicitly; candles[-1] must be the most recent closed candle."""
+    if not rows:
+        return []
+    candles: list[Candle] = []
+    for r in rows:
+        try:
+            candles.append(
+                Candle(
+                    timestamp_ms=int(r["timestamp"]),
+                    open=float(r["open"]),
+                    high=float(r["high"]),
+                    low=float(r["low"]),
+                    close=float(r["close"]),
+                    volume_base=float(r["volume"]),
+                    volume_quote=None,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    candles.sort(key=lambda c: c.timestamp_ms)
+    return candles
 
 
 def _volume_ratio_at(candles: list[Candle], index: int, period: int = 20) -> float:
@@ -36,7 +67,7 @@ def _volume_ratio_at(candles: list[Candle], index: int, period: int = 20) -> flo
 
 def _participation_score(candles: list[Candle], direction: str) -> float:
     """Mirror of MomentumBreakoutStrategy._participation_score on 1m data
-    (scale ~0.0-2.75) so the momentum scorer/close_pos gate read a comparable
+    (scale ~0.0-2.75) so the momentum scorer / close_pos gate read a comparable
     value."""
     if len(candles) < 3:
         return 0.0
@@ -65,9 +96,20 @@ def _participation_score(candles: list[Candle], direction: str) -> float:
     return round(score, 2)
 
 
+def _ema(values: list[float], period: int) -> float:
+    if not values:
+        return 0.0
+    alpha = 2.0 / (period + 1.0)
+    ema = float(values[0])
+    for v in values[1:]:
+        ema = (float(v) * alpha) + (ema * (1.0 - alpha))
+    return ema
+
+
 class EarlyBreakoutTrigger:
-    """Detects a fresh, volume-confirmed 1m breakout aligned with the 15m/1H
-    trend and emits a momentum_breakout / momentum_breakdown candidate."""
+    """Detects a fresh, volume-confirmed 1m breakout, confirmed on the 5m and
+    aligned with the 15m/1H trend; emits a momentum_breakout / momentum_breakdown
+    candidate that trades at probe size."""
 
     def __init__(self, settings) -> None:
         self.settings = settings
@@ -76,7 +118,8 @@ class EarlyBreakoutTrigger:
         if not bool(getattr(self.settings, "early_trigger_1m_enabled", False)):
             return None
 
-        candles_1m = (getattr(market, "context", {}) or {}).get("candles_1m")
+        context = getattr(market, "context", {}) or {}
+        candles_1m = context.get("candles_1m")
         lookback = int(getattr(self.settings, "early_trigger_1m_lookback", 20))
         if not candles_1m or len(candles_1m) < lookback + 2:
             return None
@@ -85,7 +128,6 @@ class EarlyBreakoutTrigger:
         primary_trend = (market.primary.trend or "").lower()
         confirmation_trend = (market.confirmation.trend or "").lower()
 
-        # Trend alignment: never take a 1m breakout against the higher-TF trend.
         long_ok = (
             alignment in {"aligned_bullish", "mixed"}
             and primary_trend != "bearish"
@@ -113,7 +155,6 @@ class EarlyBreakoutTrigger:
         min_body = float(getattr(self.settings, "early_trigger_1m_min_body_pct", 0.5))
         max_disp = float(getattr(self.settings, "early_trigger_1m_max_displacement_pct", 0.5))
 
-        # Volume expansion + real body are the false-breakout defence.
         if vol_ratio_1m < min_vr or body_pct < min_body:
             return None
 
@@ -129,7 +170,28 @@ class EarlyBreakoutTrigger:
         if direction is None:
             return None
 
+        # 5m confirmation: a genuine breakout shows up on the 5m too, not just a
+        # single 1m spike. Requires the last closed 5m candle to push in the
+        # breakout direction and price to sit on the right side of the 5m EMA.
+        if not self._confirm_5m(context.get("candles_5m"), direction):
+            return None
+
         return self._build_candidate(market, candles_1m, last, direction, vol_ratio_1m)
+
+    def _confirm_5m(self, candles_5m, direction: str) -> bool:
+        # Fail-open: if 5m confirmation is disabled or the data is missing, do
+        # not block the trigger (1m + 15m/1H already agree).
+        if not bool(getattr(self.settings, "early_trigger_5m_confirm_enabled", True)):
+            return True
+        if not candles_5m or len(candles_5m) < 21:
+            return True
+
+        last5 = candles_5m[-1]
+        closes = [c.close for c in candles_5m[-21:]]
+        ema20 = _ema(closes, 20)
+        if direction == "LONG":
+            return last5.close > last5.open and last5.close >= ema20
+        return last5.close < last5.open and last5.close <= ema20
 
     def _build_candidate(
         self,
@@ -141,7 +203,7 @@ class EarlyBreakoutTrigger:
     ) -> StrategyCandidate | None:
         entry = float(last.close)
         rng = max(last.high - last.low, 1e-9)
-        close_pos = (last.close - last.low) / rng  # ~1.0 for a strong breakout
+        close_pos = (last.close - last.low) / rng
 
         # Structural stop from the 15m primary, NOT a tight 1m level: hold for
         # the bigger move. For momentum the planner does not ATR-clamp the stop,
@@ -151,23 +213,24 @@ class EarlyBreakoutTrigger:
         recent15 = c15[-stop_lb:] if len(c15) >= stop_lb else c15
         if direction == "LONG":
             structural = min((c.low for c in recent15), default=entry)
-            invalidation = min(structural, entry * (1.0 - 0.001))  # guarantee below entry
+            invalidation = min(structural, entry * (1.0 - 0.001))
         else:
             structural = max((c.high for c in recent15), default=entry)
-            invalidation = max(structural, entry * (1.0 + 0.001))  # guarantee above entry
+            invalidation = max(structural, entry * (1.0 + 0.001))
 
         participation = _participation_score(candles_1m, direction)
         followthrough = round(vol_ratio_1m, 2)
-        # 15m volume ratio on its own scale, for the momentum scorer/gate.
         volume_ratio_15m = float(getattr(market.primary, "volume_ratio_20", 0.0) or 0.0)
         strategy_name = "momentum_breakout" if direction == "LONG" else "momentum_breakdown"
 
         notes = [
             "early_breakout_trigger_1m",
             "entry_trigger=1m_early",
+            "early_trigger_probe=true",
             "breakout above range" if direction == "LONG" else "breakdown below range",
             "volume expansion",
             "strong continuation close",
+            "5m_confirmed=true",
             f"breakout_pct={0.0:.2f}",
             f"breakdown_pct={0.0:.2f}",
             "bars_since_breakout=0",
@@ -198,7 +261,7 @@ class EarlyBreakoutTrigger:
         )
 
         logger.info(
-            "EARLY_TRIGGER_1M_FIRED | %s | strategy=%s | direction=%s | entry=%.8f | stop=%.8f | vol_ratio_1m=%.2f | participation=%.2f | close_pos=%.3f | alignment=%s",
+            "EARLY_TRIGGER_1M_FIRED | %s | strategy=%s | direction=%s | entry=%.8f | stop=%.8f | vol_ratio_1m=%.2f | participation=%.2f | close_pos=%.3f | alignment=%s | 5m_confirmed=true",
             market.symbol,
             strategy_name,
             direction,

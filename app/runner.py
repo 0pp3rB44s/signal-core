@@ -26,7 +26,7 @@ from risk.cooldown_manager import SymbolCooldownManager
 from agents_v2.learning.coach_rules import run as run_coach_rules
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
-from strategies.early_breakout_trigger import EarlyBreakoutTrigger
+from strategies.early_breakout_trigger import EarlyBreakoutTrigger, candles_from_cache_rows
 from strategies.strategies.continuation import detect_continuation
 from strategies.strategies.low_vol_reclaim import detect_low_vol_reclaim
 from strategies.strategies.selector import select_best_candidate
@@ -639,7 +639,27 @@ class StartupRunner:
                     # only: fills a momentum/breakdown slot solely when the normal
                     # 15m detection produced nothing, plugging the 0-15m latency
                     # gap. No-op unless EARLY_TRIGGER_1M_ENABLED is set.
-                    if momentum_candidate is None and momentum_breakdown_candidate is None:
+                    if (
+                        momentum_candidate is None
+                        and momentum_breakdown_candidate is None
+                        and getattr(self.settings, "early_trigger_1m_enabled", False)
+                    ):
+                        # Reuse the 1m/5m already refreshed into the multi_tf_cache
+                        # this scan (no extra API calls); skip stale timeframes.
+                        for tf, ctx_key in (("1m", "candles_1m"), ("5m", "candles_5m")):
+                            try:
+                                if self.multi_tf_cache.is_stale(symbol, tf):
+                                    snapshot.context[ctx_key] = None
+                                else:
+                                    snapshot.context[ctx_key] = candles_from_cache_rows(
+                                        self.multi_tf_cache.get(symbol, tf)
+                                    )
+                            except Exception as exc:
+                                self.log.warning(
+                                    "EARLY_TRIGGER_CACHE_READ_FAILED | %s | tf=%s | error=%s",
+                                    symbol, tf, exc,
+                                )
+                                snapshot.context[ctx_key] = None
                         try:
                             early_candidate = self.early_trigger.detect(snapshot)
                         except Exception as exc:
