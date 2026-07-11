@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     max_daily_loss_pct: float = Field(default=1.5, alias="MAX_DAILY_LOSS_PCT")
     hard_daily_stop_pct: float = Field(default=2.0, alias="HARD_DAILY_STOP_PCT")
     weekly_freeze_loss_pct: float = Field(default=7.0, alias="WEEKLY_FREEZE_LOSS_PCT")
+    # Master switch for the weekly-freeze kill-switch. Put on hold 2026-07-11 at
+    # owner request (the freeze had jammed on a losing week dominated by the now
+    # hard-paused low_vol_reclaim, blocking the new setups we need live data on).
+    # The daily-stop (HARD_DAILY_STOP_PCT) and consecutive-loss kill-switches stay
+    # active. Set WEEKLY_FREEZE_ENABLED=true to restore the weekly freeze.
+    weekly_freeze_enabled: bool = Field(default=False, alias="WEEKLY_FREEZE_ENABLED")
     planner_ladder_steps: int = Field(default=3, alias="PLANNER_LADDER_STEPS")
     planner_stop_buffer_bps: int = Field(default=8, alias="PLANNER_STOP_BUFFER_BPS")
     planner_tp1_r_multiple: float = Field(default=1.2, alias="PLANNER_TP1_R_MULTIPLE")

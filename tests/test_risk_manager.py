@@ -106,6 +106,45 @@ def test_strategy_weighting_negative_expectancy_probes_at_reduced_size():
     assert any("PROBE: negative expectancy" in r for r in reasons)
 
 
+def _make_weekly_freeze_rm(enabled: bool, weekly_pnl: float, equity: float = 58.8) -> RiskManager:
+    settings = MagicMock()
+    settings.account_equity_usdt = equity
+    settings.hard_daily_stop_pct = 2.0
+    settings.weekly_freeze_loss_pct = 7.0
+    settings.weekly_freeze_enabled = enabled
+    rm = RiskManager(settings=settings)
+    rm._latest_backtest_summary = lambda: {"by_strategy": {}, "by_symbol": {}}
+    rm._latest_strategy_expectancy = lambda: {}
+    rm._weekly_realized_pnl = lambda: weekly_pnl
+    rm._daily_defensive_status = lambda: {"daily_total_net_pnl": 0.0, "consecutive_losses": 0, "report_readable": True}
+    return rm
+
+
+def test_weekly_freeze_fires_when_enabled():
+    # -4.28 on 58.8 equity = 7.27% > 7% -> freeze active.
+    rm = _make_weekly_freeze_rm(enabled=True, weekly_pnl=-4.28)
+    allowed, reasons = rm._kill_switch_gate(_candidate())
+    assert not allowed
+    assert any("weekly freeze active" in r for r in reasons)
+
+
+def test_weekly_freeze_on_hold_when_disabled():
+    # Same loss, switch off -> weekly freeze must NOT fire.
+    rm = _make_weekly_freeze_rm(enabled=False, weekly_pnl=-4.28)
+    allowed, reasons = rm._kill_switch_gate(_candidate())
+    assert allowed
+    assert not any("weekly freeze active" in r for r in reasons)
+
+
+def test_daily_stop_still_fires_with_weekly_freeze_disabled():
+    # Disabling the weekly freeze must NOT disable the daily-stop brake.
+    rm = _make_weekly_freeze_rm(enabled=False, weekly_pnl=0.0)
+    rm._daily_defensive_status = lambda: {"daily_total_net_pnl": -5.0, "consecutive_losses": 0, "report_readable": True}
+    allowed, reasons = rm._kill_switch_gate(_candidate())
+    assert not allowed
+    assert any("daily" in r for r in reasons)
+
+
 def test_strategy_weighting_pause_status_hard_blocks():
     # A PAUSE verdict from the learning report with a solid sample must stop
     # the strategy completely; probe-mode data collection at live fee cost

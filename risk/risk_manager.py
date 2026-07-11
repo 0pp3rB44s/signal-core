@@ -181,8 +181,15 @@ class RiskManager:
                 f"kill-switch: consecutive loss limit reached ({consecutive_losses})"
             )
 
+        # Weekly-freeze kill-switch, gated by weekly_freeze_enabled. Put on hold
+        # 2026-07-11 at owner request: the freeze had triggered on a losing week
+        # that was 75% low_vol_reclaim (now hard-paused), blocking the fresh
+        # breakout/early-trigger setups we need live data on. The daily-stop and
+        # consecutive-loss kill-switches above stay active, so intraday capital
+        # protection remains. Re-enable with WEEKLY_FREEZE_ENABLED=true.
+        weekly_freeze_enabled = bool(getattr(self.settings, "weekly_freeze_enabled", True))
         weekly_freeze_pct = float(getattr(self.settings, "weekly_freeze_loss_pct", 0.0) or 0.0)
-        if weekly_freeze_pct and account_equity > 0:
+        if weekly_freeze_enabled and weekly_freeze_pct and account_equity > 0:
             weekly_pnl = self._weekly_realized_pnl()
             weekly_loss_pct = abs(weekly_pnl) / account_equity * 100.0 if weekly_pnl < 0 else 0.0
             if weekly_loss_pct >= weekly_freeze_pct:
