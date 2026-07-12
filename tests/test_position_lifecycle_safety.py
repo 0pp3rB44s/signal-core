@@ -356,6 +356,63 @@ def test_profit_lock_does_not_arm_below_threshold():
     assert saved["stop_loss"] == 99.0
 
 
+# --- 11b. Wick-aware MFE: spike tussen twee syncs telt mee (2026-07-12) ---
+# sync draait ~1x per 2-3 min; een wick die daartussen 45%+ richting TP kwam
+# bestond niet voor de bot (ENAUSDT-case: wick +0.53%, samples max +0.295%).
+# De candle-high/low is cumulatief binnen de candle en vangt die wicks wel.
+
+def test_profit_lock_arms_on_candle_wick_missed_by_price_sample():
+    # Prijs-sample onder de drempel (0.40% < 0.60%) maar de candle-high raakte
+    # 100.70 -> wick armt de lock; prijs staat boven BE -> stop schuift.
+    manager = _manager([_live_payload(size=1.0)])
+    manager.store.save([_position()])
+
+    manager.sync([_snapshot(price=100.40, high=100.70, low=100.1)])
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["profit_lock_active"] is True
+    expected_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)
+    assert saved["stop_loss"] == expected_be
+
+
+def test_wick_mfe_ignored_during_entry_candle():
+    # Zelfde wick, maar de positie is <15 min oud: de high van de entry-candle
+    # kan van VOOR de entry zijn en telt niet mee -> geen lock.
+    from datetime import datetime, timezone, timedelta
+    opened = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    manager = _manager([_live_payload(size=1.0)])
+    manager.store.save([_position(opened_at=opened)])
+
+    manager.sync([_snapshot(price=100.40, high=100.70, low=100.1)])
+
+    saved = manager.store.load(default=[])[0]
+    assert not saved.get("profit_lock_active")
+    assert saved["stop_loss"] == 99.0
+
+
+def test_wick_armed_lock_waits_below_be_and_places_on_recovery():
+    # Wick armde de conditie maar de prijs is al terug ONDER de BE: geen
+    # gedoemde API-call (Bitget 40917), stop blijft staan...
+    from datetime import datetime, timezone, timedelta
+    opened = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    manager = _manager([_live_payload(size=1.0)])
+    manager.store.save([_position(opened_at=opened)])
+
+    manager.sync([_snapshot(price=100.05, high=100.70, low=100.0)])
+    saved = manager.store.load(default=[])[0]
+    assert not saved.get("profit_lock_active")
+    assert saved["stop_loss"] == 99.0
+    manager.client.move_futures_stop_loss.assert_not_called()
+
+    # ...en zodra de prijs weer boven BE staat, plaatst hij alsnog (de MFE
+    # blijft geratchet, de WAITING-tak herprobeert elke cyclus).
+    manager.sync([_snapshot(price=100.40, high=100.40, low=100.0)])
+    saved = manager.store.load(default=[])[0]
+    assert saved["profit_lock_active"] is True
+    expected_be = 100.0 * (1.0 + EFFECTIVE_BE_BUFFER_PCT / 100.0)
+    assert saved["stop_loss"] == expected_be
+
+
 def test_profit_lock_never_loosens_a_tighter_stop():
     manager = _manager([_live_payload(size=1.0)])
     # stop staat al strakker dan BE (bv. door failed-continuation tighten)

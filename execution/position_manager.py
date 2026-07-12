@@ -389,8 +389,28 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             # max_adverse_excursion_pct = worst unrealized drawdown seen while open.
             previous_mfe = float(position.get("max_favorable_excursion_pct") or 0.0)
             previous_mae = float(position.get("max_adverse_excursion_pct") or 0.0)
-            position["max_favorable_excursion_pct"] = round(max(previous_mfe, pnl_pct), 4)
-            position["max_adverse_excursion_pct"] = round(min(previous_mae, pnl_pct), 4)
+            # Wick-aware: sync draait ~1x per scan-cyclus (2-3 min) en zag alleen
+            # de momentane prijs. Een spike TUSSEN twee syncs bestond daardoor
+            # niet voor de bot: de profit-lock armde nooit terwijl de chart >45%
+            # richting TP toonde (ENAUSDT 2026-07-12: wick +0.53%, hoogste
+            # sample +0.295%, lock-drempel 0.32% -> gemist, SL bleef onder BE).
+            # De candle-high/low is cumulatief binnen de 15m-candle en vangt die
+            # spikes wel. Guard: pas na 15 min positie-leeftijd, anders telt het
+            # deel van de entry-candle van VOOR de entry mee als excursie.
+            favorable_pnl = pnl_pct
+            adverse_pnl = pnl_pct
+            try:
+                opened_dt = datetime.fromisoformat(str(position.get("opened_at")))
+                age_seconds = (datetime.now(timezone.utc) - opened_dt).total_seconds()
+            except (TypeError, ValueError):
+                age_seconds = 0.0
+            if age_seconds > 900:
+                favorable_extreme = current_high if direction == "LONG" else current_low
+                adverse_extreme = current_low if direction == "LONG" else current_high
+                favorable_pnl = max(pnl_pct, self._pnl_pct(direction, entry, favorable_extreme))
+                adverse_pnl = min(pnl_pct, self._pnl_pct(direction, entry, adverse_extreme))
+            position["max_favorable_excursion_pct"] = round(max(previous_mfe, favorable_pnl), 4)
+            position["max_adverse_excursion_pct"] = round(min(previous_mae, adverse_pnl), 4)
 
             # --- Telemetry: trade duration/timing fields ---
             now_iso = datetime.now(timezone.utc).isoformat()

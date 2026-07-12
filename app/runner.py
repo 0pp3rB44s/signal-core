@@ -488,12 +488,31 @@ class StartupRunner:
 
         try:
             os.makedirs("state", exist_ok=True)
-            scan_lock_handle = open(self._scan_lock_path, "w")
+            # Crash-proof lock-open (2026-07-12): een bestaand lockbestand kan
+            # een macOS com.apple.provenance-attribuut dragen van een ander
+            # (sandboxed) proces; open("w") geeft dan EPERM en dat crashte de
+            # bot hard (PID 37170, 17:54 — 9 min down, watchdog is notify-only).
+            # Vers aanmaken geeft een eigen bestand; lukt ook dat niet, dan
+            # draaien we door ZONDER file-lock: de in-process guard
+            # (_scan_in_progress) dekt re-entrancy en start_bot.sh pkill't
+            # dubbele runners al. Een zwakker cross-proces-slot is beter dan
+            # een dode bot.
             try:
-                fcntl.flock(scan_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
-                return
+                if os.path.exists(self._scan_lock_path):
+                    os.unlink(self._scan_lock_path)
+            except OSError:
+                pass
+            try:
+                scan_lock_handle = open(self._scan_lock_path, "w")
+            except OSError as exc:
+                scan_lock_handle = None
+                self.log.warning("SCAN_LOCK_UNAVAILABLE | %s | doorgaan zonder file-lock", exc)
+            if scan_lock_handle is not None:
+                try:
+                    fcntl.flock(scan_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
+                    return
 
             try:
                 agent_report = run_coach_rules()

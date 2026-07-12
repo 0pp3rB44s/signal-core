@@ -195,5 +195,19 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   Dagverlies 2026-07-12 was overigens een richting-cluster (4 gestopte shorts in 50 min), geen
   sizing-probleem; cluster-rem als voorstel afgewezen door eigenaar t.g.v. deze cap-verhoging.
 
+- PATCH-067 | 2026-07-12 | (1) WICK-AWARE MFE: sync zag alleen de momentane prijs per scan-cyclus
+  (2-3 min); een spike ertussen bestond niet -> profit-lock armde nooit terwijl de chart >45%
+  richting TP toonde (ENAUSDT: wick +0.53%, hoogste sample +0.295%, drempel 0.32%; eigenaar zag
+  het op de Bitget-app). MFE/MAE ratchten nu op de candle-high/low (cumulatief binnen de candle),
+  guard: pas na 15 min positie-leeftijd (entry-candle-high kan van voor de entry zijn). Samen met
+  de WAITING-tak (PATCH-064) = armen op de wick, plaatsen zodra de prijs boven BE staat.
+  (2) CRASH-PROOF SCAN-LOCK: bot PID 37170 stierf om 17:54 op PermissionError bij open() van
+  state/scan_cycle.lock (macOS com.apple.provenance-attribuut van een ander sandboxed proces) —
+  9 min down, watchdog is notify-only. Lock wordt nu vers aangemaakt en bij falen draait de bot
+  door zonder file-lock (in-process guard + pkill in start_bot.sh dekken re-entrancy).
+  (3) ENA-BACKFILL: derde close-pad sloeg exchange-truth over; ENAUSDT TP-win +0.156 stond als
+  -0.0127 geboekt en miste in de dataset -> handmatig backfilled met Bitget position history
+  (structurele fix van dat pad staat als aparte taak uit). 142/142 tests groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
