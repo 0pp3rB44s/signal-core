@@ -12,7 +12,7 @@ from collections import Counter
 from app.config import Settings
 from app.equity import write_equity_snapshot
 from clients.bitget_rest import BitgetRestClient
-from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
+from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, RiskVerdict, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
 from data.market_fetcher import MarketFetcher
 from data.watchlist import get_watchlist
 from market_data.market_data_service import MarketDataService
@@ -1193,6 +1193,7 @@ class StartupRunner:
                                 fast_plan = self.trade_planner.build(fast_candidate, fast_score, fast_risk)
                                 plans.append(fast_plan)
                                 fast_plans += 1
+                                self._log_fast_lane_funnel(fast_plan, fast_score, fast_risk, fast_candidate)
                                 self.log.info(
                                     "FAST_LANE_PLAN | %s | strategy=%s | direction=%s | verdict=%s | score=%.1f",
                                     fast_plan.symbol,
@@ -1241,6 +1242,45 @@ class StartupRunner:
                 except Exception:
                     pass
             self._scan_in_progress = False
+
+    def _log_fast_lane_funnel(
+        self,
+        plan: TradePlan,
+        score: StrategyScore,
+        risk: RiskVerdict,
+        candidate: StrategyCandidate,
+    ) -> None:
+        # Zelfde PLAN/PLAN_REJECT-funnelrijen als de basisscan, anders
+        # ondertellen strategy_funnel/N1 de fast-lane-executies. Telemetrie
+        # mag een al aan plans toegevoegd plan nooit blokkeren, dus eigen guard.
+        try:
+            self.strategy_performance_logger.append_setup_event(
+                symbol=plan.symbol,
+                strategy=plan.strategy,
+                direction=plan.direction,
+                verdict=plan.verdict,
+                score=round(float(score.total), 2),
+                stage="PLAN",
+                reasons=list(getattr(risk, "reasons", []) or []) + list(getattr(score, "reasons", []) or []),
+                notes=list(candidate.notes or []) + list(plan.notes or []),
+            )
+            if plan.verdict != "EXECUTABLE":
+                self.strategy_performance_logger.append_setup_event(
+                    symbol=plan.symbol,
+                    strategy=plan.strategy,
+                    direction=plan.direction,
+                    verdict=plan.verdict,
+                    score=round(float(score.total), 2),
+                    stage="PLAN_REJECT",
+                    reasons=list(getattr(risk, "reasons", []) or []),
+                    notes=list(candidate.notes or []) + list(plan.notes or []),
+                )
+        except Exception as telemetry_exc:
+            self.log.warning(
+                "FAST_LANE_TELEMETRY_FAILED | %s | error=%s",
+                plan.symbol,
+                telemetry_exc,
+            )
 
     def _active_symbol_cooldown(self, symbol: str) -> dict | None:
         return self.cooldown_manager.as_log_payload(symbol)
