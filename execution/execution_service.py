@@ -51,6 +51,38 @@ class ExecutionService:
         self.journal = LiveTradeJournalLogger()
         self.decision_snapshot_logger = TradeDecisionSnapshotLogger()
         self.symbol_cooldown_minutes = int(getattr(settings, "symbol_cooldown_minutes", 30))
+        self._close_backfill_manager = None
+
+    def _finalize_exchange_synced_close(self, row: dict) -> None:
+        """Draai een hier gedetecteerde exchange-close door dezelfde
+        exchange-truth backfill + dataset-writer als PositionManager's
+        close-pad. Dit was het "derde close-pad": deze sync markeerde records
+        CLOSED_SYNCED zonder backfill, waardoor het record de open-fee
+        placeholder als net_pnl hield en er geen dataset-CLOSE-rij kwam
+        (ENAUSDT 2026-07-12: TP-win +0.156 geboekt als -0.0127; idem LDOUSDT).
+        Geport uit de close-pad-fix-sessie (worktree mystifying-meninsky,
+        daar tegen een verouderde basis gebouwd en nooit gecommit)."""
+        symbol = row.get("symbol")
+        try:
+            if self._close_backfill_manager is None:
+                # Lazy import: voorkomt import-volgorde-problemen bij opstart.
+                from execution.position_manager import PositionManager
+                self._close_backfill_manager = PositionManager(settings=self.settings)
+            self._close_backfill_manager._ensure_closed_trade_dataset_row(row)
+            self.log.warning(
+                "EXCHANGE_SYNC_CLOSE_FINALIZED | %s | close_source=%s | realized_pnl=%s | net_pnl=%s | dataset_close_written=%s",
+                symbol,
+                row.get("close_source"),
+                row.get("realized_pnl"),
+                row.get("net_pnl"),
+                bool(row.get("dataset_close_written")),
+            )
+        except Exception as exc:
+            self.log.error(
+                "EXCHANGE_SYNC_CLOSE_FINALIZE_FAILED | %s | error=%s",
+                symbol,
+                exc,
+            )
 
     def execute(self, plans: list[TradePlan]) -> list[ExecutionReport]:
         if not self.settings.execution_enabled:
@@ -94,6 +126,7 @@ class ExecutionService:
                         row["status"] = "CLOSED_SYNCED"
                         row["closed_at"] = datetime.now(timezone.utc).isoformat()
                         row["sync_reason"] = "closed on Bitget; local state synced"
+                        self._finalize_exchange_synced_close(row)
                 open_symbols = set(bitget_open_symbols)
             else:
                 open_symbols = local_open_symbols.union(bitget_open_symbols)

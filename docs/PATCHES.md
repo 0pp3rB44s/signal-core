@@ -219,5 +219,15 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   asymmetrie kwam van 5 handmatige trades (+6.82); bot-only is LONG -0.034 vs SHORT -0.031/trade.
   Daarom lerende laag i.p.v. botte uitschakeling. 146/146 tests groen.
 
+- PATCH-069 | 2026-07-12 | PIPELINE-CHECK: alle achtergrond-fixes geland. (1) Derde close-pad
+  gedicht: execution_service's eigen exchange-sync markeerde CLOSED_SYNCED zonder backfill
+  (ENA/LDO-cases) -> draait nu door dezelfde exchange-truth backfill + dataset-writer
+  (_finalize_exchange_synced_close; geport uit de close-pad-sessie wiens worktree op een
+  juni-basis stond en nooit gecommit had). (2) Cherry-pick leerketen-versheid (9dfc45d):
+  eigen versheids-checks per leerartefact, luide failures, kill-switch fail-closed bij
+  rapport >48h. (3) Cherry-pick fast-lane funnel-logging (bf2e17f): fast-lane executies
+  krijgen nu PLAN/PLAN_REJECT-rijen (fix ondertelling). Test-conflict opgelost (beide
+  test-blokken behouden). 160/160 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
