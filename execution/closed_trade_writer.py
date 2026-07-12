@@ -182,6 +182,9 @@ class ClosedTradeWriterMixin:
                 position["exchange_truth_pnl"] = exchange_close_truth.get("pnl", "")
                 position["exchange_truth_fee"] = exchange_close_truth.get("fee", "")
                 position["realized_pnl"] = exchange_close_truth.get("pnl", position.get("realized_pnl", ""))
+                # netProfit is al netto: overschrijf ook net_pnl, anders blijft
+                # de open-time placeholder (-entry fee) in het record staan.
+                position["net_pnl"] = exchange_close_truth.get("pnl", position.get("net_pnl", ""))
                 position["fees_paid"] = exchange_close_truth.get("fee", position.get("fees_paid", ""))
 
         data_confidence = str(position.get("data_confidence") or data_confidence or "")
@@ -200,6 +203,9 @@ class ClosedTradeWriterMixin:
                 position["exchange_truth_pnl"] = exchange_close_truth.get("pnl", "")
                 position["exchange_truth_fee"] = exchange_close_truth.get("fee", "")
                 position["realized_pnl"] = exchange_close_truth.get("pnl", position.get("realized_pnl", ""))
+                # netProfit is al netto: overschrijf ook net_pnl, anders blijft
+                # de open-time placeholder (-entry fee) in het record staan.
+                position["net_pnl"] = exchange_close_truth.get("pnl", position.get("net_pnl", ""))
                 position["fees_paid"] = exchange_close_truth.get("fee", position.get("fees_paid", ""))
 
         data_confidence = str(position.get("data_confidence") or data_confidence or "")

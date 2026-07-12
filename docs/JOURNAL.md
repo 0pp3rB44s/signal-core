@@ -394,6 +394,62 @@ de bot (die leest de exchange) maar tegen jou. Meet vóór je een knop omzet:
 de meeste "blokkades" waren het vangnet dat werkte.
 
 ═══════════════════════════════════
+37. De Audit: Waarheid over de Waarheid (2026-07-12)
+═══════════════════════════════════
+
+BESTANDEN / MODULES
+
+execution/position_manager.py, execution/closed_trade_writer.py
+app/config.py, agents_v2/learning/knowledge_builder.py
+
+WAT ER GEBEURDE
+
+Eigenaar-vraag: "1 trade vannacht — zitten we dichtgeblokkeerd? Check de
+hele bot." De audit vond de echte keten: om 22:15 had de leerloop ALLE
+vier strategieën op status=PAUSE gezet (drempel: expectancy <= 0 -> PAUSE),
+en momentum_breakout (n=32) viel daarmee onder de HARD-PAUSE die op 07-10
+voor low_vol_reclaim was gebouwd. De bevroren-strategie-val van 06-07,
+één dag na herintroductie dichtgeklapt.
+
+Dieper graven vond iets ergers: elke close in executed_trades.json stond
+op net_pnl ~ -0.012 — een CONSTANTE. Oorzaak: net_pnl wordt bij OPEN gezet
+op -entry-fee en werd op close nooit bijgewerkt; de exchange-truth backfill
+repareerde realized_pnl en exchange_truth_pnl maar vergat net_pnl. De echte
+nacht: FET +0.052 (eerste TP-hit!), ENA +0.010, BNB -0.002, AAVE -0.110 (SL),
+DOGE -0.125 (SL) — geboekt als vijf identieke scratches. Gelukkig bleek
+trade_dataset_v2.csv (de leerloop-bron) WEL correct; de vervuiling zat in
+de state-records en alles wat die leest.
+
+Verder: de coach draaide op een learning.json van 2 JULI (10 dagen oud,
+mét een testdata-rij), de PROFIT_LOCK_BE spamde 197 gedoemde API-calls op
+één nacht (BE-stop boven de mark-prijs = Bitget 40917, elke cyclus opnieuw),
+en het maker-30s-experiment gaf zijn antwoord: 0/7 fills, terwijl het
+30s-wachten twee chase-limit skips veroorzaakte.
+
+En één vals alarm: een "geest-positie" bleek een tijdzone-misinterpretatie
+van de auditor zelf (bot.out logt lokaal/CEST, state in UTC). De
+positie-sync werkt correct en instant.
+
+FIXES (PATCH-064)
+
+- exchange-truth backfill schrijft ook net_pnl (3 plekken)
+- PROFIT_LOCK_BE placeable-check (skip stil zolang prijs onder BE)
+- maker extended-wait default uit (experiment afgerond, terug naar 4s)
+- coach-testdatafilter + learning.json geregenereerd op verse data
+
+ECHTE CIJFERS (30d, exchange-truth): reclaim -0.027/trade (36.5% WR),
+momentum -0.075 (48.6%), breakdown -0.027 (44.4%), continuation -0.064
+(22.2%). Alles negatief — maar het venster meet overwegend de OUDE
+geometrie (TP1 pas bereikbaar sinds de ATR-cap van 07-11 14:24).
+
+BELANGRIJKSTE LES
+
+"Exchange truth" is geen label maar een discipline: één vergeten veld
+(net_pnl) en vijf dagen aan trades logen tegen elke lezer — terwijl het
+juiste getal er in hetzelfde record naast stond. En een vangnet dat op
+zulke data beslist, pauzeert met evenveel overtuiging de verkeerde dingen.
+
+═══════════════════════════════════
 HUIDIGE STATUS — 2026-07-11 EOD
 ═══════════════════════════════════
 

@@ -157,7 +157,11 @@ class Settings(BaseSettings):
     # verlengt het venster en laat maker_entry de fill-latency loggen, zodat we
     # met data kunnen beslissen of maker-entry haalbaar is. Zet
     # MAKER_ENTRY_EXTENDED_WAIT_ENABLED=false om terug te vallen op de .env-wait.
-    maker_entry_extended_wait_enabled: bool = Field(default=True, alias="MAKER_ENTRY_EXTENDED_WAIT_ENABLED")
+    # Experiment afgerond 2026-07-12: 0/7 maker-fills bij 30s venster (nacht
+    # 11->12 juli). Post-only vult niet op onze momentum-entries; het 30s
+    # wachten maakte entries juist 30s later (2 chase-limit skips als gevolg).
+    # Default terug naar False -> .env-wait (4s) geldt weer.
+    maker_entry_extended_wait_enabled: bool = Field(default=False, alias="MAKER_ENTRY_EXTENDED_WAIT_ENABLED")
     maker_entry_extended_wait_seconds: float = Field(default=30.0, alias="MAKER_ENTRY_EXTENDED_WAIT_SECONDS")
     # Entry chase-limit (2026-07-11). Entries are laddered below market (a long
     # waits for a pullback). When the breakout runs away instead, the maker limit

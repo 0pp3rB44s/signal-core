@@ -164,5 +164,19 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   analytics-only; positie-gate leest exchange truth, dus geen trading-impact. Root-cause (journal
   wordt niet gesloten bij exchange-sync-close) staat als aparte taak open
 
+## 2026-07-12 — Full-bot audit: registratie-waarheid & pause-diagnose
+
+- PATCH-064 | 2026-07-12 | AUDIT-FIXES (volledige pipeline-audit, zie JOURNAL hfst. 37):
+  (1) net_pnl-constante gefixt: net_pnl werd bij OPEN gezet op -entry-fee en op close NOOIT
+  bijgewerkt -> elke close in executed_trades stond op ~-0.012 ongeacht echte uitkomst
+  (FET +0.052 als -0.012 geboekt). Exchange-truth backfill schrijft nu ook net_pnl
+  (position_manager sync-pad + beide closed_trade_writer backfill-blokken).
+  (2) PROFIT_LOCK_BE placeable-check: stop-move naar BE wordt overgeslagen zolang de prijs
+  onder de BE staat (Bitget 40917) i.p.v. elke 10s een gedoemde API-call (197 errors/nacht).
+  (3) Maker-venster-experiment afgerond: 0/7 fills bij 30s -> extended-wait default uit,
+  terug naar 4s + market-fallback (30s wachten veroorzaakte 2 chase-limit skips).
+  (4) Coach-datafilter: dataset_write_test-rijen uit learning.json + rapport geregenereerd
+  (stond op 2 juli!). 136/136 tests groen; bot herstart met beide posities hersteld.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).

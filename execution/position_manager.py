@@ -212,6 +212,11 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
 
                 if exchange_close_truth.get("pnl") is not None:
                     position["realized_pnl"] = float(exchange_close_truth.get("pnl") or 0.0)
+                    # netProfit uit de Bitget-positiehistorie is al netto (na
+                    # fees). Zonder deze regel houdt het record voor eeuwig de
+                    # open-time placeholder net_pnl (= -entry fee) vast en leert
+                    # elke consument van executed_trades op fees-only cijfers.
+                    position["net_pnl"] = float(exchange_close_truth.get("pnl") or 0.0)
                 if exchange_close_truth.get("fee") is not None:
                     position["fees_paid"] = float(exchange_close_truth.get("fee") or 0.0)
                 if exchange_close_truth.get("order_id"):
@@ -837,7 +842,23 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         if direction == "LONG"
                         else (fee_adjusted_be < current_stop_value or current_stop_value <= 0)
                     )
-                    if be_is_tighter and self._protect_after_tp_fill(
+                    # Bitget weigert een stop aan de verkeerde kant van de
+                    # mark-prijs (code 40917). Zodra de prijs terugzakt onder de
+                    # fee-adjusted BE is de move onmogelijk; de MFE-trigger
+                    # blijft echter waar (high-water mark), dus zonder deze
+                    # check herhaalt de bot de gedoemde API-call elke cyclus
+                    # (197 errors op één BNB-nacht). Wacht stil tot de prijs
+                    # weer boven BE staat; 5bps marge tegen mark/last-verschil.
+                    be_is_placeable = (
+                        fee_adjusted_be < current_price * (1 - 0.0005)
+                        if direction == "LONG"
+                        else fee_adjusted_be > current_price * (1 + 0.0005)
+                    )
+                    if be_is_tighter and not be_is_placeable:
+                        note_parts.append(
+                            f"PROFIT_LOCK_BE_WAITING stop={fee_adjusted_be:.8f} px={current_price:.8f}"
+                        )
+                    elif be_is_tighter and self._protect_after_tp_fill(
                         position=position,
                         target_stop=fee_adjusted_be,
                         reason="PROFIT_LOCK_BE",

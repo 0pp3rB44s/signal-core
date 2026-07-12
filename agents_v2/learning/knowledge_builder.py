@@ -63,6 +63,11 @@ def build_learning(rows: list[dict[str, Any]]) -> dict[str, Any]:
         strategy = str(row.get("strategy") or "UNKNOWN")
         symbol = str(row.get("symbol") or "UNKNOWN")
 
+        # Startup-selftest-rijen zijn geen trades; zonder dit filter leert de
+        # coach van een fictieve 100%-winrate strategie.
+        if strategy == "dataset_write_test" or symbol.startswith("TEST"):
+            continue
+
         # Update strategy aggregate
         strat_stats = strategies[strategy]
         strat_stats["trades"] += 1
