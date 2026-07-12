@@ -186,5 +186,14 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   hard dicht. Lost de bevroren-strategie-deadlock op: momentum (wr 53%, cohort 8/15) trade weer
   op halve size. 3 testcontracten; 139/139 groen.
 
+- PATCH-066 | 2026-07-12 | Notional-cap 35% -> 50% (eigenaar-besluit, .env: PLANNER_MAX_NOTIONAL_
+  PCT_OF_EQUITY). Context: eigenaar stelde 5x leverage voor om "eerder boven BE+fees" te komen;
+  rekensom (zie PATCH-046) toont dat leverage de positiegrootte en het BE-punt niet raakt — de
+  notional-cap wel. Cap €21 -> €30 per positie bij €60 equity: meer € per winnende trade, maar
+  verliezen schalen exact mee. EXPLICIET OMKEERBAAR: bij tegenvallend post-fix cohort de regel
+  terug naar 35 + herstart. Vangnet: equity-geschaalde daily kill-switch blijft actief.
+  Dagverlies 2026-07-12 was overigens een richting-cluster (4 gestopte shorts in 50 min), geen
+  sizing-probleem; cluster-rem als voorstel afgewezen door eigenaar t.g.v. deze cap-verhoging.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
