@@ -324,50 +324,125 @@ class StartupRunner:
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
         self._learning_refresh_proc: subprocess.Popen | None = None
+        self._learning_refresh_step: str | None = None
+        self._learning_refresh_queue: list[tuple[str, list[str]]] = []
+        self._learning_refresh_failed_steps: list[str] = []
+        self._learning_refresh_active = False
+        self._learning_refresh_last_start = 0.0
+
+    # Every learning artifact must regenerate at least daily; risk_manager
+    # additionally fails the kill-switch closed once the daily report passes
+    # 48h (DAILY_STATUS_STALE_HOURS), so 24h here leaves one full retry day.
+    LEARNING_ARTIFACT_MAX_AGE_HOURS = 24.0
+    # A persistently failing chain retries hourly (each failure logged), not
+    # on every scan cycle — the validation backtest step is too heavy for that.
+    LEARNING_REFRESH_RETRY_MIN_SEC = 3600.0
+    LEARNING_REFRESH_LOG = "logs/daily_learning_report.log"
+    # Each artifact has its own freshness check; any one going stale starts
+    # the full chain (which regenerates all of them).
+    LEARNING_ARTIFACTS = (
+        ("strategy_expectancy.json", "reports/backtests/strategy_expectancy.json"),
+        ("daily_learning_report.json", "data_store/trades/daily_learning_report.json"),
+        ("learning.json", "agents_v2/reports/learning.json"),
+    )
 
     def _maybe_refresh_learning_reports(self) -> None:
-        """Regenerate the daily learning/expectancy reports when they go stale.
+        """Keep every learning artifact fresh, and make failures loud.
 
         The launchd job that used to do this gets blocked by macOS TCC (launchd
         children may not write inside ~/Desktop), so the bot — started from a
         terminal that does have that access — refreshes its own learning input.
-        Runs as a background subprocess so the scan loop never stalls on it.
+
+        Chain: dataset_builder (daily_learning_report.json, kill-switch input)
+        -> validation backtest (strategy_expectancy.json) -> morning_audit ->
+        knowledge_builder (agents_v2/reports/learning.json, AI-coach input).
+        Steps run one at a time as background subprocesses so the scan loop
+        never stalls; every non-zero exit logs LEARNING_REFRESH_FAILED instead
+        of the old check=False silence. Step output goes to LEARNING_REFRESH_LOG.
         """
         if self._learning_refresh_proc is not None:
             if self._learning_refresh_proc.poll() is None:
                 return
-            exit_code = self._learning_refresh_proc.returncode
-            self._learning_refresh_proc = None
-            if exit_code == 0:
-                self.log.info("LEARNING_REFRESH_OK | strategy_expectancy.json regenerated")
-            else:
-                self.log.warning("LEARNING_REFRESH_FAILED | exit_code=%s", exit_code)
+            self._finish_learning_refresh_step()
 
-        report_path = Path("reports/backtests/strategy_expectancy.json")
-        try:
-            age_hours = (time.time() - report_path.stat().st_mtime) / 3600.0
-        except OSError:
-            age_hours = float("inf")
-
-        if age_hours < 24.0:
+        if self._learning_refresh_queue:
+            self._start_next_learning_refresh_step()
             return
 
-        chain = (
-            "import subprocess, sys;"
-            "subprocess.run([sys.executable, '-m', 'telemetry.dataset_builder'], check=False);"
-            "subprocess.run([sys.executable, 'scripts/run_backtest.py', '--validation-only'], check=True);"
-            "subprocess.run([sys.executable, 'morning_audit.py'], check=False)"
-        )
+        if self._learning_refresh_active:
+            self._learning_refresh_active = False
+            if self._learning_refresh_failed_steps:
+                self.log.error(
+                    "LEARNING_REFRESH_FAILED | chain finished with failures | failed_steps=%s | output=%s",
+                    ",".join(self._learning_refresh_failed_steps),
+                    self.LEARNING_REFRESH_LOG,
+                )
+            else:
+                self.log.info("LEARNING_REFRESH_OK | all learning artifacts regenerated")
+
+        stale = [
+            f"{name}={age:.1f}h"
+            for name, path in self.LEARNING_ARTIFACTS
+            if (age := self._artifact_age_hours(Path(path))) >= self.LEARNING_ARTIFACT_MAX_AGE_HOURS
+        ]
+        if not stale:
+            return
+        if time.time() - self._learning_refresh_last_start < self.LEARNING_REFRESH_RETRY_MIN_SEC:
+            return
+
+        self._learning_refresh_last_start = time.time()
+        self._learning_refresh_active = True
+        self._learning_refresh_failed_steps = []
+        self._learning_refresh_queue = [
+            ("dataset_builder", [sys.executable, "-m", "telemetry.dataset_builder"]),
+            ("validation_backtest", [sys.executable, "scripts/run_backtest.py", "--validation-only"]),
+            ("morning_audit", [sys.executable, "morning_audit.py"]),
+            ("knowledge_builder", [sys.executable, "-m", "agents_v2.learning.knowledge_builder"]),
+        ]
+        self.log.info("LEARNING_REFRESH_STARTED | stale=%s", ",".join(stale))
+        self._start_next_learning_refresh_step()
+
+    def _finish_learning_refresh_step(self) -> None:
+        exit_code = self._learning_refresh_proc.returncode
+        step = self._learning_refresh_step
+        self._learning_refresh_proc = None
+        self._learning_refresh_step = None
+        if exit_code == 0:
+            self.log.info("LEARNING_REFRESH_STEP_OK | step=%s", step)
+        else:
+            self._learning_refresh_failed_steps.append(f"{step}:exit={exit_code}")
+            self.log.warning(
+                "LEARNING_REFRESH_FAILED | step=%s | exit_code=%s | output=%s",
+                step,
+                exit_code,
+                self.LEARNING_REFRESH_LOG,
+            )
+
+    def _start_next_learning_refresh_step(self) -> None:
+        step, argv = self._learning_refresh_queue.pop(0)
         try:
-            with open("logs/daily_learning_report.log", "a", encoding="utf-8") as log_handle:
+            with open(self.LEARNING_REFRESH_LOG, "a", encoding="utf-8") as log_handle:
+                log_handle.write(
+                    f"\n===== {datetime.now(timezone.utc).isoformat()} | step={step} =====\n"
+                )
+                log_handle.flush()
                 self._learning_refresh_proc = subprocess.Popen(
-                    [sys.executable, "-c", chain],
+                    argv,
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
                 )
-            self.log.info("LEARNING_REFRESH_STARTED | report_age_hours=%.1f", age_hours)
+            self._learning_refresh_step = step
         except Exception as exc:
-            self.log.warning("LEARNING_REFRESH_SPAWN_FAILED | error=%s", exc)
+            # Next scan cycle picks up the remainder of the queue.
+            self._learning_refresh_failed_steps.append(f"{step}:spawn")
+            self.log.warning("LEARNING_REFRESH_FAILED | step=%s | spawn_error=%s", step, exc)
+
+    @staticmethod
+    def _artifact_age_hours(path: Path) -> float:
+        try:
+            return (time.time() - path.stat().st_mtime) / 3600.0
+        except OSError:
+            return float("inf")
 
     def _is_network_resolution_error(self, exc: Exception) -> bool:
         error_text = str(exc).lower()

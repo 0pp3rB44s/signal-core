@@ -1,3 +1,8 @@
+import json
+import os
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -402,3 +407,44 @@ def test_direction_layer_noop_without_directions_section():
     allowed, reasons, probe = rm._strategy_weighting_gate(_candidate())
     assert allowed
     assert not any("direction weighting" in r for r in reasons)
+def test_kill_switch_fails_closed_on_stale_daily_report():
+    rm = _make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0)
+    rm._daily_defensive_status = lambda: {"daily_status_stale": True, "daily_status_age_hours": 50.2}
+    allowed, reasons = rm._kill_switch_gate(_candidate())
+    assert not allowed
+    assert any("daily learning report stale" in r for r in reasons)
+
+
+def _write_daily_report(tmp_path, monkeypatch, payload: dict) -> "Path":
+    import risk.risk_manager as rm_mod
+
+    monkeypatch.setattr(rm_mod, "BASE_PATH", tmp_path)
+    report_path = tmp_path / "data_store" / "trades" / "daily_learning_report.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+    return report_path
+
+
+def test_daily_defensive_status_stale_generated_at_fails_closed(tmp_path, monkeypatch):
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
+    _write_daily_report(tmp_path, monkeypatch, {"generated_at": old_ts, "daily_total_net_pnl": -5.0})
+    status = RiskManager._daily_defensive_status()
+    assert status.get("daily_status_stale") is True
+    assert "daily_total_net_pnl" not in status
+
+
+def test_daily_defensive_status_fresh_report_passes_through(tmp_path, monkeypatch):
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_daily_report(tmp_path, monkeypatch, {"generated_at": fresh_ts, "daily_total_net_pnl": -5.0})
+    status = RiskManager._daily_defensive_status()
+    assert status.get("daily_total_net_pnl") == -5.0
+    assert not status.get("daily_status_stale")
+
+
+def test_daily_defensive_status_stale_mtime_fallback(tmp_path, monkeypatch):
+    # No generated_at in the payload -> staleness falls back to file mtime.
+    report_path = _write_daily_report(tmp_path, monkeypatch, {"daily_total_net_pnl": 0.0})
+    old = time.time() - 49 * 3600
+    os.utime(report_path, (old, old))
+    status = RiskManager._daily_defensive_status()
+    assert status.get("daily_status_stale") is True

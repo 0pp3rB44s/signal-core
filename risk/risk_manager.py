@@ -16,6 +16,11 @@ REPORTS_PATH = BASE_PATH / "reports" / "backtests"
 AGENT_DECISIONS_PATH = BASE_PATH / "agents_v2" / "reports" / "coach_decisions.json"
 logger = logging.getLogger("risk_manager")
 
+# Fail-closed threshold for the daily defensive report: the runner refreshes
+# it every 24h, so anything past 48h means two missed refresh cycles and the
+# daily kill-switch would be judging today on stale data — block instead.
+DAILY_STATUS_STALE_HOURS = 48.0
+
 BETA_CLUSTERS = {
     "L1_BETA": {"SOLUSDT", "AVAXUSDT", "SUIUSDT", "INJUSDT", "SEIUSDT"},
     "MAJORS": {"BTCUSDT", "ETHUSDT"},
@@ -153,6 +158,12 @@ class RiskManager:
         if daily_status.get("daily_status_unreadable"):
             reasons.append(
                 "kill-switch: daily learning report unreadable; failing closed until it is restored"
+            )
+        if daily_status.get("daily_status_stale"):
+            reasons.append(
+                "kill-switch: daily learning report stale "
+                f"(age={daily_status.get('daily_status_age_hours', '?')}h, "
+                f"threshold={DAILY_STATUS_STALE_HOURS:.0f}h); failing closed until it is refreshed"
             )
         daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
         consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
@@ -536,8 +547,9 @@ class RiskManager:
     @staticmethod
     def _daily_defensive_status() -> dict:
         """Fail-closed nuance: a MISSING report is a normal fresh state (no
-        defensive data -> no block), but an UNREADABLE/corrupt report means the
-        daily kill-switch would be silently disabled — that must block instead.
+        defensive data -> no block), but an UNREADABLE/corrupt report — or one
+        older than DAILY_STATUS_STALE_HOURS — means the daily kill-switch
+        would be silently disabled — that must block instead.
         """
         path = BASE_PATH / "data_store" / "trades" / "daily_learning_report.json"
         if not path.exists():
@@ -554,7 +566,32 @@ class RiskManager:
             logger.error("DAILY_DEFENSIVE_STATUS_MALFORMED | fail-closed | type=%s", type(payload).__name__)
             return {"daily_status_unreadable": True}
 
+        age_hours = RiskManager._daily_report_age_hours(path, payload)
+        if age_hours >= DAILY_STATUS_STALE_HOURS:
+            logger.error(
+                "DAILY_DEFENSIVE_STATUS_STALE | fail-closed | age_hours=%.1f | threshold=%.0f",
+                age_hours,
+                DAILY_STATUS_STALE_HOURS,
+            )
+            return {"daily_status_stale": True, "daily_status_age_hours": round(age_hours, 1)}
+
         return payload
+
+    @staticmethod
+    def _daily_report_age_hours(path: Path, payload: dict) -> float:
+        """Age by the report's own generated_at; file mtime as fallback."""
+        raw = str(payload.get("generated_at") or "")
+        try:
+            generated = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if generated.tzinfo is None:
+                generated = generated.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - generated).total_seconds() / 3600.0
+        except ValueError:
+            pass
+        try:
+            return (time.time() - path.stat().st_mtime) / 3600.0
+        except OSError:
+            return float("inf")
 
     def optimization_advice(self) -> dict:
         """Read-only advisory layer. Never mutates settings or trading state."""
