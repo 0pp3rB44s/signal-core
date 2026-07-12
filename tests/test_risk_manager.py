@@ -336,3 +336,69 @@ def test_kill_switch_missing_daily_report_is_not_a_block():
     rm._daily_defensive_status = lambda: {}
     allowed, _ = rm._kill_switch_gate(_candidate())
     assert allowed
+
+
+# --- Richting-leerlaag (2026-07-13): grijpt alleen in bij echte asymmetrie ---
+
+def _make_direction_risk_manager(directions: dict) -> RiskManager:
+    rm = RiskManager(settings=MagicMock())
+    rm._latest_strategy_expectancy = lambda: {
+        "strategies": {
+            "low_vol_reclaim": {"trades": 10, "expectancy": 0.2, "tp1_hit_rate": 0.5},
+        },
+        "directions": directions,
+    }
+    return rm
+
+
+def _direction_candidate(direction: str) -> MagicMock:
+    candidate = _candidate()
+    candidate.direction = direction
+    return candidate
+
+
+def test_direction_asymmetry_probes_weaker_direction():
+    rm = _make_direction_risk_manager({
+        "SHORT": {"trades": 40, "expectancy": -0.05, "status": "PAUSE",
+                  "fresh_since_geometry_fix": {"trades": 5}},
+        "LONG": {"trades": 40, "expectancy": 0.01, "status": "WATCH"},
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_direction_candidate("SHORT"))
+    assert allowed
+    assert probe
+    assert any("direction weighting PROBE" in r for r in reasons)
+
+
+def test_direction_symmetric_losses_do_not_trigger():
+    # Beide richtingen ~even slecht = strategie-probleem, geen richting-
+    # probleem (bot-only analyse 2026-07-13: LONG -0.034 vs SHORT -0.031).
+    directions = {
+        "SHORT": {"trades": 113, "expectancy": -0.031, "status": "PAUSE"},
+        "LONG": {"trades": 88, "expectancy": -0.034, "status": "PAUSE"},
+    }
+    for side in ("SHORT", "LONG"):
+        rm = _make_direction_risk_manager(directions)
+        allowed, reasons, probe = rm._strategy_weighting_gate(_direction_candidate(side))
+        assert allowed
+        assert not probe
+        assert not any("direction weighting" in r for r in reasons)
+
+
+def test_direction_hard_pauses_after_requalify_budget():
+    rm = _make_direction_risk_manager({
+        "SHORT": {"trades": 60, "expectancy": -0.08, "status": "PAUSE",
+                  "fresh_since_geometry_fix": {"trades": 15}},
+        "LONG": {"trades": 40, "expectancy": 0.0, "status": "PAUSE"},
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_direction_candidate("SHORT"))
+    assert not allowed
+    assert any("direction weighting HARD-PAUSE" in r for r in reasons)
+
+
+def test_direction_layer_noop_without_directions_section():
+    rm = _make_weighting_risk_manager({
+        "low_vol_reclaim": {"trades": 10, "expectancy": 0.2, "tp1_hit_rate": 0.5},
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate())
+    assert allowed
+    assert not any("direction weighting" in r for r in reasons)

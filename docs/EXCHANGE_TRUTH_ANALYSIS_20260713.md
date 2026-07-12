@@ -87,3 +87,26 @@ nog niet positief — de R-verhouding is scheef.
 2. **Churn <1h aanpakken** (fee-margin-filter / minimum-houdtijd): -5,3 gecombineerd
    onder het uur, +5,7 erboven.
 3. Fee-drag blijft de hoofdvijand: $5,25 fees op $5,66 bruto.
+
+## CORRECTIE (2026-07-13, bot-only attributie) — conclusie 1 herzien
+
+Na matching van elke export-rij tegen de bot-state blijkt de LONG/SHORT-
+asymmetrie **vrijwel volledig van de 5 handmatige trades** te komen (4x SOL +
+1x XLM, samen +$6,82, 80% WR — eigenaar-trades, geen bot-beslissingen):
+
+| Bot-only | n | net | per trade |
+|---|---|---|---|
+| LONG | 88 | -2,97 | -0,034 |
+| SHORT | 113 | -3,46 | -0,031 |
+
+De bot verliest in beide richtingen ~evenveel per trade: het is een
+strategie/geometrie-probleem, geen richting-probleem. Een botte
+short-uitschakeling is daarom NIET doorgevoerd. In plaats daarvan
+(PATCH-068): richting-expectancy als lerende laag in het expectancy-rapport +
+een slapende asymmetrie-gate in de risk manager die pas ingrijpt (probe →
+hard-pause) wanneer een richting aantoonbaar >= $0,04/trade slechter wordt
+dan de ander. Conclusies 2 en 3 blijven staan.
+
+Bijvangst: de 26 bot-trades die in de dataset ontbraken (close-pad-bug) zijn
+via `scripts/import_exchange_export.py` uit deze export in de leerdataset
+gebackfilled (idempotent; handmatige trades worden geskipt).

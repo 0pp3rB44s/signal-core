@@ -209,5 +209,15 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   -0.0127 geboekt en miste in de dataset -> handmatig backfilled met Bitget position history
   (structurele fix van dat pad staat als aparte taak uit). 142/142 tests groen.
 
+- PATCH-068 | 2026-07-13 | BOT LEERT VAN EXCHANGE-EXPORT (eigenaar-besluit): (1) importer
+  scripts/import_exchange_export.py — eigenaar-exports voeden de leerdataset; 26 ontbrekende
+  bot-trades (close-pad-bug) gebackfilled, handmatige trades geskipt, idempotent. (2) Richting-
+  expectancy in strategy_expectancy.json (LONG/SHORT, zelfde window+requalify als strategieën).
+  (3) Slapende asymmetrie-gate in risk_manager: richting met negatieve expectancy die >= $0.04/
+  trade slechter is dan de ander -> probe; op PAUSE met vol requalify-cohort (15) -> hard dicht.
+  BELANGRIJK: bot-only attributie weerlegde de export-conclusie "shorts uit, longs winnen" — de
+  asymmetrie kwam van 5 handmatige trades (+6.82); bot-only is LONG -0.034 vs SHORT -0.031/trade.
+  Daarom lerende laag i.p.v. botte uitschakeling. 146/146 tests groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).

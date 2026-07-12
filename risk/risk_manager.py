@@ -214,7 +214,63 @@ class RiskManager:
         ]
         return not hard_reasons, reasons
 
+    # Richting-leerlaag (eigenaar-besluit 2026-07-13, exchange-truth analyse):
+    # grijpt ALLEEN in bij echte asymmetrie tussen LONG en SHORT. Beide
+    # richtingen even slecht = een strategie-probleem, geen richting-probleem
+    # (bot-only 2026-07-13: LONG -0.034/trade vs SHORT -0.031/trade — de
+    # schijnbare export-asymmetrie bleek van handmatige SOL-trades te komen).
+    DIRECTION_MIN_TRADES = 30
+    DIRECTION_ASYMMETRY_GAP = 0.04  # USD/trade verschil in expectancy
+    DIRECTION_REQUALIFY_MAX_FRESH = 15
+
+    def _direction_weighting(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Returns (allowed, reasons, probe) op basis van richting-expectancy.
+
+        Slapend zolang er geen materiële asymmetrie is; wordt een richting
+        aantoonbaar slechter dan de ander (negatieve expectancy én >= GAP
+        verschil, beide met sample), dan eerst probe-size. Staat die richting
+        op PAUSE en is het herkwalificatie-cohort (post-fix trades) op, dan
+        hard dicht tot het venster nieuwe data toelaat.
+        """
+        reasons: list[str] = []
+        direction = str(getattr(candidate, "direction", "") or "").upper()
+        if direction not in {"LONG", "SHORT"}:
+            return True, reasons, False
+        directions = (self._latest_strategy_expectancy() or {}).get("directions") or {}
+        mine = directions.get(direction) or {}
+        other = directions.get("SHORT" if direction == "LONG" else "LONG") or {}
+        trades = int(mine.get("trades", 0) or 0)
+        other_trades = int(other.get("trades", 0) or 0)
+        if trades < self.DIRECTION_MIN_TRADES or other_trades < self.DIRECTION_MIN_TRADES:
+            return True, reasons, False
+        expectancy = float(mine.get("expectancy", 0.0) or 0.0)
+        other_expectancy = float(other.get("expectancy", 0.0) or 0.0)
+        if expectancy >= 0 or (other_expectancy - expectancy) < self.DIRECTION_ASYMMETRY_GAP:
+            return True, reasons, False
+        status = str(mine.get("status") or "").upper()
+        fresh = mine.get("fresh_since_geometry_fix") or {}
+        fresh_trades = int(fresh.get("trades", 0) or 0)
+        if status == "PAUSE" and fresh_trades >= self.DIRECTION_REQUALIFY_MAX_FRESH:
+            reasons.append(
+                f"direction weighting HARD-PAUSE: {direction} exp={expectancy:.3f} vs {other_expectancy:.3f}, requalify-cohort vol ({fresh_trades}/{self.DIRECTION_REQUALIFY_MAX_FRESH}, n={trades})"
+            )
+            return False, reasons, False
+        reasons.append(
+            f"direction weighting PROBE: asymmetrie {direction} exp={expectancy:.3f} vs {other_expectancy:.3f} (n={trades}) -> halve size"
+        )
+        return True, reasons, True
+
     def _strategy_weighting_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        allowed, reasons, probe = self._strategy_weighting_gate_inner(candidate)
+        if not allowed:
+            return allowed, reasons, probe
+        direction_allowed, direction_reasons, direction_probe = self._direction_weighting(candidate)
+        reasons.extend(direction_reasons)
+        if not direction_allowed:
+            return False, reasons, False
+        return True, reasons, probe or direction_probe
+
+    def _strategy_weighting_gate_inner(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
         """Returns (allowed, reasons, probe).
 
         probe=True means: keep trading, but at reduced size (hedge-fund style

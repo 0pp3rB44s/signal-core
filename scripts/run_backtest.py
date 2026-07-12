@@ -1051,6 +1051,46 @@ def _build_strategy_expectancy(trades: list[dict[str, Any]], window_days: int = 
             payload["status_source"] = "fresh_cohort"
         output["strategies"][strategy] = payload
 
+    # Richting-niveau leren (eigenaar-besluit 2026-07-13): dezelfde stats,
+    # window en herkwalificatie-semantiek als strategieën, maar gebucket op
+    # LONG/SHORT over alle confidence-gevalideerde trades. De risk gate
+    # gebruikt dit alleen bij echte asymmetrie tussen de richtingen
+    # (bot-only analyse 2026-07-13: beide richtingen ~even slecht, dus de
+    # laag is vandaag slapend — hij grijpt pas in als een richting zich
+    # aantoonbaar slechter ontwikkelt dan de ander).
+    output["directions"] = {}
+    direction_buckets: dict[str, list[dict[str, Any]]] = {}
+    for rows in strategy_buckets.values():
+        for row in rows:
+            direction = str(row.get("direction") or "").upper()
+            if direction in {"LONG", "SHORT"}:
+                direction_buckets.setdefault(direction, []).append(row)
+    for direction, rows in direction_buckets.items():
+        payload = _bucket_payload(rows)
+        fresh_rows = [
+            row for row in rows
+            if _trade_close_timestamp(row)[:19] >= GEOMETRY_FIX_CUTOFF_UTC
+        ]
+        fresh_stats = _expectancy_stats(fresh_rows)
+        payload["fresh_since_geometry_fix"] = {
+            "cutoff_utc": GEOMETRY_FIX_CUTOFF_UTC,
+            "trades": fresh_stats["trades"],
+            "tp1_hit_rate": fresh_stats["tp1_hit_rate"],
+            "expectancy": fresh_stats["expectancy"],
+            "winrate": fresh_stats["winrate"],
+        }
+        payload["status_source"] = "window_30d"
+        if int(fresh_stats["trades"]) >= REQUALIFY_MIN_FRESH_TRADES:
+            fresh_expectancy = float(fresh_stats["expectancy"])
+            if fresh_expectancy > 0.25:
+                payload["status"] = "GOOD"
+            elif fresh_expectancy > 0.0:
+                payload["status"] = "WATCH"
+            else:
+                payload["status"] = "PAUSE"
+            payload["status_source"] = "fresh_cohort"
+        output["directions"][direction] = payload
+
     for strategy, rows in recovery_buckets.items():
         payload = _bucket_payload(rows)
         payload["status"] = "RECOVERY_ONLY"
