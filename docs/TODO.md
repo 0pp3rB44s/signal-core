@@ -7,7 +7,7 @@ leerrapport-status; (2) momentum_breakout houden; (3) breakdown/continuation op
 probe; (4) liquidity_sweep close-pos gate gerepareerd; (5) geen nieuwe strategieën
 tot de basis winstgevend is.
 
-- [ ] EIGENAAR-BESLUIT (2026-07-12): HARD-PAUSE-beleid. Alle 4 strategieën staan op status=PAUSE (expectancy<=0 -> PAUSE, geen onderscheid scratch/structureel; momentum n=32 -> hard-pauze). Het 30d-venster meet vooral de oude geometrie (TP1 pas bereikbaar sinds ATR-cap 07-11). Opties: (a) laten staan = nauwelijks nieuwe data; (b) status baseren op post-fix cohort (cutoff 2026-07-11T14:30) zodra n>=10; (c) alleen momentum handmatig naar PROBE voor N trades. Zie JOURNAL hfst. 37.
+- [x] ~~EIGENAAR-BESLUIT: HARD-PAUSE-beleid~~ BESLOTEN 2026-07-12: herkwalificatie-modus (optie b) — PATCH-065. Gepauzeerde strategie met wr>=40% mag op probe-size max 15 post-fix-cohort-trades doen; vanaf n>=10 bepaalt het cohort de status. Reclaim (wr 36%) blijft hard dicht.
 - [ ] Meet post-fix cohort (trades sinds 2026-07-11T14:30): eerste 5 = FET +0.052 (TP-hit!), ENA +0.010, BNB -0.002, AAVE -0.110, DOGE -0.125. Na ~15-20 trades opnieuw beoordelen.
 - [ ] strategy_performance.csv logt geen EXECUTABLE-plan-rijen voor trend_continuation (AAVE/FET executies zonder PLAN-rij) -> funnel-metingen ondertellen. Vind de logging-plek en dek alle strategieën.
 - [ ] Leerketen-cadans: daily_learning_report.json was >26h oud (defensieve kill-switch-input!), learning.json 10 dagen. De keten hangt aan strategy_expectancy-leeftijd (24h) en morning_audit draait met check=False (stille fouten). Eigen versheids-checks per artefact + luide failure.

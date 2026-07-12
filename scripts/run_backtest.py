@@ -941,10 +941,14 @@ def _build_daily_validation() -> dict[str, Any]:
 
 
 EXPECTANCY_WINDOW_DAYS = 30
-# Reclaim TP geometry moved from 1.00R to 1.30R on this date (roadmap N4);
-# trades before it measured a different TP model and must not dilute the
-# fresh-geometry TP1 hit-rate reading.
-GEOMETRY_FIX_CUTOFF_UTC = "2026-07-05T13:00:00"
+# Herkwalificatie-cutoff (eigenaar-besluit 2026-07-12): de ATR-stop-cap +
+# BE-op-echte-fill fixes van 2026-07-11 (PATCH-057..062) repareerden de
+# stop/TP-geometrie; trades van daarvóór meten de bug, niet de strategie.
+# (Was 2026-07-05: de eerdere reclaim 1.00R->1.30R geometrie-ronde.)
+GEOMETRY_FIX_CUTOFF_UTC = "2026-07-11T14:30:00"
+# Zodra het post-fix cohort dit aantal trades heeft, bepaalt HET de status
+# (i.p.v. het 30d-venster dat nog weken oude-geometrie-trades bevat).
+REQUALIFY_MIN_FRESH_TRADES = 10
 
 
 def _trade_close_timestamp(trade: dict[str, Any]) -> str:
@@ -1034,6 +1038,17 @@ def _build_strategy_expectancy(trades: list[dict[str, Any]], window_days: int = 
             "expectancy": fresh_stats["expectancy"],
             "winrate": fresh_stats["winrate"],
         }
+        # Herkwalificatie: met genoeg post-fix trades telt alleen vers bewijs.
+        payload["status_source"] = "window_30d"
+        if int(fresh_stats["trades"]) >= REQUALIFY_MIN_FRESH_TRADES:
+            fresh_expectancy = float(fresh_stats["expectancy"])
+            if fresh_expectancy > 0.25:
+                payload["status"] = "GOOD"
+            elif fresh_expectancy > 0.0:
+                payload["status"] = "WATCH"
+            else:
+                payload["status"] = "PAUSE"
+            payload["status_source"] = "fresh_cohort"
         output["strategies"][strategy] = payload
 
     for strategy, rows in recovery_buckets.items():

@@ -271,6 +271,22 @@ class RiskManager:
         # lifts automatically when a newer report drops the PAUSE status.
         report_status = str(stats.get("status") or "").upper()
         if report_status == "PAUSE" and trades >= 30:
+            # Herkwalificatie-modus (eigenaar-besluit 2026-07-12): een PAUSE
+            # uit het 30d-venster meet vooral de oude stop/TP-geometrie
+            # (gerepareerd 2026-07-11, PATCH-057..062). Een geometrie-
+            # slachtoffer — herkenbaar aan een gezonde winrate (>=40%)
+            # ondanks negatieve expectancy — mag op probe-size een klein
+            # post-fix cohort vullen (max 15 trades) zodat de status op vers
+            # bewijs kan draaien. Structurele verliezers (lage winrate, zoals
+            # low_vol_reclaim: eigenaar-pauze 2026-07-10) blijven hard dicht.
+            fresh = stats.get("fresh_since_geometry_fix") or {}
+            fresh_trades = int(fresh.get("trades", 0) or 0)
+            winrate = float(stats.get("winrate", 0.0) or 0.0)
+            if winrate >= 0.40 and fresh_trades < 15:
+                reasons.append(
+                    f"strategy weighting REQUALIFY-PROBE: PAUSE uit oud venster, post-fix cohort {fresh_trades}/15 op halve size ({strategy_name}, wr={winrate:.2f})"
+                )
+                return True, reasons, True
             reasons.append(
                 f"strategy weighting HARD-PAUSE: learning report status=PAUSE ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
             )

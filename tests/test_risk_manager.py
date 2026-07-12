@@ -169,6 +169,55 @@ def test_strategy_weighting_pause_status_small_sample_still_probes():
     assert probe
 
 
+def test_strategy_weighting_requalify_probe_after_geometry_fix():
+    # Herkwalificatie (eigenaar-besluit 2026-07-12): een PAUSE uit het oude
+    # 30d-venster + gezonde winrate (geometrie-slachtoffer) + klein post-fix
+    # cohort -> probe i.p.v. hard-pauze, zodat een gerepareerde strategie
+    # zich met vers bewijs kan herkwalificeren (max 15 cohort-trades).
+    rm = _make_weighting_risk_manager({
+        "momentum_breakout": {
+            "trades": 32, "expectancy": -0.075, "winrate": 0.486,
+            "tp1_hit_rate": 0.0, "status": "PAUSE",
+            "fresh_since_geometry_fix": {"trades": 3, "expectancy": -0.04},
+        },
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert allowed
+    assert probe
+    assert any("REQUALIFY-PROBE" in r for r in reasons)
+
+
+def test_strategy_weighting_requalify_denied_for_low_winrate():
+    # Structurele verliezers (lage winrate) blijven hard dicht — de
+    # herkwalificatie is alleen voor geometrie-slachtoffers, niet voor
+    # low_vol_reclaim-achtige selectieproblemen (eigenaar-pauze 2026-07-10).
+    rm = _make_weighting_risk_manager({
+        "low_vol_reclaim": {
+            "trades": 257, "expectancy": -0.028, "winrate": 0.358,
+            "tp1_hit_rate": 0.09, "status": "PAUSE",
+            "fresh_since_geometry_fix": {"trades": 0, "expectancy": 0.0},
+        },
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="low_vol_reclaim"))
+    assert not allowed
+    assert any("HARD-PAUSE" in r for r in reasons)
+
+
+def test_strategy_weighting_requalify_cohort_full_hard_pauses_again():
+    # Cohort vol (>=15) en nog steeds PAUSE -> het verse bewijs is negatief;
+    # de hard-pauze geldt weer onverkort.
+    rm = _make_weighting_risk_manager({
+        "momentum_breakout": {
+            "trades": 40, "expectancy": -0.06, "winrate": 0.45,
+            "tp1_hit_rate": 0.05, "status": "PAUSE",
+            "fresh_since_geometry_fix": {"trades": 15, "expectancy": -0.05},
+        },
+    })
+    allowed, reasons, probe = rm._strategy_weighting_gate(_candidate(strategy="momentum_breakout"))
+    assert not allowed
+    assert any("HARD-PAUSE" in r for r in reasons)
+
+
 def _sweep_candidate(close_pos: float, participation: float, followthrough: float, direction: str = "LONG") -> MagicMock:
     candidate = _candidate(strategy="liquidity_sweep_reversal")
     candidate.direction = direction

@@ -178,5 +178,13 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   (4) Coach-datafilter: dataset_write_test-rijen uit learning.json + rapport geregenereerd
   (stond op 2 juli!). 136/136 tests groen; bot herstart met beide posities hersteld.
 
+- PATCH-065 | 2026-07-12 | HERKWALIFICATIE-MODUS (eigenaar-besluit): een strategie die op PAUSE
+  staat uit het 30d-venster maar een gezonde winrate heeft (>=40% = geometrie-slachtoffer, geen
+  selectieprobleem) mag op probe-size (halve risico) een post-fix cohort vullen (cutoff
+  2026-07-11T14:30 = ATR-cap deploy, max 15 trades). Vanaf cohort n>=10 bepaalt het verse cohort
+  de rapportstatus (status_source=fresh_cohort). Structurele verliezers (reclaim, wr 36%) blijven
+  hard dicht. Lost de bevroren-strategie-deadlock op: momentum (wr 53%, cohort 8/15) trade weer
+  op halve size. 3 testcontracten; 139/139 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
