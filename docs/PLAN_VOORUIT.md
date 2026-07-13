@@ -78,7 +78,7 @@ Beslisregels, vooraf vastgelegd zodat emotie ze niet kan buigen:
   bijstorten + compounding is over 3-5 jaar levensveranderend groter dan
   elke gok die volgende maand op nul eindigt.
 - Als crypto een echte trending fase ingaat (regime-monitor), mag de
-  trend-following-aanpak (backtest +80R over 1,4jr; OOS zwak) een её
+  trend-following-aanpak (backtest +80R over 1,4jr; OOS zwak) een
   her-test krijgen — eerst paper, dan pas probe.
 
 ## Wat dit plan NIET belooft
