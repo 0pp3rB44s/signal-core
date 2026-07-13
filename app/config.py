@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     max_symbols: int = Field(default=28, alias="MAX_SYMBOLS")
     strategy_debug_symbols: str = Field(default="", alias="STRATEGY_DEBUG_SYMBOLS")
     enable_shorts: bool = Field(default=True, alias="ENABLE_SHORTS")
+    # Per-strategie uitzondering op ENABLE_SHORTS=false (2026-07-13). De
+    # short-bloeding zat in low_vol_reclaim (mean-reversion, bounces shorten,
+    # -6.08, al hard-paused). momentum_breakdown is trend-following en loopt MET
+    # een downtrend mee; in een bearmarkt is dat de enige richting die aansluit.
+    # Deze strategieen mogen shorten ook als enable_shorts uit staat.
+    shorts_allowed_strategies: str = Field(default="momentum_breakdown", alias="SHORTS_ALLOWED_STRATEGIES")
     strategy_isolation_enabled: bool = Field(default=False, alias="STRATEGY_ISOLATION_ENABLED")
     enabled_strategies: str = Field(default="", alias="ENABLED_STRATEGIES")
     disabled_strategies: str = Field(default="", alias="DISABLED_STRATEGIES")

@@ -762,9 +762,24 @@ class TradePlanner:
         # die z'n break-even benadert. Volledig reversibel via .env. De schakelaar
         # bestond al in config maar was nergens bedraad; dit is de bedrading.
         if not getattr(self.settings, "enable_shorts", True) and str(candidate.direction or "").upper() == "SHORT":
-            verdict = "BLOCKED"
-            reasons.append("shorts disabled (ENABLE_SHORTS=false): 32% WR / -7.94 net vs longs 47% / -2.96")
-            notes.append("directional_gate=shorts_disabled")
+            allowed_short_strats = {
+                s.strip().lower()
+                for s in str(getattr(self.settings, "shorts_allowed_strategies", "") or "").split(",")
+                if s.strip()
+            }
+            plan_strat = str(self._normalize_plan_strategy(candidate) or "").lower()
+            if plan_strat in allowed_short_strats:
+                # Trend-following short (bv. momentum_breakdown): loopt mee met de
+                # downtrend, mag ook met enable_shorts=false. De bloeder was
+                # low_vol_reclaim (mean-reversion), die valt hier niet onder.
+                notes.append(f"directional_gate=short_allowed_trend_following ({plan_strat})")
+            else:
+                verdict = "BLOCKED"
+                reasons.append(
+                    f"shorts disabled (ENABLE_SHORTS=false, {plan_strat} niet trend-following): "
+                    "shorts 32% WR / -7.94 net vs longs 47% / -2.96"
+                )
+                notes.append("directional_gate=shorts_disabled")
 
         self._emit_near_executable(
             candidate=candidate,

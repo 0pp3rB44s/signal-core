@@ -188,18 +188,27 @@ def test_momentum_unaffected_by_sweep_reachability_guard():
 
 
 def test_shorts_blocked_when_enable_shorts_false():
-    """Directional gate (2026-07-13): ENABLE_SHORTS=false blokkeert shorts.
+    """Directional gate (2026-07-13): ENABLE_SHORTS=false blokkeert mean-reversion
+    shorts, maar niet de trend-following uitzondering (shorts_allowed_strategies).
 
-    383-trade exchange-truth: SHORT 32% WR / -7.94 vs LONG 47% / -2.96.
-    De schakelaar bestond al maar was nergens bedraad; dit pint de bedrading.
+    383-trade exchange-truth: SHORT 32% WR / -7.94 vs LONG 47% / -2.96, waarvan
+    low_vol_reclaim short -6.08 de bloeder is. momentum_breakdown (trend-following)
+    mag wel shorten zodat de bot met een downtrend kan meelopen.
     """
     s = _settings()
     s.enable_shorts = False
+    s.shorts_allowed_strategies = "momentum_breakdown"
     planner = TradePlanner(settings=s)
 
-    short_plan = planner.build(_candidate("momentum_breakdown", "SHORT"), _score(), _risk())
-    assert short_plan.verdict == "BLOCKED"
-    assert any("shorts disabled" in r.lower() for r in short_plan.reasons)
+    # Mean-reversion short (low_vol_reclaim) -> geblokkeerd.
+    blocked = planner.build(_candidate("low_vol_reclaim", "SHORT"), _score(), _risk())
+    assert blocked.verdict == "BLOCKED"
+    assert any("shorts disabled" in r.lower() for r in blocked.reasons)
+
+    # Trend-following short (momentum_breakdown) -> uitzondering, niet geblokkeerd
+    # door de directional gate.
+    allowed = planner.build(_candidate("momentum_breakdown", "SHORT"), _score(), _risk())
+    assert not any("shorts disabled" in r.lower() for r in (allowed.reasons or []))
 
     # Longs blijven ongemoeid.
     long_plan = planner.build(_candidate("momentum_breakout", "LONG"), _score(), _risk())
