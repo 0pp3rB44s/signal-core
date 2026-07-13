@@ -8,6 +8,9 @@
 - [Journal](JOURNAL.md)
 - [Patches](PATCHES.md)
 - [Position Manager Audit](position_manager_audit.md)
+- [TODO / backlog](TODO.md)
+- [Exchange-Truth Analyse 2026-07-13](EXCHANGE_TRUTH_ANALYSIS_20260713.md)
+- [Early Trigger 1m](EARLY_TRIGGER_1M.md)
 - [CGCAgent README](../agents_v3/README.md)
 
 ## State / journals

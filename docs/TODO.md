@@ -8,10 +8,12 @@ probe; (4) liquidity_sweep close-pos gate gerepareerd; (5) geen nieuwe strategie
 tot de basis winstgevend is.
 
 - [x] ~~EIGENAAR-BESLUIT: HARD-PAUSE-beleid~~ BESLOTEN 2026-07-12: herkwalificatie-modus (optie b) — PATCH-065. Gepauzeerde strategie met wr>=40% mag op probe-size max 15 post-fix-cohort-trades doen; vanaf n>=10 bepaalt het cohort de status. Reclaim (wr 36%) blijft hard dicht.
-- [ ] Meet post-fix cohort (trades sinds 2026-07-11T14:30): eerste 5 = FET +0.052 (TP-hit!), ENA +0.010, BNB -0.002, AAVE -0.110, DOGE -0.125. Na ~15-20 trades opnieuw beoordelen.
-- [ ] strategy_performance.csv logt geen EXECUTABLE-plan-rijen voor trend_continuation (AAVE/FET executies zonder PLAN-rij) -> funnel-metingen ondertellen. Vind de logging-plek en dek alle strategieën.
-- [ ] Leerketen-cadans: daily_learning_report.json was >26h oud (defensieve kill-switch-input!), learning.json 10 dagen. De keten hangt aan strategy_expectancy-leeftijd (24h) en morning_audit draait met check=False (stille fouten). Eigen versheids-checks per artefact + luide failure.
-- [ ] bot.out ongerotecteerd (72MB in één nacht; startscript trunceert bij start -> historie weg). Rotatie of gzip-archief bij start (handmatig gedaan op 2026-07-12: bot.out.pre_audit_restart_20260712.gz).
+- [ ] KERN-WERF (2026-07-13): long-setup-kwaliteit. Diagnose is nu waterdicht — winnaars lopen al 2.9R, break-even = 42% WR, longs zitten op 47%. De ENIGE weg naar structureel groen is de long-WR van 47% richting 50%+ tillen (betere entry-filters / hogere conviction), NIET de exit-geometrie (runner-hypothese getest op echte data -> maakte het slechter, verworpen). Aparte zorgvuldige klus mét backtest.
+- [ ] Meet post-fix cohort (momentum_breakout, sinds 2026-07-11T14:30): stond op 14/15, wr 0.51. Bij 15/15 vervalt de requalify-probe -> valt terug naar hard-pause. Beoordeel of het cohort de status omhoog trekt of dat momentum ook dicht moet.
+- [x] ~~strategy_performance.csv logt geen EXECUTABLE-plan-rijen (fast-lane)~~ OPGELOST 2026-07-12 (cherry-pick bf2e17f, PATCH-069): fast-lane logt nu PLAN/PLAN_REJECT-funnelrijen. Geverifieerd: fast-lane-rijen aanwezig in strategy_performance.csv.
+- [x] ~~Leerketen-cadans / stale rapporten~~ OPGELOST 2026-07-12 (cherry-pick 9dfc45d, PATCH-069): elk artefact (strategy_expectancy, daily_learning_report, learning.json) heeft eigen versheids-check (24h refresh), kill-switch fail-closed bij >48h. Geverifieerd lezend: risk-gate + kill-switch lezen live verse data.
+- [ ] bot.out ongerotecteerd (72MB in één nacht; startscript trunceert bij start). Rotatie/gzip bij start (handmatig gearchiveerd 07-12/13: bot.out.pre_*_restart.gz). Nog structureel oplossen.
+- [ ] Cosmetisch: 2 pre-PATCH-069 state-records (TIA/LDO 07-12) houden placeholder net_pnl in executed_trades.json; dataset (leer-bron) heeft de echte waarden. Optioneel backfillen bij volgende bot-stop (niet live i.v.m. write-race).
 - [x] ~~Verlaag fee-drag: analyseer maker-entry fill-rate~~ AFGEROND 2026-07-12: 0/7 maker-fills zelfs bij 30s venster. Post-only vult niet op momentum-entries (de prijs loopt per definitie weg). Extended-wait uit (PATCH-064); hybride 4s + market-fallback blijft.
 - [ ] TP-geometrie low_vol_reclaim: mediane MFE is 0.39% terwijl TP1 op 1.30R (0.39-1.1%) ligt; TP1-hitrate 9.6%. Herontwerp entries of TP-profiel op de MFE-verdeling voordat de strategie van HARD-PAUSE af mag. Vereist menselijke goedkeuring.
 - [x] ~~SHORT-bias~~ HERZIEN NA BOT-ONLY ATTRIBUTIE (2026-07-13): de export-asymmetrie (LONG +3.45 vs SHORT -3.05) bleek van 5 handmatige trades (+6.82). Bot-only: LONG -0.034/trade vs SHORT -0.031/trade — geen richting-probleem. Opgelost als LERENDE laag (PATCH-068): richting-expectancy in strategy_expectancy.json + slapende asymmetrie-gate in risk_manager (probe bij gap >= 0.04/trade, hard-pause na vol requalify-cohort). Zie docs/EXCHANGE_TRUTH_ANALYSIS_20260713.md correctie-sectie.
@@ -34,3 +36,10 @@ tot de basis winstgevend is.
 - [x] (2026-07-11) Break-even-geometrie coherent: fee-adjusted BE-floor, ATR-stop-cap, BE op echte fill — PATCH-057/058/059/061.
 - [x] (2026-07-11) Entry chase-limit (skip >15bps weggelopen breakout) — PATCH-062.
 - [x] (2026-07-11) live_trade_journal.json gereconcilieerd (28 stale OPEN → CLOSED tegen exchange truth) — PATCH-063.
+- [x] (2026-07-12) Derde close-pad gedicht: exchange-sync-close draait door exchange-truth backfill — PATCH-069. Live bewezen na reboot (TRX/FET correct verwerkt).
+- [x] (2026-07-12) net_pnl exchange-truth fix (was open-fee placeholder op close) — PATCH-064.
+- [x] (2026-07-12) Notional-cap 35%→50% (eigenaar-besluit; leverage raakt BE-punt niet) — PATCH-066.
+- [x] (2026-07-12) Wick-aware MFE + crash-proof scan-lock — PATCH-067.
+- [x] (2026-07-13) Runner-hypothese gebouwd, gesimuleerd op 206 export-trades → maakte het slechter (winnaars lopen al 2.9R), teruggedraaid. Echte probleem = win rate.
+- [x] (2026-07-13) Shorts: per-strategie gate, alleen momentum_breakdown (trend-following) mag shorten — PATCH-070/071.
+- [x] (2026-07-13) Data-pijplijn kwaliteitscheck: schrijven correct, lezen door consumenten live geverifieerd, leren schoon (0 dataset-mismatches).

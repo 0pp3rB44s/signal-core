@@ -450,20 +450,92 @@ juiste getal er in hetzelfde record naast stond. En een vangnet dat op
 zulke data beslist, pauzeert met evenveel overtuiging de verkeerde dingen.
 
 ═══════════════════════════════════
-HUIDIGE STATUS — 2026-07-11 EOD
+38. De Runner-Hypothese die Sneuvelde + de Echte Diagnose (2026-07-12/13)
 ═══════════════════════════════════
 
-✅ low_vol_reclaim HARD-PAUSE'd (bewezen verliezer, 24,5% WR)
-✅ momentum_breakout actief op negative-expectancy PROBE (getthrottled)
-✅ liquidity_sweep als 2e strategie geactiveerd (wacht op eerste setups)
-✅ BE-geometrie coherent: fee-adjusted floor, ATR-cap, echte-fill-anker
-✅ live_trade_journal.json gereconcilieerd (0 stale OPEN-rijen)
-✅ PATCHES/JOURNAL bijgewerkt t/m PATCH-063
+BESTANDEN / MODULES
+
+execution/execution_service.py, execution/position_manager.py
+planning/trade_planner.py, app/config.py, app/runner.py
+data_store/exchange_exports/, reports/EXCHANGE_TRUTH_ANALYSIS_20260713.md
+
+WAT ER GEBEURDE
+
+Eerst leverde een MacBook-reboot gratis bewijs: TRX en FET sloten op de
+exchange terwijl de bot ~8,5u plat lag. Bij opstart verwerkte
+EXCHANGE_SYNC_CLOSE_FINALIZED (PATCH-069) ze met de ECHTE exchange-pnl
+(TRX +0.023, FET -0.172) — eerste live bewijs dat het derde close-pad dicht
+is. Ook geland via cherry-pick: leerketen-versheid (elk artefact eigen check,
+48h fail-closed) en fast-lane funnel-logging.
+
+Toen de eigenaar-vraag, ontmoedigd na honderden uren: "zet hem zo dat we
+winst maken." Ochtend-audit + eigenaar-export van 206 exchange-trades gaven
+de harde cijfers: 367 closes, 38% WR, avg win +0.111 / avg loss -0.118
+(R-ratio 0.95) = wiskundig verlies.
+
+Hypothese: elke trade was execution_profile=single_tp_full_close op ~1.3R,
+dus winnaars afgekapt, geen runners. Ik bouwde de hele runner-mode (TP naar
+2.5R + trailing stop). MAAR simuleerde hem eerst op de 206 echte trades ->
+resultaat SLECHTER (-5.79 vs +0.40). Waarom? De echte stop-afstand is 0.25%,
+dus winnaars lopen al naar ~2.9R (+0.72% gem, tot +4.4%) en verliezers
+-1.29R. De winnaars werden NIET afgekapt. Runner-mode volledig teruggedraaid.
+
+DE ECHTE DIAGNOSE
+
+Break-even vereist 42% WR (bij 2.9R:1.29R met 0.48R fees/trade). De bot zit
+op 33-38%. Het is geen exit-probleem maar een WIN-RATE-probleem. En het
+sterkste, consistentste signaal: SHORT 32% WR / -7.94 vs LONG 47% / -2.96,
+met low_vol_reclaim short (-6.08) als de grootste bloeder.
+
+FIXES
+
+- PATCH-070: ENABLE_SHORTS bedraad (bestond in config, deed niets) -> shorts uit.
+- "Waarom geen trades?": markt bearish (1D+4H), longs correct HTF-geblokkeerd,
+  shorts uit -> bot idle. PATCH-071: per-strategie gate; momentum_breakdown
+  (trend-following) mag mét de downtrend meeshorten, low_vol_reclaim niet.
+  Restant-stilte = de breakdown-detector vindt geen scherpe setup (de markt
+  grindt traag omlaag). Bot forceert geen slechte trade = correct gedrag.
+
+KWALITEITSCHECK (data-pijplijn)
+
+- Schrijf: executed_trades vers, funnel-logging actief (PLAN/PLAN_REJECT +
+  fast-lane), dataset 0 mismatches op 367 rijen.
+- Lees: risk-gate leest expectancy live (trades=45 matcht), kill-switch leest
+  daily report (DAY_MODE), drempels 24h refresh / 48h fail-closed.
+- Bevinding: leren is SCHOON (dataset heeft echte pnl). 2 pre-PATCH-069
+  state-records (TIA/LDO) houden cosmetisch een placeholder net_pnl; de
+  dataset (leer-bron) heeft hun echte -0.167/-0.171. Geen leer-vervuiling.
+
+BELANGRIJKSTE LES
+
+Simuleer een exit-hypothese op echte data VOOR je hem live zet. Mijn
+overtuigende "winnaars worden afgekapt"-verhaal was fout, en de simulatie op
+de eigenaar-export ving het voordat het geld kostte. En: een bot die niet
+meer bloedt, traadt ook veel minder — je kunt in een markt zonder goede
+setups niet tegelijk "stop de verliezers" en "veel data" hebben.
+
+═══════════════════════════════════
+HUIDIGE STATUS — 2026-07-13
+═══════════════════════════════════
+
+✅ Alle close-paden schrijven exchange-truth net_pnl (3 paden, PATCH-064/069)
+✅ Leerketen: eigen versheids-checks per artefact, 48h fail-closed kill-switch
+✅ Funnel-logging compleet (incl. fast-lane); dataset 0 mismatches / 367 rijen
+✅ Data-pijplijn geverifieerd: schrijven correct, lezen door consumenten live
+✅ Shorts: per-strategie gate — alleen trend-following (momentum_breakdown)
+✅ Runner-hypothese getest op echte data en verworpen (winnaars lopen al 2.9R)
+✅ Tests 162/162 groen; docs/PATCHES t/m PATCH-071
+
+KERN-DIAGNOSE (waar het echt op zit)
+
+- Winnaars lopen prima (2.9R). Probleem = WIN RATE 33-38% vs 42% break-even.
+- Fees ~0.48R/trade eten een licht-positieve bruto-edge op.
+- Longs (47% WR) zijn veel dichter bij break-even dan shorts (32%).
 
 AANDACHTSPUNTEN
 
-- Edge blijft dun: fee-drag > edge; recent ~1 trade/dag, kleine verliezen
-- liquidity_sweep heeft 0 afgesloten trades → geen live track record
-- Journal-drift root-cause loopt als aparte taak (exchange-sync-close → journal-close)
-- Volgende verdedigbare stap: fee-margin-filter op <30m churn (mét backtest,
-  niet blind live)
+- Markt bearish -> longs geblokkeerd, breakdown-shorts wachten op scherpe
+  setup. Weinig trades is nu correct gedrag, geen storing.
+- Volgende inhoudelijke werf: long-setup-kwaliteit van 47% richting 50%+ WR
+  tillen (de enige echte weg naar structureel groen). Aparte, zorgvuldige klus.
+- 2 cosmetische placeholder-state-records (TIA/LDO, pre-069); leren onaangetast.

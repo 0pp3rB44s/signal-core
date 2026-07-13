@@ -1,17 +1,41 @@
 # CGC BOT V5 — MASTER ROADMAP HERSTRUCTUREERD
 
-VERSIE: 2026-07-11 (EOD)
+VERSIE: 2026-07-13
 STATUS: ACTIEF
-VORIGE VERSIE: 2026-07-07 (EOD)
+VORIGE VERSIE: 2026-07-11 (EOD)
 
 ═══════════════════════════════════
-UPDATE — 2026-07-11 EOD (nieuwste bovenop; detail-historie hieronder)
+UPDATE — 2026-07-13 (nieuwste bovenop; detail-historie hieronder)
 ═══════════════════════════════════
 
-PORTFOLIO: low_vol_reclaim HARD-PAUSE'd (bewezen verliezer, 24,5% WR),
-momentum_breakout actief op negative-expectancy PROBE, liquidity_sweep als
-2e strategie geactiveerd (nog 0 afgesloten trades = geen track record).
-Regel: geen nieuwe strategieën tot de basis winstgevend is.
+KERN-DIAGNOSE (nu waterdicht, 367 closes + 206-trade exchange-export):
+Winnaars lopen al ~2.9R — de exit is NIET het probleem (runner-hypothese
+gebouwd, gesimuleerd op echte data, maakte het slechter, verworpen). Het
+echte probleem is WIN RATE: 33-38% vs 42% break-even. Fees ~0.48R/trade eten
+een licht-positieve bruto-edge op. Longs (47% WR) staan veel dichter bij
+break-even dan shorts (32%). ENIGE weg naar structureel groen = long-WR
+omhoog; dat is de volgende inhoudelijke werf.
+
+PORTFOLIO: low_vol_reclaim HARD-PAUSE'd (mean-reversion verliezer),
+momentum_breakout op requalify-probe (14/15 cohort), momentum_breakdown mag
+trend-following shorten (per-strategie gate), overige shorts uit.
+
+DEZE FASE OPGELOST (PATCH-064 t/m 071, zie docs/PATCHES.md):
+[x] net_pnl exchange-truth op alle 3 close-paden (was open-fee placeholder)
+[x] Derde close-pad gedicht; live bewezen na MacBook-reboot (TRX/FET correct)
+[x] Leerketen-versheid: eigen check per artefact, 48h fail-closed kill-switch
+[x] Fast-lane funnel-logging (executies tellen nu mee)
+[x] Wick-aware MFE + crash-proof scan-lock (macOS provenance EPERM)
+[x] Notional-cap 35%→50%; shorts per-strategie gated
+[x] DATA-PIJPLIJN KWALITEITSCHECK: schrijven correct, lezen door consumenten
+    (risk-gate/kill-switch) live geverifieerd, leren schoon (0 dataset-mismatches)
+
+ACTIEVE AANDACHTSPUNTEN (2026-07-13):
+[ ] Long-setup-kwaliteit: 47% → 50%+ WR (de enige echte weg naar groen)
+[ ] Markt bearish -> weinig trades = correct gedrag (geen storing); geduld
+    of setup-drempel, maar losser = slechtere setups terug
+[ ] momentum_breakout cohort 14/15: bij vol -> terug naar hard-pause, beoordelen
+[ ] bot.out-rotatie structureel; 2 cosmetische placeholder-state-records
 
 DEZE FASE OPGELOST (PATCH-049 t/m 063, zie docs/PATCHES.md):
 [x] Break-even-geometrie coherent: fee-adjusted BE-floor (0,16%), momentum-
