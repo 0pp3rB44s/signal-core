@@ -3,11 +3,14 @@ from pathlib import Path
 import json
 import fcntl
 import os
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone, timedelta
 from collections import Counter
 
 from app.config import Settings
+from app.equity import write_equity_snapshot
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
 from data.market_fetcher import MarketFetcher
@@ -20,6 +23,7 @@ from execution.state_store import JsonStateStore
 from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
 from risk.cooldown_manager import SymbolCooldownManager
+from agents_v2.learning.coach_rules import run as run_coach_rules
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
 from strategies.strategies.continuation import detect_continuation
@@ -317,6 +321,51 @@ class StartupRunner:
         self._last_continuation_reject_log = {}
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
+        self._learning_refresh_proc: subprocess.Popen | None = None
+
+    def _maybe_refresh_learning_reports(self) -> None:
+        """Regenerate the daily learning/expectancy reports when they go stale.
+
+        The launchd job that used to do this gets blocked by macOS TCC (launchd
+        children may not write inside ~/Desktop), so the bot — started from a
+        terminal that does have that access — refreshes its own learning input.
+        Runs as a background subprocess so the scan loop never stalls on it.
+        """
+        if self._learning_refresh_proc is not None:
+            if self._learning_refresh_proc.poll() is None:
+                return
+            exit_code = self._learning_refresh_proc.returncode
+            self._learning_refresh_proc = None
+            if exit_code == 0:
+                self.log.info("LEARNING_REFRESH_OK | strategy_expectancy.json regenerated")
+            else:
+                self.log.warning("LEARNING_REFRESH_FAILED | exit_code=%s", exit_code)
+
+        report_path = Path("reports/backtests/strategy_expectancy.json")
+        try:
+            age_hours = (time.time() - report_path.stat().st_mtime) / 3600.0
+        except OSError:
+            age_hours = float("inf")
+
+        if age_hours < 24.0:
+            return
+
+        chain = (
+            "import subprocess, sys;"
+            "subprocess.run([sys.executable, '-m', 'telemetry.dataset_builder'], check=False);"
+            "subprocess.run([sys.executable, 'scripts/run_backtest.py', '--validation-only'], check=True);"
+            "subprocess.run([sys.executable, 'morning_audit.py'], check=False)"
+        )
+        try:
+            with open("logs/daily_learning_report.log", "a", encoding="utf-8") as log_handle:
+                self._learning_refresh_proc = subprocess.Popen(
+                    [sys.executable, "-c", chain],
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            self.log.info("LEARNING_REFRESH_STARTED | report_age_hours=%.1f", age_hours)
+        except Exception as exc:
+            self.log.warning("LEARNING_REFRESH_SPAWN_FAILED | error=%s", exc)
 
     def _is_network_resolution_error(self, exc: Exception) -> bool:
         error_text = str(exc).lower()
@@ -443,6 +492,51 @@ class StartupRunner:
             except BlockingIOError:
                 self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
                 return
+
+            try:
+                agent_report = run_coach_rules()
+                self.log.info(
+                    "AI_AGENT_DECISIONS_REFRESHED | decision_count=%s",
+                    agent_report.get("decision_count", 0),
+                )
+            except Exception as exc:
+                self.log.warning("AI_AGENT_DECISIONS_REFRESH_FAILED | error=%s", exc)
+
+            self._maybe_refresh_learning_reports()
+
+            if self.client.has_credentials:
+                try:
+                    accounts_payload = self.client.get_accounts()
+                    for account in accounts_payload.get("data") or []:
+                        if str(account.get("marginCoin", "")).upper() != "USDT":
+                            continue
+                        live_equity = float(
+                            account.get("accountEquity")
+                            or account.get("usdtEquity")
+                            or account.get("equity")
+                            or 0.0
+                        )
+                        if live_equity > 0:
+                            write_equity_snapshot(live_equity)
+                        break
+                except Exception as exc:
+                    self.log.warning("EQUITY_SNAPSHOT_FAILED | error=%s", exc)
+
+            try:
+                day_mode = self.risk_manager.day_mode()
+                self.log.info(
+                    "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s | weekly_pnl=%.2f | weekly_loss_pct=%.2f | equity=%.2f (%s)",
+                    day_mode["mode"],
+                    day_mode["daily_realized_pnl"],
+                    day_mode["daily_loss_pct"],
+                    day_mode["consecutive_losses"],
+                    day_mode["weekly_realized_pnl"],
+                    day_mode["weekly_loss_pct"],
+                    day_mode["account_equity"],
+                    day_mode["equity_source"],
+                )
+            except Exception as exc:
+                self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
 
             contracts = self.fetcher.fetch_contracts(force_refresh=False)
             symbols = get_watchlist(self.settings, contracts=contracts)
@@ -916,6 +1010,77 @@ class StartupRunner:
             if snapshots:
                 self._emit_summary(snapshots)
                 self.scan_logger.append_rows(snapshots)
+
+            # --- FAST LANE (eigenaar 2026-07-07): 5m-entries op de sterkste
+            # symbolen van de basisscan. Zelfde detectoren, zelfde scorer,
+            # zelfde risk gates, zelfde planner — frequentie komt uit meer
+            # detectiekansen (12 verse 5m-candles/uur i.p.v. 4 op 15m), NIET
+            # uit lossere poorten. Volledig omkapseld: kan de basisscan en
+            # executie nooit breken. Cooldowns/positie-guards dwingt de
+            # execution-laag zelf af.
+            if bool(getattr(self.settings, "fast_lane_enabled", True)):
+                try:
+                    min_hint = float(getattr(self.settings, "fast_lane_min_score_hint", 50.0))
+                    lane_limit = int(getattr(self.settings, "fast_lane_symbols", 8))
+                    ranked = sorted(
+                        (s for s in snapshots if s.score_hint >= min_hint),
+                        key=lambda s: s.score_hint,
+                        reverse=True,
+                    )[:lane_limit]
+                    lane_primary = str(getattr(self.settings, "fast_lane_granularity", "5m"))
+                    lane_confirm = str(getattr(self.settings, "fast_lane_confirmation_granularity", "15m"))
+                    fast_plans = 0
+                    for base_snapshot in ranked:
+                        try:
+                            snap_fast = self.fetcher.build_market_snapshot(
+                                base_snapshot.symbol,
+                                primary_granularity=lane_primary,
+                                confirmation_granularity=lane_confirm,
+                            )
+                            detected: list = []
+                            for detector in (
+                                self.strategy.detect,
+                                self.momentum_strategy.detect,
+                                self.momentum_breakdown_strategy.detect,
+                                detect_continuation,
+                                detect_low_vol_reclaim,
+                            ):
+                                try:
+                                    fast_candidate = detector(snap_fast)
+                                    if fast_candidate is not None:
+                                        detected.append(fast_candidate)
+                                except Exception:
+                                    continue
+                            for fast_candidate in detected:
+                                fast_candidate.notes.append("fast_lane=true")
+                                fast_candidate.notes.append(f"fast_lane_granularity={lane_primary}")
+                                fast_score = self.scorer.score(fast_candidate)
+                                candidates.append((fast_candidate, fast_score))
+                                fast_risk = self.risk_manager.evaluate(fast_candidate, fast_score)
+                                fast_plan = self.trade_planner.build(fast_candidate, fast_score, fast_risk)
+                                plans.append(fast_plan)
+                                fast_plans += 1
+                                self.log.info(
+                                    "FAST_LANE_PLAN | %s | strategy=%s | direction=%s | verdict=%s | score=%.1f",
+                                    fast_plan.symbol,
+                                    fast_plan.strategy,
+                                    fast_plan.direction,
+                                    fast_plan.verdict,
+                                    float(fast_score.total),
+                                )
+                        except Exception as lane_exc:
+                            self.log.warning("FAST_LANE_SYMBOL_FAILED | %s | error=%s", base_snapshot.symbol, lane_exc)
+                    if ranked:
+                        self.log.info(
+                            "FAST_LANE_SCAN | symbols=%s | granularity=%s/%s | plans=%s",
+                            len(ranked),
+                            lane_primary,
+                            lane_confirm,
+                            fast_plans,
+                        )
+                except Exception as lane_exc:
+                    self.log.warning("FAST_LANE_FAILED | error=%s", lane_exc)
+
             if candidates:
                 self._emit_candidate_summary(candidates)
                 self.candidate_logger.append_rows(candidates)

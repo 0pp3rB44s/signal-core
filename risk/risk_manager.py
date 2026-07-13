@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import csv
 import json
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import Settings
+from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
+AGENT_DECISIONS_PATH = BASE_PATH / "agents_v2" / "reports" / "coach_decisions.json"
 logger = logging.getLogger("risk_manager")
 
 BETA_CLUSTERS = {
@@ -20,6 +25,27 @@ BETA_CLUSTERS = {
 class RiskManager:
     SAFE_ALPHA_MAX_LEVERAGE = 8
     SAFE_ALPHA_MAX_RISK_PCT = 0.75
+    # Probe mode: a strategy flagged by the expectancy report or the coach
+    # keeps trading at this fraction of normal risk so it can re-qualify.
+    PROBE_RISK_MULTIPLIER = 0.5
+
+    # Last known allocation state per strategy, to log promotion/demotion
+    # transitions (roadmap N3). Class-level so all gate paths share it.
+    _allocation_states: dict[str, str] = {}
+
+    def _log_allocation_transition(self, strategy: str, state: str) -> None:
+        strategy_key = str(strategy or "unknown").lower()
+        previous = self._allocation_states.get(strategy_key)
+        if previous == state:
+            return
+        self._allocation_states[strategy_key] = state
+        if previous is not None:
+            logger.warning(
+                "ALLOCATION_CHANGED | strategy=%s | %s -> %s",
+                strategy_key,
+                previous,
+                state,
+            )
     SAFE_ALPHA_MIN_SCORE = 60
     SAFE_MOMENTUM_MIN_SCORE = 72
     SAFE_CONTINUATION_MIN_SCORE = 78
@@ -27,6 +53,80 @@ class RiskManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
+    @staticmethod
+    def _latest_agent_decisions() -> dict:
+        """Read Learning/Coach decisions. Safe fallback: no decisions."""
+        if not AGENT_DECISIONS_PATH.exists():
+            return {}
+
+        try:
+            with open(AGENT_DECISIONS_PATH, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            logger.warning("AI_AGENT_DECISIONS_UNAVAILABLE | error=%s", exc)
+            return {}
+
+        return payload if isinstance(payload, dict) else {}
+
+    def _ai_agent_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Apply Learning Agent decisions as a live risk gate.
+
+        Returns (allowed, reasons, probe). A coach "reduce_strategy_exposure"
+        now does what it says — reduce size — instead of hard-blocking; only
+        symbol-level avoidance stays a hard block.
+        """
+        reasons: list[str] = []
+        payload = self._latest_agent_decisions()
+        decisions = payload.get("decisions") or []
+
+        if not decisions:
+            reasons.append("ai-agent: no active decisions")
+            return True, reasons, False
+
+        strategy_name = str(candidate.strategy or "").strip().lower()
+        symbol = str(candidate.symbol or "").strip().upper()
+
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                continue
+
+            action = str(decision.get("action") or "").strip()
+            target = str(decision.get("target") or "").strip()
+            target_lower = target.lower()
+            target_upper = target.upper()
+            reason = str(decision.get("reason") or "")
+
+            if action == "reduce_strategy_exposure" and target_lower and target_lower in strategy_name:
+                reasons.append(f"ai-agent PROBE: strategy exposure reduced by coach ({target}) | {reason}")
+                logger.info(
+                    "AI_AGENT_STRATEGY_PROBE | symbol=%s | strategy=%s | target=%s | reason=%s",
+                    symbol,
+                    candidate.strategy,
+                    target,
+                    reason,
+                )
+                return True, reasons, True
+
+            if action == "avoid_symbol_until_improved" and target_upper and target_upper == symbol:
+                reasons.append(f"ai-agent HARD_BLOCK: symbol avoided by coach ({target}) | {reason}")
+                logger.warning(
+                    "AI_AGENT_SYMBOL_BLOCK | symbol=%s | strategy=%s | target=%s | reason=%s",
+                    symbol,
+                    candidate.strategy,
+                    target,
+                    reason,
+                )
+                return False, reasons, False
+
+        reasons.append(f"ai-agent: passed ({len(decisions)} decisions checked)")
+        logger.info(
+            "AI_AGENT_GATE_PASSED | symbol=%s | strategy=%s | decisions=%s",
+            symbol,
+            candidate.strategy,
+            len(decisions),
+        )
+        return True, reasons, False
 
     def _kill_switch_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
         reasons: list[str] = []
@@ -50,18 +150,47 @@ class RiskManager:
 
         # --- Defensive daily status checks ---
         daily_status = self._daily_defensive_status()
+        if daily_status.get("daily_status_unreadable"):
+            reasons.append(
+                "kill-switch: daily learning report unreadable; failing closed until it is restored"
+            )
         daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
         consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
 
-        if daily_realized_pnl <= -10.0:
+        # Daily loss kill-switch as a % of account equity, matching the
+        # HARD_DAILY_STOP_PCT the rest of the system (dashboard_v2) already
+        # surfaces -- previously this was a flat -10.0 USD figure that didn't
+        # scale with account size.
+        account_equity, _equity_source = resolve_account_equity(self.settings)
+        hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
+        daily_loss_pct = (
+            abs(daily_realized_pnl) / account_equity * 100.0
+            if account_equity > 0 and daily_realized_pnl < 0
+            else 0.0
+        )
+
+        if hard_daily_stop_pct and daily_loss_pct >= hard_daily_stop_pct:
             reasons.append(
-                f"kill-switch: daily defensive mode active (daily_pnl={daily_realized_pnl:.2f})"
+                f"kill-switch: daily defensive mode active "
+                f"(daily_pnl={daily_realized_pnl:.2f}, daily_loss_pct={daily_loss_pct:.2f}%, "
+                f"hard_daily_stop_pct={hard_daily_stop_pct:.2f}%)"
             )
 
         if consecutive_losses >= 3:
             reasons.append(
                 f"kill-switch: consecutive loss limit reached ({consecutive_losses})"
             )
+
+        weekly_freeze_pct = float(getattr(self.settings, "weekly_freeze_loss_pct", 0.0) or 0.0)
+        if weekly_freeze_pct and account_equity > 0:
+            weekly_pnl = self._weekly_realized_pnl()
+            weekly_loss_pct = abs(weekly_pnl) / account_equity * 100.0 if weekly_pnl < 0 else 0.0
+            if weekly_loss_pct >= weekly_freeze_pct:
+                reasons.append(
+                    f"kill-switch: weekly freeze active "
+                    f"(weekly_pnl={weekly_pnl:.2f}, weekly_loss_pct={weekly_loss_pct:.2f}%, "
+                    f"weekly_freeze_loss_pct={weekly_freeze_pct:.2f}%)"
+                )
 
         if self._stats_should_pause(strategy_stats, min_trades=5):
             reasons.append(f"expectancy-watch: strategy weak but not hard-paused ({strategy_name})")
@@ -78,11 +207,19 @@ class RiskManager:
         ]
         return not hard_reasons, reasons
 
-    def _strategy_weighting_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _strategy_weighting_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Returns (allowed, reasons, probe).
+
+        probe=True means: keep trading, but at reduced size (hedge-fund style
+        dynamic allocation). A strategy with negative recent expectancy earns
+        its full allocation back through fresh results instead of being frozen
+        out entirely — a hard freeze can never re-qualify because it generates
+        no new data.
+        """
         reasons: list[str] = []
         strategy_expectancy = self._latest_strategy_expectancy()
         if not strategy_expectancy:
-            return True, reasons
+            return True, reasons, False
 
         strategy_name = (candidate.strategy or "").lower()
         note_text = self._note_text(candidate)
@@ -100,33 +237,152 @@ class RiskManager:
         stats = clean_strategies.get(strategy_name) or {}
         if not isinstance(stats, dict):
             reasons.append(f"strategy weighting WATCH: no clean expectancy data ({strategy_name})")
-            return True, reasons
+            return True, reasons, False
 
         trades = int(stats.get("trades", 0) or 0)
         expectancy = float(stats.get("expectancy", 0.0) or 0.0)
-        tp1_hit_rate = float(stats.get("tp1_hit_rate", 0.0) or 0.0)
+        raw_tp1_hit_rate = stats.get("tp1_hit_rate")
+        # The dataset explicitly distinguishes "missing" (tp1_hit_rate_status
+        # == "missing_not_zero") from a genuine 0% hit-rate. Coercing a missing
+        # value to 0.0 here previously hard-blocked strategies with excellent
+        # real performance (e.g. low_vol_reclaim: 82% winrate, +expectancy)
+        # purely because TP1 tracking data hadn't been backfilled yet.
+        tp1_hit_rate_missing = raw_tp1_hit_rate is None
+        tp1_hit_rate = float(raw_tp1_hit_rate) if raw_tp1_hit_rate is not None else 0.0
         reasons.append(
             f"strategy weighting source=clean_strategy_expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
         )
 
         if trades < 5:
             reasons.append(f"strategy weighting WATCH: insufficient data ({strategy_name}, trades={trades})")
-            return True, reasons
+            return True, reasons, False
 
         if expectancy < 0:
-            reasons.append(f"strategy weighting HARD_BLOCK: negative expectancy ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
-            return False, reasons
+            reasons.append(
+                f"strategy weighting PROBE: negative expectancy, trading at reduced size ({strategy_name}, trades={trades}, exp={expectancy:.3f})"
+            )
+            return True, reasons, True
 
-        if tp1_hit_rate < 0.25:
-            reasons.append(f"strategy weighting HARD_BLOCK: weak TP1 hit-rate ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})")
-            return False, reasons
+        if tp1_hit_rate_missing:
+            reasons.append(f"strategy weighting WATCH: tp1_hit_rate data missing, not treated as zero ({strategy_name}, trades={trades}, exp={expectancy:.3f})")
+        elif tp1_hit_rate < 0.25:
+            reasons.append(
+                f"strategy weighting PROBE: weak TP1 hit-rate, trading at reduced size ({strategy_name}, trades={trades}, tp1={tp1_hit_rate:.3f})"
+            )
+            return True, reasons, True
 
         if expectancy >= 0.15 and tp1_hit_rate >= 0.45:
             reasons.append(f"strategy weighting BOOST: strong expectancy ({strategy_name}, exp={expectancy:.3f})")
         else:
             reasons.append(f"strategy weighting WATCH: neutral expectancy ({strategy_name}, exp={expectancy:.3f})")
 
-        return True, reasons
+        return True, reasons, False
+
+    _weekly_pnl_cache: tuple[float, float] | None = None  # (monotonic_ts, value)
+    WEEKLY_PNL_CACHE_SECONDS = 60.0
+
+    def _weekly_realized_pnl(self) -> float:
+        """Rolling 7-day realized net PnL from the v2 close dataset.
+
+        Backs the WEEKLY_FREEZE_LOSS_PCT kill-switch, which was configured in
+        .env since the start but never enforced anywhere. Cached 60s; a read
+        failure returns 0.0 (the daily stop and consecutive-loss switches
+        remain the primary intraday brakes).
+        """
+        now = time.monotonic()
+        if self._weekly_pnl_cache and (now - self._weekly_pnl_cache[0]) < self.WEEKLY_PNL_CACHE_SECONDS:
+            return self._weekly_pnl_cache[1]
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        total = 0.0
+        try:
+            dataset_path = BASE_PATH / "logs" / "trade_dataset_v2.csv"
+            for path in (dataset_path.with_name(dataset_path.name + ".1"), dataset_path):
+                if not path.exists():
+                    continue
+                with path.open("r", newline="", encoding="utf-8") as handle:
+                    for row in csv.DictReader(handle):
+                        if str(row.get("event_type") or "").upper() not in ("CLOSE", "POSITION_CLOSED"):
+                            continue
+                        closed_at = str(row.get("closed_at") or row.get("timestamp") or "")
+                        if closed_at < cutoff:
+                            continue
+                        raw = row.get("net_pnl") or row.get("pnl") or 0
+                        try:
+                            total += float(raw)
+                        except (TypeError, ValueError):
+                            continue
+        except Exception as exc:
+            logger.warning("WEEKLY_PNL_READ_FAILED | error=%s", exc)
+            total = 0.0
+
+        self._weekly_pnl_cache = (now, total)
+        return total
+
+    def day_mode(self) -> dict:
+        """RED/GREEN day verdict for the daily defensive layer (roadmap P0.8).
+
+        RED = capital-protection mode: the hard daily stop distance is more
+        than half consumed, or 3+ consecutive losses. Logged once per scan
+        cycle by the runner so every day has an auditable mode trail.
+        """
+        daily_status = self._daily_defensive_status()
+        daily_realized_pnl = float(daily_status.get("daily_total_net_pnl", 0.0) or 0.0)
+        consecutive_losses = int(daily_status.get("consecutive_losses", 0) or 0)
+        account_equity, equity_source = resolve_account_equity(self.settings)
+        hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
+        daily_loss_pct = (
+            abs(daily_realized_pnl) / account_equity * 100.0
+            if account_equity > 0 and daily_realized_pnl < 0
+            else 0.0
+        )
+        weekly_pnl = self._weekly_realized_pnl()
+        weekly_freeze_pct = float(getattr(self.settings, "weekly_freeze_loss_pct", 0.0) or 0.0)
+        weekly_loss_pct = abs(weekly_pnl) / account_equity * 100.0 if account_equity > 0 and weekly_pnl < 0 else 0.0
+        red = (
+            (hard_daily_stop_pct > 0 and daily_loss_pct >= hard_daily_stop_pct * 0.5)
+            or consecutive_losses >= 3
+            or (weekly_freeze_pct > 0 and weekly_loss_pct >= weekly_freeze_pct)
+        )
+        return {
+            "mode": "RED" if red else "GREEN",
+            "daily_realized_pnl": round(daily_realized_pnl, 4),
+            "daily_loss_pct": round(daily_loss_pct, 4),
+            "consecutive_losses": consecutive_losses,
+            "weekly_realized_pnl": round(weekly_pnl, 4),
+            "weekly_loss_pct": round(weekly_loss_pct, 4),
+            "account_equity": round(account_equity, 2),
+            "equity_source": equity_source,
+        }
+
+    def _session_risk_multiplier(self, now_hour_utc: int | None = None) -> tuple[float, str]:
+        """Size down (never up) inside UTC hour windows with negative live history.
+
+        Live data (2026-06/07): 08-11 UTC (EU morning chop) and 23-00 UTC
+        (post-US dead zone) were consistently red; US session hours were green.
+        """
+        raw_windows = str(getattr(self.settings, "session_risk_reduction_windows_utc", "") or "")
+        multiplier = float(getattr(self.settings, "session_risk_multiplier", 0.5) or 0.5)
+        multiplier = min(max(multiplier, 0.1), 1.0)
+        if not raw_windows or multiplier >= 1.0:
+            return 1.0, ""
+
+        if now_hour_utc is None:
+            now_hour_utc = datetime.now(timezone.utc).hour
+
+        for window in raw_windows.split(","):
+            window = window.strip()
+            if "-" not in window:
+                continue
+            try:
+                start, end = (int(part) % 24 for part in window.split("-", 1))
+            except ValueError:
+                continue
+            in_window = start <= now_hour_utc < end if start < end else (now_hour_utc >= start or now_hour_utc < end)
+            if in_window:
+                return multiplier, f"session risk window {window} UTC active: risk x{multiplier:.2f}"
+
+        return 1.0, ""
 
     @staticmethod
     def _stats_should_pause(stats: dict, min_trades: int) -> bool:
@@ -188,6 +444,10 @@ class RiskManager:
 
     @staticmethod
     def _daily_defensive_status() -> dict:
+        """Fail-closed nuance: a MISSING report is a normal fresh state (no
+        defensive data -> no block), but an UNREADABLE/corrupt report means the
+        daily kill-switch would be silently disabled — that must block instead.
+        """
         path = BASE_PATH / "data_store" / "trades" / "daily_learning_report.json"
         if not path.exists():
             return {}
@@ -195,10 +455,15 @@ class RiskManager:
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except Exception:
-            return {}
+        except Exception as exc:
+            logger.error("DAILY_DEFENSIVE_STATUS_UNREADABLE | fail-closed | error=%s", exc)
+            return {"daily_status_unreadable": True}
 
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            logger.error("DAILY_DEFENSIVE_STATUS_MALFORMED | fail-closed | type=%s", type(payload).__name__)
+            return {"daily_status_unreadable": True}
+
+        return payload
 
     def optimization_advice(self) -> dict:
         """Read-only advisory layer. Never mutates settings or trading state."""
@@ -661,15 +926,22 @@ class RiskManager:
 
         return not reasons, reasons
 
-    def _momentum_quality_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _momentum_quality_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str], bool]:
+        """Returns (allowed, reasons, probe).
+
+        Volume slightly below the requirement (>= 75% of it) trades at probe
+        size instead of being hard-blocked: 74 push-candidates in one day died
+        solely on this gate while the market kept running. Extension/lateness
+        blocks stay hard — chasing a vertical move is not a size question.
+        """
         reasons: list[str] = []
         strategy_name = (candidate.strategy or "").lower()
         if "momentum" not in strategy_name and "breakout" not in strategy_name and "breakdown" not in strategy_name:
-            return True, reasons
+            return True, reasons, False
 
         if strategy_name == "adaptive_momentum_continuation":
             reasons.append("momentum-quality watch: adaptive fallback skips legacy breakout/breakdown age gate")
-            return True, reasons
+            return True, reasons, False
 
         note_text = self._note_text(candidate)
         symbol = (candidate.symbol or "").upper()
@@ -693,10 +965,17 @@ class RiskManager:
         max_clean_breakout_pct = 0.70 if mtf_quality else (0.55 if symbol in major_symbols else 0.45)
         hard_extension_pct = 1.05 if mtf_quality else (0.85 if symbol in major_symbols else 0.70)
 
+        momentum_probe = False
         if volume_ratio and volume_ratio < min_volume_ratio:
-            reasons.append(
-                f"momentum-quality blocked: volume ratio too weak ({volume_ratio:.2f} < {min_volume_ratio:.2f})"
-            )
+            if volume_ratio >= min_volume_ratio * 0.75:
+                momentum_probe = True
+                reasons.append(
+                    f"momentum-quality PROBE: volume below requirement, reduced size ({volume_ratio:.2f} < {min_volume_ratio:.2f})"
+                )
+            else:
+                reasons.append(
+                    f"momentum-quality blocked: volume ratio too weak ({volume_ratio:.2f} < {min_volume_ratio:.2f})"
+                )
 
         if move_pct >= hard_extension_pct:
             reasons.append(
@@ -723,11 +1002,25 @@ class RiskManager:
         )
 
         if "move already expanded" in note_text or expansion_exhaustion_score >= 85.0:
-            reasons.append(
-                f"momentum-quality blocked: exhaustion/expanded move warning (exhaustion={expansion_exhaustion_score:.2f})"
-            )
+            is_coil = "entry_model=pre_breakout_coil" in note_text
+            if is_coil:
+                # Forward-return studie 2026-07-07 (12 symbolen, 331 entries):
+                # een verse coil NA een geexpandeerde move was de enige
+                # netto-positieve bucket (+0.198R, 61.5% TP1, n=26) — dat is
+                # het "push meeliften"-setup. Chases na expansie blijven hard
+                # geblokkeerd (25.5% TP1, 48.9% timeout). n is klein, dus
+                # coils draaien op probe-size tot de leerloop ze bewijst.
+                momentum_probe = True
+                reasons.append(
+                    f"momentum-quality PROBE: coil after expansion, reduced size (exhaustion={expansion_exhaustion_score:.2f})"
+                )
+            else:
+                reasons.append(
+                    f"momentum-quality blocked: exhaustion/expanded move warning (exhaustion={expansion_exhaustion_score:.2f})"
+                )
 
-        return not reasons, reasons
+        hard_blocks = [r for r in reasons if "momentum-quality blocked" in r]
+        return not hard_blocks, reasons, momentum_probe and not hard_blocks
 
     def evaluate(self, candidate: StrategyCandidate, score: StrategyScore) -> RiskVerdict:
         reasons: list[str] = []
@@ -783,6 +1076,14 @@ class RiskManager:
             allowed = False
             reasons.append(f"Safe Mode blocks unsupported strategy: {candidate.strategy}")
 
+        # Same explicit allow-list rule as execution_service's hybrid gate,
+        # so risk and execution can never disagree about supported strategies.
+        enabled_set = self.settings.enabled_strategy_set
+        if enabled_set and not any(name in strategy_name for name in enabled_set):
+            allowed = False
+            reasons.append(f"strategy not in ENABLED_STRATEGIES allow-list: {candidate.strategy}")
+
+        probe_mode = False
         if self._is_backtest_candidate(candidate):
             reasons.append("backtest mode: adaptive kill-switch/strategy-weighting disabled")
         else:
@@ -791,10 +1092,22 @@ class RiskManager:
             if not kill_allowed:
                 allowed = False
 
-            strategy_weight_allowed, strategy_weight_reasons = self._strategy_weighting_gate(candidate)
+            strategy_weight_allowed, strategy_weight_reasons, strategy_probe = self._strategy_weighting_gate(candidate)
             reasons.extend(strategy_weight_reasons)
             if not strategy_weight_allowed:
                 allowed = False
+            probe_mode = probe_mode or strategy_probe
+
+            ai_agent_allowed, ai_agent_reasons, ai_agent_probe = self._ai_agent_gate(candidate)
+            reasons.extend(ai_agent_reasons)
+            if not ai_agent_allowed:
+                allowed = False
+            probe_mode = probe_mode or ai_agent_probe
+
+            self._log_allocation_transition(
+                candidate.strategy,
+                "PROBE" if probe_mode else ("FULL" if (kill_allowed and strategy_weight_allowed and ai_agent_allowed) else "BLOCKED"),
+            )
 
         cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)
         reasons.extend(cluster_reasons)
@@ -806,10 +1119,11 @@ class RiskManager:
         if not execution_cost_allowed:
             allowed = False
 
-        momentum_quality_allowed, momentum_quality_reasons = self._momentum_quality_gate(candidate)
+        momentum_quality_allowed, momentum_quality_reasons, momentum_quality_probe = self._momentum_quality_gate(candidate)
         reasons.extend(momentum_quality_reasons)
         if not momentum_quality_allowed:
             allowed = False
+        probe_mode = probe_mode or momentum_quality_probe
 
         if is_adaptive_fallback:
             required_score = 74
@@ -841,6 +1155,50 @@ class RiskManager:
             allowed = False
             reasons.append("HTF alignment opposes short setup")
 
+        # 1D/4H regime-laag (timeframe-uitbreiding 2026-07-07): beide HTF's
+        # tegen de richting → hard block ("nooit tegen de dagtrend in");
+        # één van beide tegen → probe-size. Geen data → neutraal, geen block.
+        opposition_count = 0
+        opposition_hits: list[str] = []
+        opposing_regime = "bearish" if candidate.direction == "LONG" else "bullish"
+        if f"htf_regime_1d={opposing_regime}" in note_text:
+            opposition_count += 1
+            opposition_hits.append(f"1D={opposing_regime}")
+        if f"htf_regime_4h={opposing_regime}" in note_text:
+            opposition_count += 1
+            opposition_hits.append(f"4H={opposing_regime}")
+        if opposition_count >= 2:
+            allowed = False
+            reasons.append(
+                f"HTF regime blocks {candidate.direction}: {', '.join(opposition_hits)} (1D+4H beide tegen)"
+            )
+        elif opposition_count == 1:
+            probe_mode = True
+            reasons.append(
+                f"HTF regime PROBE: {', '.join(opposition_hits)} tegen {candidate.direction}, halve size"
+            )
+
+        # Reclaim = mean-reversion; verdient alleen edge MET trend-consensus.
+        # 90d-validatie (10.814 reclaim-setups): met 1D+4H consensus +0,071R,
+        # geen consensus -0,15R (56% van het volume), tegen -0,35R. De
+        # ochtend-audit 2026-07-08 bevestigde dit live: 20 chop-reclaims
+        # verdunden de winst van 32 in-regime trades naar break-even. Zonder
+        # volledige consensus in de richting: probe-size.
+        if is_low_vol_reclaim and opposition_count == 0:
+            full_consensus = (
+                (candidate.direction == "LONG"
+                 and "htf_regime_1d=bullish" in note_text
+                 and "htf_regime_4h=bullish" in note_text)
+                or (candidate.direction == "SHORT"
+                    and "htf_regime_1d=bearish" in note_text
+                    and "htf_regime_4h=bearish" in note_text)
+            )
+            if not full_consensus:
+                probe_mode = True
+                reasons.append(
+                    "reclaim PROBE: geen volledige HTF-consensus (mean-reversion zonder trendrug), halve size"
+                )
+
         if is_sweep:
             bars_since_sweep = getattr(candidate.detection, "bars_since_sweep", 999)
             if bars_since_sweep > self.SAFE_ALPHA_MAX_BARS_SINCE_SWEEP:
@@ -863,6 +1221,16 @@ class RiskManager:
         elif not reasons:
             reasons.append("risk checks failed")
         account_risk_pct = min(self.settings.account_risk_per_trade_pct, self.SAFE_ALPHA_MAX_RISK_PCT)
+        if probe_mode and allowed:
+            account_risk_pct = round(account_risk_pct * self.PROBE_RISK_MULTIPLIER, 4)
+            reasons.append(
+                f"probe mode: risk reduced to {account_risk_pct:.2f}% until strategy re-qualifies on fresh data"
+            )
+        if allowed and not self._is_backtest_candidate(candidate):
+            session_multiplier, session_reason = self._session_risk_multiplier()
+            if session_multiplier < 1.0:
+                account_risk_pct = round(account_risk_pct * session_multiplier, 4)
+                reasons.append(session_reason)
         return RiskVerdict(
             allowed=allowed,
             status=status,

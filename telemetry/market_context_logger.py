@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from telemetry.csv_rotation import rotate_if_needed
+
 
 class MarketContextLogger:
     """Structured market context logger for backtests and self-learning."""
@@ -105,6 +107,7 @@ class MarketContextLogger:
             "raw_notes",
         ]
 
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)

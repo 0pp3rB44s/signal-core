@@ -90,16 +90,19 @@ class AdaptiveTPEngine:
             reasoning.append("short continuation defensive TP profile")
 
         if ctx.strategy == "low_vol_reclaim":
-            # Single-TP low-vol reclaim must align with the planner's 1.00R expectancy rule.
-            # Do not generate 0.55-0.60R targets that are rejected later or create poor expectancy.
-            tp1_rr = 1.00
-            tp2_rr = 1.00
+            # Single-TP low-vol reclaim. At ~12bps roundtrip costs a 1.00R target
+            # nets ~0.7R on wins and ~1.3R on losses; with the observed ~46% win
+            # rate that is structurally negative. 1.30R is the minimum where
+            # break-even win rate drops to ~54% and matches the planner's
+            # documented rr_to_tp1 >= 1.30 execution gate.
+            tp1_rr = 1.30
+            tp2_rr = 1.30
             tp3_rr = 1.50
 
             tp1_size_pct = 100.0
             tp2_size_pct = 0.0
             tp3_size_pct = 0.0
-            reasoning.append("low vol reclaim single TP 1.00R expectancy profile")
+            reasoning.append("low vol reclaim single TP 1.30R net-expectancy profile")
 
         if ctx.market_regime in {"compression", "pre_expansion"}:
             tp1_rr *= 0.90
@@ -119,9 +122,23 @@ class AdaptiveTPEngine:
             reasoning.append("runner environment confirmed")
 
         if ctx.strategy == "low_vol_reclaim":
-            tp1_rr = 1.00
-            tp2_rr = min(tp2_rr, 1.00)
+            tp1_rr = 1.30
+            tp2_rr = min(tp2_rr, 1.30)
             tp3_rr = min(tp3_rr, 1.50)
+
+        # The planner hard-gates rr_to_tp1 >= 1.00 and stop <= 1.2x TP1 distance.
+        # A TP1 below 1.0R therefore produces plans that are mathematically
+        # guaranteed to be rejected (observed live: 94 rr_to_tp1-blocks and 93
+        # risk-shape-blocks in one day, all from the 0.9R default minus regime
+        # multipliers). Build at >= 1.05R so valid setups pass their own gates.
+        MIN_TP1_RR_FOR_PLANNER_GATES = 1.05
+        if tp1_rr < MIN_TP1_RR_FOR_PLANNER_GATES:
+            reasoning.append(
+                f"tp1 raised {tp1_rr:.2f}R -> {MIN_TP1_RR_FOR_PLANNER_GATES:.2f}R (planner gate floor)"
+            )
+            tp1_rr = MIN_TP1_RR_FOR_PLANNER_GATES
+        if tp2_size_pct > 0:
+            tp2_rr = max(tp2_rr, tp1_rr + 0.10)
 
         tp1_rr = self._clamp_rr(tp1_rr)
         tp2_rr = self._clamp_rr(tp2_rr)

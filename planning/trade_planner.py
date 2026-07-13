@@ -1,19 +1,50 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from app.config import Settings
+from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore, TradePlan
 from execution.adaptive_tp_engine import AdaptiveTPContext, AdaptiveTPEngine
 
 
 logger = logging.getLogger("trade_planner")
 
+STRATEGY_EXPECTANCY_PATH = Path(__file__).resolve().parents[1] / "reports" / "backtests" / "strategy_expectancy.json"
+
+
 class TradePlanner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.min_live_notional_usdt = float(getattr(settings, "planner_min_live_notional_usdt", 10.0))
         self.adaptive_tp_engine = AdaptiveTPEngine()
+        self._expectancy_cache: dict = {}
+        self._expectancy_mtime: float = -1.0
+
+    def _strategy_learning_stats(self, strategy: str) -> dict:
+        """Per-strategy stats from the daily expectancy report, cached by mtime.
+
+        Feeds real TP1/TP3 hit rates into the adaptive TP engine so it can adjust
+        targets from live results instead of the hardcoded zeros it used to get.
+        """
+        try:
+            mtime = STRATEGY_EXPECTANCY_PATH.stat().st_mtime
+        except OSError:
+            return {}
+
+        if mtime != self._expectancy_mtime:
+            try:
+                with STRATEGY_EXPECTANCY_PATH.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                self._expectancy_cache = payload.get("strategies") or {} if isinstance(payload, dict) else {}
+            except Exception:
+                self._expectancy_cache = {}
+            self._expectancy_mtime = mtime
+
+        stats = self._expectancy_cache.get(str(strategy or "").lower())
+        return stats if isinstance(stats, dict) else {}
 
     @staticmethod
     def _note_text(candidate: StrategyCandidate) -> str:
@@ -274,7 +305,15 @@ class TradePlanner:
         )
 
     def build(self, candidate: StrategyCandidate, score: StrategyScore, risk: RiskVerdict) -> TradePlan:
-        entry = candidate.detection.entry_hint
+        # Geometry must be priced from where the market order will actually
+        # fill (current price), not from the detection's retest level. Live
+        # audit 2026-07-07: every fill sat a median 30bps past the planned
+        # entry, so the real stop was ~30bps (noise floor) and the real TP
+        # 2.6-3.8R away instead of the designed 1.05-1.30R — gates were
+        # approving trades that were never actually available.
+        detection_entry = float(candidate.detection.entry_hint or 0.0)
+        market_price = float(getattr(candidate.market.primary, "latest_close", 0.0) or 0.0)
+        entry = market_price if market_price > 0 else detection_entry
         stop = self._build_stop(candidate)
         entries = self._build_entries(candidate, entry)
         risk_per_unit = abs(entry - stop)
@@ -288,11 +327,13 @@ class TradePlanner:
 
         adaptive_tp = self._build_adaptive_tp(candidate, entry, stop)
 
-        # Low-vol reclaim runs in single-TP mode and must align with the 1.00R expectancy rule.
-        # The TP engine and planner must not disagree, otherwise valid setups are generated then rejected.
+        # Low-vol reclaim runs in single-TP mode at 1.30R so the built TP1 actually
+        # satisfies the rr_to_tp1 >= 1.30 execution gate. At 1.00R the roundtrip fees
+        # (~12bps) turned every win into ~0.7R net and every loss into ~1.3R net,
+        # which is negative expectancy at any win rate below ~62%.
         if "low_vol_reclaim" in strategy_name_preview:
-            adaptive_tp.tp1_rr = 1.00
-            adaptive_tp.tp2_rr = min(adaptive_tp.tp2_rr, 1.00)
+            adaptive_tp.tp1_rr = 1.30
+            adaptive_tp.tp2_rr = min(adaptive_tp.tp2_rr, 1.30)
             adaptive_tp.tp3_rr = min(adaptive_tp.tp3_rr, 1.50)
         tp1 = self._tp_from_r(candidate.direction, entry, risk_per_unit, adaptive_tp.tp1_rr)
         tp2 = self._tp_from_r(candidate.direction, entry, risk_per_unit, adaptive_tp.tp2_rr)
@@ -303,7 +344,9 @@ class TradePlanner:
         tp1_move_bps = self._target_move_bps(entry, tp1)
         stop_move_bps = self._target_move_bps(entry, stop)
         atr_pct = float(getattr(candidate.market.primary, "atr_percent", 0.0) or 0.0)
-        spread_bps = self._extract_note_float(candidate, "spread ", 0.0)
+        # Market fetcher writes "spread_bps=X"; older note formats used "spread X bps".
+        # Parsing only the old format made the planner price the edge with spread=0.
+        spread_bps = self._extract_note_float_any(candidate, ["spread_bps=", "spread "], 0.0)
         estimated_roundtrip_fee_bps = float(getattr(self.settings, "planner_estimated_roundtrip_fee_bps", 12.0))
         minimum_net_edge_buffer_bps = float(getattr(self.settings, "planner_minimum_net_edge_buffer_bps", 4.0))
         minimum_tp1_move_bps = spread_bps + estimated_roundtrip_fee_bps + minimum_net_edge_buffer_bps
@@ -407,15 +450,18 @@ class TradePlanner:
             minimum_tp1_move_bps *= 0.85
             notes_profile_hint = "short_continuation"
         elif is_low_vol_reclaim:
-            # Reclaim trades should target nearby liquidity, not multi-percent swings.
-            minimum_tp1_move_bps *= 0.80
+            # Reclaim scalps live or die on net edge: the gross TP1 move must be a
+            # comfortable multiple of total roundtrip costs, otherwise fees eat the
+            # win side while inflating the loss side. Require >= 2.5x costs.
+            minimum_tp1_move_bps = max(
+                minimum_tp1_move_bps,
+                (spread_bps + estimated_roundtrip_fee_bps) * 2.5,
+            )
 
-            if atr_pct > 0:
-                # atr_pct is stored as percent points, e.g. 0.42 means 0.42%.
-                # Convert to bps with *100, not *10000. Keep reclaim targets realistic.
-                reclaim_tp1_cap_bps = max(30.0, min(90.0, atr_pct * 100.0 * 0.75))
-            else:
-                reclaim_tp1_cap_bps = 75.0
+            # Cap relative to the actual stop so a 1.30R target stays reachable:
+            # with stops capped at 30-85bps this allows 45-130bps targets while
+            # still blocking multi-percent swings.
+            reclaim_tp1_cap_bps = max(45.0, min(130.0, stop_move_bps * 1.45))
 
             notes_profile_hint = "low_vol_reclaim_controlled_unlock"
         else:
@@ -441,9 +487,12 @@ class TradePlanner:
             notes.append("adaptive_tp_reason=" + "; ".join(adaptive_tp.reasoning))
         notes.extend(sizing_notes)
         notes.append(f"position_notional_usdt={position_notional:.2f}")
-        notes.append(f"max_loss_budget_usdt={self.settings.account_equity_usdt * (risk.account_risk_pct / 100):.2f}")
+        notes.append(f"max_loss_budget_usdt={resolve_account_equity(self.settings)[0] * (risk.account_risk_pct / 100):.2f}")
         notes.append(f"rr_to_tp2={rr:.2f}")
         notes.append(f"rr_to_tp1={rr_to_tp1:.2f}")
+        notes.append("geometry_anchor=market_price")
+        if detection_entry > 0 and entry > 0:
+            notes.append(f"detection_entry_drift_bps={abs(entry - detection_entry) / entry * 10000:.1f}")
         notes.append(f"tp1_move_bps={tp1_move_bps:.2f}")
         notes.append(f"stop_move_bps={stop_move_bps:.2f}")
         if is_low_vol_reclaim:
@@ -522,7 +571,7 @@ class TradePlanner:
             and not low_vol_reclaim_day_defensive_block
             and score.total >= 72.0
             and risk.allowed
-            and rr_to_tp1 >= 1.00
+            and rr_to_tp1 >= 1.30
             and tp1_move_bps <= reclaim_tp1_cap_bps
             and str(getattr(risk, "status", "")).upper() in {"GO", "WATCH"}
         ):
@@ -534,11 +583,16 @@ class TradePlanner:
             notes.append("blocked_reason=day_defensive_low_vol_reclaim_quality_gate")
 
         if verdict == "EXECUTABLE" and not master_gate_passed:
-            verdict = "BLOCKED"
-            notes.append("blocked_reason=master_entry_quality_gate")
-            notes.append("master_entry_quality_gate_blocked=true")
-            logger.warning(
-                "MASTER_ENTRY_QUALITY_BLOCKED | %s | strategy=%s | direction=%s | reasons=%s",
+            # Gedemoteerd naar observability (funnel-audit 2026-07-07): de
+            # master gate raakte 43/43 geblokkeerde plannen maar was slechts
+            # 1x de enige blokker — alles wat hij vangt, vangen de specifieke
+            # kwaliteitspoorten (score, exhaustion, volume, edge) ook. Als de
+            # dagelijkse funnel ooit laat zien dat hij als enige zou moeten
+            # blokkeren, is die ene note hieronder het bewijs om hem terug te
+            # promoveren.
+            notes.append("master_entry_quality_would_have_blocked=true")
+            logger.info(
+                "MASTER_ENTRY_QUALITY_OBSERVE | %s | strategy=%s | direction=%s | reasons=%s",
                 candidate.symbol,
                 candidate.strategy,
                 candidate.direction,
@@ -674,8 +728,6 @@ class TradePlanner:
         if tp1_move_bps < minimum_tp1_move_bps:
             if strong_continuation_quality and tp1_move_bps >= (minimum_tp1_move_bps * 0.85):
                 notes.append("adaptive_tp1_edge_override=strong_continuation")
-            elif is_low_vol_reclaim and tp1_move_bps >= (minimum_tp1_move_bps * 0.70):
-                notes.append("adaptive_tp1_edge_override=low_vol_reclaim_fast_scalp")
             else:
                 verdict = "BLOCKED"
                 reasons.append(
@@ -741,12 +793,17 @@ class TradePlanner:
                 tp1_move_bps,
                 position_notional,
             )
+        # Single-TP mode must use the REACHABLE tp1, not tp2. Live excursion
+        # data (2026-07-07): median favorable move = 0.5-1.0R while tp2 sits at
+        # 1.5-1.7R -> the target almost never filled and every reversal closed
+        # red. tp1 (>=1.05R) is the fee-viable target the TP engine designs and
+        # the profit-lock (60% of tp1) is calibrated against.
         if is_low_vol_reclaim:
             single_tp = tp1
             notes.append("single_tp_source=tp1_reclaim_profile")
         else:
-            single_tp = tp2
-            notes.append("single_tp_source=tp2_standard_profile")
+            single_tp = tp1
+            notes.append("single_tp_source=tp1_reachable_profile")
 
         notes.append("execution_profile=single_tp_full_close")
         notes.append(f"single_tp_target={single_tp:.8f}")
@@ -767,6 +824,7 @@ class TradePlanner:
             position_notional_usdt=position_notional,
             notes=notes,
             reasons=reasons,
+            geometry_entry=entry,
         )
 
     def _build_adaptive_tp(self, candidate: StrategyCandidate, entry: float, stop: float):
@@ -814,6 +872,14 @@ class TradePlanner:
         else:
             market_regime = "chop"
 
+        learning_stats = self._strategy_learning_stats(strategy)
+        # tp1_hit_rate can be null in the report ("missing_not_zero"); treat
+        # missing as 0.0 here — the engine only *boosts* on high rates, so a
+        # missing value simply means no adjustment, never a false block.
+        tp1_hit_rate = float(learning_stats.get("tp1_hit_rate") or 0.0)
+        tp3_hit_rate = float(learning_stats.get("tp3_hit_rate") or 0.0)
+        missed_tp1_to_sl_rate = float(learning_stats.get("missed_tp1_to_sl_rate") or 0.0)
+
         ctx = AdaptiveTPContext(
             symbol=candidate.symbol,
             strategy=strategy,  # type: ignore[arg-type]
@@ -823,16 +889,20 @@ class TradePlanner:
             atr_pct=atr_pct,
             volatility_rank=volatility_rank,
             volume_ratio=volume_ratio,
-            tp1_hit_rate=0.0,
-            tp3_hit_rate=0.0,
-            missed_tp1_to_sl_rate=0.0,
+            tp1_hit_rate=tp1_hit_rate,
+            tp3_hit_rate=tp3_hit_rate,
+            missed_tp1_to_sl_rate=missed_tp1_to_sl_rate,
             market_regime=market_regime,  # type: ignore[arg-type]
         )
         return self.adaptive_tp_engine.build(ctx)
 
     def _build_stop(self, candidate: StrategyCandidate) -> float:
         raw_stop = candidate.detection.invalidation
-        entry = float(candidate.detection.entry_hint or 0.0)
+        # Same market-price anchor as build(): the stop-cap must be measured
+        # from where the order fills, not from the detection retest level.
+        entry = float(getattr(candidate.market.primary, "latest_close", 0.0) or 0.0)
+        if entry <= 0:
+            entry = float(candidate.detection.entry_hint or 0.0)
         buffer = raw_stop * (self.settings.planner_stop_buffer_bps / 10_000)
 
         strategy_name = str(candidate.strategy or "").lower()
@@ -897,12 +967,10 @@ class TradePlanner:
 
     def _position_notional(self, entry: float, stop: float, account_risk_pct: float, leverage: float) -> tuple[float, list[str]]:
         notes: list[str] = []
-        account_equity = max(
-            float(self.settings.account_equity_usdt),
-            float(getattr(self.settings, "account_balance_usdt", self.settings.account_equity_usdt)),
-        )
+        account_equity, equity_source = resolve_account_equity(self.settings)
         risk_budget = account_equity * (account_risk_pct / 100)
         notes.append("dynamic_compounding_enabled=true")
+        notes.append(f"equity_source={equity_source}")
         risk_per_unit = abs(entry - stop)
 
         notes.append(f"account_equity_usdt={account_equity:.2f}")

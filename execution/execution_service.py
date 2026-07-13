@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
 from app.config import Settings
+from app.equity import resolve_account_equity
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, TradePlan
 from execution.state_store import JsonStateStore
@@ -34,6 +36,10 @@ def _deep_get(payload: dict | None, *keys: str):
 
 
 class ExecutionService:
+    # Regime diversification cap: with MAX_OPEN_POSITIONS total slots, no
+    # single strategy may hold more than this many at once.
+    MAX_OPEN_POSITIONS_PER_STRATEGY = 2
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.log = logging.getLogger(self.__class__.__name__)
@@ -96,7 +102,7 @@ class ExecutionService:
             open_symbols = set(local_open_symbols)
 
         max_open_positions = int(self.settings.max_open_positions)
-        hard_cap_notional = float(self.settings.account_equity_usdt) * float(self.settings.max_leverage)
+        hard_cap_notional = resolve_account_equity(self.settings)[0] * float(self.settings.max_leverage)
 
         executable: list[TradePlan] = []
         seen_symbols: set[str] = set()
@@ -162,6 +168,11 @@ class ExecutionService:
             avg_entry = round(sum(plan.entry_prices) / len(plan.entry_prices), 8)
             expected_entry = avg_entry
             actual_entry = avg_entry
+            # Standaard = plan-niveaus; de live-tak herankert deze op de echte
+            # fill (bug 2026-07-08) en overschrijft ze vóór opslag.
+            protect_stop_loss = plan.stop_loss
+            protect_take_profits = list(plan.take_profits or [])
+            entry_via = "market"
             slippage_pct = 0.0
             fees_paid = 0.0
             realized_pnl = 0.0
@@ -178,13 +189,16 @@ class ExecutionService:
 
             # HYBRID SAFE MODE: live execution gate.
             # Allowed: liquidity sweep reversals + momentum breakout/breakdown + strict trend-continuation entries + low_vol_reclaim/reclaim.
-            # Blocked: all unsupported strategies.
+            # Blocked: all unsupported strategies. When ENABLED_STRATEGIES is set
+            # in .env it is the explicit allow-list (same rule as risk_manager).
             strategy_name = str(plan.strategy or "").lower()
             is_sweep = "sweep" in strategy_name
             is_momentum = "momentum" in strategy_name or "breakout" in strategy_name or "breakdown" in strategy_name
             is_continuation = "continuation" in strategy_name
             is_low_vol_reclaim = "low_vol_reclaim" in strategy_name or "reclaim" in strategy_name
-            if not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim:
+            enabled_set = self.settings.enabled_strategy_set
+            env_allowed = (not enabled_set) or any(name in strategy_name for name in enabled_set)
+            if (not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim) or not env_allowed:
                 reports.append(
                     self._report(
                         plan=plan,
@@ -203,6 +217,29 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message="position already open for symbol",
+                        avg_entry=avg_entry,
+                        notional=min(plan.position_notional_usdt, hard_cap_notional),
+                        leverage=plan.leverage,
+                    )
+                )
+                continue
+
+            # Regime diversification: one strategy may never occupy the whole
+            # book again (low_vol_reclaim previously monopolised both slots and
+            # starved the other regimes out of 1000+ executable plans).
+            open_for_strategy = sum(
+                1
+                for row in existing
+                if row.get("status") == "OPEN"
+                and str(row.get("strategy") or "").lower() == str(plan.strategy or "").lower()
+                and row.get("symbol") in open_symbols
+            )
+            if open_for_strategy >= self.MAX_OPEN_POSITIONS_PER_STRATEGY:
+                reports.append(
+                    self._report(
+                        plan=plan,
+                        status="SKIPPED",
+                        message=f"max open positions for strategy reached: {open_for_strategy}/{self.MAX_OPEN_POSITIONS_PER_STRATEGY} ({plan.strategy})",
                         avg_entry=avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
@@ -276,6 +313,14 @@ class ExecutionService:
                 )
                 continue
 
+            self.log.info(
+                "EXECUTABLE_TRADE_CAPS | %s | strategy=%s | notional=%.2f | hard_cap_notional=%.2f | leverage=%.2f",
+                plan.symbol,
+                plan.strategy,
+                min(plan.position_notional_usdt, hard_cap_notional),
+                hard_cap_notional,
+                plan.leverage,
+            )
             live_order_payload = None
             live_order_id = None
             leverage_payload = None
@@ -298,7 +343,7 @@ class ExecutionService:
 
                 # Conservative live notional cap for small-account protection.
                 # Prevent repeated Bitget 40762 "order amount exceeds balance" failures before order-send.
-                account_equity = float(getattr(self.settings, "account_equity_usdt", 0.0) or 0.0)
+                account_equity, _equity_source = resolve_account_equity(self.settings)
                 configured_notional_cap = float(
                     getattr(
                         self.settings,
@@ -442,15 +487,52 @@ class ExecutionService:
                         len(plan.take_profits or []),
                     )
 
-                    live_order_payload = self.client.place_futures_market_order(
-                        symbol=plan.symbol,
-                        size=order_size,
-                        side=side,
-                        trade_side=trade_side,
-                        margin_mode="isolated",
-                    )
+                    # Hybride maker-entry: probeer eerst een post-only limit
+                    # (maker-fee). Vult hij niet binnen het venster, dan alsnog
+                    # een market-order (taker) tenzij fallback uitstaat. Zo
+                    # missen we nooit een trade en besparen we fee waar het kan.
+                    live_order_payload = None
+                    live_order_id = None
+                    entry_via = "market"
+                    if bool(getattr(self.settings, "maker_entry_enabled", False)):
+                        from execution.maker_entry import attempt_maker_entry
+                        maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or avg_entry
+                        maker_result = attempt_maker_entry(
+                            client=self.client, settings=self.settings, symbol=plan.symbol,
+                            direction=plan.direction, size=order_size, anchor_price=maker_anchor,
+                            hold_side=hold_side, log=self.log,
+                        )
+                        if maker_result["status"] == "FILLED":
+                            live_order_payload = maker_result["payload"]
+                            live_order_id = maker_result["order_id"]
+                            entry_via = "maker"
+                        elif not bool(getattr(self.settings, "maker_entry_fallback_market", True)):
+                            # Pure maker-modus: niet gevuld -> skippen, geen taker.
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"maker entry {maker_result['status'].lower()} (geen taker-fallback)",
+                                    avg_entry=avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
+                        else:
+                            entry_via = "maker_then_market_fallback"
 
-                    live_order_id = self.client.extract_order_id(live_order_payload)
+                    if live_order_id is None:
+                        live_order_payload = self.client.place_futures_market_order(
+                            symbol=plan.symbol,
+                            size=order_size,
+                            side=side,
+                            trade_side=trade_side,
+                            margin_mode="isolated",
+                        )
+                        live_order_id = self.client.extract_order_id(live_order_payload)
+
+                    self.log.warning("ENTRY_VIA | %s | %s", plan.symbol, entry_via)
 
                     if not live_order_id:
                         raise RuntimeError(
@@ -470,6 +552,7 @@ class ExecutionService:
                     verification_positions = verification_payload.get("data") or []
 
                     exchange_position_found = False
+                    live_fill_entry = 0.0
 
                     for position in verification_positions:
                         if str(position.get("symbol") or "") != plan.symbol:
@@ -489,6 +572,15 @@ class ExecutionService:
 
                         if live_size > 0:
                             exchange_position_found = True
+                            live_fill_entry = _safe_float(
+                                position.get("openPriceAvg")
+                                or position.get("averageOpenPrice")
+                                or position.get("openAvgPrice")
+                                or position.get("avgOpenPrice")
+                                or position.get("openPrice")
+                                or 0.0,
+                                0.0,
+                            )
                             break
 
                     if not exchange_position_found:
@@ -508,6 +600,34 @@ class ExecutionService:
                     )
 
 
+                    # --- SL/TP herankeren op de ECHTE fill (bug 2026-07-08) ---
+                    # De planner berekent stop/TP vanaf latest_close, maar de
+                    # market-order vult op de live prijs (structureel 0,1-0,4%
+                    # verderop). Zonder herankering verschrompelt de stopafstand
+                    # met 30-90% -> mini-stops -> uitgestopt vóór TP. We behouden
+                    # de ontworpen prijs-RATIO's t.o.v. de echte fill.
+                    ref_entry = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0)
+                    if live_fill_entry > 0 and ref_entry > 0:
+                        scale = live_fill_entry / ref_entry
+                        reanchored_stop = round(plan.stop_loss * scale, 8)
+                        reanchored_tps = [round(tp * scale, 8) for tp in protect_take_profits]
+                        old_stop_bps = abs(plan.stop_loss - ref_entry) / ref_entry * 10000
+                        new_stop_bps = abs(reanchored_stop - live_fill_entry) / live_fill_entry * 10000
+                        self.log.warning(
+                            "SLTP_REANCHORED | %s | ref_entry=%.8f | fill=%.8f | drift_bps=%.1f | "
+                            "stop %.8f->%.8f | intended_stop_bps=%.1f | actual_now_stop_bps=%.1f",
+                            plan.symbol,
+                            ref_entry,
+                            live_fill_entry,
+                            (live_fill_entry - ref_entry) / ref_entry * 10000,
+                            plan.stop_loss,
+                            reanchored_stop,
+                            old_stop_bps,
+                            new_stop_bps,
+                        )
+                        protect_stop_loss = reanchored_stop
+                        protect_take_profits = reanchored_tps
+
                     # Place protection with stronger validation and retry.
                     protection_payload = None
                     has_sl = False
@@ -521,8 +641,8 @@ class ExecutionService:
                                 direction=plan.direction,
                                 hold_side=hold_side,
                                 size=order_size,
-                                stop_loss=plan.stop_loss,
-                                take_profits=plan.take_profits,
+                                stop_loss=protect_stop_loss,
+                                take_profits=protect_take_profits,
                                 margin_mode="isolated",
                             )
                         except Exception as protection_exc:
@@ -638,38 +758,52 @@ class ExecutionService:
                     order_detail_payload = None
                     detailed_fill_metrics: dict[str, object] = {}
 
+                    # NB: extract_fill_metrics levert de canonieke sleutels
+                    # avg_price/fee/pnl/state (zoals de reconciler ze ook leest).
+                    # Deze laag las jarenlang niet-bestaande aliassen, waardoor
+                    # elke fill terugviel op het plan-gemiddelde en slippage
+                    # altijd 0.0000 was (N8, roadmap 2026-07-07).
                     fill_metrics = self.client.extract_fill_metrics(live_order_payload)
 
-                    extracted_actual_entry = _safe_float(fill_metrics.get("avg_fill_price"), 0.0)
+                    extracted_actual_entry = _safe_float(fill_metrics.get("avg_price"), 0.0)
                     if extracted_actual_entry > 0:
                         actual_entry = round(extracted_actual_entry, 8)
                     else:
                         actual_entry = avg_entry
 
-                    fees_paid = abs(_safe_float(fill_metrics.get("fee_paid"), 0.0))
-                    realized_pnl = _safe_float(fill_metrics.get("realized_pnl"), 0.0)
+                    fees_paid = abs(_safe_float(fill_metrics.get("fee"), 0.0))
+                    realized_pnl = _safe_float(fill_metrics.get("pnl"), 0.0)
 
                     if exchange_order_id:
                         try:
-                            order_detail_payload = self.client.get_order_detail(
-                                symbol=plan.symbol,
-                                order_id=exchange_order_id,
-                            )
-                            detailed_fill_metrics = self.client.extract_fill_metrics(order_detail_payload)
+                            detailed_fill_metrics = {}
+                            # Marktorders registreren hun fill soms pas een
+                            # fractie later; probeer kort opnieuw tot er een
+                            # echte fill-prijs staat.
+                            for detail_attempt in range(3):
+                                order_detail_payload = self.client.get_order_detail(
+                                    symbol=plan.symbol,
+                                    order_id=exchange_order_id,
+                                )
+                                detailed_fill_metrics = self.client.extract_fill_metrics(order_detail_payload)
+                                if _safe_float(detailed_fill_metrics.get("avg_price"), 0.0) > 0:
+                                    break
+                                time.sleep(0.5)
 
                             detailed_actual_entry = _safe_float(
-                                detailed_fill_metrics.get("avg_fill_price"),
+                                detailed_fill_metrics.get("avg_price"),
                                 0.0,
                             )
                             if detailed_actual_entry > 0:
                                 actual_entry = round(detailed_actual_entry, 8)
+                                extracted_actual_entry = detailed_actual_entry
 
-                            detailed_fees = abs(_safe_float(detailed_fill_metrics.get("fee_paid"), 0.0))
+                            detailed_fees = abs(_safe_float(detailed_fill_metrics.get("fee"), 0.0))
                             if detailed_fees > 0:
                                 fees_paid = detailed_fees
 
                             detailed_realized_pnl = _safe_float(
-                                detailed_fill_metrics.get("realized_pnl"),
+                                detailed_fill_metrics.get("pnl"),
                                 0.0,
                             )
                             if detailed_realized_pnl != 0:
@@ -682,7 +816,7 @@ class ExecutionService:
                                 actual_entry,
                                 fees_paid,
                                 realized_pnl,
-                                detailed_fill_metrics.get("raw_order_state"),
+                                detailed_fill_metrics.get("state"),
                             )
                         except Exception as detail_exc:
                             self.log.warning(
@@ -797,9 +931,10 @@ class ExecutionService:
                 "slippage_pct": slippage_pct,
                 "fees_paid": fees_paid,
                 "entry_prices": plan.entry_prices,
-                "stop_loss": plan.stop_loss,
-                "initial_stop_loss": plan.stop_loss,
-                "take_profits": plan.take_profits,
+                "entry_via": entry_via,
+                "stop_loss": protect_stop_loss,
+                "initial_stop_loss": protect_stop_loss,
+                "take_profits": protect_take_profits,
                 "tp1_hit": False,
                 "tp2_hit": False,
                 "tp3_hit": False,
@@ -843,6 +978,8 @@ class ExecutionService:
                 fees_paid=fees_paid,
                 realized_pnl=realized_pnl,
                 exchange_order_id=exchange_order_id,
+                stop_loss=protect_stop_loss,
+                take_profits=protect_take_profits,
             )
             reports.append(report)
 
@@ -1073,6 +1210,8 @@ class ExecutionService:
         fees_paid: float = 0.0,
         realized_pnl: float = 0.0,
         exchange_order_id: str = "",
+        stop_loss: float | None = None,
+        take_profits: list[float] | None = None,
     ) -> ExecutionReport:
         return ExecutionReport(
             symbol=plan.symbol,
@@ -1082,8 +1221,8 @@ class ExecutionService:
             status=status,
             message=message,
             avg_entry=avg_entry,
-            stop_loss=plan.stop_loss,
-            take_profits=plan.take_profits,
+            stop_loss=plan.stop_loss if stop_loss is None else stop_loss,
+            take_profits=plan.take_profits if take_profits is None else take_profits,
             position_notional_usdt=notional,
             leverage=leverage,
             expected_entry=expected_entry or avg_entry,

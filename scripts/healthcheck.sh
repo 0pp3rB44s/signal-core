@@ -7,6 +7,7 @@ cd "$PROJECT_DIR"
 mkdir -p logs state
 
 BOT_STATUS="stopped"
+BOT_SUPERVISOR=""
 DASH_STATUS="stopped"
 PORT_STATUS="closed"
 HTTP_STATUS="down"
@@ -34,6 +35,16 @@ fi
 
 if [ -f state/bot.pid ] && ps -p "$(cat state/bot.pid)" > /dev/null 2>&1; then
   BOT_STATUS="running"
+fi
+
+# scripts/install_launchd.sh only runs a periodic pgrep-based
+# notification check (via launchd) -- it never restarts the bot itself,
+# so it's not a signal here at all. Fall back to pgrep directly, which
+# works regardless of how the bot process was started (scripts/start_bot.sh
+# vs a manual foreground run).
+if [ "$BOT_STATUS" != "running" ] && pgrep -f "app.main" > /dev/null 2>&1; then
+  BOT_STATUS="running"
+  BOT_SUPERVISOR=" (pid file stale, matched via pgrep)"
 fi
 
 if [ -f state/dashboard.pid ] && ps -p "$(cat state/dashboard.pid)" > /dev/null 2>&1; then
@@ -81,7 +92,7 @@ echo "env: $ENV_STATUS"
 echo "app env: $APP_ENV_VALUE"
 echo "app mode: $APP_MODE_VALUE"
 echo "execution mode: $EXECUTION_MODE_VALUE"
-echo "bot: $BOT_STATUS"
+echo "bot: $BOT_STATUS$BOT_SUPERVISOR"
 echo "dashboard pid: $DASH_STATUS"
 echo "dashboard port $DASHBOARD_PORT: $PORT_STATUS"
 echo "dashboard http: $HTTP_STATUS"

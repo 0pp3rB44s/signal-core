@@ -129,6 +129,11 @@ class TradePlan:
     notes: list[str]
     reasons: list[str]
     tp_size_pcts: list[float] = field(default_factory=list)
+    # Marktprijs-anker waarop stop/TP zijn berekend (latest_close op planmoment).
+    # Executie herankert SL/TP op de ECHTE fill zodat de ontworpen R:R-afstand
+    # behouden blijft ook als de fill van het anker is weggedreven (bug
+    # 2026-07-08: fill dreef structureel naar de stop -> mini-stops).
+    geometry_entry: float = 0.0
 
 
 @dataclass(slots=True)

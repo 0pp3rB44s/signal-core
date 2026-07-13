@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan
+from telemetry.csv_rotation import rotate_if_needed
 
 
 # --- Trade Quality/Grade helpers ---
@@ -278,6 +279,7 @@ class MarketScanCsvLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append_rows(self, snapshots: list[MarketSnapshot]) -> None:
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -295,7 +297,27 @@ class MarketScanCsvLogger:
                 ])
 
 
+def _rotate_on_schema_change(path: Path, expected_header: list[str]) -> None:
+    """Force-rotate a CSV whose on-disk header doesn't match the expected schema,
+    so new columns start cleanly in a fresh segment instead of corrupting rows."""
+    if not path.exists():
+        return
+    try:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            existing = next(csv.reader(handle), [])
+    except Exception:
+        return
+    if existing and [c.strip() for c in existing] != expected_header:
+        rotate_if_needed(path, max_bytes=0)
+
+
 class StrategyCandidateCsvLogger:
+    HEADER = [
+        "timestamp","symbol","strategy","direction","verdict","score","primary_tf","confirm_tf","alignment",
+        "entry_hint","reclaim_level","invalidation","bars_since_sweep","volume_ratio_on_sweep",
+        "displacement_pct","notes","reasons"
+    ]
+
     def __init__(self, path: str = "logs/strategy_candidates.csv") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -303,17 +325,17 @@ class StrategyCandidateCsvLogger:
     def append_rows(self, rows: list[tuple[StrategyCandidate, StrategyScore]]) -> None:
         if not rows:
             return
+        rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, self.HEADER)
         exists = self.path.exists()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             if not exists:
-                writer.writerow([
-                    "symbol","strategy","direction","verdict","score","primary_tf","confirm_tf","alignment",
-                    "entry_hint","reclaim_level","invalidation","bars_since_sweep","volume_ratio_on_sweep",
-                    "displacement_pct","notes","reasons"
-                ])
+                writer.writerow(self.HEADER)
             for candidate, score in rows:
                 writer.writerow([
+                    now,
                     candidate.symbol, candidate.strategy, candidate.direction, score.verdict, f"{score.total:.2f}",
                     candidate.primary_granularity, candidate.confirmation_granularity, candidate.market.alignment,
                     f"{candidate.detection.entry_hint:.8f}", f"{candidate.detection.reclaim_level:.8f}",
@@ -324,6 +346,12 @@ class StrategyCandidateCsvLogger:
 
 
 class TradePlanCsvLogger:
+    HEADER = [
+        "timestamp","symbol","strategy","direction","verdict","score","entries","stop_loss","take_profits",
+        "risk_reward_ratio","account_risk_pct","leverage","position_notional_usdt","notes","reasons",
+        "decision_snapshot"
+    ]
+
     def __init__(self, path: str = "logs/trade_plans.csv") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -331,17 +359,17 @@ class TradePlanCsvLogger:
     def append_rows(self, plans: list[TradePlan]) -> None:
         if not plans:
             return
+        rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, self.HEADER)
         exists = self.path.exists()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             if not exists:
-                writer.writerow([
-                    "symbol","strategy","direction","verdict","score","entries","stop_loss","take_profits",
-                    "risk_reward_ratio","account_risk_pct","leverage","position_notional_usdt","notes","reasons",
-                    "decision_snapshot"
-                ])
+                writer.writerow(self.HEADER)
             for plan in plans:
                 writer.writerow([
+                    now,
                     plan.symbol, plan.strategy, plan.direction, plan.verdict, f"{plan.score:.2f}",
                     " | ".join(f"{x:.8f}" for x in plan.entry_prices), f"{plan.stop_loss:.8f}",
                     " | ".join(f"{x:.8f}" for x in plan.take_profits), f"{plan.risk_reward_ratio:.2f}",
@@ -367,6 +395,7 @@ class TradeDecisionSnapshotLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append_plan(self, plan: TradePlan, opened_at: str | None = None) -> str:
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -408,7 +437,7 @@ class ExecutionCsvLogger:
 
     def _fieldnames(self) -> list[str]:
         return [
-            "symbol", "direction", "strategy", "mode", "status", "message", "avg_entry", "expected_entry",
+            "timestamp", "symbol", "direction", "strategy", "mode", "status", "message", "avg_entry", "expected_entry",
             "actual_entry", "slippage_pct", "fees_paid", "realized_pnl", "exchange_order_id", "stop_loss",
             "take_profits", "position_notional_usdt", "leverage",
         ]
@@ -451,11 +480,15 @@ class ExecutionCsvLogger:
     def append_rows(self, reports: list[ExecutionReport]) -> None:
         if not reports:
             return
+        rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, self._fieldnames())
         self._ensure_header()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             for report in reports:
                 writer.writerow([
+                    now,
                     report.symbol, report.direction, report.strategy, report.mode, report.status, report.message,
                     f"{report.avg_entry:.8f}",
                     f"{getattr(report, 'expected_entry', report.avg_entry):.8f}",
@@ -480,6 +513,7 @@ class PositionUpdateCsvLogger:
     def append_rows(self, updates: list[PositionUpdate]) -> None:
         if not updates:
             return
+        rotate_if_needed(self.path)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -686,6 +720,8 @@ class TradeDatasetLogger:
             "close_reason",
             "message",
         ]
+        rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -702,6 +738,41 @@ class TradeDatasetV2Logger:
     def __init__(self, path: str | Path = "logs/trade_dataset_v2.csv") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._seen_close_keys: set[tuple] | None = None
+
+    def _close_key(self, symbol: str, direction: str, closed_at: str, pnl) -> tuple:
+        return (
+            str(symbol or "").upper(),
+            str(direction or "").upper(),
+            str(closed_at or "")[:19],
+            f"{_safe_float(pnl):.6f}",
+        )
+
+    def _is_duplicate_close(self, key: tuple) -> bool:
+        """Duplicate closes (re-syncs, replays) poison expectancy; block them.
+
+        Keys are seeded from the on-disk tail once per process so duplicates
+        are also caught across restarts.
+        """
+        if self._seen_close_keys is None:
+            self._seen_close_keys = set()
+            if self.path.exists():
+                try:
+                    with self.path.open("r", newline="", encoding="utf-8") as handle:
+                        rows = list(csv.DictReader(handle))
+                    for row in rows[-500:]:
+                        if str(row.get("event_type") or "").upper() in ("CLOSE", "POSITION_CLOSED"):
+                            self._seen_close_keys.add(self._close_key(
+                                row.get("symbol"), row.get("direction"),
+                                row.get("closed_at") or row.get("timestamp"), row.get("pnl"),
+                            ))
+                except Exception:
+                    pass
+
+        if key in self._seen_close_keys:
+            return True
+        self._seen_close_keys.add(key)
+        return False
 
     def _fieldnames(self) -> list[str]:
         return [
@@ -860,6 +931,10 @@ class TradeDatasetV2Logger:
             net_pnl = pnl - abs(fees)
 
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
+        closed_at = trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        close_key = self._close_key(trade.get("symbol"), trade.get("direction"), closed_at, pnl)
+        if self._is_duplicate_close(close_key):
+            return
         self._append_row({
             "event_type": "CLOSE",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -869,7 +944,7 @@ class TradeDatasetV2Logger:
             "status": "CLOSED",
             "result": result,
             "opened_at": trade.get("opened_at", ""),
-            "closed_at": trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            "closed_at": closed_at,
             "entry": trade.get("entry", ""),
             "expected_entry": trade.get("expected_entry", ""),
             "actual_entry": trade.get("actual_entry", ""),
@@ -933,6 +1008,11 @@ class TradeDatasetV2Logger:
 
     def _append_row(self, row: dict) -> None:
         fieldnames = self._fieldnames()
+        rotate_if_needed(self.path)
+        # Appending 68-column rows into a file whose header still has an older
+        # 59-column schema silently shifts every value into the wrong column
+        # (observed live 2026-07-07: trade_grade landed in close_reason).
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -986,6 +1066,8 @@ class ValidationEventLogger:
             "message",
             "details",
         ]
+        rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -1110,6 +1192,8 @@ class StrategyPerformanceLogger:
             "reasons",
             "notes",
         ]
+        rotate_if_needed(self.path)
+        _rotate_on_schema_change(self.path, fieldnames)
         exists = self.path.exists()
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")

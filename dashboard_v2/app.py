@@ -1,124 +1,98 @@
-from flask import Flask, render_template, jsonify
-from dashboard_v2.data_provider import get_dashboard_data
-from collections import Counter
-from pathlib import Path
+import logging
 import os
-from dotenv import load_dotenv
+import secrets
+from datetime import timedelta
+from functools import wraps
 
+from dotenv import load_dotenv
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+
+from dashboard_v2 import bot_control
+from dashboard_v2.data_provider import get_dashboard_data
 
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("DASHBOARD_SECRET_KEY") or secrets.token_urlsafe(32)
+app.permanent_session_lifetime = timedelta(days=7)
+
+logger = logging.getLogger("dashboard")
+
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+if not DASHBOARD_PASSWORD:
+    DASHBOARD_PASSWORD = secrets.token_urlsafe(18)
+    logger.warning(
+        "DASHBOARD_PASSWORD not set in .env -- generated a one-time password for "
+        "this run: %s (set DASHBOARD_PASSWORD in .env to keep it stable across restarts)",
+        DASHBOARD_PASSWORD,
+    )
+    print(f"[dashboard] No DASHBOARD_PASSWORD set. One-time password: {DASHBOARD_PASSWORD}")
 
 
-LOG_PATH = Path("logs/agent.log")
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("authenticated"):
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
-def build_optimization_advice():
-    advice = {
-        "market_regime": "UNKNOWN",
-        "strategies_to_watch": [],
-        "strategies_to_boost": [],
-        "symbols_to_pause": [],
-        "stats": {},
-    }
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        submitted = request.form.get("password", "")
+        if secrets.compare_digest(submitted, DASHBOARD_PASSWORD):
+            session.clear()
+            session["authenticated"] = True
+            session.permanent = True
+            next_url = request.args.get("next") or url_for("index")
+            return redirect(next_url)
+        error = "Incorrect password."
+    return render_template("login.html", error=error)
 
-    if not LOG_PATH.exists():
-        return advice
 
-    try:
-        lines = LOG_PATH.read_text(errors="ignore").splitlines()[-1200:]
-    except Exception:
-        return advice
-
-    continuation_rejects = 0
-    momentum_mentions = 0
-    conflicted_count = 0
-
-    symbol_rejections = Counter()
-    strategy_rejections = Counter()
-
-    for line in lines:
-        if "CONTINUATION_REJECT" in line:
-            continuation_rejects += 1
-
-            parts = [part.strip() for part in line.split("|")]
-            symbol = ""
-
-            if "CONTINUATION_REJECT" in parts:
-                idx = parts.index("CONTINUATION_REJECT")
-                if len(parts) > idx + 1:
-                    symbol = parts[idx + 1].strip()
-            elif len(parts) >= 5:
-                symbol = parts[4].strip()
-
-            if symbol and symbol not in {"CONTINUATION_REJECT", "NO_SETUP", "REJECTED_SETUP"}:
-                symbol_rejections[symbol] += 1
-
-        if "MOMENTUM_BREAKOUT" in line or "volume expansion" in line:
-            momentum_mentions += 1
-
-        if "alignment=conflicted" in line or "alignment=mixed" in line:
-            conflicted_count += 1
-
-        if "trend_continuation" in line and "REJECTED_SETUP" in line:
-            strategy_rejections["trend_continuation"] += 1
-
-    if conflicted_count >= 25:
-        advice["market_regime"] = "CHOPPY / CONFLICTED"
-    elif momentum_mentions > continuation_rejects:
-        advice["market_regime"] = "TRENDING / EXPANSION"
-    else:
-        advice["market_regime"] = "MIXED"
-
-    if continuation_rejects >= 10:
-        advice["strategies_to_watch"].append({
-            "strategy": "trend_continuation",
-            "status": "WATCH",
-            "reason": "high rejection rate / weak continuation quality",
-        })
-
-    if momentum_mentions >= 10:
-        advice["strategies_to_boost"].append({
-            "strategy": "momentum_breakout",
-            "status": "BOOST",
-            "reason": "strong expansion + volume confirmation",
-        })
-
-    for symbol, count in symbol_rejections.most_common(5):
-        if count >= 3:
-            advice["symbols_to_pause"].append({
-                "symbol": symbol,
-                "reason": f"{count} recent continuation rejects / conflicted structure",
-            })
-
-    advice["stats"] = {
-        "continuation_rejects": continuation_rejects,
-        "momentum_mentions": momentum_mentions,
-        "conflicted_signals": conflicted_count,
-    }
-
-    return advice
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.route("/")
+@login_required
 def index():
     data = get_dashboard_data()
-    data["roadmap_focus"] = "P3.9 Sweep Evolution Engine"
-    data["optimization_advice"] = build_optimization_advice()
     return render_template("index.html", data=data)
 
 
 @app.route("/api/data")
+@login_required
 def api_data():
-    data = get_dashboard_data()
-    data["roadmap_focus"] = "P3.9 Sweep Evolution Engine"
-    data["optimization_advice"] = build_optimization_advice()
-    return jsonify(data)
+    return jsonify(get_dashboard_data())
+
+
+@app.route("/api/bot/start", methods=["POST"])
+@login_required
+def api_bot_start():
+    result = bot_control.start_bot(reason="dashboard_start")
+    return jsonify(result)
+
+
+@app.route("/api/bot/stop", methods=["POST"])
+@login_required
+def api_bot_stop():
+    result = bot_control.stop_bot(reason="dashboard_stop")
+    return jsonify(result)
 
 
 if __name__ == "__main__":
     host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
     port = int(os.getenv("DASHBOARD_PORT", "8501"))
     debug = os.getenv("DASHBOARD_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
-    app.run(host=host, port=port, debug=debug)
+    # threaded=True: /api/data does several live Bitget API round-trips plus
+    # log/CSV parsing, so a single request can take longer than the 5s client
+    # poll interval. Without threading, Flask's dev server handles requests
+    # one at a time and polling clients back up behind each other.
+    app.run(host=host, port=port, debug=debug, threaded=True)
