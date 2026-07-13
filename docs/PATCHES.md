@@ -229,5 +229,15 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   krijgen nu PLAN/PLAN_REJECT-rijen (fix ondertelling). Test-conflict opgelost (beide
   test-blokken behouden). 160/160 groen.
 
+- PATCH-070 | 2026-07-13 | Shorts uit (ENABLE_SHORTS bedraad). Morning-audit + 383-trade
+  exchange-truth diagnose. Eerst runner-mode-hypothese (single-TP kapt winnaars af) gebouwd
+  MAAR op de 206-trade export gesimuleerd -> maakte het SLECHTER: winnaars lopen al ~2.9R
+  (echte stop-afstand 0.25%, niet 1.3R-cap). Runner-code volledig teruggedraaid. Echte
+  probleem = WIN RATE: 33-38% vs 42% break-even. Shorts zijn de structurele bloeding (32% WR
+  / -7.94 net vs longs 47% / -2.96; low_vol_reclaim short alleen -6.08). ENABLE_SHORTS bestond
+  in config maar was nergens bedraad -> nu geblokkeerd in trade_planner (verdict=BLOCKED,
+  directional_gate=shorts_disabled). .env op false. Reversibel. 162/162 groen. LES: simuleer
+  een exit-hypothese op echte data VOOR je hem live zet - dit voorkwam een verliesgevende wijziging.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
