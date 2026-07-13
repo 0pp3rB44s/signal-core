@@ -259,5 +259,15 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   Context: geen entries sinds 2026-07-12 20:14 UTC (markt bearish, 108 plannen geblokkeerd);
   geen storing (sole-blocker-analyse: 91% faalt op 2-4 onafhankelijke gates).
 
+- PATCH-073 | 2026-07-13 | OBSERVE-MODE (eigenaar-besluit): EXECUTION_ENABLED=false. De bot
+  scant, plant en logt volledig door (funnel/leerdata blijven groeien), maar kan geen orders
+  meer plaatsen; positie-monitoring blijft actief. Grond: vier rigoureuze strategie-tests
+  (scalp-autopsie 367 trades, trend-following 1.4jr IS/OOS, sweep-reverse 1H+HTF, regime-
+  filter) vonden geen stabiele edge; post-fix cohort 31 trades = 16% WR bij RR~1; autopsie
+  toont 48% van trades komt nooit >25% richting TP (entry-probleem, geen exit-formule fixt
+  dat). Instellingen zijn remmen, geen motor. Omkeren: EXECUTION_ENABLED=true + herstart.
+  Vervolgroute: pool-detector (market_data/liquidity_pools.py) als hulpmiddel voor handmatig
+  traden — daar zat de enige bewezen winst (SOL-trades, +6.83 bruto).
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
