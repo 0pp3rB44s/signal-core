@@ -88,6 +88,21 @@ Beslisregels, vooraf vastgelegd zodat emotie ze niet kan buigen:
 - Geen garantie dat er een edge IS — wel de garantie dat we hem eerlijk
   meten als hij er is, en dat we niets meer verliezen aan ruis.
 
+## Gereedschap (gebouwd 2026-07-13, alle drie getest)
+
+```
+python3 scripts/pool_kaart.py [SYMBOLEN]   # dagelijkse pool-kaart (1H + 4H)
+python3 scripts/journal.py add --symbol .. --dir .. --entry .. --stop .. --exit .. --setup ".."
+python3 scripts/journal.py stats           # hand-expectancy + fase-2 oordeel
+python3 scripts/maandmeting.py             # A: hand / B: bot-forward / C: regime
+```
+
+- pool_kaart: onaangeroerde pools boven/onder, x-aantal = sterkte, STERK bij x3+.
+- journal: elke handmatige trade erin; vanaf n=20 velt hij zelf het fase-2 oordeel.
+- maandmeting: simuleert de EXECUTABLE plannen van de bot (sinds observe) tegen de
+  echte candles erna = out-of-sample forward-bewijs; plus BTC-regime-check die
+  meldt wanneer de markt weer trending is (her-test-moment trend-following).
+
 ## Ritme
 
 - **Dagelijks (eigenaar, 10 min):** pool-kaart bekijken; alleen handelen
