@@ -185,3 +185,30 @@ def test_momentum_unaffected_by_sweep_reachability_guard():
     planner = TradePlanner(settings=_settings())
     plan = planner.build(_candidate("momentum_breakout", "LONG"), _score(), _risk())
     assert not any("sweep_target_unreachable" in str(n) for n in plan.notes)
+
+
+def test_shorts_blocked_when_enable_shorts_false():
+    """Directional gate (2026-07-13): ENABLE_SHORTS=false blokkeert shorts.
+
+    383-trade exchange-truth: SHORT 32% WR / -7.94 vs LONG 47% / -2.96.
+    De schakelaar bestond al maar was nergens bedraad; dit pint de bedrading.
+    """
+    s = _settings()
+    s.enable_shorts = False
+    planner = TradePlanner(settings=s)
+
+    short_plan = planner.build(_candidate("momentum_breakdown", "SHORT"), _score(), _risk())
+    assert short_plan.verdict == "BLOCKED"
+    assert any("shorts disabled" in r.lower() for r in short_plan.reasons)
+
+    # Longs blijven ongemoeid.
+    long_plan = planner.build(_candidate("momentum_breakout", "LONG"), _score(), _risk())
+    assert not any("shorts disabled" in r.lower() for r in (long_plan.reasons or []))
+
+
+def test_shorts_allowed_when_enable_shorts_true():
+    s = _settings()
+    s.enable_shorts = True
+    planner = TradePlanner(settings=s)
+    short_plan = planner.build(_candidate("momentum_breakdown", "SHORT"), _score(), _risk())
+    assert not any("shorts disabled" in r.lower() for r in (short_plan.reasons or []))

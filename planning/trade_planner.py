@@ -754,6 +754,18 @@ class TradePlanner:
             reasons.append(f"position notional {position_notional:.2f} below live minimum {min_live_notional:.2f}")
             notes.append(f"live_min_notional_usdt={min_live_notional:.2f}")
 
+        # Directional gate (2026-07-13, data-besluit eigenaar). 383-trade
+        # exchange-truth: SHORT 32% WR / -7.94 net vs LONG 47% WR / -2.96 net —
+        # shorts zijn structureel de bloeding (low_vol_reclaim short alleen al
+        # -6.08). Break-even vereist ~42% WR; shorts halen dat nergens. Blokkeer
+        # shorts wanneer ENABLE_SHORTS=false zodat de bot alleen de kant traadt
+        # die z'n break-even benadert. Volledig reversibel via .env. De schakelaar
+        # bestond al in config maar was nergens bedraad; dit is de bedrading.
+        if not getattr(self.settings, "enable_shorts", True) and str(candidate.direction or "").upper() == "SHORT":
+            verdict = "BLOCKED"
+            reasons.append("shorts disabled (ENABLE_SHORTS=false): 32% WR / -7.94 net vs longs 47% / -2.96")
+            notes.append("directional_gate=shorts_disabled")
+
         self._emit_near_executable(
             candidate=candidate,
             score=score,
