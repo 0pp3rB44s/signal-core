@@ -187,27 +187,8 @@ class ClosedTradeWriterMixin:
                 position["net_pnl"] = exchange_close_truth.get("pnl", position.get("net_pnl", ""))
                 position["fees_paid"] = exchange_close_truth.get("fee", position.get("fees_paid", ""))
 
-        data_confidence = str(position.get("data_confidence") or data_confidence or "")
-        process_verdict = str(position.get("process_verdict") or process_verdict or "")
-        close_source = str(position.get("close_source") or close_source or "")
-
-        if position.get("exchange_truth_pnl") in (None, ""):
-            exchange_close_truth = self._exchange_close_truth_from_position_history(position)
-            if str(exchange_close_truth.get("close_source") or "") == "bitget_position_history" and exchange_close_truth.get("pnl") not in (None, ""):
-                position["close_source"] = "bitget_position_history"
-                position["data_confidence"] = "EXCHANGE_TRUTH"
-                position["process_verdict"] = "EXCHANGE_TRUTH_CLOSE"
-                position["exchange_truth_order_id"] = exchange_close_truth.get("order_id", "")
-                position["exchange_truth_exit_price"] = exchange_close_truth.get("exit_price", position.get("exchange_truth_exit_price", ""))
-                position["exchange_truth_size"] = exchange_close_truth.get("size", position.get("exchange_truth_size", ""))
-                position["exchange_truth_pnl"] = exchange_close_truth.get("pnl", "")
-                position["exchange_truth_fee"] = exchange_close_truth.get("fee", "")
-                position["realized_pnl"] = exchange_close_truth.get("pnl", position.get("realized_pnl", ""))
-                # netProfit is al netto: overschrijf ook net_pnl, anders blijft
-                # de open-time placeholder (-entry fee) in het record staan.
-                position["net_pnl"] = exchange_close_truth.get("pnl", position.get("net_pnl", ""))
-                position["fees_paid"] = exchange_close_truth.get("fee", position.get("fees_paid", ""))
-
+        # (2026-07-13) Dedup: een tweede identiek backfill-blok stond hier
+        # (copy-paste); idempotent, dus verwijderd. Blok 1 hierboven doet het werk.
         data_confidence = str(position.get("data_confidence") or data_confidence or "")
         process_verdict = str(position.get("process_verdict") or process_verdict or "")
         close_source = str(position.get("close_source") or close_source or "")
@@ -471,12 +452,6 @@ class ClosedTradeWriterMixin:
             "exchange_truth_pnl": position.get("exchange_truth_pnl", ""),
             "exchange_truth_fee": position.get("exchange_truth_fee", ""),
         }
-
-        if position.get("exchange_truth_pnl") not in (None, ""):
-            try:
-                pnl = float(position.get("exchange_truth_pnl") or pnl)
-            except (TypeError, ValueError):
-                pass
 
         if position.get("exchange_truth_pnl") not in (None, ""):
             try:
