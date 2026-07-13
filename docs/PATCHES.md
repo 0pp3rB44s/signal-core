@@ -249,5 +249,15 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   no_fresh_breakdown): de markt grindt traag omlaag zonder scherpe breakdown-druk. Bot werkt
   correct = forceert geen slechte trades. 162/162 groen.
 
+- PATCH-072 | 2026-07-13 | Watchlist verbreed (eigenaar-besluit, .env): MAX_SYMBOLS 28->40,
+  MIN_USDT_VOLUME_24H 10M->5M. Doel: meer trade-kansen, m.n. decoupled small/mid-cap
+  volume-explosies die tegen de bearmarkt in kunnen longen (HTF-regime is per-coin). Bot
+  selecteert dynamisch top-N uit ~700 contracten op expectancy->volume->24h-move, dus de
+  extra slots = liquide movers (nieuw o.a. DOT/XRP/LTC/SUI/DYDX/GALA), geen micro-caps.
+  Spread/fee-gate (TP1_NET_EDGE) blijft de bescherming tegen te-illiquide fills. NB:
+  verbreedt het net, repareert de edge (win rate) niet. Reversibel via .env + herstart.
+  Context: geen entries sinds 2026-07-12 20:14 UTC (markt bearish, 108 plannen geblokkeerd);
+  geen storing (sole-blocker-analyse: 91% faalt op 2-4 onafhankelijke gates).
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
