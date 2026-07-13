@@ -239,5 +239,15 @@ git-historie. Format per regel: nummer | datum | wat + waarom (kort).
   directional_gate=shorts_disabled). .env op false. Reversibel. 162/162 groen. LES: simuleer
   een exit-hypothese op echte data VOOR je hem live zet - dit voorkwam een verliesgevende wijziging.
 
+- PATCH-071 | 2026-07-13 | Per-strategie shorts-gate: trend-following shorts terug. "Waarom geen
+  trades"-diagnose: markt bearish (1D+4H marktbreed), longs correct HTF-geblokkeerd, PATCH-070
+  zette ALLE shorts uit -> bot idle in downtrend. Nuance: de short-bloeding was low_vol_reclaim
+  (mean-reversion bounces, -6.08, al hard-paused); momentum_breakdown is trend-following (-0.89)
+  en loopt MET de downtrend mee. Gate nu per-strategie: SHORTS_ALLOWED_STRATEGIES (default
+  momentum_breakdown) mag shorten ook met ENABLE_SHORTS=false. Restant "geen trades" = de
+  breakdown-detector vindt geen geldige setup (trend_not_aligned / lacks_directional_pressure /
+  no_fresh_breakdown): de markt grindt traag omlaag zonder scherpe breakdown-druk. Bot werkt
+  correct = forceert geen slechte trades. 162/162 groen.
+
 Nieuwe wijzigingen: verhoog het nummer, zet "PATCH-0XX:" vooraan de
 commit-titel en voeg hier één regel toe (datum | wat + waarom).
