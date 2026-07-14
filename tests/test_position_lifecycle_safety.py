@@ -372,6 +372,24 @@ def test_profit_lock_arms_only_once():
     assert manager.client.move_futures_stop_loss.call_count == calls_after_first
 
 
+def test_monitor_cycle_uses_fresh_exchange_mark_and_remains_idempotent():
+    live = _live_payload(size=1.0)
+    live["markPrice"] = "100.65"
+    manager = _manager([live])
+    manager.store.save([_position()])
+
+    stale_scan = _snapshot(price=100.10, high=100.10, low=100.05)
+    manager.sync([stale_scan], use_snapshot_context=False)
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["last_price"] == 100.65
+    assert saved["profit_lock_active"] is True
+    calls_after_first = manager.client.move_futures_stop_loss.call_count
+
+    manager.sync([stale_scan], use_snapshot_context=False)
+    assert manager.client.move_futures_stop_loss.call_count == calls_after_first
+
+
 # --- 10b. SL-verplaatsing faalt -> lokale SL blijft op oude waarde (fail closed) ---
 
 def test_failed_sl_move_keeps_previous_stop():

@@ -20,6 +20,7 @@ from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
+from execution.runtime_lock import trading_state_lock
 from execution.state_store import JsonStateStore
 from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
@@ -412,20 +413,32 @@ class StartupRunner:
         while True:
             self._position_monitor_wakeup.wait(timeout=interval)
             self._position_monitor_wakeup.clear()
-            with self._position_snapshots_lock:
-                snapshots = list(self._position_snapshots)
-            if not snapshots:
-                continue
-            try:
-                self._sync_positions(snapshots)
-            except Exception as exc:
-                self.log.exception("POSITION_MONITOR_FAILED | error=%s", exc)
+            self._position_monitor_iteration()
 
-    def _sync_positions(self, snapshots: list[MarketSnapshot]) -> None:
+    def _position_monitor_iteration(self) -> bool:
+        """Run one cycle without allowing a transient failure to kill the loop."""
+        try:
+            self._position_monitor_cycle()
+            return True
+        except Exception as exc:
+            self.log.exception("POSITION_MONITOR_FAILED | error=%s", exc)
+            return False
+
+    def _position_monitor_cycle(self) -> None:
+        with self._position_snapshots_lock:
+            snapshots = list(self._position_snapshots)
+        if snapshots:
+            self._sync_positions(snapshots, use_snapshot_context=False)
+
+    def _sync_positions(self, snapshots: list[MarketSnapshot], *, use_snapshot_context: bool) -> None:
         if not snapshots or not self.settings.position_manager_enabled:
             return
         with self._position_sync_lock:
-            position_updates = self.position_manager.sync(snapshots)
+            with trading_state_lock():
+                position_updates = self.position_manager.sync(
+                    snapshots,
+                    use_snapshot_context=use_snapshot_context,
+                )
         if position_updates:
             self._emit_position_summary(position_updates)
             self.position_logger.append_rows(position_updates)
@@ -1127,7 +1140,8 @@ class StartupRunner:
                 self._emit_plan_summary(plans)
                 self.trade_plan_logger.append_rows(plans)
 
-            exec_reports = self.execution_service.execute(plans)
+            with trading_state_lock():
+                exec_reports = self.execution_service.execute(plans)
             if exec_reports:
                 self._emit_execution_summary(exec_reports)
                 self.execution_logger.append_rows(exec_reports)
@@ -1135,10 +1149,7 @@ class StartupRunner:
             if snapshots and self.settings.position_manager_enabled:
                 with self._position_snapshots_lock:
                     self._position_snapshots = list(snapshots)
-                if self.settings.position_loop_enabled:
-                    self._position_monitor_wakeup.set()
-                else:
-                    self._sync_positions(snapshots)
+                self._sync_positions(snapshots, use_snapshot_context=True)
 
 
         finally:

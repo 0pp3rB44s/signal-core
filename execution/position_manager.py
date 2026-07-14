@@ -37,7 +37,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         self.failed_continuation_sl_buffer_pct = 0.06
         self.failed_continuation_min_unrealized_pct = -0.35
 
-    def sync(self, snapshots: list[MarketSnapshot]) -> list[PositionUpdate]:
+    def sync(
+        self,
+        snapshots: list[MarketSnapshot],
+        *,
+        use_snapshot_context: bool = True,
+    ) -> list[PositionUpdate]:
         positions = self.store.load(default=[])
 
         price_map = {snapshot.symbol: snapshot.primary.latest_close for snapshot in snapshots}
@@ -69,6 +74,13 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 for p in positions_live
                 if float(p.get("total") or p.get("size") or 0) > 0
             }
+            if not use_snapshot_context:
+                for live_position in positions_live:
+                    live_symbol = str(live_position.get("symbol") or "")
+                    live_mark = self._live_mark_price(live_position)
+                    if live_symbol and live_mark > 0:
+                        price_map[live_symbol] = live_mark
+                        candle_range_map[live_symbol] = {"high": live_mark, "low": live_mark}
             bitget_sync_ok = True
         except Exception as exc:
             self.log.warning("Bitget position sync failed in PositionManager: %s", exc)
@@ -1013,14 +1025,19 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         pending_stop,
                     )
 
-            should_tighten_failed, failed_continuation_stop, failed_continuation_context = self._should_tighten_failed_continuation(
-                position=position,
-                snapshot=snapshot_map.get(symbol),
-                direction=direction,
-                entry=entry,
-                current_price=current_price,
-                pnl_pct=pnl_pct,
-            )
+            if use_snapshot_context:
+                should_tighten_failed, failed_continuation_stop, failed_continuation_context = self._should_tighten_failed_continuation(
+                    position=position,
+                    snapshot=snapshot_map.get(symbol),
+                    direction=direction,
+                    entry=entry,
+                    current_price=current_price,
+                    pnl_pct=pnl_pct,
+                )
+            else:
+                should_tighten_failed = False
+                failed_continuation_stop = 0.0
+                failed_continuation_context = "monitor_reconciliation_without_fresh_strategy_context"
             if should_tighten_failed:
                 previous_stop = float(position.get("stop_loss") or 0.0)
                 self.log.warning(
@@ -1277,4 +1294,3 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             return round(notional / avg_entry, 6)
 
         return 0.0
-
