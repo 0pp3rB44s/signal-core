@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     execution_max_live_notional_per_trade_usdt: float = Field(default=35.0, alias="EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT")
     execution_min_live_notional_usdt: float = Field(default=10.0, alias="EXECUTION_MIN_LIVE_NOTIONAL_USDT")
 
+    # Strict public-data runtime. This is deliberately stronger than ordinary
+    # observe/DRY_RUN mode: private exchange surfaces are unavailable.
+    forward_paper_only: bool = Field(default=False, alias="FORWARD_PAPER_ONLY")
+
     # Forward-paper is an isolated observer. It never calls exchange order or
     # account endpoints and writes only to data_store/forward_paper_*.
     forward_paper_enabled: bool = Field(default=True, alias="FORWARD_PAPER_ENABLED")
@@ -170,6 +174,17 @@ class Settings(BaseSettings):
     tp2_close_pct: float = Field(default=30.0, alias="TP2_CLOSE_PCT")
     tp3_close_pct: float = Field(default=30.0, alias="TP3_CLOSE_PCT")
     tp3_close_all_remainder: bool = Field(default=True, alias="TP3_CLOSE_ALL_REMAINDER")
+
+    @model_validator(mode="after")
+    def enforce_forward_paper_only(self) -> "Settings":
+        if self.forward_paper_only:
+            self.execution_enabled = False
+            self.execution_mode = "DRY_RUN"
+            self.forward_paper_enabled = True
+            self.position_manager_enabled = False
+            self.position_loop_enabled = False
+            self.position_sync_on_start = False
+        return self
 
     @property
     def is_production(self) -> bool:
