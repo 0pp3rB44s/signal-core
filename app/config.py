@@ -146,7 +146,7 @@ class Settings(BaseSettings):
     dashboard_port: int = Field(default=8501, alias="DASHBOARD_PORT")
     dashboard_debug: bool = Field(default=False, alias="DASHBOARD_DEBUG")
     position_sync_on_start: bool = Field(default=True, alias="POSITION_SYNC_ON_START")
-    position_loop_enabled: bool = Field(default=False, alias="POSITION_LOOP_ENABLED")
+    position_loop_enabled: bool = Field(default=True, alias="POSITION_LOOP_ENABLED")
     position_check_interval_sec: int = Field(default=30, alias="POSITION_CHECK_INTERVAL_SEC")
     move_stop_to_be_after_tp1: bool = Field(default=True, alias="MOVE_STOP_TO_BE_AFTER_TP1")
     tp1_close_pct: float = Field(default=40.0, alias="TP1_CLOSE_PCT")

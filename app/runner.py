@@ -5,6 +5,7 @@ import fcntl
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from collections import Counter
@@ -322,6 +323,11 @@ class StartupRunner:
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
         self._learning_refresh_proc: subprocess.Popen | None = None
+        self._position_snapshots: list[MarketSnapshot] = []
+        self._position_snapshots_lock = threading.Lock()
+        self._position_sync_lock = threading.Lock()
+        self._position_monitor_wakeup = threading.Event()
+        self._position_monitor_thread: threading.Thread | None = None
 
     def _maybe_refresh_learning_reports(self) -> None:
         """Regenerate the daily learning/expectancy reports when they go stale.
@@ -380,6 +386,18 @@ class StartupRunner:
         self.log.info("Starting Bitget AI Agent Phase 7")
         self._startup_checks()
 
+        if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
+            self._position_monitor_thread = threading.Thread(
+                target=self._position_monitor_loop,
+                name="position-monitor",
+                daemon=True,
+            )
+            self._position_monitor_thread.start()
+            self.log.info(
+                "POSITION_MONITOR_STARTED | interval=%ss",
+                self.settings.position_check_interval_sec,
+            )
+
         if self.settings.scan_on_start:
             self._scan_cycle()
 
@@ -388,8 +406,29 @@ class StartupRunner:
             while True:
                 time.sleep(self.settings.scan_interval_sec)
                 self._scan_cycle()
-                if self.settings.position_loop_enabled:
-                    time.sleep(max(1, self.settings.position_check_interval_sec))
+
+    def _position_monitor_loop(self) -> None:
+        interval = max(1, int(self.settings.position_check_interval_sec))
+        while True:
+            self._position_monitor_wakeup.wait(timeout=interval)
+            self._position_monitor_wakeup.clear()
+            with self._position_snapshots_lock:
+                snapshots = list(self._position_snapshots)
+            if not snapshots:
+                continue
+            try:
+                self._sync_positions(snapshots)
+            except Exception as exc:
+                self.log.exception("POSITION_MONITOR_FAILED | error=%s", exc)
+
+    def _sync_positions(self, snapshots: list[MarketSnapshot]) -> None:
+        if not snapshots or not self.settings.position_manager_enabled:
+            return
+        with self._position_sync_lock:
+            position_updates = self.position_manager.sync(snapshots)
+        if position_updates:
+            self._emit_position_summary(position_updates)
+            self.position_logger.append_rows(position_updates)
 
     def _startup_checks(self) -> None:
         self.log.info("Running startup checks")
@@ -1094,10 +1133,12 @@ class StartupRunner:
                 self.execution_logger.append_rows(exec_reports)
 
             if snapshots and self.settings.position_manager_enabled:
-                position_updates = self.position_manager.sync(snapshots)
-                if position_updates:
-                    self._emit_position_summary(position_updates)
-                    self.position_logger.append_rows(position_updates)
+                with self._position_snapshots_lock:
+                    self._position_snapshots = list(snapshots)
+                if self.settings.position_loop_enabled:
+                    self._position_monitor_wakeup.set()
+                else:
+                    self._sync_positions(snapshots)
 
 
         finally:
@@ -1288,4 +1329,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
