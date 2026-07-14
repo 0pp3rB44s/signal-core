@@ -21,7 +21,7 @@ from execution.position_manager import PositionManager
 
 TP1_CLOSE_PCT = 40.0
 TP2_CLOSE_PCT = 30.0
-BE_FEE_BUFFER_PCT = 0.10
+BE_FEE_BUFFER_PCT = 0.12
 
 
 def _settings() -> MagicMock:
@@ -357,7 +357,7 @@ def test_profit_lock_never_loosens_a_tighter_stop():
     manager.sync([_snapshot(price=100.65, high=100.65, low=100.55)])
 
     saved = manager.store.load(default=[])[0]
-    assert saved["stop_loss"] == 100.5  # niet terug naar 100.1 gezet
+    assert saved["stop_loss"] == 100.5  # niet terug naar fee-adjusted break-even gezet
     assert not saved.get("profit_lock_active")
 
 

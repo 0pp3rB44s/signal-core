@@ -14,6 +14,7 @@ def test_default_settings_are_observe_only_and_local_dashboard():
     assert settings.is_live_execution is False
     assert settings.dashboard_host == "127.0.0.1"
     assert settings.position_loop_enabled is True
+    assert settings.break_even_fee_buffer_pct >= settings.planner_estimated_roundtrip_fee_bps / 100.0
 
 
 def test_disabled_execution_never_queries_exchange_or_places_orders():
