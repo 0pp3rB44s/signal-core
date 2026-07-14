@@ -25,6 +25,10 @@ class BitgetRetryableError(BitgetAPIError):
     pass
 
 
+class PrivateExchangeCallBlocked(BitgetAPIError):
+    """Raised before transport when strict forward-paper mode sees a private call."""
+
+
 class BitgetBaseClient:
     """Base Bitget REST layer: auth, request, retry, rate-limit and validation."""
 
@@ -67,6 +71,8 @@ class BitgetBaseClient:
 
     @property
     def has_credentials(self) -> bool:
+        if self.settings.forward_paper_only:
+            return False
         return all(
             [
                 self.settings.bitget_api_key.get_secret_value(),
@@ -104,6 +110,10 @@ class BitgetBaseClient:
         body: dict[str, Any] | None = None,
         private: bool = False,
     ) -> dict[str, Any]:
+        if private and self.settings.forward_paper_only:
+            raise PrivateExchangeCallBlocked(
+                "Private exchange call blocked: FORWARD_PAPER_ONLY is active"
+            )
         url = f"{self.base_url}{path}"
         body_for_signing = None
         if body is not None:

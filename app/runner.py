@@ -13,6 +13,7 @@ from collections import Counter
 from app.config import Settings
 from app.equity import write_equity_snapshot
 from clients.bitget_rest import BitgetRestClient
+from clients.bitget_public_client import BitgetPublicClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
 from data.market_fetcher import MarketFetcher
 from data.watchlist import get_watchlist
@@ -265,7 +266,11 @@ class StartupRunner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.log = logging.getLogger(self.__class__.__name__)
-        self.client = BitgetRestClient(settings=settings)
+        self.client = (
+            BitgetPublicClient(settings=settings)
+            if settings.forward_paper_only
+            else BitgetRestClient(settings=settings)
+        )
         self.fetcher = MarketFetcher(client=self.client, settings=settings)
         self.multi_tf_cache = MultiTimeframeCache()
         self.market_data_service = MarketDataService(
@@ -285,9 +290,9 @@ class StartupRunner:
         self.scorer = StrategyScorer(settings=settings)
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
-        self.execution_service = ExecutionService(settings=settings)
+        self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
         self.forward_paper = ForwardPaperService(settings=settings)
-        self.position_manager = PositionManager(settings=settings)
+        self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
         self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
         self.signal_cooldown_minutes = 30
@@ -366,6 +371,9 @@ class StartupRunner:
 
     def run(self) -> None:
         self.log.info("Starting Bitget AI Agent Phase 7")
+        if self.settings.forward_paper_only:
+            self.log.warning("FORWARD_PAPER_ONLY ACTIVE")
+            self.log.warning("PRIVATE EXCHANGE CALLS DISABLED")
         self._startup_checks()
 
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
@@ -412,7 +420,11 @@ class StartupRunner:
             self._sync_positions(snapshots, use_snapshot_context=False)
 
     def _sync_positions(self, snapshots: list[MarketSnapshot], *, use_snapshot_context: bool) -> None:
-        if not snapshots or not self.settings.position_manager_enabled:
+        if (
+            not snapshots
+            or not self.settings.position_manager_enabled
+            or self.position_manager is None
+        ):
             return
         with self._position_sync_lock:
             with trading_state_lock():
@@ -1120,7 +1132,11 @@ class StartupRunner:
                 self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
 
             with trading_state_lock():
-                exec_reports = self.execution_service.execute(plans)
+                exec_reports = (
+                    self.execution_service.execute(plans)
+                    if self.execution_service is not None
+                    else []
+                )
             if exec_reports:
                 self._emit_execution_summary(exec_reports)
                 self.execution_logger.append_rows(exec_reports)

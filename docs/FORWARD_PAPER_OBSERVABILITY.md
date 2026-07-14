@@ -16,6 +16,37 @@ The namespaces are immutable:
 
 No live or backtest record is imported into paper storage.
 
+## Runtime modes
+
+Gewone observe/DRY_RUN-modus voorkomt execution entries, maar kan voor
+exchange-truth nog private account- en position-endpoints gebruiken.
+
+Gebruik voor een volledig publiek, strikt geïsoleerd paperproces:
+
+```bash
+./scripts/start_forward_paper.sh 60
+```
+
+Dit activeert tijdelijk `FORWARD_PAPER_ONLY=true`. Typed configuratie forceert
+execution en position management uit en forward paper aan. De runner maakt dan
+geen execution- of positionmanagerclient en gebruikt een public-only
+marktclient. Een centrale transportguard blokkeert iedere toekomstige private
+request alsnog fail-closed. `.env` wordt niet gewijzigd.
+
+De runtime logt bij startup exact:
+
+```text
+FORWARD_PAPER_ONLY ACTIVE
+PRIVATE EXCHANGE CALLS DISABLED
+```
+
+Gezondheid controleren en stoppen:
+
+```bash
+./scripts/check_forward_paper.sh
+./scripts/stop_all.sh strict_forward_paper_stop
+```
+
 ## Architecture
 
 `ForwardPaperService` observes executable plans and fresh market snapshots. It
