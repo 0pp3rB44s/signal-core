@@ -74,6 +74,15 @@ print(f"closed_trades={len(closed_ids)}")
 print(f"outcomes={len(outcomes)}")
 print(f"incomplete_trades={len(quality.get('incomplete_trades', []))}")
 print("event_types=" + json.dumps(dict(sorted(event_types.items())), separators=(",", ":")))
+
+heartbeat_path = Path("state/runtime_heartbeat.json")
+if heartbeat_path.exists():
+    heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+    print("runtime_stage=" + str(heartbeat.get("stage") or "UNKNOWN"))
+    print("scan_cycles_started=" + str(heartbeat.get("scan_cycles_started", 0)))
+    print("scan_cycles_completed=" + str(heartbeat.get("scan_cycles_completed", 0)))
+    print("runtime_ppid=" + str(heartbeat.get("ppid")))
+    print("runtime_process_group=" + str(heartbeat.get("process_group")))
 PY
 
 echo "status=HEALTHY"

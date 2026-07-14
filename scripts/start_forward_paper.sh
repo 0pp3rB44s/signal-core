@@ -56,8 +56,9 @@ STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 echo "FORWARD_PAPER_ONLY ACTIVE"
 echo "PRIVATE EXCHANGE CALLS DISABLED"
-nohup .venv/bin/python -u -m app.main > logs/forward_paper.out 2>&1 &
-BOT_PID=$!
+BOT_PID="$(.venv/bin/python scripts/launch_detached.py \
+  --stdout logs/forward_paper.out \
+  -- .venv/bin/python -u -m app.main)"
 echo "$BOT_PID" > state/bot.pid
 
 {
@@ -68,9 +69,21 @@ echo "$BOT_PID" > state/bot.pid
   echo "reason=$START_REASON"
 } > state/forward_paper_runtime.state
 
-sleep 1
+sleep 2
 if ! ps -p "$BOT_PID" >/dev/null 2>&1; then
   echo "ERROR: strict forward-paper process failed to start"
+  if [ -f state/last_shutdown.json ]; then
+    .venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+payload = json.loads(Path("state/last_shutdown.json").read_text(encoding="utf-8"))
+expected_pid = int(Path("state/bot.pid").read_text(encoding="utf-8").strip())
+if payload.get("pid") == expected_pid:
+    print("shutdown_reason=" + str(payload.get("reason") or "UNKNOWN"))
+    print("exit_code=" + str(payload.get("exit_code")))
+    print("signal=" + str(payload.get("signal")))
+PY
+  fi
   exit 8
 fi
 

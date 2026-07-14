@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.runtime_diagnostics import runtime_heartbeat
+
 
 class BitgetMarketClientMixin:
     """Market-data endpoints: contracts, candles, multi-timeframe candles and orderbook."""
@@ -25,7 +27,22 @@ class BitgetMarketClientMixin:
             "granularity": granularity,
             "limit": limit,
         }
-        return self._request("GET", "/api/v2/mix/market/candles", params=params)
+        if getattr(self.settings, "forward_paper_only", False):
+            runtime_heartbeat(
+                "candle_request",
+                symbol=symbol.upper(),
+                granularity=granularity,
+                limit=limit,
+            )
+        payload = self._request("GET", "/api/v2/mix/market/candles", params=params)
+        if getattr(self.settings, "forward_paper_only", False):
+            runtime_heartbeat(
+                "candle_response",
+                symbol=symbol.upper(),
+                granularity=granularity,
+                row_count=len(payload.get("data") or []),
+            )
+        return payload
 
     def get_multi_timeframe_candles(
         self,

@@ -54,6 +54,17 @@ De check valideert proces en modus, zoekt private-callmarkers, reconstrueert de
 outcomes, valideert de event-hash-chain en rapporteert events, open/closed
 trades, outcomes en incomplete trades.
 
+De runtime schrijft daarnaast twee genegeerde diagnosebestanden:
+
+- `state/runtime_heartbeat.json`: PID/PPID/process group, laatste scanfase,
+  laatste candle-request en aantallen gestarte/voltooide cycli;
+- `state/last_shutdown.json`: expliciete shutdownreden, exitcode en eventueel
+  ontvangen signal.
+
+De backgroundlauncher plaatst de bot in een nieuwe OS-session. Daardoor blijft
+het proces leven wanneer de startende shell sluit; `nohup` alleen is hiervoor
+niet voldoende in process-group-isolerende omgevingen.
+
 ## Stoppen
 
 ```bash
