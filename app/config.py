@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     position_manager_enabled: bool = Field(default=True, alias="POSITION_MANAGER_ENABLED")
 
     dashboard_enabled: bool = Field(default=True, alias="DASHBOARD_ENABLED")
-    dashboard_host: str = Field(default="0.0.0.0", alias="DASHBOARD_HOST")
+    dashboard_host: str = Field(default="127.0.0.1", alias="DASHBOARD_HOST")
     dashboard_port: int = Field(default=8501, alias="DASHBOARD_PORT")
     dashboard_debug: bool = Field(default=False, alias="DASHBOARD_DEBUG")
     position_sync_on_start: bool = Field(default=True, alias="POSITION_SYNC_ON_START")
