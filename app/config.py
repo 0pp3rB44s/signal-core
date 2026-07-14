@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     execution_max_live_notional_per_trade_usdt: float = Field(default=35.0, alias="EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT")
     execution_min_live_notional_usdt: float = Field(default=10.0, alias="EXECUTION_MIN_LIVE_NOTIONAL_USDT")
 
+    # Forward-paper is an isolated observer. It never calls exchange order or
+    # account endpoints and writes only to data_store/forward_paper_*.
+    forward_paper_enabled: bool = Field(default=True, alias="FORWARD_PAPER_ENABLED")
+    forward_paper_roundtrip_fee_bps: float = Field(default=12.0, alias="FORWARD_PAPER_ROUNDTRIP_FEE_BPS")
+    forward_paper_liquidity_assumption: str = Field(default="taker", alias="FORWARD_PAPER_LIQUIDITY_ASSUMPTION")
+
     position_manager_enabled: bool = Field(default=True, alias="POSITION_MANAGER_ENABLED")
 
     dashboard_enabled: bool = Field(default=True, alias="DASHBOARD_ENABLED")
