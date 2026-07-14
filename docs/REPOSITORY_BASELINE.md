@@ -27,15 +27,14 @@ expectancy.
 - `scripts/start_bot.sh` and `scripts/stop_all.sh` remain the supported bot
   lifecycle commands.
 - Backtests and validation scripts do not enable live execution.
-- Position management currently runs at the end of each complete scan cycle;
-  it is not an independent high-frequency monitor.
+- Position management runs in an independent serialized monitor loop using the
+  latest complete market snapshots.
 
 ## Deferred work
 
 The following items need a separate design or migration plan and are not part
 of this baseline:
 
-- independent position-monitor scheduling;
 - interprocess locking/snapshotting for all CSV telemetry readers and writers;
 - consolidation of configuration reads that bypass `Settings`;
 - removal of legacy agent and dashboard modules that may still have external

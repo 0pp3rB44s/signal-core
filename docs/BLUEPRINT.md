@@ -44,7 +44,7 @@ Elke trade doorloopt deze keten. Elke schakel heeft een eigen bestand:
     ↓ TP's (adaptive TP engine), sizing, EXECUTABLE/BLOCKED
   EXECUTIE                           execution/execution_service.py
     ↓ market order → fill-truth → SL/TP op exchange → verificatie
-  POSITIE-BEHEER (einde scancyclus)  execution/position_manager.py
+  POSITIE-BEHEER (onafhankelijke loop) execution/position_manager.py
     ↓ + tp_sl_lifecycle.py (TP-hits, BE, profit-lock, tighten)
     ↓ + position_reconciler.py (exchange↔lokaal sync, ghost-preventie)
     ↓ + closed_trade_writer.py (gegarandeerde CLOSED rows)
@@ -117,6 +117,7 @@ EXECUTION (execution/execution_service.py):
 POSITIE-BEHEER (bescherming ná entry):
 - SL/TP wordt op de exchange geverifieerd (protectie bestaat pas na verificatie)
 - Profit-lock: standaard bij 60% van TP1-afstand → SL naar fee-adjusted break-even
+  (minimaal 12bps kostendekking)
 - Failed-continuation tighten: momentum dood → SL aanscherpen (persistent
   retry per position-sync tot geverifieerd; alleen strakker, nooit ruimer)
 - Dead-trade timeout: vlak + geen TP1 na 90 min (reclaim) / 240 min → close
