@@ -21,6 +21,7 @@ from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
 from execution.runtime_lock import trading_state_lock
+from forward_paper.service import ForwardPaperService
 from execution.state_store import JsonStateStore
 from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
@@ -285,6 +286,7 @@ class StartupRunner:
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
         self.execution_service = ExecutionService(settings=settings)
+        self.forward_paper = ForwardPaperService(settings=settings)
         self.position_manager = PositionManager(settings=settings)
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
         self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
@@ -1109,6 +1111,13 @@ class StartupRunner:
             if plans:
                 self._emit_plan_summary(plans)
                 self.trade_plan_logger.append_rows(plans)
+
+            try:
+                self.forward_paper.process(plans, snapshots)
+            except Exception as exc:
+                # Paper telemetry must never interrupt scans or weaken live
+                # execution safety. Corruption fails the paper writer closed.
+                self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
 
             with trading_state_lock():
                 exec_reports = self.execution_service.execute(plans)
