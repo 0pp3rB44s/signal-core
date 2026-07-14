@@ -3,6 +3,7 @@ import os
 import secrets
 from datetime import timedelta
 from functools import wraps
+from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
@@ -10,7 +11,7 @@ from flask import Flask, jsonify, redirect, render_template, request, session, u
 from dashboard_v2 import bot_control
 from dashboard_v2.data_provider import get_dashboard_data
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 app = Flask(__name__)
 app.secret_key = os.getenv("DASHBOARD_SECRET_KEY") or secrets.token_urlsafe(32)
@@ -20,13 +21,9 @@ logger = logging.getLogger("dashboard")
 
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 if not DASHBOARD_PASSWORD:
-    DASHBOARD_PASSWORD = secrets.token_urlsafe(18)
-    logger.warning(
-        "DASHBOARD_PASSWORD not set in .env -- generated a one-time password for "
-        "this run: %s (set DASHBOARD_PASSWORD in .env to keep it stable across restarts)",
-        DASHBOARD_PASSWORD,
+    raise RuntimeError(
+        "DASHBOARD_PASSWORD is required; refusing to start the dashboard without authentication configuration"
     )
-    print(f"[dashboard] No DASHBOARD_PASSWORD set. One-time password: {DASHBOARD_PASSWORD}")
 
 
 def login_required(view):
@@ -88,7 +85,7 @@ def api_bot_stop():
 
 
 if __name__ == "__main__":
-    host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.getenv("DASHBOARD_PORT", "8501"))
     debug = os.getenv("DASHBOARD_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
     # threaded=True: /api/data does several live Bitget API round-trips plus
