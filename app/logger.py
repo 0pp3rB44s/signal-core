@@ -12,14 +12,32 @@ class SensitiveDataFilter(logging.Filter):
     """Redact common credential fields before any handler emits a record."""
 
     _credential_pattern = re.compile(
-        r"(?i)(api[_-]?(?:key|secret)|passphrase|password|token)"
-        r"(\s*[=:]\s*)([^,\s|]+)"
+        r"(?ix)"
+        r"(?P<prefix>"
+        r"(?P<keyquote>['\"]?)"
+        r"(?:api[_-]?(?:key|secret)|secret[_-]?key|passphrase|password|"
+        r"access[_-]?token|refresh[_-]?token|token)"
+        r"(?P=keyquote)\s*[:=]\s*"
+        r")"
+        r"(?P<value>"
+        r"\"(?:\\.|[^\"])*\"|"
+        r"'(?:\\.|[^'])*'|"
+        r"[^\s,;}\]|]+"
+        r")"
+    )
+    _authorization_pattern = re.compile(
+        r"(?i)(['\"]?authorization['\"]?\s*[:=]\s*)"
+        r"(?:bearer|basic)?\s*[^\s,;}\]]+"
     )
     _bearer_pattern = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
 
     @classmethod
     def redact(cls, message: str) -> str:
-        message = cls._credential_pattern.sub(r"\1\2[REDACTED]", message)
+        message = cls._authorization_pattern.sub(r"\1[REDACTED]", str(message))
+        message = cls._credential_pattern.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]",
+            message,
+        )
         return cls._bearer_pattern.sub("Bearer [REDACTED]", message)
 
     def filter(self, record: logging.LogRecord) -> bool:

@@ -9,6 +9,8 @@ from typing import Any
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout as RequestsTimeout
+
+from app.logger import SensitiveDataFilter
 from requests.exceptions import RequestException
 
 from app.config import Settings
@@ -24,7 +26,30 @@ class BitgetRetryableError(BitgetAPIError):
 
 
 class BitgetBaseClient:
-    """Base Bitget REST layer: auth, request, retry, rate-limit and payload validation only."""
+    """Base Bitget REST layer: auth, request, retry, rate-limit and validation."""
+
+    _MAX_ERROR_MESSAGE_LENGTH = 300
+
+    @classmethod
+    def _safe_response_error(cls, response: requests.Response, *, private: bool) -> tuple[str, str]:
+        """Return only a bounded, redacted exchange code/message pair."""
+        code = "unknown"
+        message = "upstream error response"
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            payload = None
+
+        if isinstance(payload, dict):
+            code = str(payload.get("code") or code)
+            message = str(payload.get("msg") or payload.get("message") or message)
+        elif not private:
+            # Public endpoints may return useful plain-text errors. Private
+            # response bodies are deliberately never copied into logs/errors.
+            message = str(response.text or message)
+
+        message = SensitiveDataFilter.redact(message).replace("\r", " ").replace("\n", " ")
+        return code[:64], message[: cls._MAX_ERROR_MESSAGE_LENGTH]
 
     _global_rate_limit_lock = threading.Lock()
     _global_last_request_ts = 0.0
@@ -146,18 +171,19 @@ class BitgetBaseClient:
                 try:
                     response.raise_for_status()
                 except requests.HTTPError as exc:
-                    response_text = response.text
                     status_code = response.status_code
+                    error_code, safe_message = self._safe_response_error(response, private=private)
                     retryable_status = status_code in {408, 429, 500, 502, 503, 504}
                     log_method = self.log.warning if retryable_status else self.log.error
                     log_method(
-                        "BITGET_HTTP_ERROR | method=%s | path=%s | status=%s | retryable=%s | attempt=%s | response=%s",
+                        "BITGET_HTTP_ERROR | method=%s | path=%s | status=%s | code=%s | retryable=%s | attempt=%s | msg=%s",
                         method.upper(),
                         path,
                         status_code,
+                        error_code,
                         retryable_status,
                         attempt,
-                        response_text,
+                        safe_message,
                     )
 
                     if retryable_status and attempt < self.max_request_retries:
@@ -173,7 +199,7 @@ class BitgetBaseClient:
                         continue
 
                     raise BitgetAPIError(
-                        f"Bitget HTTP error: status={status_code} response={response_text}"
+                        f"Bitget HTTP error: status={status_code} code={error_code} msg={safe_message}"
                     ) from exc
 
                 payload = response.json()
@@ -206,7 +232,8 @@ class BitgetBaseClient:
                         continue
 
                     raise BitgetAPIError(
-                        f"Bitget error: code={code} msg={payload.get('msg')} data={payload.get('data')}"
+                        "Bitget error: "
+                        f"code={code} msg={SensitiveDataFilter.redact(str(payload.get('msg') or 'upstream error'))[:self._MAX_ERROR_MESSAGE_LENGTH]}"
                     )
 
                 return payload
