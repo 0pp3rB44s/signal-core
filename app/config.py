@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     bitget_contract_cache_ttl_sec: int = Field(default=180, alias="BITGET_CONTRACT_CACHE_TTL_SEC")
     bitget_rate_limit_min_interval_ms: int = Field(default=120, alias="BITGET_RATE_LIMIT_MIN_INTERVAL_MS")
     bitget_rate_limit_429_cooldown_sec: float = Field(default=5.0, alias="BITGET_RATE_LIMIT_429_COOLDOWN_SEC")
+    bitget_rate_limit_state_path: str = Field(default="state/bitget_rate_limit.json", alias="BITGET_RATE_LIMIT_STATE_PATH")
     bitget_max_request_retries: int = Field(default=3, alias="BITGET_MAX_REQUEST_RETRIES")
     bitget_retry_backoff_seconds: float = Field(default=1.25, alias="BITGET_RETRY_BACKOFF_SECONDS")
     watchlist: str = Field(

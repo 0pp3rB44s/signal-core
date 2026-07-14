@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 from typing import Any
 
@@ -15,6 +14,7 @@ from requests.exceptions import RequestException
 
 from app.config import Settings
 from clients.bitget_auth import build_headers
+from clients.interprocess_rate_limiter import InterprocessRateLimiter
 
 
 class BitgetAPIError(RuntimeError):
@@ -51,9 +51,6 @@ class BitgetBaseClient:
         message = SensitiveDataFilter.redact(message).replace("\r", " ").replace("\n", " ")
         return code[:64], message[: cls._MAX_ERROR_MESSAGE_LENGTH]
 
-    _global_rate_limit_lock = threading.Lock()
-    _global_last_request_ts = 0.0
-
     def __init__(self, settings: Settings, timeout: int = 15) -> None:
         self.settings = settings
         self.timeout = timeout
@@ -63,6 +60,10 @@ class BitgetBaseClient:
         self.retry_backoff_seconds = float(getattr(settings, "bitget_retry_backoff_seconds", 1.25) or 1.25)
         self.rate_limit_min_interval_seconds = float(getattr(settings, "bitget_rate_limit_min_interval_ms", 120) or 120) / 1000.0
         self.rate_limit_429_cooldown_seconds = float(getattr(settings, "bitget_rate_limit_429_cooldown_sec", 5.0) or 5.0)
+        self.rate_limiter = InterprocessRateLimiter(
+            getattr(settings, "bitget_rate_limit_state_path", "state/bitget_rate_limit.json"),
+            self.rate_limit_min_interval_seconds,
+        )
 
     @property
     def has_credentials(self) -> bool:
@@ -75,23 +76,7 @@ class BitgetBaseClient:
         )
 
     def _rate_limit_wait(self) -> None:
-        if self.rate_limit_min_interval_seconds <= 0:
-            return
-
-        with self._global_rate_limit_lock:
-            now = time.perf_counter()
-            elapsed = now - type(self)._global_last_request_ts
-            sleep_seconds = self.rate_limit_min_interval_seconds - elapsed
-
-            if sleep_seconds > 0:
-                self.log.info(
-                    "BITGET_RATE_LIMIT_WAIT | sleep=%ss | min_interval=%ss",
-                    round(sleep_seconds, 4),
-                    self.rate_limit_min_interval_seconds,
-                )
-                time.sleep(sleep_seconds)
-
-            type(self)._global_last_request_ts = time.perf_counter()
+        self.rate_limiter.wait()
 
     @staticmethod
     def _validate_futures_order_flags(body: dict[str, Any]) -> None:
