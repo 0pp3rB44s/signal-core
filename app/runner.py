@@ -12,6 +12,7 @@ from collections import Counter
 
 from app.config import Settings
 from app.equity import write_equity_snapshot
+from app.runtime_diagnostics import runtime_heartbeat
 from clients.bitget_rest import BitgetRestClient
 from clients.bitget_public_client import BitgetPublicClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
@@ -374,6 +375,7 @@ class StartupRunner:
         if self.settings.forward_paper_only:
             self.log.warning("FORWARD_PAPER_ONLY ACTIVE")
             self.log.warning("PRIVATE EXCHANGE CALLS DISABLED")
+            runtime_heartbeat("startup_checks")
         self._startup_checks()
 
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
@@ -528,6 +530,9 @@ class StartupRunner:
 
         self._scan_in_progress = True
         scan_lock_handle = None
+        scan_completed = False
+        plans: list[TradePlan] = []
+        snapshots: list[MarketSnapshot] = []
 
         try:
             os.makedirs("state", exist_ok=True)
@@ -537,6 +542,9 @@ class StartupRunner:
             except BlockingIOError:
                 self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
                 return
+
+            if self.settings.forward_paper_only:
+                runtime_heartbeat("scan_cycle_start", scan_started=True)
 
             try:
                 agent_report = run_coach_rules()
@@ -585,6 +593,8 @@ class StartupRunner:
 
             contracts = self.fetcher.fetch_contracts(force_refresh=False)
             symbols = get_watchlist(self.settings, contracts=contracts)
+            if self.settings.forward_paper_only:
+                runtime_heartbeat("market_refresh_start", symbol_count=len(symbols))
 
             try:
                 self.market_data_service.refresh_many(
@@ -596,6 +606,8 @@ class StartupRunner:
                     "MULTI_TF_REFRESH_OK | symbols=%s",
                     len(symbols),
                 )
+                if self.settings.forward_paper_only:
+                    runtime_heartbeat("market_refresh_complete", symbol_count=len(symbols))
 
             except Exception as exc:
                 self.log.warning(
@@ -623,10 +635,12 @@ class StartupRunner:
                 self.settings.bitget_confirmation_granularity,
             )
 
-            snapshots: list[MarketSnapshot] = []
+            snapshots = []
             candidates: list[tuple[StrategyCandidate, StrategyScore]] = []
-            plans: list[TradePlan] = []
+            plans = []
             for symbol in symbols:
+                if self.settings.forward_paper_only:
+                    runtime_heartbeat("symbol_scan_start", symbol=symbol)
                 try:
                     snapshot = self.fetcher.build_market_snapshot(symbol)
                     multi_tf_snapshot = self.market_data_service.get_symbol_snapshot(symbol)
@@ -1146,6 +1160,23 @@ class StartupRunner:
                     self._position_snapshots = list(snapshots)
                 self._sync_positions(snapshots, use_snapshot_context=True)
 
+            scan_completed = True
+            if self.settings.forward_paper_only:
+                executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
+                runtime_heartbeat(
+                    "scan_cycle_complete",
+                    scan_completed=True,
+                    snapshot_count=len(snapshots),
+                    plan_count=len(plans),
+                    executable_plan_count=executable_count,
+                )
+                self.log.info(
+                    "SCAN_CYCLE_COMPLETED | snapshots=%s | plans=%s | executable=%s",
+                    len(snapshots),
+                    len(plans),
+                    executable_count,
+                )
+
 
         finally:
             if scan_lock_handle is not None:
@@ -1155,6 +1186,8 @@ class StartupRunner:
                 except Exception:
                     pass
             self._scan_in_progress = False
+            if self.settings.forward_paper_only and not scan_completed:
+                runtime_heartbeat("scan_cycle_incomplete")
 
     def _active_symbol_cooldown(self, symbol: str) -> dict | None:
         return self.cooldown_manager.as_log_payload(symbol)
