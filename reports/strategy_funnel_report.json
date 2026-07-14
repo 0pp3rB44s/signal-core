@@ -1,0 +1,3150 @@
+{
+  "active_strategies": [
+    "momentum_breakout",
+    "momentum_breakdown",
+    "trend_continuation",
+    "liquidity_sweep_reversal",
+    "low_vol_reclaim",
+    "adaptive_momentum_continuation"
+  ],
+  "analysis_hash": "7510d93edbf723c66575babf403fa7bdd7041b5420858da483d1f7068b89798d",
+  "analysis_policy": {
+    "current_runtime_log_files_read": false,
+    "datasets_kept_separate": true,
+    "imports_runtime_modules": false,
+    "read_only": true,
+    "unknown_counts_are_null": true
+  },
+  "data_quality": {
+    "decision_snapshots": {
+      "invalid_rows": 0,
+      "rows": 1573,
+      "shifted_rows": 1401,
+      "valid_rows": 172
+    },
+    "exchange_internal": {
+      "duplicates": 0,
+      "rows": 373,
+      "unique_rows": 373,
+      "unmapped_strategy_rows": 2
+    },
+    "forward_paper": {
+      "close_without_open": 0,
+      "duplicate_event_ids_observed": 0,
+      "duplicate_outcomes_observed": 0,
+      "event_count": 0,
+      "open_without_close": 0,
+      "outcome_count": 0,
+      "outcome_dataset_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reported_duplicate_event_ids": 0,
+      "reported_event_chain_valid": true,
+      "reported_incomplete_trades": 0
+    },
+    "issues": [
+      {
+        "action": "excluded from funnel counts",
+        "code": "SEMANTICALLY_SHIFTED_DECISION_ROWS",
+        "count": 1401,
+        "severity": "ERROR",
+        "source": "data_store/decisions/latest_decisions.json"
+      }
+    ],
+    "missing_stage_events": [
+      "detector attempts",
+      "selector pass/fail",
+      "risk pass/fail"
+    ],
+    "source_manifest": [
+      {
+        "bytes": 1324,
+        "path": "reports/backtests/strategy_funnel.json",
+        "sha256": "bb4a1a2e3706485a56ac36fc43943ed51c0c5051f14eafd4cfbe757cc42fc320",
+        "status": "read"
+      },
+      {
+        "bytes": 0,
+        "path": "data_store/forward_paper_events.jsonl",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status": "read"
+      },
+      {
+        "bytes": 755,
+        "path": "data_store/forward_paper_outcomes.csv",
+        "sha256": "fb584295db11b7b9b7acc297e3ba575902e6bcfc55cad29a048a874a0f1ed6b7",
+        "status": "read"
+      },
+      {
+        "bytes": 2204,
+        "path": "reports/forward_paper_data_quality.json",
+        "sha256": "1d88fe0df470fa0c5970b376cad1e0c05e6dfc7cc753622bfb02d75b58dbaa43",
+        "status": "read"
+      },
+      {
+        "bytes": 818909,
+        "path": "data_store/trades/latest_real_closed_trades.json",
+        "sha256": "a733dea8807e08cc9590b4bf44104d680ece16e7ea6537b211065febff2e3a88",
+        "status": "read"
+      },
+      {
+        "bytes": 1105141,
+        "path": "data_store/decisions/latest_decisions.json",
+        "sha256": "7165f02ff22c1d8ba65246013481575842fb5475b1f5cb9ef2af6f43bbaa4253",
+        "status": "read"
+      },
+      {
+        "bytes": 97323,
+        "path": "data_store/trades/trade_funnel_report.json",
+        "sha256": "7f1b14cf39df1c01e97a838d705523274fbcb0f5395cdf6258803000e2a0814e",
+        "status": "read"
+      }
+    ]
+  },
+  "dataset_views": [
+    {
+      "be": null,
+      "dataset_scope": "backtest_funnel_2026-07-13",
+      "detected": 134,
+      "exchange_trades": null,
+      "executable": 0,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": null,
+      "missing_stages": [
+        "selector_pass",
+        "selector_fail",
+        "risk_pass",
+        "risk_fail",
+        "forward_open",
+        "forward_closed",
+        "exchange_trades",
+        "wins",
+        "losses",
+        "be"
+      ],
+      "planner_fail": 134,
+      "planner_pass": 0,
+      "provenance": [
+        "reports/backtests/strategy_funnel.json"
+      ],
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 21,
+          "reason": "Negative expectancy detected for strategy momentum_breakout."
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 20,
+          "reason": "blocked: long without bullish primary trend"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 17,
+          "reason": "HTF regime blocks LONG: <N>D=bearish, <N>H=bearish"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 15,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 13,
+          "reason": "score below Safe Mode minimum: <N> < <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 9,
+          "reason": "HTF alignment opposes long setup"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 6,
+          "reason": "momentum-quality PROBE: volume below requirement, reduced size"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 5,
+          "reason": "momentum-quality blocked: volume ratio too weak"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 3,
+          "reason": "kill-switch: symbol paused by expectancy"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "execution-cost blocked: long entry too high in candle"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "TP<N>_NET_EDGE <N> below minimum <N> after spread/fees buffer"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "blocked: market alignment mixed without MTF confirmation"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "score verdict WATCH blocks execution"
+        }
+      ],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": 55,
+      "score_pass": 79,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "momentum_breakout",
+      "wins": null
+    },
+    {
+      "be": null,
+      "dataset_scope": "backtest_funnel_2026-07-13",
+      "detected": 81,
+      "exchange_trades": null,
+      "executable": 36,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": null,
+      "missing_stages": [
+        "selector_pass",
+        "selector_fail",
+        "risk_pass",
+        "risk_fail",
+        "forward_open",
+        "forward_closed",
+        "exchange_trades",
+        "wins",
+        "losses",
+        "be"
+      ],
+      "planner_fail": 45,
+      "planner_pass": 36,
+      "provenance": [
+        "reports/backtests/strategy_funnel.json"
+      ],
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 3,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 3,
+          "reason": "strategy weighting PROBE: negative expectancy, trading at reduced size"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "momentum-quality blocked: late breakdown entry without strong follow-through"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "LARGEST_LOSS_GUARD stop_bps=<N> limit=<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "blocked: orderbook risk-off"
+        }
+      ],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": 0,
+      "score_pass": 81,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "momentum_breakdown",
+      "wins": null
+    },
+    {
+      "be": null,
+      "dataset_scope": "backtest_funnel_2026-07-13",
+      "detected": 43,
+      "exchange_trades": null,
+      "executable": 0,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": null,
+      "missing_stages": [
+        "selector_pass",
+        "selector_fail",
+        "risk_pass",
+        "risk_fail",
+        "forward_open",
+        "forward_closed",
+        "exchange_trades",
+        "wins",
+        "losses",
+        "be"
+      ],
+      "planner_fail": 43,
+      "planner_pass": 0,
+      "provenance": [
+        "reports/backtests/strategy_funnel.json"
+      ],
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 4,
+          "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 4,
+          "reason": "strategy weighting PROBE: negative expectancy, trading at reduced size"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "LARGEST_LOSS_GUARD stop_bps=<N> limit=<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        }
+      ],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": 2,
+      "score_pass": 41,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "trend_continuation",
+      "wins": null
+    },
+    {
+      "be": null,
+      "dataset_scope": "backtest_funnel_2026-07-13",
+      "detected": 11,
+      "exchange_trades": null,
+      "executable": 0,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": null,
+      "missing_stages": [
+        "selector_pass",
+        "selector_fail",
+        "risk_pass",
+        "risk_fail",
+        "forward_open",
+        "forward_closed",
+        "exchange_trades",
+        "wins",
+        "losses",
+        "be"
+      ],
+      "planner_fail": 11,
+      "planner_pass": 0,
+      "provenance": [
+        "reports/backtests/strategy_funnel.json"
+      ],
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "blocked: orderbook risk-off"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "sweep_directional_pressure_weak"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "sweep_penalties=sweep_entry_quality_weak"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "verdict=NO_GO"
+        }
+      ],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": 4,
+      "score_pass": 7,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "liquidity_sweep_reversal",
+      "wins": null
+    },
+    {
+      "be": null,
+      "dataset_scope": "backtest_funnel_2026-07-13",
+      "detected": 286,
+      "exchange_trades": null,
+      "executable": 0,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": null,
+      "missing_stages": [
+        "selector_pass",
+        "selector_fail",
+        "risk_pass",
+        "risk_fail",
+        "forward_open",
+        "forward_closed",
+        "exchange_trades",
+        "wins",
+        "losses",
+        "be"
+      ],
+      "planner_fail": 286,
+      "planner_pass": 0,
+      "provenance": [
+        "reports/backtests/strategy_funnel.json"
+      ],
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 42,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 42,
+          "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 42,
+          "reason": "strategy weighting HARD-PAUSE: learning report status=PAUSE"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 17,
+          "reason": "TP<N>_NET_EDGE <N> below minimum <N> after spread/fees buffer"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 15,
+          "reason": "DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK entry_quality=<N><<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 8,
+          "reason": "DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK pressure_expansion_weak=<N>/<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 7,
+          "reason": "pressure_expansion_weak=<N>/<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 5,
+          "reason": "kill-switch: symbol paused by expectancy"
+        }
+      ],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": 0,
+      "score_pass": 286,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "low_vol_reclaim",
+      "wins": null
+    },
+    {
+      "be": null,
+      "dataset_scope": "backtest_funnel_2026-07-13",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": null,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed",
+        "exchange_trades",
+        "wins",
+        "losses",
+        "be"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "adaptive_momentum_continuation",
+      "wins": null
+    },
+    {
+      "be": 0,
+      "dataset_scope": "forward_paper_current",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": 0,
+      "forward_open": 0,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "exchange_trades"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/forward_paper_events.jsonl",
+        "data_store/forward_paper_outcomes.csv"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "momentum_breakout",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "forward_paper_current",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": 0,
+      "forward_open": 0,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "exchange_trades"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/forward_paper_events.jsonl",
+        "data_store/forward_paper_outcomes.csv"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "momentum_breakdown",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "forward_paper_current",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": 0,
+      "forward_open": 0,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "exchange_trades"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/forward_paper_events.jsonl",
+        "data_store/forward_paper_outcomes.csv"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "trend_continuation",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "forward_paper_current",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": 0,
+      "forward_open": 0,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "exchange_trades"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/forward_paper_events.jsonl",
+        "data_store/forward_paper_outcomes.csv"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "liquidity_sweep_reversal",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "forward_paper_current",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": 0,
+      "forward_open": 0,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "exchange_trades"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/forward_paper_events.jsonl",
+        "data_store/forward_paper_outcomes.csv"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "low_vol_reclaim",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "forward_paper_current",
+      "detected": null,
+      "exchange_trades": null,
+      "executable": null,
+      "forward_closed": 0,
+      "forward_open": 0,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "exchange_trades"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/forward_paper_events.jsonl",
+        "data_store/forward_paper_outcomes.csv"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "adaptive_momentum_continuation",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "exchange_internal_attribution",
+      "detected": null,
+      "exchange_trades": 48,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": 25,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/trades/latest_real_closed_trades.json"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "momentum_breakout",
+      "wins": 23
+    },
+    {
+      "be": 0,
+      "dataset_scope": "exchange_internal_attribution",
+      "detected": null,
+      "exchange_trades": 30,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": 20,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/trades/latest_real_closed_trades.json"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "momentum_breakdown",
+      "wins": 10
+    },
+    {
+      "be": 0,
+      "dataset_scope": "exchange_internal_attribution",
+      "detected": null,
+      "exchange_trades": 14,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": 11,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/trades/latest_real_closed_trades.json"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "trend_continuation",
+      "wins": 3
+    },
+    {
+      "be": 0,
+      "dataset_scope": "exchange_internal_attribution",
+      "detected": null,
+      "exchange_trades": 1,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": 1,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/trades/latest_real_closed_trades.json"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "liquidity_sweep_reversal",
+      "wins": 0
+    },
+    {
+      "be": 0,
+      "dataset_scope": "exchange_internal_attribution",
+      "detected": null,
+      "exchange_trades": 278,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": 187,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/trades/latest_real_closed_trades.json"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "low_vol_reclaim",
+      "wins": 91
+    },
+    {
+      "be": 0,
+      "dataset_scope": "exchange_internal_attribution",
+      "detected": null,
+      "exchange_trades": 0,
+      "executable": null,
+      "forward_closed": null,
+      "forward_open": null,
+      "losses": 0,
+      "missing_stages": [
+        "detected",
+        "selector_pass",
+        "selector_fail",
+        "score_pass",
+        "score_fail",
+        "risk_pass",
+        "risk_fail",
+        "planner_pass",
+        "planner_fail",
+        "executable",
+        "forward_open",
+        "forward_closed"
+      ],
+      "planner_fail": null,
+      "planner_pass": null,
+      "provenance": [
+        "data_store/trades/latest_real_closed_trades.json"
+      ],
+      "reject_reasons": [],
+      "risk_fail": null,
+      "risk_pass": null,
+      "score_fail": null,
+      "score_pass": null,
+      "selector_fail": null,
+      "selector_pass": null,
+      "strategy": "adaptive_momentum_continuation",
+      "wins": 0
+    }
+  ],
+  "findings": [
+    "momentum_breakout: 134/134 observed candidates (100.0%) did not become executable in the backtest funnel snapshot.",
+    "momentum_breakdown: 45/81 observed candidates (55.6%) did not become executable in the backtest funnel snapshot.",
+    "trend_continuation: 43/43 observed candidates (100.0%) did not become executable in the backtest funnel snapshot.",
+    "liquidity_sweep_reversal: 11/11 observed candidates (100.0%) did not become executable in the backtest funnel snapshot.",
+    "low_vol_reclaim: 286/286 observed candidates (100.0%) did not become executable in the backtest funnel snapshot.",
+    "adaptive_momentum_continuation: no candidate row exists in the backtest funnel snapshot.",
+    "The current forward-paper dataset contains no completed outcome.",
+    "Decision snapshot quality: 172 valid, 1401 semantically shifted and 0 otherwise invalid rows.",
+    "Selector-pass and risk-pass conversion rates are not measurable from the available structured datasets.",
+    "Detector overlap is not measurable without a pre-selector multi-candidate candle dataset."
+  ],
+  "generated_at_utc": "2026-07-14T16:48:18+00:00",
+  "overlap_analysis": {
+    "key": [
+      "timestamp",
+      "symbol",
+      "direction"
+    ],
+    "pairs": [
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakout",
+        "strategy_b": "momentum_breakdown"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakout",
+        "strategy_b": "trend_continuation"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakout",
+        "strategy_b": "liquidity_sweep_reversal"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakout",
+        "strategy_b": "low_vol_reclaim"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakout",
+        "strategy_b": "adaptive_momentum_continuation"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakdown",
+        "strategy_b": "trend_continuation"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakdown",
+        "strategy_b": "liquidity_sweep_reversal"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakdown",
+        "strategy_b": "low_vol_reclaim"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "momentum_breakdown",
+        "strategy_b": "adaptive_momentum_continuation"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "trend_continuation",
+        "strategy_b": "liquidity_sweep_reversal"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "trend_continuation",
+        "strategy_b": "low_vol_reclaim"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "trend_continuation",
+        "strategy_b": "adaptive_momentum_continuation"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "liquidity_sweep_reversal",
+        "strategy_b": "low_vol_reclaim"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "liquidity_sweep_reversal",
+        "strategy_b": "adaptive_momentum_continuation"
+      },
+      {
+        "examples": [],
+        "same_candle_count": null,
+        "strategy_a": "low_vol_reclaim",
+        "strategy_b": "adaptive_momentum_continuation"
+      }
+    ],
+    "reason": "No structured pre-selector candidate dataset was supplied; current telemetry stores only selected candidates.",
+    "status": "INSUFFICIENT_DATA"
+  },
+  "pipeline_architecture": [
+    {
+      "functions": [
+        "MomentumBreakoutStrategy.detect",
+        "MomentumBreakdownStrategy.detect",
+        "detect_continuation",
+        "LiquiditySweepStrategy.detect",
+        "detect_low_vol_reclaim",
+        "_build_fallback_candidate"
+      ],
+      "module": "strategy-specific; see strategy_definitions",
+      "observability": "No unified detector-attempt event; candidate CSV starts after selection/scoring path.",
+      "output": "StrategyCandidate or None",
+      "stage": "detector"
+    },
+    {
+      "functions": [
+        "select_best_candidate",
+        "_hard_filters",
+        "_selector_score"
+      ],
+      "gates": [
+        "strategy allow/deny",
+        "direction/alignment",
+        "wick/body/late-entry",
+        "strategy-specific evidence",
+        "entry quality",
+        "execution penalty",
+        "retest requirement",
+        "selector score threshold"
+      ],
+      "module": "strategies/strategies/selector.py",
+      "observability": "Rejects are text logs; no durable structured selector event dataset.",
+      "output": "one selected StrategyCandidate or None",
+      "stage": "selector",
+      "thresholds": {
+        "base_min_score": 72,
+        "continuation_mtf_min_score": 74,
+        "momentum_min_score": 72,
+        "momentum_prearmed_min_score": 70
+      }
+    },
+    {
+      "configs": [
+        "STRATEGY_SCORE_GO_THRESHOLD",
+        "STRATEGY_SCORE_WATCH_THRESHOLD"
+      ],
+      "functions": [
+        "StrategyScorer.score"
+      ],
+      "gates": [
+        "market structure",
+        "liquidity/volume",
+        "alignment",
+        "strategy evidence"
+      ],
+      "module": "strategies/scoring.py",
+      "output": "StrategyScore(total, breakdown, verdict, reasons)",
+      "stage": "scoring"
+    },
+    {
+      "functions": [
+        "RiskManager.evaluate"
+      ],
+      "gates": [
+        "score verdict",
+        "daily/weekly/consecutive-loss kill switches",
+        "strategy/symbol expectancy",
+        "coach requalification",
+        "cluster exposure",
+        "execution cost",
+        "safe-mode score",
+        "1D/4H opposition",
+        "alignment",
+        "session risk reduction"
+      ],
+      "module": "risk/risk_manager.py",
+      "observability": "Risk status is embedded in plans/decision snapshots, not a separate event table.",
+      "output": "RiskVerdict(allowed, status, reasons, risk, leverage, max positions)",
+      "stage": "risk",
+      "thresholds": {
+        "continuation_score_mtf": 74,
+        "continuation_score_strict": 78,
+        "momentum_score": 72,
+        "probe_risk_multiplier": 0.5
+      }
+    },
+    {
+      "functions": [
+        "TradePlanner.build"
+      ],
+      "gates": [
+        "master entry quality",
+        "risk allowed",
+        "RR/RR-to-TP1",
+        "largest-loss guard",
+        "stop/target geometry",
+        "TP1 net edge",
+        "minimum notional",
+        "strategy-specific low-vol geometry"
+      ],
+      "module": "planning/trade_planner.py",
+      "output": "TradePlan with verdict EXECUTABLE or BLOCKED",
+      "stage": "planner",
+      "thresholds": {
+        "estimated_roundtrip_fee_bps_default": 12,
+        "low_vol_min_rr_to_tp1": 1.3,
+        "max_stop_to_tp1_ratio": 1.2,
+        "minimum_net_edge_bps_default": 4
+      }
+    },
+    {
+      "functions": [
+        "plan.verdict == 'EXECUTABLE'"
+      ],
+      "module": "app/runner.py",
+      "observability": "Aggregate log marker; no standalone structured stage event.",
+      "output": "Executable plan count in SCAN_CYCLE_COMPLETED",
+      "stage": "executable"
+    },
+    {
+      "functions": [
+        "ForwardPaperService.process",
+        "open_trade",
+        "update_market"
+      ],
+      "gates": [
+        "plan verdict EXECUTABLE",
+        "matching market snapshot",
+        "critical fields complete",
+        "one active identity",
+        "append-only event integrity"
+      ],
+      "module": "forward_paper/service.py",
+      "output": "TRADE_OPENED/PAPER_REJECTED and lifecycle events",
+      "stage": "forward_paper"
+    },
+    {
+      "functions": [
+        "ForwardPaperReconstructor.reconstruct"
+      ],
+      "gates": [
+        "valid hash chain",
+        "contiguous sequence",
+        "complete critical fields"
+      ],
+      "module": "forward_paper/store.py",
+      "output": "forward_paper_outcomes.csv and data-quality JSON",
+      "stage": "outcome"
+    }
+  ],
+  "reject_analysis": [
+    {
+      "classification": "CONTEXT",
+      "count": 42,
+      "reason": "ai-agent: passed",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "BCHUSDT": 1,
+        "BNBUSDT": 2,
+        "BTCUSDT": 1,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ETHUSDT": 3,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "LINKUSDT": 4,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "TIAUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 42,
+      "reason": "expectancy-watch: strategy weak but not hard-paused",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "BCHUSDT": 1,
+        "BNBUSDT": 2,
+        "BTCUSDT": 1,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ETHUSDT": 3,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "LINKUSDT": 4,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "TIAUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 42,
+      "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "BCHUSDT": 1,
+        "BNBUSDT": 2,
+        "BTCUSDT": 1,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ETHUSDT": 3,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "LINKUSDT": 4,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "TIAUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 42,
+      "reason": "strategy weighting HARD-PAUSE: learning report status=PAUSE",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "BCHUSDT": 1,
+        "BNBUSDT": 2,
+        "BTCUSDT": 1,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ETHUSDT": 3,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "LINKUSDT": 4,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "TIAUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 42,
+      "reason": "strategy weighting source=clean_strategy_expectancy",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "BCHUSDT": 1,
+        "BNBUSDT": 2,
+        "BTCUSDT": 1,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ETHUSDT": 3,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "LINKUSDT": 4,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "TIAUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 41,
+      "reason": "expansion_prob=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "BCHUSDT": 1,
+        "BNBUSDT": 2,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ETHUSDT": 3,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "LINKUSDT": 4,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "TIAUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 25,
+      "reason": "pressure_score=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 2,
+        "BNBUSDT": 2,
+        "DASHUSDT": 4,
+        "DOGEUSDT": 2,
+        "ENAUSDT": 1,
+        "ETCUSDT": 1,
+        "ICPUSDT": 3,
+        "LINKUSDT": 2,
+        "SHIBUSDT": 2,
+        "SUIUSDT": 1,
+        "XLMUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 21,
+      "reason": "Negative expectancy detected for strategy momentum_breakout.",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "ETHUSDT": 1,
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "NEARUSDT": 2,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 21,
+      "reason": "ai-agent PROBE: strategy exposure reduced by coach",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "ETHUSDT": 1,
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "NEARUSDT": 2,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 21,
+      "reason": "strategy weighting REQUALIFY-PROBE: PAUSE uit oud venster, post-fix cohort <N>/<N> op halve size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "ETHUSDT": 1,
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "NEARUSDT": 2,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 20,
+      "reason": "blocked: long without bullish primary trend",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "ETHUSDT": 1,
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "NEARUSDT": 1,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 20,
+      "reason": "strategy weighting source=clean_strategy_expectancy",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "ETHUSDT": 1,
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "NEARUSDT": 2,
+        "SUIUSDT": 2,
+        "TRXUSDT": 1,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 17,
+      "reason": "TP<N>_NET_EDGE <N> below minimum <N> after spread/fees buffer",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BNBUSDT": 2,
+        "BTCUSDT": 1,
+        "DASHUSDT": 2,
+        "ETCUSDT": 1,
+        "ICPUSDT": 3,
+        "INJUSDT": 2,
+        "LINKUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 17,
+      "reason": "HTF regime blocks LONG: <N>D=bearish, <N>H=bearish",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "GALAUSDT": 2,
+        "NEARUSDT": 1,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 15,
+      "reason": "DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK entry_quality=<N><<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ATOMUSDT": 3,
+        "DASHUSDT": 2,
+        "ICPUSDT": 6,
+        "INJUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 15,
+      "reason": "expectancy-watch: strategy weak but not hard-paused",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "ETCUSDT": 4,
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "NEARUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 13,
+      "reason": "score below Safe Mode minimum: <N> < <N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "BTCUSDT": 1,
+        "ETCUSDT": 4,
+        "ETHUSDT": 1,
+        "NEARUSDT": 1,
+        "TRXUSDT": 2,
+        "XRPUSDT": 3
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 10,
+      "reason": "HTF regime PROBE: <N>D=bullish tegen SHORT, halve size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "BCHUSDT": 1,
+        "ETHUSDT": 3,
+        "LINKUSDT": 4,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 9,
+      "reason": "HTF alignment opposes long setup",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ETCUSDT": 4,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 8,
+      "reason": "DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK pressure_expansion_weak=<N>/<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "BCHUSDT": 1,
+        "BTCUSDT": 1,
+        "DOGEUSDT": 2,
+        "TRXUSDT": 2,
+        "XLMUSDT": 1,
+        "XRPUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 7,
+      "reason": "pressure_expansion_weak=<N>/<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "DASHUSDT": 2,
+        "ICPUSDT": 5
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 6,
+      "reason": "momentum-quality PROBE: volume below requirement, reduced size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ATOMUSDT": 1,
+        "NEARUSDT": 1,
+        "SUIUSDT": 2,
+        "TRXUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 5,
+      "reason": "followthrough_volume_ratio=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "ENAUSDT": 1,
+        "SHIBUSDT": 2,
+        "XRPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 5,
+      "reason": "kill-switch: symbol paused by expectancy",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "low_vol_reclaim",
+      "symbols": {
+        "BTCUSDT": 1,
+        "ETHUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 5,
+      "reason": "momentum-quality blocked: volume ratio too weak",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "BTCUSDT": 1,
+        "ETHUSDT": 1,
+        "NEARUSDT": 1,
+        "XRPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 5,
+      "reason": "pattern_flags=prearmed_momentum_profile",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "GALAUSDT": 2,
+        "LINKUSDT": 2,
+        "XLMUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 4,
+      "reason": "score_profile=prearmed_momentum",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "GALAUSDT": 2,
+        "LINKUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 4,
+      "reason": "ai-agent: passed",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 4,
+      "reason": "probe mode: risk reduced to <N> until strategy re-qualifies on fresh data",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 4,
+      "reason": "risk gate passed",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 4,
+      "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 4,
+      "reason": "strategy weighting PROBE: negative expectancy, trading at reduced size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 4,
+      "reason": "strategy weighting source=clean_strategy_expectancy",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2,
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 3,
+      "reason": "ai-agent: passed",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1,
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 3,
+      "reason": "expectancy-watch: strategy weak but not hard-paused",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1,
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 3,
+      "reason": "pattern_flags=prearmed_momentum_profile",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1,
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 3,
+      "reason": "strategy weighting PROBE: negative expectancy, trading at reduced size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1,
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 3,
+      "reason": "strategy weighting source=clean_strategy_expectancy",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1,
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 3,
+      "reason": "volume_ratio=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1,
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 3,
+      "reason": "HTF regime PROBE: <N>H=bearish tegen LONG, halve size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ETHUSDT": 1,
+        "LINKUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 3,
+      "reason": "kill-switch: symbol paused by expectancy",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "ETHUSDT": 1,
+        "SUIUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 2,
+      "reason": "momentum-quality blocked: late breakdown entry without strong follow-through",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 2,
+      "reason": "score_profile=prearmed_momentum",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "ICPUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 2,
+      "reason": "execution-cost blocked: long entry too high in candle",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "BTCUSDT": 1,
+        "NEARUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 2,
+      "reason": "HTF regime PROBE: <N>D=bullish tegen SHORT, halve size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 2,
+      "reason": "LARGEST_LOSS_GUARD stop_bps=<N> limit=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "TIAUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 2,
+      "reason": "expectancy-watch: strategy weak but not hard-paused",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 2,
+      "reason": "score_profile=short_continuation",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "trend_continuation",
+      "symbols": {
+        "DOGEUSDT": 2
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "blocked: orderbook risk-off",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "entry_quality=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "expansion_prob=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "orderbook_risk_off",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "pressure_score=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "score_profile=liquidity_sweep_reversal",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "sweep_directional_pressure_weak",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "sweep_penalties=sweep_entry_quality_weak",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "verdict=NO_GO",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "liquidity_sweep_reversal",
+      "symbols": {
+        "ARBUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "LARGEST_LOSS_GUARD stop_bps=<N> limit=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "alignment=aligned_bearish",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "blocked: orderbook risk-off",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "breakdown_pct=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "market_structure=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "pattern_flags=orderbook_risk_off",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "probe mode: risk reduced to <N> until strategy re-qualifies on fresh data",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "risk gate passed",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "GALAUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "score=<N>",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "verdict=GO",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakdown",
+      "symbols": {
+        "AXSUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "HTF regime PROBE: <N>D=bearish tegen LONG, halve size",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "NEARUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "TP<N>_NET_EDGE <N> below minimum <N> after spread/fees buffer",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "TRXUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "blocked: market alignment mixed without MTF confirmation",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "NEARUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "CONTEXT",
+      "count": 1,
+      "reason": "quality_retest_structure_boost",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "XLMUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "classification": "BLOCKING_OR_ADVERSE",
+      "count": 1,
+      "reason": "score verdict WATCH blocks execution",
+      "sessions": [
+        "UNKNOWN"
+      ],
+      "strategy": "momentum_breakout",
+      "symbols": {
+        "XRPUSDT": 1
+      },
+      "timeframes": [
+        "UNKNOWN"
+      ]
+    }
+  ],
+  "remaining_questions": [
+    "Which durable event should define a detector attempt before selector competition?",
+    "Where should selector and risk gate outcomes be stored with candle timestamp, session and timeframe?",
+    "Which exchange export rows can be mapped to strategy without inference?"
+  ],
+  "schema_version": "1.0",
+  "strategies": [
+    {
+      "metric_provenance": {
+        "be": "exchange_internal_attribution",
+        "detected": "backtest_funnel_2026-07-13",
+        "exchange_trades": "exchange_internal_attribution",
+        "executable": "backtest_funnel_2026-07-13",
+        "forward_closed": "forward_paper_current",
+        "forward_open": "forward_paper_current",
+        "losses": "exchange_internal_attribution",
+        "planner_fail": "backtest_funnel_2026-07-13",
+        "planner_pass": "backtest_funnel_2026-07-13",
+        "score_fail": "backtest_funnel_2026-07-13",
+        "score_pass": "backtest_funnel_2026-07-13",
+        "wins": "exchange_internal_attribution"
+      },
+      "metrics": {
+        "be": 0,
+        "detected": 134,
+        "exchange_trades": 48,
+        "executable": 0,
+        "forward_closed": 0,
+        "forward_open": 0,
+        "losses": 25,
+        "planner_fail": 134,
+        "planner_pass": 0,
+        "risk_fail": null,
+        "risk_pass": null,
+        "score_fail": 55,
+        "score_pass": 79,
+        "selector_fail": null,
+        "selector_pass": null,
+        "wins": 23
+      },
+      "name": "momentum_breakout",
+      "not_a_single_cohort": true,
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 21,
+          "reason": "Negative expectancy detected for strategy momentum_breakout."
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 20,
+          "reason": "blocked: long without bullish primary trend"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 17,
+          "reason": "HTF regime blocks LONG: <N>D=bearish, <N>H=bearish"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 15,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 13,
+          "reason": "score below Safe Mode minimum: <N> < <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 9,
+          "reason": "HTF alignment opposes long setup"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 6,
+          "reason": "momentum-quality PROBE: volume below requirement, reduced size"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 5,
+          "reason": "momentum-quality blocked: volume ratio too weak"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 3,
+          "reason": "kill-switch: symbol paused by expectancy"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "execution-cost blocked: long entry too high in candle"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "TP<N>_NET_EDGE <N> below minimum <N> after spread/fees buffer"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "blocked: market alignment mixed without MTF confirmation"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "score verdict WATCH blocks execution"
+        }
+      ],
+      "text_funnel": "momentum_breakout\n134\n\u2193\ndetected\n?\n\u2193\nselector pass\n79\n\u2193\nscore pass\n?\n\u2193\nrisk pass\n0\n\u2193\nplanner pass\n0\n\u2193\nexecutable\n0\n\u2193\npaper opened\n0\n\u2193\npaper closed"
+    },
+    {
+      "metric_provenance": {
+        "be": "exchange_internal_attribution",
+        "detected": "backtest_funnel_2026-07-13",
+        "exchange_trades": "exchange_internal_attribution",
+        "executable": "backtest_funnel_2026-07-13",
+        "forward_closed": "forward_paper_current",
+        "forward_open": "forward_paper_current",
+        "losses": "exchange_internal_attribution",
+        "planner_fail": "backtest_funnel_2026-07-13",
+        "planner_pass": "backtest_funnel_2026-07-13",
+        "score_fail": "backtest_funnel_2026-07-13",
+        "score_pass": "backtest_funnel_2026-07-13",
+        "wins": "exchange_internal_attribution"
+      },
+      "metrics": {
+        "be": 0,
+        "detected": 81,
+        "exchange_trades": 30,
+        "executable": 36,
+        "forward_closed": 0,
+        "forward_open": 0,
+        "losses": 20,
+        "planner_fail": 45,
+        "planner_pass": 36,
+        "risk_fail": null,
+        "risk_pass": null,
+        "score_fail": 0,
+        "score_pass": 81,
+        "selector_fail": null,
+        "selector_pass": null,
+        "wins": 10
+      },
+      "name": "momentum_breakdown",
+      "not_a_single_cohort": true,
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 3,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 3,
+          "reason": "strategy weighting PROBE: negative expectancy, trading at reduced size"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "momentum-quality blocked: late breakdown entry without strong follow-through"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "LARGEST_LOSS_GUARD stop_bps=<N> limit=<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "blocked: orderbook risk-off"
+        }
+      ],
+      "text_funnel": "momentum_breakdown\n81\n\u2193\ndetected\n?\n\u2193\nselector pass\n81\n\u2193\nscore pass\n?\n\u2193\nrisk pass\n36\n\u2193\nplanner pass\n36\n\u2193\nexecutable\n0\n\u2193\npaper opened\n0\n\u2193\npaper closed"
+    },
+    {
+      "metric_provenance": {
+        "be": "exchange_internal_attribution",
+        "detected": "backtest_funnel_2026-07-13",
+        "exchange_trades": "exchange_internal_attribution",
+        "executable": "backtest_funnel_2026-07-13",
+        "forward_closed": "forward_paper_current",
+        "forward_open": "forward_paper_current",
+        "losses": "exchange_internal_attribution",
+        "planner_fail": "backtest_funnel_2026-07-13",
+        "planner_pass": "backtest_funnel_2026-07-13",
+        "score_fail": "backtest_funnel_2026-07-13",
+        "score_pass": "backtest_funnel_2026-07-13",
+        "wins": "exchange_internal_attribution"
+      },
+      "metrics": {
+        "be": 0,
+        "detected": 43,
+        "exchange_trades": 14,
+        "executable": 0,
+        "forward_closed": 0,
+        "forward_open": 0,
+        "losses": 11,
+        "planner_fail": 43,
+        "planner_pass": 0,
+        "risk_fail": null,
+        "risk_pass": null,
+        "score_fail": 2,
+        "score_pass": 41,
+        "selector_fail": null,
+        "selector_pass": null,
+        "wins": 3
+      },
+      "name": "trend_continuation",
+      "not_a_single_cohort": true,
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 4,
+          "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 4,
+          "reason": "strategy weighting PROBE: negative expectancy, trading at reduced size"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "LARGEST_LOSS_GUARD stop_bps=<N> limit=<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 2,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        }
+      ],
+      "text_funnel": "trend_continuation\n43\n\u2193\ndetected\n?\n\u2193\nselector pass\n41\n\u2193\nscore pass\n?\n\u2193\nrisk pass\n0\n\u2193\nplanner pass\n0\n\u2193\nexecutable\n0\n\u2193\npaper opened\n0\n\u2193\npaper closed"
+    },
+    {
+      "metric_provenance": {
+        "be": "exchange_internal_attribution",
+        "detected": "backtest_funnel_2026-07-13",
+        "exchange_trades": "exchange_internal_attribution",
+        "executable": "backtest_funnel_2026-07-13",
+        "forward_closed": "forward_paper_current",
+        "forward_open": "forward_paper_current",
+        "losses": "exchange_internal_attribution",
+        "planner_fail": "backtest_funnel_2026-07-13",
+        "planner_pass": "backtest_funnel_2026-07-13",
+        "score_fail": "backtest_funnel_2026-07-13",
+        "score_pass": "backtest_funnel_2026-07-13",
+        "wins": "exchange_internal_attribution"
+      },
+      "metrics": {
+        "be": 0,
+        "detected": 11,
+        "exchange_trades": 1,
+        "executable": 0,
+        "forward_closed": 0,
+        "forward_open": 0,
+        "losses": 1,
+        "planner_fail": 11,
+        "planner_pass": 0,
+        "risk_fail": null,
+        "risk_pass": null,
+        "score_fail": 4,
+        "score_pass": 7,
+        "selector_fail": null,
+        "selector_pass": null,
+        "wins": 0
+      },
+      "name": "liquidity_sweep_reversal",
+      "not_a_single_cohort": true,
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "blocked: orderbook risk-off"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "sweep_directional_pressure_weak"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "sweep_penalties=sweep_entry_quality_weak"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 1,
+          "reason": "verdict=NO_GO"
+        }
+      ],
+      "text_funnel": "liquidity_sweep_reversal\n11\n\u2193\ndetected\n?\n\u2193\nselector pass\n7\n\u2193\nscore pass\n?\n\u2193\nrisk pass\n0\n\u2193\nplanner pass\n0\n\u2193\nexecutable\n0\n\u2193\npaper opened\n0\n\u2193\npaper closed"
+    },
+    {
+      "metric_provenance": {
+        "be": "exchange_internal_attribution",
+        "detected": "backtest_funnel_2026-07-13",
+        "exchange_trades": "exchange_internal_attribution",
+        "executable": "backtest_funnel_2026-07-13",
+        "forward_closed": "forward_paper_current",
+        "forward_open": "forward_paper_current",
+        "losses": "exchange_internal_attribution",
+        "planner_fail": "backtest_funnel_2026-07-13",
+        "planner_pass": "backtest_funnel_2026-07-13",
+        "score_fail": "backtest_funnel_2026-07-13",
+        "score_pass": "backtest_funnel_2026-07-13",
+        "wins": "exchange_internal_attribution"
+      },
+      "metrics": {
+        "be": 0,
+        "detected": 286,
+        "exchange_trades": 278,
+        "executable": 0,
+        "forward_closed": 0,
+        "forward_open": 0,
+        "losses": 187,
+        "planner_fail": 286,
+        "planner_pass": 0,
+        "risk_fail": null,
+        "risk_pass": null,
+        "score_fail": 0,
+        "score_pass": 286,
+        "selector_fail": null,
+        "selector_pass": null,
+        "wins": 91
+      },
+      "name": "low_vol_reclaim",
+      "not_a_single_cohort": true,
+      "reject_reasons": [
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 42,
+          "reason": "expectancy-watch: strategy weak but not hard-paused"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 42,
+          "reason": "shorts disabled : shorts <N> WR / <N> net vs longs <N> / <N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 42,
+          "reason": "strategy weighting HARD-PAUSE: learning report status=PAUSE"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 17,
+          "reason": "TP<N>_NET_EDGE <N> below minimum <N> after spread/fees buffer"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 15,
+          "reason": "DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK entry_quality=<N><<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 8,
+          "reason": "DAY_DEFENSIVE_LOW_VOL_RECLAIM_BLOCK pressure_expansion_weak=<N>/<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 7,
+          "reason": "pressure_expansion_weak=<N>/<N>"
+        },
+        {
+          "classification": "BLOCKING_OR_ADVERSE",
+          "count": 5,
+          "reason": "kill-switch: symbol paused by expectancy"
+        }
+      ],
+      "text_funnel": "low_vol_reclaim\n286\n\u2193\ndetected\n?\n\u2193\nselector pass\n286\n\u2193\nscore pass\n?\n\u2193\nrisk pass\n0\n\u2193\nplanner pass\n0\n\u2193\nexecutable\n0\n\u2193\npaper opened\n0\n\u2193\npaper closed"
+    },
+    {
+      "metric_provenance": {
+        "be": "exchange_internal_attribution",
+        "exchange_trades": "exchange_internal_attribution",
+        "forward_closed": "forward_paper_current",
+        "forward_open": "forward_paper_current",
+        "losses": "exchange_internal_attribution",
+        "wins": "exchange_internal_attribution"
+      },
+      "metrics": {
+        "be": 0,
+        "detected": null,
+        "exchange_trades": 0,
+        "executable": null,
+        "forward_closed": 0,
+        "forward_open": 0,
+        "losses": 0,
+        "planner_fail": null,
+        "planner_pass": null,
+        "risk_fail": null,
+        "risk_pass": null,
+        "score_fail": null,
+        "score_pass": null,
+        "selector_fail": null,
+        "selector_pass": null,
+        "wins": 0
+      },
+      "name": "adaptive_momentum_continuation",
+      "not_a_single_cohort": true,
+      "reject_reasons": [],
+      "text_funnel": "adaptive_momentum_continuation\n?\n\u2193\ndetected\n?\n\u2193\nselector pass\n?\n\u2193\nscore pass\n?\n\u2193\nrisk pass\n?\n\u2193\nplanner pass\n?\n\u2193\nexecutable\n0\n\u2193\npaper opened\n0\n\u2193\npaper closed"
+    }
+  ],
+  "strategy_definitions": {
+    "adaptive_momentum_continuation": {
+      "configs": [
+        "ENABLED_STRATEGIES",
+        "DISABLED_STRATEGIES",
+        "PRIMARY_TIMEFRAME",
+        "CONFIRMATION_TIMEFRAME",
+        "ENABLE_SHORTS",
+        "STRATEGY_SCORE_GO_THRESHOLD"
+      ],
+      "detector_gates": [
+        "only considered when no primary candidate survives",
+        "must be explicitly present in ENABLED_STRATEGIES",
+        "execution-aware score >= 75 and entry quality >= 75",
+        "aligned direction with pressure/expansion and feature evidence"
+      ],
+      "direction": [
+        "LONG",
+        "SHORT"
+      ],
+      "disabled_fallback": true,
+      "entrypoint": "_build_fallback_candidate",
+      "module": "app/runner.py",
+      "rejects": [
+        "not explicitly enabled",
+        "primary candidate exists",
+        "alignment, execution score or entry quality insufficient",
+        "required volume/range/breakout/structure evidence absent"
+      ]
+    },
+    "liquidity_sweep_reversal": {
+      "configs": [
+        "SWEEP_PIVOT_LOOKBACK",
+        "SWEEP_RECENT_BARS",
+        "SWEEP_RECLAIM_TOLERANCE_BPS",
+        "MIN_SWEEP_DISPLACEMENT_PCT",
+        "MIN_SWEEP_VOLUME_RATIO",
+        "PRIMARY_TIMEFRAME",
+        "CONFIRMATION_TIMEFRAME",
+        "ENABLE_SHORTS"
+      ],
+      "detector_gates": [
+        "wick through 12-bar pivot and reclaim within tolerance",
+        "sweep must be within 6 recent bars",
+        "displacement >= 0.12% and volume ratio >= 1.15",
+        "participation >= 0.70 and follow-through >= 0.25",
+        "wick fraction >= 0.25 plus directional close"
+      ],
+      "direction": [
+        "LONG",
+        "SHORT"
+      ],
+      "entrypoint": "LiquiditySweepStrategy.detect",
+      "module": "strategies/liquidity_sweep.py",
+      "rejects": [
+        "pivot not swept or reclaim missing",
+        "sweep too old",
+        "displacement, volume, wick or follow-through insufficient",
+        "countertrend context without strong MTF reclaim exception"
+      ]
+    },
+    "low_vol_reclaim": {
+      "configs": [
+        "PRIMARY_TIMEFRAME",
+        "CONFIRMATION_TIMEFRAME",
+        "ENABLE_SHORTS",
+        "ENABLED_STRATEGIES",
+        "DISABLED_STRATEGIES",
+        "PLANNER_MIN_RR_TO_TP1"
+      ],
+      "detector_gates": [
+        "low-volatility EMA20 retest/reclaim",
+        "volatility rank <= 55 strict or <= 65 with MTF bridge",
+        "volume ratio >= 0.20 and participation >= 0.75",
+        "follow-through >= 0.10 and spread <= 5 bps",
+        "EMA distance <= 2.5% and retest distance <= 0.85%"
+      ],
+      "direction": [
+        "LONG",
+        "SHORT"
+      ],
+      "entrypoint": "detect_low_vol_reclaim",
+      "module": "strategies/strategies/low_vol_reclaim.py",
+      "rejects": [
+        "low-vol mode confirmation absent",
+        "weak follow-through",
+        "spread too wide",
+        "EMA retest/reclaim missing or too extended",
+        "HTF direction absent without MTF bridge"
+      ]
+    },
+    "momentum_breakdown": {
+      "configs": [
+        "PRIMARY_TIMEFRAME",
+        "CONFIRMATION_TIMEFRAME",
+        "ENABLE_SHORTS",
+        "ENABLED_STRATEGIES",
+        "DISABLED_STRATEGIES",
+        "MOMENTUM_BREAKDOWN_MIN_VOLUME_RATIO",
+        "STRATEGY_SCORE_GO_THRESHOLD"
+      ],
+      "detector_gates": [
+        "fresh break below 20-bar range low or prearmed setup",
+        "minimum breakdown displacement 0.12%",
+        "volume ratio >= 0.90 in detector",
+        "participation >= 0.75 and follow-through >= 0.25",
+        "close position <= 0.38",
+        "failed reclaim <= 35 bps and breakdown age <= 2 bars",
+        "entry extension <= 0.60%"
+      ],
+      "direction": [
+        "SHORT"
+      ],
+      "entrypoint": "MomentumBreakdownStrategy.detect",
+      "module": "strategies/momentum_breakout.py",
+      "rejects": [
+        "shorts disabled or bearish context absent",
+        "no fresh breakdown or failed reclaim",
+        "late/extended entry",
+        "weak participation, volume, close or follow-through"
+      ]
+    },
+    "momentum_breakout": {
+      "configs": [
+        "PRIMARY_TIMEFRAME",
+        "CONFIRMATION_TIMEFRAME",
+        "ENABLED_STRATEGIES",
+        "DISABLED_STRATEGIES",
+        "MOMENTUM_MIN_VOLUME_RATIO",
+        "STRATEGY_SCORE_GO_THRESHOLD"
+      ],
+      "detector_gates": [
+        "fresh break above 20-bar range high or prearmed setup",
+        "minimum breakout displacement 0.12%",
+        "volume ratio >= 0.90 in detector",
+        "participation >= 0.75 and follow-through >= 0.25",
+        "close position >= 0.55",
+        "pullback <= 45 bps and breakout age <= 3 bars",
+        "entry extension <= 0.60%"
+      ],
+      "direction": [
+        "LONG"
+      ],
+      "entrypoint": "MomentumBreakoutStrategy.detect",
+      "module": "strategies/momentum_breakout.py",
+      "rejects": [
+        "trend not aligned without MTF/prearmed override",
+        "no fresh breakout or breakout confirmation",
+        "pullback broke level",
+        "late/extended entry",
+        "weak participation, volume, close or follow-through"
+      ]
+    },
+    "trend_continuation": {
+      "configs": [
+        "PRIMARY_TIMEFRAME",
+        "CONFIRMATION_TIMEFRAME",
+        "ENABLE_SHORTS",
+        "ENABLED_STRATEGIES",
+        "DISABLED_STRATEGIES",
+        "STRATEGY_SCORE_GO_THRESHOLD"
+      ],
+      "detector_gates": [
+        "aligned trend or MTF pressure bridge",
+        "EMA20/shallow pullback followed by reclaim",
+        "base volume >= 0.65 and volatility rank >= 6",
+        "participation >= 0.75 and follow-through >= 0.35",
+        "SHORT uses stricter pressure, volume and follow-through gates"
+      ],
+      "direction": [
+        "LONG",
+        "SHORT"
+      ],
+      "entrypoint": "detect_continuation",
+      "module": "strategies/strategies/continuation.py",
+      "rejects": [
+        "directional trend/confirmation absent",
+        "reclaim or structure confirmation absent",
+        "directional pressure insufficient",
+        "volume/participation/follow-through insufficient"
+      ]
+    }
+  }
+}
