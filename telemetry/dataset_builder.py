@@ -17,6 +17,7 @@ if str(BASE_PATH) not in sys.path:
 from execution.execution_service import _safe_float
 from telemetry.csv_rotation import rotated_segments
 from telemetry.trade_logger import _safe_bool
+from telemetry.safe_io import atomic_write_json, locked_open
 
 LOGS_PATH = BASE_PATH / "logs"
 STATE_PATH = BASE_PATH / "state"
@@ -33,7 +34,7 @@ def _read_csv(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for segment in rotated_segments(path):
         try:
-            with segment.open("r", encoding="utf-8", newline="") as handle:
+            with locked_open(segment, "r", encoding="utf-8", newline="") as handle:
                 rows.extend(csv.DictReader(handle))
         except Exception:
             continue
@@ -44,7 +45,7 @@ def _read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
     try:
-        with path.open("r", encoding="utf-8") as handle:
+        with locked_open(path, "r", encoding="utf-8") as handle:
             return json.load(handle)
     except Exception:
         return default
@@ -72,7 +73,7 @@ def _read_near_tp_log_events() -> list[dict[str, Any]]:
 
     for path in paths:
         try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            with locked_open(path, "r", encoding="utf-8", errors="ignore") as handle:
                 for line in handle:
                     match = pattern.search(line)
                     if not match:
@@ -106,11 +107,7 @@ def _signed_time_distance_seconds(left: str, right: str) -> float:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-    tmp.replace(path)
+    atomic_write_json(path, payload, indent=2, ensure_ascii=False)
 
 
 # Helper: normalize any record payload into list-of-dicts for dataset summary
@@ -518,7 +515,7 @@ def _read_bitget_position_history() -> list[dict[str, Any]]:
 
     for path in paths:
         try:
-            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            with locked_open(path, "r", encoding="utf-8-sig", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for raw_row in reader:
                     symbol, direction = _parse_bitget_symbol_side(raw_row.get("Futures"))
@@ -798,7 +795,7 @@ def _trade_funnel_report(decision_rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     for path in log_paths:
         try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            with locked_open(path, "r", encoding="utf-8", errors="ignore") as handle:
                 for line in handle:
                     upper_line = line.upper()
                     if "DNS" in upper_line or "RESOLUTION_FAILURE" in upper_line:

@@ -18,6 +18,7 @@ from agents_v2.learning.learning_service import learning_service
 from app.config import get_settings
 from clients.bitget_rest import BitgetRestClient
 from dashboard_v2.bot_control import is_bot_running
+from telemetry.safe_io import locked_open
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 LOGS_PATH = BASE_PATH / "logs"
@@ -36,7 +37,7 @@ def _read_json(path: Path) -> Any:
     if not path.exists():
         return None
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with locked_open(path, "r", encoding="utf-8") as handle:
             return json.load(handle)
     except Exception:
         return None
@@ -48,7 +49,7 @@ def _tail_bytes(path: Path, max_bytes: int) -> bytes:
     (hundreds of MB, unbounded growth) made every dashboard refresh do a full
     read + parse of the entire file, repeatedly, every few seconds."""
     size = path.stat().st_size
-    with open(path, "rb") as handle:
+    with locked_open(path, "rb") as handle:
         if size > max_bytes:
             handle.seek(size - max_bytes)
             handle.readline()  # drop the partial line at the seek point
@@ -70,7 +71,7 @@ def _read_csv_rows(path: Path, limit: int = 500) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with open(path, "r", encoding="utf-8", newline="") as handle:
+        with locked_open(path, "r", encoding="utf-8", newline="") as handle:
             header_line = handle.readline()
         if not header_line:
             return []

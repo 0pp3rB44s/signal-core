@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 import csv
+from telemetry.safe_io import locked_open
 
 BASE_PATH = Path(__file__).resolve().parents[2]
 LOGS_PATH = BASE_PATH / "logs"
@@ -22,7 +23,7 @@ def load_trade_rows() -> list[dict[str, Any]]:
     if not DATASET_PATH.exists():
         return []
 
-    with DATASET_PATH.open("r", encoding="utf-8", newline="") as f:
+    with locked_open(DATASET_PATH, "r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
 
 
