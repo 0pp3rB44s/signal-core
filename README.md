@@ -73,6 +73,10 @@ Local live dashboard includes:
 - bot logs
 - market snapshots
 
+The dashboard fails closed unless `DASHBOARD_PASSWORD` is configured. Its
+safe default bind address is `127.0.0.1`; exposing it on another interface
+requires an explicit `DASHBOARD_HOST` setting and appropriate network controls.
+
 ---
 
 # Current Watchlist Focus
