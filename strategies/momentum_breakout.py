@@ -1,5 +1,4 @@
 import logging
-import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -50,10 +49,10 @@ class MomentumBreakoutStrategy:
         self.weak_pressure_min_score = 30.0
         self.weak_pressure_min_expansion_prob = 55.0
         self.strict_breakout_min_volume_ratio = 0.70
-        self.context_min_expansion_prob = float(os.getenv("BREAKOUT_CONTEXT_MIN_EXPANSION_PROB", "70"))
-        self.context_min_pressure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_PRESSURE_SCORE", "45"))
-        self.context_min_structure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_STRUCTURE_SCORE", "1"))
-        self.context_high_prob_pressure_floor = float(os.getenv("BREAKOUT_CONTEXT_HIGH_PROB_PRESSURE_FLOOR", "35"))
+        self.context_min_expansion_prob = settings.breakout_context_min_expansion_prob
+        self.context_min_pressure_score = settings.breakout_context_min_pressure_score
+        self.context_min_structure_score = settings.breakout_context_min_structure_score
+        self.context_high_prob_pressure_floor = settings.breakout_context_high_prob_pressure_floor
 
     def detect(self, market: MarketSnapshot) -> Optional[StrategyCandidate]:
         candles = market.primary.candles
@@ -663,11 +662,7 @@ class MomentumBreakoutStrategy:
         structure_source = ",".join(structure_source_parts) if structure_source_parts else "missing"
         notes_sample = " || ".join(str(note) for note in (market.notes or [])[-10:])
 
-        raw_symbols = os.getenv(
-            "STRATEGY_DEBUG_SYMBOLS",
-            "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT",
-        )
-        debug_symbols = {symbol.strip().upper() for symbol in raw_symbols.split(",") if symbol.strip()}
+        debug_symbols = self.settings.strategy_debug_symbol_set
 
         if market.symbol.upper() in debug_symbols:
             logger.info(
@@ -752,9 +747,8 @@ class MomentumBreakoutStrategy:
         return default
 
     def _log_rejection(self, market: MarketSnapshot, reason: str, details: list[str]) -> None:
-        raw_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT")
-        debug_symbols = {symbol.strip().upper() for symbol in raw_symbols.split(",") if symbol.strip()}
-        audit_mode = os.getenv("MOMENTUM_FUNNEL_AUDIT", "1") == "1"
+        debug_symbols = self.settings.strategy_debug_symbol_set
+        audit_mode = self.settings.momentum_funnel_audit
 
         if not audit_mode and market.symbol.upper() not in debug_symbols:
             return
@@ -870,10 +864,10 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         self.weak_pressure_min_score = 45.0
         self.weak_pressure_min_expansion_prob = 65.0
         self.strict_breakdown_min_volume_ratio = 0.70
-        self.context_min_expansion_prob = float(os.getenv("BREAKOUT_CONTEXT_MIN_EXPANSION_PROB", "70"))
-        self.context_min_pressure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_PRESSURE_SCORE", "45"))
-        self.context_min_structure_score = float(os.getenv("BREAKOUT_CONTEXT_MIN_STRUCTURE_SCORE", "1"))
-        self.context_high_prob_pressure_floor = float(os.getenv("BREAKOUT_CONTEXT_HIGH_PROB_PRESSURE_FLOOR", "35"))
+        self.context_min_expansion_prob = settings.breakout_context_min_expansion_prob
+        self.context_min_pressure_score = settings.breakout_context_min_pressure_score
+        self.context_min_structure_score = settings.breakout_context_min_structure_score
+        self.context_high_prob_pressure_floor = settings.breakout_context_high_prob_pressure_floor
 
     def detect(self, market: MarketSnapshot) -> Optional[StrategyCandidate]:
         candles = market.primary.candles
@@ -1331,9 +1325,8 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
             ),
         )
     def _log_breakdown_rejection(self, market: MarketSnapshot, reason: str, details: list[str]) -> None:
-        raw_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT")
-        debug_symbols = {symbol.strip().upper() for symbol in raw_symbols.split(",") if symbol.strip()}
-        audit_mode = os.getenv("MOMENTUM_FUNNEL_AUDIT", "1") == "1"
+        debug_symbols = self.settings.strategy_debug_symbol_set
+        audit_mode = self.settings.momentum_funnel_audit
 
         if not audit_mode and market.symbol.upper() not in debug_symbols:
             return

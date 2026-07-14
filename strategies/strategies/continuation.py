@@ -1,5 +1,5 @@
 import logging
-import os
+from app.config import get_settings
 from clients.schemas import MarketSnapshot, StrategyCandidate, SweepDetection
 
 logger = logging.getLogger("StartupRunner")
@@ -341,8 +341,7 @@ class ContinuationStrategy:
         volatility_rank = float(getattr(market, "volatility_rank", 0.0) or 0.0)
         close_position = (last.close - last.low) / full_range
         ema_distance_pct = (abs(last.close - market.primary.ema20) / max(last.close, 1e-9)) * 100
-        raw_debug_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "")
-        debug_symbols = {item.strip().upper() for item in raw_debug_symbols.split(",") if item.strip()}
+        debug_symbols = get_settings().strategy_debug_symbol_set
         debug_enabled = market.symbol.upper() in debug_symbols
 
         participation_score = self._participation_score(primary_candles, len(primary_candles) - 1, direction=direction)

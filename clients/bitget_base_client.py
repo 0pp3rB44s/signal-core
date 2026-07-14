@@ -8,10 +8,13 @@ from typing import Any
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout as RequestsTimeout
+
+from app.logger import SensitiveDataFilter
 from requests.exceptions import RequestException
 
 from app.config import Settings
 from clients.bitget_auth import build_headers
+from clients.interprocess_rate_limiter import InterprocessRateLimiter
 
 
 class BitgetAPIError(RuntimeError):
@@ -23,7 +26,30 @@ class BitgetRetryableError(BitgetAPIError):
 
 
 class BitgetBaseClient:
-    """Base Bitget REST layer: auth, request, retry, rate-limit and payload validation only."""
+    """Base Bitget REST layer: auth, request, retry, rate-limit and validation."""
+
+    _MAX_ERROR_MESSAGE_LENGTH = 300
+
+    @classmethod
+    def _safe_response_error(cls, response: requests.Response, *, private: bool) -> tuple[str, str]:
+        """Return only a bounded, redacted exchange code/message pair."""
+        code = "unknown"
+        message = "upstream error response"
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            payload = None
+
+        if isinstance(payload, dict):
+            code = str(payload.get("code") or code)
+            message = str(payload.get("msg") or payload.get("message") or message)
+        elif not private:
+            # Public endpoints may return useful plain-text errors. Private
+            # response bodies are deliberately never copied into logs/errors.
+            message = str(response.text or message)
+
+        message = SensitiveDataFilter.redact(message).replace("\r", " ").replace("\n", " ")
+        return code[:64], message[: cls._MAX_ERROR_MESSAGE_LENGTH]
 
     def __init__(self, settings: Settings, timeout: int = 15) -> None:
         self.settings = settings
@@ -34,35 +60,23 @@ class BitgetBaseClient:
         self.retry_backoff_seconds = float(getattr(settings, "bitget_retry_backoff_seconds", 1.25) or 1.25)
         self.rate_limit_min_interval_seconds = float(getattr(settings, "bitget_rate_limit_min_interval_ms", 120) or 120) / 1000.0
         self.rate_limit_429_cooldown_seconds = float(getattr(settings, "bitget_rate_limit_429_cooldown_sec", 5.0) or 5.0)
-        self._last_request_ts = 0.0
+        self.rate_limiter = InterprocessRateLimiter(
+            getattr(settings, "bitget_rate_limit_state_path", "state/bitget_rate_limit.json"),
+            self.rate_limit_min_interval_seconds,
+        )
 
     @property
     def has_credentials(self) -> bool:
         return all(
             [
-                self.settings.bitget_api_key,
-                self.settings.bitget_api_secret,
-                self.settings.bitget_api_passphrase,
+                self.settings.bitget_api_key.get_secret_value(),
+                self.settings.bitget_api_secret.get_secret_value(),
+                self.settings.bitget_api_passphrase.get_secret_value(),
             ]
         )
 
     def _rate_limit_wait(self) -> None:
-        if self.rate_limit_min_interval_seconds <= 0:
-            return
-
-        now = time.perf_counter()
-        elapsed = now - self._last_request_ts
-        sleep_seconds = self.rate_limit_min_interval_seconds - elapsed
-
-        if sleep_seconds > 0:
-            self.log.info(
-                "BITGET_RATE_LIMIT_WAIT | sleep=%ss | min_interval=%ss",
-                round(sleep_seconds, 4),
-                self.rate_limit_min_interval_seconds,
-            )
-            time.sleep(sleep_seconds)
-
-        self._last_request_ts = time.perf_counter()
+        self.rate_limiter.wait()
 
     @staticmethod
     def _validate_futures_order_flags(body: dict[str, Any]) -> None:
@@ -100,9 +114,9 @@ class BitgetBaseClient:
             if not self.has_credentials:
                 raise BitgetAPIError("Missing Bitget API credentials for private request.")
             headers = build_headers(
-                api_key=self.settings.bitget_api_key,
-                api_secret=self.settings.bitget_api_secret,
-                passphrase=self.settings.bitget_api_passphrase,
+                api_key=self.settings.bitget_api_key.get_secret_value(),
+                api_secret=self.settings.bitget_api_secret.get_secret_value(),
+                passphrase=self.settings.bitget_api_passphrase.get_secret_value(),
                 method=method,
                 request_path=path,
                 params=params,
@@ -142,18 +156,19 @@ class BitgetBaseClient:
                 try:
                     response.raise_for_status()
                 except requests.HTTPError as exc:
-                    response_text = response.text
                     status_code = response.status_code
+                    error_code, safe_message = self._safe_response_error(response, private=private)
                     retryable_status = status_code in {408, 429, 500, 502, 503, 504}
                     log_method = self.log.warning if retryable_status else self.log.error
                     log_method(
-                        "BITGET_HTTP_ERROR | method=%s | path=%s | status=%s | retryable=%s | attempt=%s | response=%s",
+                        "BITGET_HTTP_ERROR | method=%s | path=%s | status=%s | code=%s | retryable=%s | attempt=%s | msg=%s",
                         method.upper(),
                         path,
                         status_code,
+                        error_code,
                         retryable_status,
                         attempt,
-                        response_text,
+                        safe_message,
                     )
 
                     if retryable_status and attempt < self.max_request_retries:
@@ -169,7 +184,7 @@ class BitgetBaseClient:
                         continue
 
                     raise BitgetAPIError(
-                        f"Bitget HTTP error: status={status_code} response={response_text}"
+                        f"Bitget HTTP error: status={status_code} code={error_code} msg={safe_message}"
                     ) from exc
 
                 payload = response.json()
@@ -202,7 +217,8 @@ class BitgetBaseClient:
                         continue
 
                     raise BitgetAPIError(
-                        f"Bitget error: code={code} msg={payload.get('msg')} data={payload.get('data')}"
+                        "Bitget error: "
+                        f"code={code} msg={SensitiveDataFilter.redact(str(payload.get('msg') or 'upstream error'))[:self._MAX_ERROR_MESSAGE_LENGTH]}"
                     )
 
                 return payload

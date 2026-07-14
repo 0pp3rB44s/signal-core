@@ -5,6 +5,7 @@ import fcntl
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from collections import Counter
@@ -19,6 +20,7 @@ from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
+from execution.runtime_lock import trading_state_lock
 from execution.state_store import JsonStateStore
 from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
@@ -102,33 +104,12 @@ def _execution_aware_score(snapshot: MarketSnapshot) -> float:
     return score
 
 
-def _build_fallback_candidate(snapshot: MarketSnapshot) -> StrategyCandidate | None:
+def _build_fallback_candidate(snapshot: MarketSnapshot, settings: Settings) -> StrategyCandidate | None:
     note_text = " ".join(str(note).lower() for note in (snapshot.notes or []))
 
-    def _strategy_set_from_env(name: str) -> set[str]:
-        values: list[str] = []
-        raw_value = os.getenv(name, "")
-        if raw_value:
-            values.extend(raw_value.split(","))
-
-        env_path = Path(".env")
-        if env_path.exists():
-            try:
-                for line in env_path.read_text(errors="ignore").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, value = line.split("=", 1)
-                    if key.strip() == name:
-                        values.extend(value.split(","))
-            except Exception:
-                pass
-
-        return {item.strip().lower() for item in values if item.strip()}
-
     fallback_strategy_name = "adaptive_momentum_continuation"
-    enabled_strategies = _strategy_set_from_env("ENABLED_STRATEGIES")
-    disabled_strategies = _strategy_set_from_env("DISABLED_STRATEGIES")
+    enabled_strategies = settings.enabled_strategy_set
+    disabled_strategies = settings.disabled_strategy_set
     explicitly_enabled = fallback_strategy_name in enabled_strategies
     explicitly_disabled = fallback_strategy_name in disabled_strategies
 
@@ -322,6 +303,11 @@ class StartupRunner:
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
         self._learning_refresh_proc: subprocess.Popen | None = None
+        self._position_snapshots: list[MarketSnapshot] = []
+        self._position_snapshots_lock = threading.Lock()
+        self._position_sync_lock = threading.Lock()
+        self._position_monitor_wakeup = threading.Event()
+        self._position_monitor_thread: threading.Thread | None = None
 
     def _maybe_refresh_learning_reports(self) -> None:
         """Regenerate the daily learning/expectancy reports when they go stale.
@@ -380,6 +366,18 @@ class StartupRunner:
         self.log.info("Starting Bitget AI Agent Phase 7")
         self._startup_checks()
 
+        if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
+            self._position_monitor_thread = threading.Thread(
+                target=self._position_monitor_loop,
+                name="position-monitor",
+                daemon=True,
+            )
+            self._position_monitor_thread.start()
+            self.log.info(
+                "POSITION_MONITOR_STARTED | interval=%ss",
+                self.settings.position_check_interval_sec,
+            )
+
         if self.settings.scan_on_start:
             self._scan_cycle()
 
@@ -388,8 +386,41 @@ class StartupRunner:
             while True:
                 time.sleep(self.settings.scan_interval_sec)
                 self._scan_cycle()
-                if self.settings.position_loop_enabled:
-                    time.sleep(max(1, self.settings.position_check_interval_sec))
+
+    def _position_monitor_loop(self) -> None:
+        interval = max(1, int(self.settings.position_check_interval_sec))
+        while True:
+            self._position_monitor_wakeup.wait(timeout=interval)
+            self._position_monitor_wakeup.clear()
+            self._position_monitor_iteration()
+
+    def _position_monitor_iteration(self) -> bool:
+        """Run one cycle without allowing a transient failure to kill the loop."""
+        try:
+            self._position_monitor_cycle()
+            return True
+        except Exception as exc:
+            self.log.exception("POSITION_MONITOR_FAILED | error=%s", exc)
+            return False
+
+    def _position_monitor_cycle(self) -> None:
+        with self._position_snapshots_lock:
+            snapshots = list(self._position_snapshots)
+        if snapshots:
+            self._sync_positions(snapshots, use_snapshot_context=False)
+
+    def _sync_positions(self, snapshots: list[MarketSnapshot], *, use_snapshot_context: bool) -> None:
+        if not snapshots or not self.settings.position_manager_enabled:
+            return
+        with self._position_sync_lock:
+            with trading_state_lock():
+                position_updates = self.position_manager.sync(
+                    snapshots,
+                    use_snapshot_context=use_snapshot_context,
+                )
+        if position_updates:
+            self._emit_position_summary(position_updates)
+            self.position_logger.append_rows(position_updates)
 
     def _startup_checks(self) -> None:
         self.log.info("Running startup checks")
@@ -650,8 +681,7 @@ class StartupRunner:
                         )
                         low_vol_reclaim_candidate = None
 
-                    raw_debug_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,WIFUSDT")
-                    debug_symbols = {symbol.strip().upper() for symbol in raw_debug_symbols.split(",") if symbol.strip()}
+                    debug_symbols = self.settings.strategy_debug_symbol_set
                     if snapshot.symbol.upper() in debug_symbols:
                         self.log.info(
                             "STRATEGY_ROUTE | %s | sweep=%s | continuation=%s | low_vol_reclaim=%s | momentum_breakout=%s | momentum_breakdown=%s",
@@ -697,16 +727,8 @@ class StartupRunner:
                             selector_reason = "selector_bad_return_treated_as_no_candidate"
 
                     if candidate is None:
-                        enabled_strategies = {
-                            item.strip().lower()
-                            for item in os.getenv("ENABLED_STRATEGIES", "").split(",")
-                            if item.strip()
-                        }
-                        disabled_strategies = {
-                            item.strip().lower()
-                            for item in os.getenv("DISABLED_STRATEGIES", "").split(",")
-                            if item.strip()
-                        }
+                        enabled_strategies = self.settings.enabled_strategy_set
+                        disabled_strategies = self.settings.disabled_strategy_set
 
                         fallback_strategy_name = "adaptive_momentum_continuation"
                         fallback_enabled = (
@@ -724,7 +746,7 @@ class StartupRunner:
                                 fallback_disabled,
                             )
                         else:
-                            fallback_candidate = _build_fallback_candidate(snapshot)
+                            fallback_candidate = _build_fallback_candidate(snapshot, self.settings)
 
                             if fallback_candidate is not None:
                                 candidate = fallback_candidate
@@ -1088,16 +1110,16 @@ class StartupRunner:
                 self._emit_plan_summary(plans)
                 self.trade_plan_logger.append_rows(plans)
 
-            exec_reports = self.execution_service.execute(plans)
+            with trading_state_lock():
+                exec_reports = self.execution_service.execute(plans)
             if exec_reports:
                 self._emit_execution_summary(exec_reports)
                 self.execution_logger.append_rows(exec_reports)
 
             if snapshots and self.settings.position_manager_enabled:
-                position_updates = self.position_manager.sync(snapshots)
-                if position_updates:
-                    self._emit_position_summary(position_updates)
-                    self.position_logger.append_rows(position_updates)
+                with self._position_snapshots_lock:
+                    self._position_snapshots = list(snapshots)
+                self._sync_positions(snapshots, use_snapshot_context=True)
 
 
         finally:
@@ -1288,4 +1310,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

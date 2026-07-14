@@ -21,7 +21,7 @@ from execution.position_manager import PositionManager
 
 TP1_CLOSE_PCT = 40.0
 TP2_CLOSE_PCT = 30.0
-BE_FEE_BUFFER_PCT = 0.10
+BE_FEE_BUFFER_PCT = 0.12
 
 
 def _settings() -> MagicMock:
@@ -357,7 +357,7 @@ def test_profit_lock_never_loosens_a_tighter_stop():
     manager.sync([_snapshot(price=100.65, high=100.65, low=100.55)])
 
     saved = manager.store.load(default=[])[0]
-    assert saved["stop_loss"] == 100.5  # niet terug naar 100.1 gezet
+    assert saved["stop_loss"] == 100.5  # niet terug naar fee-adjusted break-even gezet
     assert not saved.get("profit_lock_active")
 
 
@@ -369,6 +369,24 @@ def test_profit_lock_arms_only_once():
     calls_after_first = manager.client.move_futures_stop_loss.call_count
     manager.sync([_snapshot(price=100.70, high=100.70, low=100.5)])
 
+    assert manager.client.move_futures_stop_loss.call_count == calls_after_first
+
+
+def test_monitor_cycle_uses_fresh_exchange_mark_and_remains_idempotent():
+    live = _live_payload(size=1.0)
+    live["markPrice"] = "100.65"
+    manager = _manager([live])
+    manager.store.save([_position()])
+
+    stale_scan = _snapshot(price=100.10, high=100.10, low=100.05)
+    manager.sync([stale_scan], use_snapshot_context=False)
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["last_price"] == 100.65
+    assert saved["profit_lock_active"] is True
+    calls_after_first = manager.client.move_futures_stop_loss.call_count
+
+    manager.sync([stale_scan], use_snapshot_context=False)
     assert manager.client.move_futures_stop_loss.call_count == calls_after_first
 
 

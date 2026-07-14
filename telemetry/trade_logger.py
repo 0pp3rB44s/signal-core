@@ -5,6 +5,7 @@ from pathlib import Path
 
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan
 from telemetry.csv_rotation import rotate_if_needed
+from telemetry.safe_io import locked_open
 
 
 # --- Trade Quality/Grade helpers ---
@@ -280,10 +281,9 @@ class MarketScanCsvLogger:
 
     def append_rows(self, snapshots: list[MarketSnapshot]) -> None:
         rotate_if_needed(self.path)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writerow([
                     "symbol","alignment","score_hint","primary_tf","primary_trend","primary_change_pct",
                     "primary_volume_ratio","confirm_tf","confirm_trend","close","notes"
@@ -303,7 +303,7 @@ def _rotate_on_schema_change(path: Path, expected_header: list[str]) -> None:
     if not path.exists():
         return
     try:
-        with path.open("r", newline="", encoding="utf-8") as handle:
+        with locked_open(path, "r", newline="", encoding="utf-8") as handle:
             existing = next(csv.reader(handle), [])
     except Exception:
         return
@@ -327,11 +327,10 @@ class StrategyCandidateCsvLogger:
             return
         rotate_if_needed(self.path)
         _rotate_on_schema_change(self.path, self.HEADER)
-        exists = self.path.exists()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writerow(self.HEADER)
             for candidate, score in rows:
                 writer.writerow([
@@ -361,11 +360,10 @@ class TradePlanCsvLogger:
             return
         rotate_if_needed(self.path)
         _rotate_on_schema_change(self.path, self.HEADER)
-        exists = self.path.exists()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writerow(self.HEADER)
             for plan in plans:
                 writer.writerow([
@@ -396,10 +394,9 @@ class TradeDecisionSnapshotLogger:
 
     def append_plan(self, plan: TradePlan, opened_at: str | None = None) -> str:
         rotate_if_needed(self.path)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writerow([
                     "timestamp", "opened_at", "symbol", "strategy", "direction", "verdict", "score", "decision_snapshot", "snapshot_link_key"
                 ])
@@ -447,18 +444,18 @@ class ExecutionCsvLogger:
         header = self._fieldnames()
 
         if not self.path.exists() or self.path.stat().st_size == 0:
-            with self.path.open("w", newline="", encoding="utf-8") as handle:
+            with locked_open(self.path, "w", newline="", encoding="utf-8") as handle:
                 csv.writer(handle).writerow(header)
             return
 
         try:
-            with self.path.open("r", newline="", encoding="utf-8") as handle:
+            with locked_open(self.path, "r", newline="", encoding="utf-8") as handle:
                 rows = list(csv.reader(handle))
         except Exception:
             return
 
         if not rows:
-            with self.path.open("w", newline="", encoding="utf-8") as handle:
+            with locked_open(self.path, "w", newline="", encoding="utf-8") as handle:
                 csv.writer(handle).writerow(header)
             return
 
@@ -469,7 +466,7 @@ class ExecutionCsvLogger:
         backup_path = self.path.with_name(f"{self.path.stem}_headerless_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{self.path.suffix}")
         try:
             self.path.replace(backup_path)
-            with self.path.open("w", newline="", encoding="utf-8") as handle:
+            with locked_open(self.path, "w", newline="", encoding="utf-8") as handle:
                 writer = csv.writer(handle)
                 writer.writerow(header)
                 writer.writerows(rows)
@@ -484,7 +481,7 @@ class ExecutionCsvLogger:
         _rotate_on_schema_change(self.path, self._fieldnames())
         self._ensure_header()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             for report in reports:
                 writer.writerow([
@@ -514,10 +511,9 @@ class PositionUpdateCsvLogger:
         if not updates:
             return
         rotate_if_needed(self.path)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writerow([
                     "symbol","status","current_price","unrealized_pnl_pct","stop_loss","break_even_active",
                     "tp1_hit","tp2_hit","tp3_hit","note"
@@ -722,10 +718,9 @@ class TradeDatasetLogger:
         ]
         rotate_if_needed(self.path)
         _rotate_on_schema_change(self.path, fieldnames)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writeheader()
             writer.writerow(row)
 
@@ -758,7 +753,7 @@ class TradeDatasetV2Logger:
             self._seen_close_keys = set()
             if self.path.exists():
                 try:
-                    with self.path.open("r", newline="", encoding="utf-8") as handle:
+                    with locked_open(self.path, "r", newline="", encoding="utf-8") as handle:
                         rows = list(csv.DictReader(handle))
                     for row in rows[-500:]:
                         if str(row.get("event_type") or "").upper() in ("CLOSE", "POSITION_CLOSED"):
@@ -1013,10 +1008,9 @@ class TradeDatasetV2Logger:
         # 59-column schema silently shifts every value into the wrong column
         # (observed live 2026-07-07: trade_grade landed in close_reason).
         _rotate_on_schema_change(self.path, fieldnames)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-            if not exists:
+            if handle.tell() == 0:
                 writer.writeheader()
             writer.writerow(row)
 
@@ -1068,10 +1062,9 @@ class ValidationEventLogger:
         ]
         rotate_if_needed(self.path)
         _rotate_on_schema_change(self.path, fieldnames)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-            if not exists:
+            if handle.tell() == 0:
                 writer.writeheader()
             writer.writerow(row)
 
@@ -1194,10 +1187,9 @@ class StrategyPerformanceLogger:
         ]
         rotate_if_needed(self.path)
         _rotate_on_schema_change(self.path, fieldnames)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-            if not exists:
+            if handle.tell() == 0:
                 writer.writeheader()
             writer.writerow(row)
 
@@ -1226,13 +1218,13 @@ class LiveTradeJournalLogger:
         if not self.path.exists():
             return []
         try:
-            with self.path.open("r", encoding="utf-8") as f:
+            with locked_open(self.path, "r", encoding="utf-8") as f:
                 return self._load(f)
         except Exception:
             return []
 
     def _write(self, data: list[dict]) -> None:
-        with self.path.open("w", encoding="utf-8") as f:
+        with locked_open(self.path, "w", encoding="utf-8") as f:
             self._dump(data, f, indent=2)
 
     def log_open(self, report: ExecutionReport) -> None:
@@ -1405,81 +1397,6 @@ class LiveTradeJournalLogger:
         """Force-close stale journal rows when executed_trades has already synced closed state."""
         self.log_close(symbol=symbol, result=result, pnl=pnl)
 
-def append_closed_trade_row(
-    *,
-    symbol: str,
-    strategy: str,
-    direction: str,
-    entry_price: float,
-    exit_price: float,
-    size: float,
-    pnl: float,
-    pnl_pct: float,
-    close_reason: str,
-    opened_at: str | None = None,
-    closed_at: str | None = None,
-    extra: dict | None = None,
-    dataset_path: str = "logs/trade_dataset_v2.csv",
-) -> None:
-    """Append a guaranteed CLOSED trade row for live stop/TP/manual close events."""
-    import csv
-    from datetime import datetime, timezone
-    from pathlib import Path
-
-    path = Path(dataset_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    closed_at = closed_at or now
-    extra = extra or {}
-    strategy_label = _normalize_strategy_label(strategy, extra)
-
-    row = {
-        "timestamp": closed_at,
-        "created_at": closed_at,
-        "opened_at": opened_at or "",
-        "closed_at": closed_at,
-        "symbol": str(symbol or "").upper(),
-        "strategy": strategy_label,
-        "direction": str(direction or "").upper(),
-        "entry_price": float(entry_price or 0.0),
-        "exit_price": float(exit_price or 0.0),
-        "size": float(size or 0.0),
-        "pnl": float(pnl or 0.0),
-        "pnl_pct": float(pnl_pct or 0.0),
-        "status": "CLOSED",
-        "position_status": "CLOSED",
-        "event_type": "POSITION_CLOSED",
-        "closed_reason": str(close_reason or "unknown"),
-        "close_reason": str(close_reason or "unknown"),
-    }
-
-    if extra:
-        for key, value in extra.items():
-            if key not in row:
-                row[str(key)] = value
-
-    existing_fieldnames = []
-    if path.exists() and path.stat().st_size > 0:
-        try:
-            with path.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                existing_fieldnames = next(reader, [])
-        except Exception:
-            existing_fieldnames = []
-
-    fieldnames = list(existing_fieldnames)
-    for key in row.keys():
-        if key not in fieldnames:
-            fieldnames.append(key)
-
-    write_header = not path.exists() or path.stat().st_size == 0
-
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames or list(row.keys()), extrasaction="ignore")
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
 # --- Hardened closed-trade writer for v2 learning dataset ---
 def append_closed_trade_row(
     position: dict | None = None,

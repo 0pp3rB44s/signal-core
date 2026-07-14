@@ -1,10 +1,49 @@
 import logging
 from logging.handlers import RotatingFileHandler
+import re
 import sys
 from pathlib import Path
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+
+class SensitiveDataFilter(logging.Filter):
+    """Redact common credential fields before any handler emits a record."""
+
+    _credential_pattern = re.compile(
+        r"(?ix)"
+        r"(?P<prefix>"
+        r"(?P<keyquote>['\"]?)"
+        r"(?:api[_-]?(?:key|secret)|secret[_-]?key|passphrase|password|"
+        r"access[_-]?token|refresh[_-]?token|token)"
+        r"(?P=keyquote)\s*[:=]\s*"
+        r")"
+        r"(?P<value>"
+        r"\"(?:\\.|[^\"])*\"|"
+        r"'(?:\\.|[^'])*'|"
+        r"[^\s,;}\]|]+"
+        r")"
+    )
+    _authorization_pattern = re.compile(
+        r"(?i)(['\"]?authorization['\"]?\s*[:=]\s*)"
+        r"(?:bearer|basic)?\s*[^\s,;}\]]+"
+    )
+    _bearer_pattern = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
+
+    @classmethod
+    def redact(cls, message: str) -> str:
+        message = cls._authorization_pattern.sub(r"\1[REDACTED]", str(message))
+        message = cls._credential_pattern.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]",
+            message,
+        )
+        return cls._bearer_pattern.sub("Bearer [REDACTED]", message)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self.redact(record.getMessage())
+        record.args = ()
+        return True
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -17,6 +56,7 @@ def setup_logging(level: str = "INFO") -> None:
 
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    stream_handler.addFilter(SensitiveDataFilter())
 
     file_handler = RotatingFileHandler(
         log_dir / "agent.log",
@@ -25,6 +65,7 @@ def setup_logging(level: str = "INFO") -> None:
         encoding="utf-8",
     )
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    file_handler.addFilter(SensitiveDataFilter())
 
     root.addHandler(stream_handler)
     root.addHandler(file_handler)

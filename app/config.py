@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     python_unbuffered: int = Field(default=1, alias="PYTHONUNBUFFERED")
 
     bitget_base_url: str = Field(default="https://api.bitget.com", alias="BITGET_BASE_URL")
-    bitget_api_key: str = Field(default="", alias="BITGET_API_KEY")
-    bitget_api_secret: str = Field(default="", alias="BITGET_API_SECRET")
-    bitget_api_passphrase: str = Field(default="", alias="BITGET_API_PASSPHRASE")
+    bitget_api_key: SecretStr = Field(default=SecretStr(""), alias="BITGET_API_KEY")
+    bitget_api_secret: SecretStr = Field(default=SecretStr(""), alias="BITGET_API_SECRET")
+    bitget_api_passphrase: SecretStr = Field(default=SecretStr(""), alias="BITGET_API_PASSPHRASE")
     bitget_locale: str = Field(default="en-US", alias="BITGET_LOCALE")
 
     bitget_product_type: str = Field(default="USDT-FUTURES", alias="BITGET_PRODUCT_TYPE")
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     bitget_contract_cache_ttl_sec: int = Field(default=180, alias="BITGET_CONTRACT_CACHE_TTL_SEC")
     bitget_rate_limit_min_interval_ms: int = Field(default=120, alias="BITGET_RATE_LIMIT_MIN_INTERVAL_MS")
     bitget_rate_limit_429_cooldown_sec: float = Field(default=5.0, alias="BITGET_RATE_LIMIT_429_COOLDOWN_SEC")
+    bitget_rate_limit_state_path: str = Field(default="state/bitget_rate_limit.json", alias="BITGET_RATE_LIMIT_STATE_PATH")
     bitget_max_request_retries: int = Field(default=3, alias="BITGET_MAX_REQUEST_RETRIES")
     bitget_retry_backoff_seconds: float = Field(default=1.25, alias="BITGET_RETRY_BACKOFF_SECONDS")
     watchlist: str = Field(
@@ -42,7 +43,15 @@ class Settings(BaseSettings):
     min_usdt_volume_24h: float = Field(default=10_000_000, alias="MIN_USDT_VOLUME_24H")
     min_change_pct_24h_abs: float = Field(default=1.5, alias="MIN_CHANGE_PCT_24H_ABS")
     max_symbols: int = Field(default=28, alias="MAX_SYMBOLS")
-    strategy_debug_symbols: str = Field(default="", alias="STRATEGY_DEBUG_SYMBOLS")
+    strategy_debug_symbols: str = Field(
+        default="NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT",
+        alias="STRATEGY_DEBUG_SYMBOLS",
+    )
+    momentum_funnel_audit: bool = Field(default=True, alias="MOMENTUM_FUNNEL_AUDIT")
+    breakout_context_min_expansion_prob: float = Field(default=70.0, alias="BREAKOUT_CONTEXT_MIN_EXPANSION_PROB")
+    breakout_context_min_pressure_score: float = Field(default=45.0, alias="BREAKOUT_CONTEXT_MIN_PRESSURE_SCORE")
+    breakout_context_min_structure_score: float = Field(default=1.0, alias="BREAKOUT_CONTEXT_MIN_STRUCTURE_SCORE")
+    breakout_context_high_prob_pressure_floor: float = Field(default=35.0, alias="BREAKOUT_CONTEXT_HIGH_PROB_PRESSURE_FLOOR")
     enable_shorts: bool = Field(default=True, alias="ENABLE_SHORTS")
     strategy_isolation_enabled: bool = Field(default=False, alias="STRATEGY_ISOLATION_ENABLED")
     enabled_strategies: str = Field(default="", alias="ENABLED_STRATEGIES")
@@ -91,7 +100,7 @@ class Settings(BaseSettings):
     planner_max_notional_per_trade_usdt: float = Field(default=35.0, alias="PLANNER_MAX_NOTIONAL_PER_TRADE_USDT")
     planner_min_live_notional_usdt: float = Field(default=10.0, alias="PLANNER_MIN_LIVE_NOTIONAL_USDT")
     symbol_cooldown_minutes: int = Field(default=30, alias="SYMBOL_COOLDOWN_MINUTES")
-    break_even_fee_buffer_pct: float = Field(default=0.10, alias="BREAK_EVEN_FEE_BUFFER_PCT")
+    break_even_fee_buffer_pct: float = Field(default=0.12, alias="BREAK_EVEN_FEE_BUFFER_PCT")
     # UTC hour windows where live results are historically negative; risk is
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
@@ -142,11 +151,13 @@ class Settings(BaseSettings):
     position_manager_enabled: bool = Field(default=True, alias="POSITION_MANAGER_ENABLED")
 
     dashboard_enabled: bool = Field(default=True, alias="DASHBOARD_ENABLED")
-    dashboard_host: str = Field(default="0.0.0.0", alias="DASHBOARD_HOST")
+    dashboard_host: str = Field(default="127.0.0.1", alias="DASHBOARD_HOST")
     dashboard_port: int = Field(default=8501, alias="DASHBOARD_PORT")
     dashboard_debug: bool = Field(default=False, alias="DASHBOARD_DEBUG")
+    dashboard_password: SecretStr = Field(default=SecretStr(""), alias="DASHBOARD_PASSWORD")
+    dashboard_secret_key: SecretStr = Field(default=SecretStr(""), alias="DASHBOARD_SECRET_KEY")
     position_sync_on_start: bool = Field(default=True, alias="POSITION_SYNC_ON_START")
-    position_loop_enabled: bool = Field(default=False, alias="POSITION_LOOP_ENABLED")
+    position_loop_enabled: bool = Field(default=True, alias="POSITION_LOOP_ENABLED")
     position_check_interval_sec: int = Field(default=30, alias="POSITION_CHECK_INTERVAL_SEC")
     move_stop_to_be_after_tp1: bool = Field(default=True, alias="MOVE_STOP_TO_BE_AFTER_TP1")
     tp1_close_pct: float = Field(default=40.0, alias="TP1_CLOSE_PCT")

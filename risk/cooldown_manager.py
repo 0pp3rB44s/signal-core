@@ -67,15 +67,18 @@ class SymbolCooldownManager:
         now = datetime.now(timezone.utc)
         until = now + timedelta(minutes=minutes)
 
-        data = self.state_store.load(default={}) or {}
-        data[symbol] = {
-            "symbol": symbol,
-            "reason": reason,
-            "created_at": now.isoformat(),
-            "until": until.isoformat(),
-            "duration_minutes": minutes,
-        }
-        self.state_store.save(data)
+        def apply(data: dict) -> dict:
+            data = dict(data or {})
+            data[symbol] = {
+                "symbol": symbol,
+                "reason": reason,
+                "created_at": now.isoformat(),
+                "until": until.isoformat(),
+                "duration_minutes": minutes,
+            }
+            return data
+
+        self.state_store.update(default={}, mutator=apply)
         return self.get(symbol)
 
     def set_cooldown(self, symbol: str, *, minutes: int, reason: str = "cooldown") -> CooldownStatus:
@@ -83,42 +86,46 @@ class SymbolCooldownManager:
 
     def clear(self, symbol: str) -> None:
         symbol = symbol.upper()
-        data = self.state_store.load(default={}) or {}
-        if symbol in data:
+
+        def apply(data: dict) -> dict:
+            data = dict(data or {})
             data.pop(symbol, None)
-            self.state_store.save(data)
+            return data
+
+        self.state_store.update(default={}, mutator=apply)
 
     def clear_cooldown(self, symbol: str) -> None:
         self.clear(symbol)
 
     def prune_expired(self) -> int:
-        data = self.state_store.load(default={}) or {}
         removed = 0
         now = datetime.now(timezone.utc)
-        cleaned = {}
 
-        for symbol, payload in data.items():
-            until_raw = str((payload or {}).get("until") or "")
-            if not until_raw:
-                removed += 1
-                continue
-            try:
-                until_dt = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
-            except Exception:
-                removed += 1
-                continue
-            if until_dt <= now:
-                removed += 1
-                continue
-            normalized_symbol = str(symbol).upper()
-            cleaned[normalized_symbol] = {
-                **payload,
-                "symbol": normalized_symbol,
-                "reason": self.normalize_reason((payload or {}).get("reason")),
-            }
+        def apply(data: dict) -> dict:
+            nonlocal removed
+            cleaned = {}
+            for symbol, payload in dict(data or {}).items():
+                until_raw = str((payload or {}).get("until") or "")
+                if not until_raw:
+                    removed += 1
+                    continue
+                try:
+                    until_dt = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
+                except Exception:
+                    removed += 1
+                    continue
+                if until_dt <= now:
+                    removed += 1
+                    continue
+                normalized_symbol = str(symbol).upper()
+                cleaned[normalized_symbol] = {
+                    **payload,
+                    "symbol": normalized_symbol,
+                    "reason": self.normalize_reason((payload or {}).get("reason")),
+                }
+            return cleaned
 
-        if removed:
-            self.state_store.save(cleaned)
+        self.state_store.update(default={}, mutator=apply)
         return removed
 
     def is_active(self, symbol: str) -> bool:

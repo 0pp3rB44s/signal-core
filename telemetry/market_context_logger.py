@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from telemetry.csv_rotation import rotate_if_needed
+from telemetry.safe_io import locked_open
 
 
 class MarketContextLogger:
@@ -108,10 +109,9 @@ class MarketContextLogger:
         ]
 
         rotate_if_needed(self.path)
-        exists = self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8") as handle:
+        with locked_open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            if not exists:
+            if handle.tell() == 0:
                 writer.writeheader()
             writer.writerow(row)
 

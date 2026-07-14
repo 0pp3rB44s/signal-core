@@ -887,7 +887,9 @@ class RiskManager:
         note_text = self._note_text(candidate)
         symbol = (candidate.symbol or "").upper()
 
-        spread_bps = self._extract_note_float(candidate, "spread ", 0.0)
+        spread_bps = self._extract_note_float(candidate, "spread_bps=", 0.0)
+        if spread_bps == 0.0:
+            spread_bps = self._extract_note_float(candidate, "spread ", 0.0)
         entry_quality_long = self._extract_note_float(candidate, "entry_quality long=", 100.0)
         entry_quality_short = self._extract_note_float(candidate, "short=", 100.0)
         close_pos = self._extract_note_float(candidate, "close_pos=", 0.5)

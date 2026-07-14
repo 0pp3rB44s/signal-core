@@ -11,7 +11,7 @@ patchhistorie en ROADMAP.md voor wat er nog komt.
 
 Een autonome crypto futures execution engine op Bitget (USDT-perpetuals,
 15m/1H timeframes, 28 symbolen) die elke 60 seconden de markt scant, setups
-detecteert via 4 strategieën, elke kandidaat door een keten van kwaliteits-
+detecteert via 5 strategieroutes, elke kandidaat door een keten van kwaliteits-
 en risicopoorten haalt, trades uitvoert met exchange-geverifieerde SL/TP,
 posities elke 10 seconden bewaakt, elke close terugleest van de exchange
 (exchange truth), en dagelijks van zijn eigen resultaten leert om de
@@ -33,7 +33,7 @@ Elke trade doorloopt deze keten. Elke schakel heeft een eigen bestand:
                                      market_data/entry_quality.py
                                      market_data/orderbook_analyzer.py
                                      market_data/liquidity_heatmap.py (read-only)
-  DETECTIE (4 strategieën)           strategies/ (zie §3)
+  DETECTIE (5 strategieroutes)       strategies/ (zie §3)
     ↓ StrategyCandidate
   SCORING                            strategies/scoring.py (0-100, GO≥70)
     ↓ StrategyScore
@@ -44,7 +44,7 @@ Elke trade doorloopt deze keten. Elke schakel heeft een eigen bestand:
     ↓ TP's (adaptive TP engine), sizing, EXECUTABLE/BLOCKED
   EXECUTIE                           execution/execution_service.py
     ↓ market order → fill-truth → SL/TP op exchange → verificatie
-  POSITIE-BEHEER (elke 10s)          execution/position_manager.py
+  POSITIE-BEHEER (onafhankelijke loop) execution/position_manager.py
     ↓ + tp_sl_lifecycle.py (TP-hits, BE, profit-lock, tighten)
     ↓ + position_reconciler.py (exchange↔lokaal sync, ghost-preventie)
     ↓ + closed_trade_writer.py (gegarandeerde CLOSED rows)
@@ -110,15 +110,16 @@ PLANNER (planning/trade_planner.py):
 - master_entry_quality: observe-only (gedemoteerd PATCH-040, was dood gewicht)
 
 EXECUTION (execution/execution_service.py):
-- Max 4 open posities, max 2 per strategie, max 2 nieuwe per cyclus
+- Standaard max 2 open posities, max 2 per strategie, max 1 nieuwe per cyclus
 - Notional-caps op echte equity; balance guard vóór order-send
 - Confirmatie-allowlist per symbool
 
 POSITIE-BEHEER (bescherming ná entry):
 - SL/TP wordt op de exchange geverifieerd (protectie bestaat pas na verificatie)
-- Profit-lock: bij 45% van TP1-afstand → SL naar fee-adjusted break-even
+- Profit-lock: standaard bij 60% van TP1-afstand → SL naar fee-adjusted break-even
+  (minimaal 12bps kostendekking)
 - Failed-continuation tighten: momentum dood → SL aanscherpen (persistent
-  retry elke 10s tot geverifieerd; alleen strakker, nooit ruimer)
+  retry per position-sync tot geverifieerd; alleen strakker, nooit ruimer)
 - Dead-trade timeout: vlak + geen TP1 na 90 min (reclaim) / 240 min → close
 - Dedupe-blocker: geen dubbele close-rows, ook niet na herstart
 
@@ -128,8 +129,8 @@ POSITIE-BEHEER (bescherming ná entry):
 
 Strategie-niveau bepaalt SIZE, setup-niveau bepaalt GO/NO-GO:
 
-  FULL   → 0,50% risico per trade (ACCOUNT_RISK_PER_TRADE_PCT)
-  PROBE  → 0,25% (×0,5) — bij negatieve expectancy, zwakke TP1-rate,
+  FULL   → maximaal 0,75% risico per trade (ACCOUNT_RISK_PER_TRADE_PCT)
+  PROBE  → maximaal 0,375% (×0,5) — bij negatieve expectancy, zwakke TP1-rate,
            coach-reduce, volume-tekort of coil-experiment
   Sessie-venster (rode uren) → nog eens ×0,5
   BLOCKED→ alleen kill-switches en symbool-blokkades
@@ -232,7 +233,7 @@ PLAN_ACCEPTED/PLAN_REJECT → planner-uitkomst + redenen
 NEAR_EXECUTABLE           → bijna-trade: wat ontbrak er precies
 EXECUTABLE_TRADE_CAPS     → sizing-bewijs per uitgevoerde trade
 ENTRY_PROTECTION_CONFIRMED→ SL/TP staat geverifieerd op de exchange
-PROFIT_LOCK_BE            → winst-slot geactiveerd (45% van TP1)
+PROFIT_LOCK_BE            → winst-slot geactiveerd (standaard 60% van TP1)
 FAILED_CONTINUATION_*     → momentum dood → SL-tighten (+ retry-intent)
 DEAD_TRADE_TIMEOUT        → vlakke trade na max duur gesloten
 POSITION_CLOSED_CLEAN     → nette close + exchange truth + dataset-row

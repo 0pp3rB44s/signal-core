@@ -5,9 +5,15 @@ import json
 import os
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator, TypeVar
+
+import fcntl
+
+
+T = TypeVar("T")
 
 
 class JsonStateStore:
@@ -15,9 +21,21 @@ class JsonStateStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._write_lock = threading.Lock()
+        self._lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
         self.state_version = 1
 
-    def load(self, default: Any) -> Any:
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        """Serialize state access across store instances and processes."""
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+
+    def _load_unlocked(self, default: T) -> T:
         if not self.path.exists():
             return default
 
@@ -52,6 +70,10 @@ class JsonStateStore:
         except OSError as exc:
             self._quarantine_corrupt_file("os_error", exc)
             return default
+
+    def load(self, default: T) -> T:
+        with self._file_lock():
+            return self._load_unlocked(default)
 
     def _quarantine_corrupt_file(self, reason: str, exc: Exception) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -95,39 +117,51 @@ class JsonStateStore:
 
         return snapshot_path
 
-    def save(self, data: Any) -> None:
+    def _save_unlocked(self, data: Any) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.snapshot(max_snapshots=10)
 
-        with self._write_lock:
-            self.snapshot(max_snapshots=10)
+        wrapped_payload = {
+            "_state_metadata": {
+                "version": self.state_version,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "checksum": hashlib.sha256(
+                    json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                ).hexdigest(),
+            },
+            "data": data,
+        }
 
-            wrapped_payload = {
-                "_state_metadata": {
-                    "version": self.state_version,
-                    "saved_at": datetime.now(timezone.utc).isoformat(),
-                    "checksum": hashlib.sha256(
-                        json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
-                    ).hexdigest(),
-                },
-                "data": data,
-            }
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=self.path.name,
+            suffix=".tmp",
+            dir=str(self.path.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(wrapped_payload, handle, indent=2, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
 
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=self.path.name,
-                suffix=".tmp",
-                dir=str(self.path.parent),
-            )
+            os.replace(tmp_name, str(self.path))
+        except Exception:
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(wrapped_payload, handle, indent=2, ensure_ascii=False)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-
-                os.replace(tmp_name, str(self.path))
+                if os.path.exists(tmp_name):
+                    os.remove(tmp_name)
             except Exception:
-                try:
-                    if os.path.exists(tmp_name):
-                        os.remove(tmp_name)
-                except Exception:
-                    pass
-                raise
+                pass
+            raise
+
+    def save(self, data: Any) -> None:
+        with self._write_lock, self._file_lock():
+            self._save_unlocked(data)
+
+    def update(self, default: T, mutator: Callable[[T], T | None]) -> T:
+        """Atomically load, mutate and save state under one interprocess lock."""
+        with self._write_lock, self._file_lock():
+            current = self._load_unlocked(default)
+            updated = mutator(current)
+            result = current if updated is None else updated
+            if result != current:
+                self._save_unlocked(result)
+            return result
