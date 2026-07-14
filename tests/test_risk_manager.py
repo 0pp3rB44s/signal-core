@@ -38,7 +38,31 @@ def _candidate(strategy: str = "low_vol_reclaim", symbol: str = "BTCUSDT") -> Ma
     candidate.strategy = strategy
     candidate.symbol = symbol
     candidate.notes = []
+    candidate.market.notes = []
+    candidate.direction = "LONG"
     return candidate
+
+
+def test_execution_cost_gate_reads_current_spread_note_format():
+    rm = RiskManager(settings=MagicMock())
+    candidate = _candidate(symbol="AAVEUSDT")
+    candidate.notes = ["spread_bps=5.250", "entry_quality long=90", "close_pos=0.5"]
+
+    allowed, reasons = rm._execution_cost_gate(candidate)
+
+    assert not allowed
+    assert any("spread too wide (5.25bps >= 5.00bps)" in reason for reason in reasons)
+
+
+def test_execution_cost_gate_keeps_legacy_spread_note_compatible():
+    rm = RiskManager(settings=MagicMock())
+    candidate = _candidate(symbol="AAVEUSDT")
+    candidate.notes = ["spread 5.250bps", "entry_quality long=90", "close_pos=0.5"]
+
+    allowed, reasons = rm._execution_cost_gate(candidate)
+
+    assert not allowed
+    assert any("spread too wide (5.25bps >= 5.00bps)" in reason for reason in reasons)
 
 
 def test_kill_switch_scales_with_equity_below_threshold():
