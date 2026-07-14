@@ -69,9 +69,9 @@ class BitgetBaseClient:
     def has_credentials(self) -> bool:
         return all(
             [
-                self.settings.bitget_api_key,
-                self.settings.bitget_api_secret,
-                self.settings.bitget_api_passphrase,
+                self.settings.bitget_api_key.get_secret_value(),
+                self.settings.bitget_api_secret.get_secret_value(),
+                self.settings.bitget_api_passphrase.get_secret_value(),
             ]
         )
 
@@ -114,9 +114,9 @@ class BitgetBaseClient:
             if not self.has_credentials:
                 raise BitgetAPIError("Missing Bitget API credentials for private request.")
             headers = build_headers(
-                api_key=self.settings.bitget_api_key,
-                api_secret=self.settings.bitget_api_secret,
-                passphrase=self.settings.bitget_api_passphrase,
+                api_key=self.settings.bitget_api_key.get_secret_value(),
+                api_secret=self.settings.bitget_api_secret.get_secret_value(),
+                passphrase=self.settings.bitget_api_passphrase.get_secret_value(),
                 method=method,
                 request_path=path,
                 params=params,

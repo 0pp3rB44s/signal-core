@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     python_unbuffered: int = Field(default=1, alias="PYTHONUNBUFFERED")
 
     bitget_base_url: str = Field(default="https://api.bitget.com", alias="BITGET_BASE_URL")
-    bitget_api_key: str = Field(default="", alias="BITGET_API_KEY")
-    bitget_api_secret: str = Field(default="", alias="BITGET_API_SECRET")
-    bitget_api_passphrase: str = Field(default="", alias="BITGET_API_PASSPHRASE")
+    bitget_api_key: SecretStr = Field(default=SecretStr(""), alias="BITGET_API_KEY")
+    bitget_api_secret: SecretStr = Field(default=SecretStr(""), alias="BITGET_API_SECRET")
+    bitget_api_passphrase: SecretStr = Field(default=SecretStr(""), alias="BITGET_API_PASSPHRASE")
     bitget_locale: str = Field(default="en-US", alias="BITGET_LOCALE")
 
     bitget_product_type: str = Field(default="USDT-FUTURES", alias="BITGET_PRODUCT_TYPE")
@@ -43,7 +43,15 @@ class Settings(BaseSettings):
     min_usdt_volume_24h: float = Field(default=10_000_000, alias="MIN_USDT_VOLUME_24H")
     min_change_pct_24h_abs: float = Field(default=1.5, alias="MIN_CHANGE_PCT_24H_ABS")
     max_symbols: int = Field(default=28, alias="MAX_SYMBOLS")
-    strategy_debug_symbols: str = Field(default="", alias="STRATEGY_DEBUG_SYMBOLS")
+    strategy_debug_symbols: str = Field(
+        default="NEARUSDT,FETUSDT,FILUSDT,OPUSDT,ADAUSDT,LINKUSDT,WIFUSDT,AAVEUSDT",
+        alias="STRATEGY_DEBUG_SYMBOLS",
+    )
+    momentum_funnel_audit: bool = Field(default=True, alias="MOMENTUM_FUNNEL_AUDIT")
+    breakout_context_min_expansion_prob: float = Field(default=70.0, alias="BREAKOUT_CONTEXT_MIN_EXPANSION_PROB")
+    breakout_context_min_pressure_score: float = Field(default=45.0, alias="BREAKOUT_CONTEXT_MIN_PRESSURE_SCORE")
+    breakout_context_min_structure_score: float = Field(default=1.0, alias="BREAKOUT_CONTEXT_MIN_STRUCTURE_SCORE")
+    breakout_context_high_prob_pressure_floor: float = Field(default=35.0, alias="BREAKOUT_CONTEXT_HIGH_PROB_PRESSURE_FLOOR")
     enable_shorts: bool = Field(default=True, alias="ENABLE_SHORTS")
     strategy_isolation_enabled: bool = Field(default=False, alias="STRATEGY_ISOLATION_ENABLED")
     enabled_strategies: str = Field(default="", alias="ENABLED_STRATEGIES")
@@ -146,6 +154,8 @@ class Settings(BaseSettings):
     dashboard_host: str = Field(default="127.0.0.1", alias="DASHBOARD_HOST")
     dashboard_port: int = Field(default=8501, alias="DASHBOARD_PORT")
     dashboard_debug: bool = Field(default=False, alias="DASHBOARD_DEBUG")
+    dashboard_password: SecretStr = Field(default=SecretStr(""), alias="DASHBOARD_PASSWORD")
+    dashboard_secret_key: SecretStr = Field(default=SecretStr(""), alias="DASHBOARD_SECRET_KEY")
     position_sync_on_start: bool = Field(default=True, alias="POSITION_SYNC_ON_START")
     position_loop_enabled: bool = Field(default=True, alias="POSITION_LOOP_ENABLED")
     position_check_interval_sec: int = Field(default=30, alias="POSITION_CHECK_INTERVAL_SEC")

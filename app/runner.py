@@ -104,33 +104,12 @@ def _execution_aware_score(snapshot: MarketSnapshot) -> float:
     return score
 
 
-def _build_fallback_candidate(snapshot: MarketSnapshot) -> StrategyCandidate | None:
+def _build_fallback_candidate(snapshot: MarketSnapshot, settings: Settings) -> StrategyCandidate | None:
     note_text = " ".join(str(note).lower() for note in (snapshot.notes or []))
 
-    def _strategy_set_from_env(name: str) -> set[str]:
-        values: list[str] = []
-        raw_value = os.getenv(name, "")
-        if raw_value:
-            values.extend(raw_value.split(","))
-
-        env_path = Path(".env")
-        if env_path.exists():
-            try:
-                for line in env_path.read_text(errors="ignore").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, value = line.split("=", 1)
-                    if key.strip() == name:
-                        values.extend(value.split(","))
-            except Exception:
-                pass
-
-        return {item.strip().lower() for item in values if item.strip()}
-
     fallback_strategy_name = "adaptive_momentum_continuation"
-    enabled_strategies = _strategy_set_from_env("ENABLED_STRATEGIES")
-    disabled_strategies = _strategy_set_from_env("DISABLED_STRATEGIES")
+    enabled_strategies = settings.enabled_strategy_set
+    disabled_strategies = settings.disabled_strategy_set
     explicitly_enabled = fallback_strategy_name in enabled_strategies
     explicitly_disabled = fallback_strategy_name in disabled_strategies
 
@@ -702,8 +681,7 @@ class StartupRunner:
                         )
                         low_vol_reclaim_candidate = None
 
-                    raw_debug_symbols = os.getenv("STRATEGY_DEBUG_SYMBOLS", "NEARUSDT,WIFUSDT")
-                    debug_symbols = {symbol.strip().upper() for symbol in raw_debug_symbols.split(",") if symbol.strip()}
+                    debug_symbols = self.settings.strategy_debug_symbol_set
                     if snapshot.symbol.upper() in debug_symbols:
                         self.log.info(
                             "STRATEGY_ROUTE | %s | sweep=%s | continuation=%s | low_vol_reclaim=%s | momentum_breakout=%s | momentum_breakdown=%s",
@@ -749,16 +727,8 @@ class StartupRunner:
                             selector_reason = "selector_bad_return_treated_as_no_candidate"
 
                     if candidate is None:
-                        enabled_strategies = {
-                            item.strip().lower()
-                            for item in os.getenv("ENABLED_STRATEGIES", "").split(",")
-                            if item.strip()
-                        }
-                        disabled_strategies = {
-                            item.strip().lower()
-                            for item in os.getenv("DISABLED_STRATEGIES", "").split(",")
-                            if item.strip()
-                        }
+                        enabled_strategies = self.settings.enabled_strategy_set
+                        disabled_strategies = self.settings.disabled_strategy_set
 
                         fallback_strategy_name = "adaptive_momentum_continuation"
                         fallback_enabled = (
@@ -776,7 +746,7 @@ class StartupRunner:
                                 fallback_disabled,
                             )
                         else:
-                            fallback_candidate = _build_fallback_candidate(snapshot)
+                            fallback_candidate = _build_fallback_candidate(snapshot, self.settings)
 
                             if fallback_candidate is not None:
                                 candidate = fallback_candidate

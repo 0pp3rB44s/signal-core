@@ -1,25 +1,22 @@
 import logging
-import os
 import secrets
 from datetime import timedelta
 from functools import wraps
-from pathlib import Path
-
-from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
+from app.config import Settings
 from dashboard_v2 import bot_control
 from dashboard_v2.data_provider import get_dashboard_data
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+settings = Settings()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("DASHBOARD_SECRET_KEY") or secrets.token_urlsafe(32)
+app.secret_key = settings.dashboard_secret_key.get_secret_value() or secrets.token_urlsafe(32)
 app.permanent_session_lifetime = timedelta(days=7)
 
 logger = logging.getLogger("dashboard")
 
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+DASHBOARD_PASSWORD = settings.dashboard_password.get_secret_value()
 if not DASHBOARD_PASSWORD:
     raise RuntimeError(
         "DASHBOARD_PASSWORD is required; refusing to start the dashboard without authentication configuration"
@@ -85,11 +82,13 @@ def api_bot_stop():
 
 
 if __name__ == "__main__":
-    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
-    port = int(os.getenv("DASHBOARD_PORT", "8501"))
-    debug = os.getenv("DASHBOARD_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
     # threaded=True: /api/data does several live Bitget API round-trips plus
     # log/CSV parsing, so a single request can take longer than the 5s client
     # poll interval. Without threading, Flask's dev server handles requests
     # one at a time and polling clients back up behind each other.
-    app.run(host=host, port=port, debug=debug, threaded=True)
+    app.run(
+        host=settings.dashboard_host,
+        port=settings.dashboard_port,
+        debug=settings.dashboard_debug,
+        threaded=True,
+    )
