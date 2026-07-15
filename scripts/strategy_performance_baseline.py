@@ -14,6 +14,7 @@ from typing import Any
 
 from app.config import Settings
 from backtesting.backtest_engine import BacktestEngine
+from risk.historical_policy import HistoricalProxyConfig, ResearchRiskMode
 from clients.schemas import Candle
 
 
@@ -310,6 +311,11 @@ def main() -> int:
     parser.add_argument("--analysis-tooling-commit", required=True)
     parser.add_argument("--dataset-version", required=True)
     parser.add_argument("--dataset-hash", required=True)
+    parser.add_argument(
+        "--research-risk-mode",
+        choices=[mode.value for mode in ResearchRiskMode],
+        default=ResearchRiskMode.PRODUCTION.value,
+    )
     parser.add_argument("--require-clean-runtime", action="store_true")
     args = parser.parse_args()
     if args.output_dir.exists():
@@ -329,7 +335,13 @@ def main() -> int:
         raise SystemExit("no datasets found")
 
     settings = Settings(_env_file=None)
-    engine = BacktestEngine(settings)
+    risk_mode = ResearchRiskMode(args.research_risk_mode)
+    proxy_config = HistoricalProxyConfig()
+    engine = BacktestEngine(
+        settings,
+        research_risk_mode=risk_mode,
+        historical_proxy_config=proxy_config,
+    )
     result = engine.run(market_data)
     records = list(result["execution_records"])
     trades = list(result.get("trade_log", []))
@@ -356,6 +368,12 @@ def main() -> int:
         "duplicate_policy": "report and deterministically keep last row per timestamp",
         "timezone": "UTC", "strategy_versions": {row["strategy"]: args.execution_commit for row in STRATEGIES},
         "execution_assumptions": assumptions, "random_seed": None,
+        "research_risk_mode": risk_mode.value,
+        "historical_proxy": {
+            "configuration": proxy_config.canonical_payload(),
+            "configuration_hash": proxy_config.configuration_hash,
+            "activation": "explicit CLI choice only; no Settings or environment binding",
+        } if risk_mode is ResearchRiskMode.HISTORICAL_CONSERVATIVE_PROXY else None,
         "runtime_isolation": "clean source export; _env_file=None; operational runtime files forbidden",
         "comparability_exception": "adaptive_momentum_continuation is a disabled fallback and cannot emit standalone signals",
     }
@@ -431,6 +449,10 @@ def main() -> int:
     funnel_rows = build_funnel_rows(debug, summaries, candidate_keys)
     _write_csv(args.output_dir / "detector_funnel.csv", funnel_rows, list(funnel_rows[0]))
     (args.output_dir / "detector_funnel.json").write_text(json.dumps(funnel_rows, indent=2, sort_keys=True) + "\n")
+    gate_decisions = list(result.get("gate_decisions", []))
+    (args.output_dir / "risk_gate_decisions.json").write_text(json.dumps(gate_decisions, indent=2, sort_keys=True) + "\n")
+    gate_fields = ["strategy", "symbol", "direction", "signal_timestamp", "risk_policy", "allowed", "reasons", "proxy_values"]
+    _write_csv(args.output_dir / "risk_gate_decisions.csv", gate_decisions, gate_fields)
     (args.output_dir / "run_diagnostics.json").write_text(json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
     return 0
 

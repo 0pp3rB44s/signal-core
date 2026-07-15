@@ -10,6 +10,7 @@ from pathlib import Path
 from app.config import Settings
 from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
+from risk.historical_policy import ResearchRiskMode
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
@@ -1024,14 +1025,25 @@ class RiskManager:
         hard_blocks = [r for r in reasons if "momentum-quality blocked" in r]
         return not hard_blocks, reasons, momentum_probe and not hard_blocks
 
-    def evaluate(self, candidate: StrategyCandidate, score: StrategyScore) -> RiskVerdict:
+    def evaluate(
+        self,
+        candidate: StrategyCandidate,
+        score: StrategyScore,
+        *,
+        research_mode: ResearchRiskMode = ResearchRiskMode.PRODUCTION,
+    ) -> RiskVerdict:
         reasons: list[str] = []
+
+        if not isinstance(research_mode, ResearchRiskMode):
+            raise TypeError("research_mode must be an explicit ResearchRiskMode")
 
         note_text = self._note_text(candidate)
         leverage = min(self.settings.default_leverage, self.settings.max_leverage, self.SAFE_ALPHA_MAX_LEVERAGE)
         account_risk_pct = min(self.settings.account_risk_per_trade_pct, self.SAFE_ALPHA_MAX_RISK_PCT)
 
-        if "orderbook_risk_off=true" in note_text or "orderbook_available=false" in note_text:
+        if research_mode is ResearchRiskMode.PRODUCTION and (
+            "orderbook_risk_off=true" in note_text or "orderbook_available=false" in note_text
+        ):
             reasons.append("blocked: orderbook risk-off")
             return RiskVerdict(
                 allowed=False,
@@ -1086,7 +1098,9 @@ class RiskManager:
             reasons.append(f"strategy not in ENABLED_STRATEGIES allow-list: {candidate.strategy}")
 
         probe_mode = False
-        if self._is_backtest_candidate(candidate):
+        if research_mode is not ResearchRiskMode.PRODUCTION:
+            reasons.append(f"research risk mode: {research_mode.value}; operational account gates excluded")
+        elif self._is_backtest_candidate(candidate):
             reasons.append("backtest mode: adaptive kill-switch/strategy-weighting disabled")
         else:
             kill_allowed, kill_reasons = self._kill_switch_gate(candidate)
@@ -1111,10 +1125,11 @@ class RiskManager:
                 "PROBE" if probe_mode else ("FULL" if (kill_allowed and strategy_weight_allowed and ai_agent_allowed) else "BLOCKED"),
             )
 
-        cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)
-        reasons.extend(cluster_reasons)
-        if not cluster_allowed:
-            allowed = False
+        if research_mode is ResearchRiskMode.PRODUCTION:
+            cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)
+            reasons.extend(cluster_reasons)
+            if not cluster_allowed:
+                allowed = False
 
         execution_cost_allowed, execution_cost_reasons = self._execution_cost_gate(candidate)
         reasons.extend(execution_cost_reasons)

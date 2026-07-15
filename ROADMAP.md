@@ -262,3 +262,12 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Prove detectors are not permanently silent: 835 raw candidates across four active strategies.
 - [ ] Resolve the evidence gap for historical orderbook risk context before profitability analysis; all 475 selector-accepted candidates currently fail closed at risk.
 - [ ] Do not enter Phase 3 or alter gates until that missing historical context has an evidence-backed treatment.
+
+# Phase 2C evidence — 2026-07-15
+
+- [x] Preserve production orderbook fail-closed behavior.
+- [x] Separate intrinsic strategy gates, execution economics, live safety and operational account state.
+- [x] Add explicit structural-only and frozen conservative-proxy research modes.
+- [x] Prove no-lookahead proxy inputs and unchanged execution costs/constraints.
+- [x] Run production/structural/proxy shadows twice with deterministic hashes.
+- [ ] Do not start Phase 3: no strategy satisfies sample, expectancy, PF, robustness and drawdown criteria.

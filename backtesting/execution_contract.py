@@ -60,6 +60,7 @@ class ExecutionRecord:
     direction: str
     signal_timestamp: int
     requested_entry: float
+    risk_policy: str = "PRODUCTION"
     executed_entry: float = 0.0
     entry_type: str = "MARKET"
     fill_timestamp: int | None = None
@@ -118,13 +119,14 @@ class BacktestExecutionContract:
     def execute(
         self, *, strategy: str, symbol: str, timeframe: str, direction: str,
         signal_timestamp: int, requested_entry: float, stop: float, targets: Sequence[float],
-        candles: Sequence[Candle], equity: float,
+        candles: Sequence[Candle], equity: float, risk_policy: str = "PRODUCTION",
     ) -> ExecutionRecord:
         cfg = self.config
         direction = direction.upper()
         record = ExecutionRecord(
             strategy=strategy, symbol=symbol, timeframe=timeframe, direction=direction,
             signal_timestamp=signal_timestamp, requested_entry=requested_entry,
+            risk_policy=risk_policy,
             entry_type=cfg.entry_type.upper(), initial_stop=stop,
             tp1_price=float(targets[0]) if targets else 0.0, equity_before=equity,
             equity_after=equity, intrabar_policy_used=cfg.same_candle_policy.upper(),

@@ -290,3 +290,13 @@ VOLGENDE FASE
 - Frozen baseline evaluated 279,680 valid snapshots. Raw candidates: momentum breakout 98, breakdown 98, continuation 401, sweep 238, low-vol reclaim 0. Selector accepted 475 candidates, but frozen risk rejected all on missing historical orderbook context (`orderbook risk-off`). No orders or trades were produced.
 - Two isolated runs completed in 199 seconds each; core reports were byte-identical. Result hash `4ac865f94f9df0a80c35ef169b34c87d34164c7289ba18dcbbc3c6209ca3bfe3`.
 - Reports: `reports/analysis/phase2b_20250715_20260715_dataset_9053781e/`. Phase 3 remains blocked: candle-only history cannot satisfy the production orderbook risk gate, and no candidate may be fabricated or gate disabled in this phase.
+
+# 2026-07-15 — Phase 2C historical risk-gate parity
+
+- Phase 2B frozen in commit `523fc77`; raw/canonical 58 MB payloads remain reproducible local data while manifests and quality evidence are tracked.
+- Exact production blocker: `RiskManager.evaluate` immediately fails closed on `orderbook_available=false` or `orderbook_risk_off=true`. Production and forward-paper behavior remain unchanged.
+- Added explicit `PRODUCTION`, `HISTORICAL_STRUCTURAL_ONLY` and `HISTORICAL_CONSERVATIVE_PROXY` research modes. Historical activation is typed and explicit, with no Settings/`.env` path.
+- Frozen proxy hash `722bb6962e575931e5d4b2ee58ce175413729c587f9eed5a796b69930a349cbc`: volume ratio >=0.50, range <=5%, volatility rank <=90 and TP1 reward >=2x configured round-trip cost (48 bps under the frozen 24 bps baseline).
+- Shadow results: production 0/475 accepted; structural 272 accepted and 212 closed; proxy 144 accepted and 123 closed. Proxy ending equity 986.31, net PnL -13.69; structural ending equity 981.65, net PnL -18.35.
+- Two isolated runs per mode produced identical result hashes: production `4ac865f9`, structural `6ef0a421`, proxy `2d898466`. Comparison hash `16605778`.
+- Phase 3 remains blocked: trend continuation is a 102-trade negative sample in the official proxy baseline; the positive sweep result has only 10 trades; all other strategies have negative or insufficient samples.

@@ -16,6 +16,13 @@ from strategies.strategies.continuation import ContinuationStrategy
 from strategies.strategies.low_vol_reclaim import LowVolReclaimStrategy
 
 from risk.risk_manager import RiskManager
+from risk.historical_policy import (
+    HistoricalProxyConfig,
+    ResearchRiskMode,
+    blocked_proxy_verdict,
+    evaluate_conservative_proxy,
+    historical_candidate,
+)
 from backtesting.metrics import summarize
 from market_features.engine import CandleContractError, FeatureInputs, aggregate_candles, build_market_snapshot
 from backtesting.execution_contract import BacktestExecutionConfig, BacktestExecutionContract, ExecutionRecord
@@ -37,6 +44,7 @@ class BacktestTrade:
     regime: str
     timeframe: str = ""
     signal_timestamp: int = 0
+    risk_policy: str = "PRODUCTION"
     requested_entry: float = 0.0
     executed_entry: float = 0.0
     entry_type: str = "MARKET"
@@ -55,8 +63,18 @@ class BacktestTrade:
 
 
 class BacktestEngine:
-    def __init__(self, settings) -> None:
+    def __init__(
+        self,
+        settings,
+        *,
+        research_risk_mode: ResearchRiskMode = ResearchRiskMode.PRODUCTION,
+        historical_proxy_config: HistoricalProxyConfig | None = None,
+    ) -> None:
+        if not isinstance(research_risk_mode, ResearchRiskMode):
+            raise TypeError("research_risk_mode must be explicitly selected with ResearchRiskMode")
         self.settings = settings
+        self.research_risk_mode = research_risk_mode
+        self.historical_proxy_config = historical_proxy_config or HistoricalProxyConfig()
         self.sweep = LiquiditySweepStrategy(settings)
         self.momentum = MomentumBreakoutStrategy(settings)
         self.momentum_breakdown = MomentumBreakdownStrategy(settings)
@@ -70,6 +88,7 @@ class BacktestEngine:
     def run(self, market_data: Dict[str, List[Candle]]) -> Dict[str, Any]:
         trades: List[BacktestTrade] = []
         execution_records: list[ExecutionRecord] = []
+        gate_decisions: list[dict[str, Any]] = []
         equity = self.execution_config.starting_equity
         debug = Counter()
         debug_by_symbol: dict[str, Counter] = {}
@@ -148,12 +167,43 @@ class BacktestEngine:
                 debug_by_symbol[symbol]["selected_candidate"] += 1
                 debug[f"selected_strategy::{candidate.strategy}"] += 1
 
-                score = self.scorer.score(candidate)
+                risk_candidate = candidate
+                if self.research_risk_mode is not ResearchRiskMode.PRODUCTION:
+                    risk_candidate = historical_candidate(candidate)
+                score = self.scorer.score(risk_candidate)
                 debug["scored_candidate"] += 1
                 debug_by_symbol[symbol]["scored_candidate"] += 1
                 debug[f"score_bucket::{int(score.total // 10) * 10}"] += 1
 
-                verdict = self.risk.evaluate(candidate, score)
+                verdict = self.risk.evaluate(
+                    risk_candidate,
+                    score,
+                    research_mode=self.research_risk_mode,
+                )
+                proxy_decision = None
+                if verdict.allowed and self.research_risk_mode is ResearchRiskMode.HISTORICAL_CONSERVATIVE_PROXY:
+                    proxy_decision = evaluate_conservative_proxy(
+                        risk_candidate,
+                        self.execution_config,
+                        self.historical_proxy_config,
+                    )
+                    for key, value in proxy_decision.proxy_values.items():
+                        debug[f"proxy_value::{key}::sum"] += value
+                    if not proxy_decision.allowed:
+                        verdict = blocked_proxy_verdict(verdict, proxy_decision)
+                        for reason in proxy_decision.reasons:
+                            debug[f"proxy_reason::{reason}"] += 1
+
+                gate_decisions.append({
+                    "strategy": candidate.strategy,
+                    "symbol": candidate.symbol,
+                    "direction": candidate.direction,
+                    "signal_timestamp": candidate.candidate_candle_open_timestamp_ms,
+                    "risk_policy": self.research_risk_mode.value,
+                    "allowed": verdict.allowed,
+                    "reasons": list(verdict.reasons),
+                    "proxy_values": proxy_decision.proxy_values if proxy_decision is not None else {},
+                })
 
                 if not verdict.allowed:
                     debug["risk_rejected"] += 1
@@ -183,6 +233,7 @@ class BacktestEngine:
         result["debug_by_symbol"] = {sym: dict(counter.most_common()) for sym, counter in debug_by_symbol.items()}
         result["execution_records"] = [record.__dict__ for record in execution_records]
         result["trade_log"] = [asdict(trade) for trade in trades]
+        result["gate_decisions"] = gate_decisions
         result["starting_equity"] = self.execution_config.starting_equity
         result["ending_equity"] = equity
         result["execution_assumptions"] = self.execution_config.__dict__
@@ -230,6 +281,7 @@ class BacktestEngine:
             direction=candidate.direction, signal_timestamp=signal_timestamp,
             requested_entry=float(entry), stop=float(sl), targets=[tp1, tp2],
             candles=future_candles, equity=equity,
+            risk_policy=self.research_risk_mode.value,
         )
 
     @staticmethod
@@ -245,6 +297,7 @@ class BacktestEngine:
             candles_held=record.candles_held, tp1_hit=record.tp1_quantity > 0,
             timed_exit=record.timed_exit, regime=regime, timeframe=record.timeframe,
             signal_timestamp=record.signal_timestamp, requested_entry=record.requested_entry,
+            risk_policy=record.risk_policy,
             executed_entry=record.executed_entry, entry_type=record.entry_type,
             fill_timestamp=record.fill_timestamp, fill_status=record.fill_status,
             gross_pnl=record.gross_pnl, entry_fees=record.entry_fee,
