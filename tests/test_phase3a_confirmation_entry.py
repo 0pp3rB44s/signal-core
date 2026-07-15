@@ -77,7 +77,7 @@ def test_experimental_variant_is_absent_from_settings_and_rejected_in_research_s
     root = Path(__file__).resolve().parents[1]
     import json
     status = json.loads((root / "research/strategy_status.json").read_text())
-    assert status[EXPERIMENTAL_STRATEGY] == "HYPOTHESIS_REJECTED_RESEARCH_ONLY"
+    assert status[EXPERIMENTAL_STRATEGY] == "REJECTED — LATE ENTRY DESTROYED GROSS EDGE"
 
 
 def test_production_paper_and_live_sources_do_not_register_variant():

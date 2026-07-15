@@ -297,3 +297,11 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Prove identical detector, selector and risk-accepted cohorts before confirmation.
 - [x] Reject the hypothesis: independent expectancy worsened to `-0.168712` and combined gross price edge became negative.
 - [ ] Do not vary the confirmation window or promote the experimental variant.
+
+# Phase 3B preregistration — 2026-07-15
+
+- [x] Archive rejected paths as research metadata without deleting implementations.
+- [x] Compare only five permitted families using two-year OHLCV behaviour.
+- [x] Freeze exactly one new hypothesis: `failed_range_escape_reversal_v1`.
+- [x] Freeze its split, deterministic rules, parameter register, cost screen and Phase 3C rejection criteria.
+- [ ] Phase 3C may implement only this research contract; any deviation requires a new version and invalidates v1.

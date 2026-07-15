@@ -333,3 +333,19 @@ VOLGENDE FASE
 - Paired confirmed-candidate mean difference is `-0.157336`, bootstrap 95% interval `[-0.281097, -0.064616]`. Four expired losers were avoided and three winners missed, but this selection benefit did not offset worse confirmed entries.
 - Verdict: `HYPOTHESIS REJECTED`. The experimental variant remains unregistered in production, paper and live paths.
 - Two complete runs are byte-identical with Phase 3A artifact hash `ddb74fedb1cdae6b1a0b4f603434aa714b886f60b1634bc7a3d162bd59244336`.
+
+# 2026-07-15 — Phase 3B new-strategy preregistration
+
+- Branched `research/preregister-next-strategy` at frozen Phase 3A commit
+  `4c44d3fbeeb694091fdd523293ffe3980edd8517`; Phase 3A hash `ddb74fed`
+  remains unchanged.
+- Built an OHLCV-only inventory over two non-overlapping years, eight symbols
+  and five permitted families. No execution, trade record or performance field
+  was loaded. Two runs are byte-identical with evidence hash `662f35b9`.
+- Compression breakout, continuation, volatility expansion and extreme
+  structural mean reversion were contradicted. Failed breakout reversal alone
+  had repeated positive directional medians at 4, 8 and 16 candles in both
+  years with broad cross-symbol and cross-direction frequency.
+- Froze one hypothesis, `failed_range_escape_reversal_v1`, with document hash
+  `e7117eefbf5e387646f2a5bceb444d5125a46c56b438eb6f2c8d2e6f69077da9`.
+  It is neither implemented nor registered; Phase 3C criteria are immutable.

@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "hypothesis_id": "failed_range_escape_reversal_v1",
+  "status": "PREREGISTERED_NOT_IMPLEMENTED",
+  "research_only": true,
+  "frozen_parent_commit": "4c44d3fbeeb694091fdd523293ffe3980edd8517",
+  "phase3a_artifact_hash": "ddb74fedb1cdae6b1a0b4f603434aa714b886f60b1634bc7a3d162bd59244336",
+  "evidence_hash": "662f35b959914e4f2d308a6b48513def7af1911cbcdabba1ceb4047b1ac1e68f",
+  "selection_basis": "Repeated descriptive failed-escape/re-entry behaviour with adequate event frequency across both years, all eight symbols, both directions and all sessions; selected without strategy execution or profitability ranking.",
+  "economic_rationale": "A close outside a recent range can attract continuation orders and stops. An immediate, directional close back inside the range demonstrates rejection of that auction and can force trapped breakout participants to unwind toward the opposite side. Structural risk is bounded by the escape extreme.",
+  "deterministic_specification": {
+    "setup": {
+      "timeframe": "15m",
+      "market_regime": "all; regime is recorded but is not a gate",
+      "structural_context": "range high and low over the 20 fully closed candles immediately preceding the escape candle",
+      "required_price_pattern": "escape candle closes at least 0.10 ATR14 outside the prior range; the immediately following failure candle closes at least 0.15 ATR14 back inside, has body/range >= 0.50, and its body points in the reversal direction",
+      "higher_timeframe_condition": "last fully closed 1h EMA20/EMA50 context must be available and recorded; no directional filter",
+      "volume_or_volatility_condition": "ATR14 must be finite and positive; volume ratio is recorded, not gated",
+      "cost_distance_condition": "distance from next-open entry to TP1 must be at least 72 basis points"
+    },
+    "entry": {
+      "trigger": "the failed-escape candle closes and satisfies every setup condition",
+      "direction": "LONG after failed downside escape; SHORT after failed upside escape",
+      "timing": "market order at the next 15m candle open",
+      "expiration": "one candle; no later entry",
+      "no_lookahead": "range ends before escape; escape and failure candles are fully closed; entry uses only their data and the next open"
+    },
+    "invalidation": {
+      "structure": "LONG stop at failed downside escape candle low; SHORT stop at failed upside escape candle high",
+      "maximum_stop": "entry-to-stop distance <= 2.0 ATR14 measured on the failure candle",
+      "invalid": "reject if stop is not strictly beyond entry in the loss direction, ATR is unavailable, or required candles/1h context are incomplete"
+    },
+    "exit": {
+      "tp1": "1.2R from executable entry",
+      "final_target": "2.0R from executable entry",
+      "partial_percentage": "40% at TP1",
+      "break_even": "after completed TP1 partial, move stop to fee-adjusted break-even using frozen 12 bps entry-plus-exit cost allowance",
+      "maximum_holding": "8 fully elapsed 15m candles after entry; close at candle 8 close if still open"
+    },
+    "risk": {
+      "risk_percentage": "0.75% of available equity",
+      "leverage_cap": "5x",
+      "maximum_notional": "35% of available equity times leverage cap",
+      "exchange_constraints": "frozen execution contract tick, lot, minimum quantity and minimum notional rules; invalid orders fail closed"
+    },
+    "suppression": {
+      "candidate_identity": "strategy + symbol + direction + failure-candle open timestamp",
+      "duplicates": "same candidate candle is emitted once",
+      "cooldown": "no global candle cooldown",
+      "same_symbol_overlap": "an active same-symbol lifecycle blocks another entry",
+      "conflicting_signals": "existing selector resolves conflicts; this preregistration does not change selector behaviour"
+    }
+  },
+  "parameter_register": [
+    {
+      "name": "range_lookback",
+      "category": "setup",
+      "value": 20,
+      "unit": "closed 15m candles",
+      "formula": "max(high), min(low) over t-21..t-2",
+      "rationale": "defines a local auction boundary before escape",
+      "plausible_range": "10-40 candles",
+      "expected_effect": "longer windows reduce event frequency and widen structural context"
+    },
+    {
+      "name": "minimum_escape",
+      "category": "setup",
+      "value": 0.1,
+      "unit": "ATR14",
+      "formula": "distance of escape close beyond range / failure-candle ATR14",
+      "rationale": "excludes boundary rounding noise",
+      "plausible_range": "0.0-0.5 ATR",
+      "expected_effect": "higher values retain more displaced escapes"
+    },
+    {
+      "name": "minimum_reentry",
+      "category": "setup",
+      "value": 0.15,
+      "unit": "ATR14",
+      "formula": "distance of failure close back inside boundary / ATR14",
+      "rationale": "requires observable rejection inside the old auction",
+      "plausible_range": "0.0-0.75 ATR",
+      "expected_effect": "higher values reduce shallow re-entries"
+    },
+    {
+      "name": "minimum_failure_body_fraction",
+      "category": "setup",
+      "value": 0.5,
+      "unit": "fraction",
+      "formula": "abs(close-open)/(high-low)",
+      "rationale": "requires the failure close to be driven by body movement rather than wick alone",
+      "plausible_range": "0.3-0.8",
+      "expected_effect": "higher values select more directional failure candles"
+    },
+    {
+      "name": "minimum_tp1_distance",
+      "category": "setup",
+      "value": 72,
+      "unit": "basis points",
+      "formula": "abs(TP1-entry)/entry*10000",
+      "rationale": "three times frozen 24 bps round-trip execution cost",
+      "plausible_range": "72-144 bps",
+      "expected_effect": "rejects structures whose first reward is mechanically cost-dominated"
+    },
+    {
+      "name": "entry_delay",
+      "category": "entry_timing",
+      "value": 1,
+      "unit": "next candle open",
+      "formula": "failure candle index + 1",
+      "rationale": "closed-candle signal without lookahead",
+      "plausible_range": "1 candle only for v1",
+      "expected_effect": "makes the signal executable after confirmation"
+    },
+    {
+      "name": "maximum_stop_distance",
+      "category": "stop",
+      "value": 2.0,
+      "unit": "ATR14",
+      "formula": "abs(entry-escape extreme)/ATR14",
+      "rationale": "bounds risk when the escape extreme is remote",
+      "plausible_range": "1.0-3.0 ATR",
+      "expected_effect": "rejects structurally expensive invalidations"
+    },
+    {
+      "name": "tp1_multiple",
+      "category": "target",
+      "value": 1.2,
+      "unit": "R",
+      "formula": "entry + direction*1.2*initial risk",
+      "rationale": "first realization beyond round-trip cost for eligible structures",
+      "plausible_range": "1.0-2.0R",
+      "expected_effect": "higher values reduce target reach frequency"
+    },
+    {
+      "name": "final_target_multiple",
+      "category": "target",
+      "value": 2.0,
+      "unit": "R",
+      "formula": "entry + direction*2.0*initial risk",
+      "rationale": "captures forced unwind beyond first target",
+      "plausible_range": "1.5-3.0R",
+      "expected_effect": "higher values increase required follow-through"
+    },
+    {
+      "name": "maximum_holding_candles",
+      "category": "max_hold",
+      "value": 8,
+      "unit": "15m candles",
+      "formula": "entry candle through eighth elapsed candle",
+      "rationale": "the causal unwind should occur within two hours",
+      "plausible_range": "4-16 candles",
+      "expected_effect": "longer holds admit behaviour unrelated to immediate rejection"
+    }
+  ],
+  "split": {
+    "development": {
+      "start": "2024-07-15T00:00:00Z",
+      "end_exclusive": "2025-07-15T00:00:00Z"
+    },
+    "locked_validation": {
+      "start": "2025-07-15T00:00:00Z",
+      "end_exclusive": "2026-07-15T00:00:00Z"
+    },
+    "validation_design_use": "descriptive price-behaviour stability only; no trades, PnL, threshold choice or family ranking"
+  },
+  "phase3c_evaluation": {
+    "acceptance_criteria": [
+      "closed_trades >= 30",
+      "gross_price_expectancy > 0",
+      "net_expectancy > 0",
+      "profit_factor > 1.15",
+      "net_result_without_best_trade > 0",
+      "largest_profitable_symbol_share <= 0.50",
+      "largest_profitable_month_share <= 0.40",
+      "total_costs / gross_profit < 0.70",
+      "maximum_drawdown_pct <= 0.05",
+      "maximum_drawdown / total_net_profit <= 1.50",
+      "development_and_validation_gross_expectancy_have_same_sign",
+      "bootstrap_95pct_mean_net_expectancy_lower_bound_r >= -0.05",
+      "at_least_3_symbols_each_have_5_trades_and_positive_gross_price_expectancy"
+    ],
+    "rejection_rule": "reject v1 if any acceptance criterion is false",
+    "technical_invalidation": "invalidate the attempt without interpreting performance if preregistration hash differs, data boundaries overlap, leakage occurs, candidate/trade reconciliation differs, or any trade/outcome is unresolved",
+    "immutability": "any rule, threshold, cost, acceptance criterion or implementation-semantics change creates a new version and permanently invalidates this v1 validation attempt"
+  },
+  "phase3c_minimal_plan": [
+    "implement one research-only detector matching this document",
+    "add closed-candle, direction, boundary, stop and duplicate unit tests",
+    "prove candidate counts on development data and freeze implementation hash",
+    "unlock locked-validation execution only when document hash matches and tests are green",
+    "run one frozen development report and one locked validation report; do not tune v1"
+  ],
+  "risks_and_limitations": [
+    "descriptive validation close_8 mean is negative despite a positive median",
+    "eight-candle MFE and MAE are similar, so path ordering may eliminate apparent opportunity",
+    "the descriptive TP1-touch diagnostic omits executable next-open movement and costs",
+    "events overlap in time and are not equivalent to independent trades",
+    "no directional, symbol, session, volume or HTF filter is justified by the frozen evidence"
+  ],
+  "document_hash": "e7117eefbf5e387646f2a5bceb444d5125a46c56b438eb6f2c8d2e6f69077da9"
+}

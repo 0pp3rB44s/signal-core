@@ -1,9 +1,14 @@
 {
   "adaptive_momentum_continuation": "DISABLED",
   "liquidity_sweep_reversal": "REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED",
-  "liquidity_sweep_reversal_confirmation_v1": "HYPOTHESIS_REJECTED_RESEARCH_ONLY",
+  "liquidity_sweep_reversal_v1": "REJECTED — FAILED INDEPENDENT VALIDATION",
+  "liquidity_sweep_reversal_confirmation_v1": "REJECTED — LATE ENTRY DESTROYED GROSS EDGE",
   "low_vol_reclaim": "NO_CANDIDATES_IN_FROZEN_SAMPLE",
+  "low_vol_reclaim_v1": "NO CANDIDATES IN FROZEN SAMPLE",
   "momentum_breakdown": "ENTRY_FAILURE_WEAK_SAMPLE",
+  "momentum_breakdown_v1": "REJECTED FOR CURRENT RESEARCH — ENTRY FAILURE",
   "momentum_breakout": "INSUFFICIENT_SAMPLE",
-  "trend_continuation": "REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED"
+  "momentum_breakout_v1": "INSUFFICIENT SAMPLE",
+  "trend_continuation": "REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED",
+  "trend_continuation_v1": "REJECTED — ENTRY FAILURE"
 }
