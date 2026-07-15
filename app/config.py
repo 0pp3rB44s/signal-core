@@ -158,6 +158,30 @@ class Settings(BaseSettings):
     forward_paper_roundtrip_fee_bps: float = Field(default=12.0, alias="FORWARD_PAPER_ROUNDTRIP_FEE_BPS")
     forward_paper_liquidity_assumption: str = Field(default="taker", alias="FORWARD_PAPER_LIQUIDITY_ASSUMPTION")
 
+    # Conservative deterministic historical execution assumptions. These affect
+    # backtests only; live and forward-paper execution remain unchanged.
+    backtest_entry_type: str = Field(default="MARKET", alias="BACKTEST_ENTRY_TYPE")
+    backtest_limit_expiration_candles: int = Field(default=3, alias="BACKTEST_LIMIT_EXPIRATION_CANDLES")
+    backtest_maker_fee_bps: float = Field(default=2.0, alias="BACKTEST_MAKER_FEE_BPS")
+    backtest_taker_fee_bps: float = Field(default=6.0, alias="BACKTEST_TAKER_FEE_BPS")
+    backtest_spread_bps: float = Field(default=4.0, alias="BACKTEST_SPREAD_BPS")
+    backtest_entry_slippage_bps: float = Field(default=2.0, alias="BACKTEST_ENTRY_SLIPPAGE_BPS")
+    backtest_exit_slippage_bps: float = Field(default=2.0, alias="BACKTEST_EXIT_SLIPPAGE_BPS")
+    backtest_same_candle_policy: str = Field(default="CONSERVATIVE", alias="BACKTEST_SAME_CANDLE_POLICY")
+    backtest_starting_equity: float = Field(default=1000.0, alias="BACKTEST_STARTING_EQUITY")
+    backtest_risk_per_trade_pct: float = Field(default=0.75, alias="BACKTEST_RISK_PER_TRADE_PCT")
+    backtest_leverage_cap: float = Field(default=5.0, alias="BACKTEST_LEVERAGE_CAP")
+    backtest_maximum_notional: float = Field(default=35.0, alias="BACKTEST_MAXIMUM_NOTIONAL")
+    backtest_available_equity_notional_pct: float = Field(default=100.0, alias="BACKTEST_AVAILABLE_EQUITY_NOTIONAL_PCT")
+    backtest_minimum_quantity: float = Field(default=0.001, alias="BACKTEST_MINIMUM_QUANTITY")
+    backtest_minimum_notional: float = Field(default=10.0, alias="BACKTEST_MINIMUM_NOTIONAL")
+    backtest_quantity_step: float = Field(default=0.001, alias="BACKTEST_QUANTITY_STEP")
+    backtest_price_tick: float = Field(default=0.0001, alias="BACKTEST_PRICE_TICK")
+    backtest_tp1_partial_pct: float = Field(default=40.0, alias="BACKTEST_TP1_PARTIAL_PCT")
+    backtest_break_even_policy: str = Field(default="FEE_ADJUSTED", alias="BACKTEST_BREAK_EVEN_POLICY")
+    backtest_break_even_fee_buffer_bps: float = Field(default=12.0, alias="BACKTEST_BREAK_EVEN_FEE_BUFFER_BPS")
+    backtest_max_hold_candles: int = Field(default=6, alias="BACKTEST_MAX_HOLD_CANDLES")
+
     position_manager_enabled: bool = Field(default=True, alias="POSITION_MANAGER_ENABLED")
 
     dashboard_enabled: bool = Field(default=True, alias="DASHBOARD_ENABLED")

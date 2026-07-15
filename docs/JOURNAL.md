@@ -261,3 +261,12 @@ VOLGENDE FASE
 - N7/N8 valideren op echte fills
 - entry-context backfill afronden → L3 setup-quality learning
 - confluence-regels liquidity heatmap (na backtest + goedkeuring)
+# 2026-07-15 — Minimal backtest execution-realism closure
+
+- Replaced unconditional historical fills and fixed-R profitability with a deterministic execution contract.
+- Conservative defaults: next-candle market entry, 4 bps spread, 2 bps adverse entry/exit slippage, 6 bps taker fee, 2 bps maker fee, and `CONSERVATIVE` same-candle handling.
+- Limit entries require OHLC touch before their configured expiration. TP/SL evaluation begins on the candle after the fill.
+- Backtest PnL now uses executable quantity, partial exits, entry/exit fees, net PnL and sequential equity updates.
+- Basic contract constraints cover price tick, quantity step, minimum quantity and minimum notional; invalid/unfilled records retain explicit reasons.
+- Known limitations: no order-book queue, stochastic fill, portfolio margin, liquidation or funding model. Contract parameters are global unless a caller supplies symbol-specific settings. Live maker partial-fill handling remains a separate execution bugfix.
+- Added 16 deterministic numerical execution-contract tests. Phase 2 is permitted only if the complete validation remains green and controlled reconciliations match manual arithmetic.

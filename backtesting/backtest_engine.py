@@ -18,6 +18,7 @@ from strategies.strategies.low_vol_reclaim import LowVolReclaimStrategy
 from risk.risk_manager import RiskManager
 from backtesting.metrics import summarize
 from market_features.engine import FeatureInputs, aggregate_candles, build_market_snapshot
+from backtesting.execution_contract import BacktestExecutionConfig, BacktestExecutionContract, ExecutionRecord
 
 
 @dataclass
@@ -34,6 +35,23 @@ class BacktestTrade:
     tp1_hit: bool
     timed_exit: bool
     regime: str
+    timeframe: str = ""
+    signal_timestamp: int = 0
+    requested_entry: float = 0.0
+    executed_entry: float = 0.0
+    entry_type: str = "MARKET"
+    fill_timestamp: int | None = None
+    fill_status: str = "FILLED"
+    gross_pnl: float = 0.0
+    entry_fees: float = 0.0
+    exit_fees: float = 0.0
+    total_fees: float = 0.0
+    net_pnl: float = 0.0
+    initial_quantity: float = 0.0
+    equity_before: float = 0.0
+    equity_after: float = 0.0
+    intrabar_ambiguous: bool = False
+    intrabar_policy_used: str = "CONSERVATIVE"
 
 
 class BacktestEngine:
@@ -46,9 +64,13 @@ class BacktestEngine:
         self.low_vol_reclaim = LowVolReclaimStrategy()
         self.scorer = StrategyScorer(settings)
         self.risk = RiskManager(settings)
+        self.execution_config = BacktestExecutionConfig.from_settings(settings)
+        self.execution = BacktestExecutionContract(self.execution_config)
 
     def run(self, market_data: Dict[str, List[Candle]]) -> Dict[str, Any]:
         trades: List[BacktestTrade] = []
+        execution_records: list[ExecutionRecord] = []
+        equity = self.execution_config.starting_equity
         debug = Counter()
         debug_by_symbol: dict[str, Counter] = {}
 
@@ -125,11 +147,14 @@ class BacktestEngine:
                 debug_by_symbol[symbol]["risk_allowed"] += 1
 
                 regime = self._market_regime(snapshot)
-                trade = self._simulate_trade(candidate, candles[i + 1 :], regime)
+                record = self._execute_candidate(candidate, candles[i + 1 :], equity)
+                execution_records.append(record)
+                trade = self._trade_from_execution(candidate, record, regime)
                 if trade:
                     debug["simulated_trade"] += 1
                     debug_by_symbol[symbol]["simulated_trade"] += 1
                     trades.append(trade)
+                    equity = record.equity_after
                 else:
                     debug["simulation_no_exit"] += 1
                     debug_by_symbol[symbol]["simulation_no_exit"] += 1
@@ -137,26 +162,35 @@ class BacktestEngine:
         result = self._metrics(trades)
         result["debug"] = dict(debug.most_common())
         result["debug_by_symbol"] = {sym: dict(counter.most_common()) for sym, counter in debug_by_symbol.items()}
+        result["execution_records"] = [record.__dict__ for record in execution_records]
+        result["starting_equity"] = self.execution_config.starting_equity
+        result["ending_equity"] = equity
+        result["execution_assumptions"] = self.execution_config.__dict__
         return result
 
     def _simulate_trade(self, candidate, future_candles: List[Candle], regime: str) -> BacktestTrade | None:
+        """Compatibility adapter using the shared deterministic execution contract."""
+        record = self._execute_candidate(candidate, future_candles, self.execution_config.starting_equity)
+        return self._trade_from_execution(candidate, record, regime)
+
+    def _execute_candidate(self, candidate, future_candles: List[Candle], equity: float) -> ExecutionRecord:
         entry = getattr(candidate.detection, "entry_hint", None)
         if entry is None:
             entry = getattr(candidate.detection, "close", None)
         if entry is None:
             entry = getattr(candidate.detection, "reclaim_level", None)
         if entry is None:
-            return None
+            entry = 0.0
 
         sl = getattr(candidate.detection, "invalidation", None)
         if sl is None:
             sl = getattr(candidate.detection, "breakout_level", None)
         if sl is None:
-            return None
+            sl = 0.0
 
         risk = abs(entry - sl)
         if risk == 0:
-            return None
+            risk = 0.0
 
         tp1_rr = 0.8
         tp2_rr = 1.5
@@ -169,107 +203,37 @@ class BacktestEngine:
             tp1 = entry - risk * tp1_rr
             tp2 = entry - risk * tp2_rr
 
-        tp1_hit = False
+        signal_timestamp = int(getattr(candidate, "candidate_candle_open_timestamp_ms", 0) or 0)
+        timeframe = str(getattr(candidate, "primary_granularity", "") or "")
+        return self.execution.execute(
+            strategy=candidate.strategy, symbol=candidate.symbol, timeframe=timeframe,
+            direction=candidate.direction, signal_timestamp=signal_timestamp,
+            requested_entry=float(entry), stop=float(sl), targets=[tp1, tp2],
+            candles=future_candles, equity=equity,
+        )
 
-        for idx, c in enumerate(future_candles, start=1):
-            if candidate.direction == "LONG":
-                if c.low <= sl:
-                    return BacktestTrade(
-                        candidate.symbol,
-                        candidate.strategy,
-                        candidate.direction,
-                        entry,
-                        sl,
-                        tp2,
-                        "SL",
-                        -1.0,
-                        idx,
-                        tp1_hit,
-                        False,
-                        regime,
-                    )
-
-                if not tp1_hit and c.high >= tp1:
-                    tp1_hit = True
-                    sl = entry
-
-                if c.high >= tp2:
-                    return BacktestTrade(
-                        candidate.symbol,
-                        candidate.strategy,
-                        candidate.direction,
-                        entry,
-                        sl,
-                        tp2,
-                        "TP",
-                        1.5,
-                        idx,
-                        tp1_hit,
-                        False,
-                        regime,
-                    )
-
-            else:
-                if c.high >= sl:
-                    return BacktestTrade(
-                        candidate.symbol,
-                        candidate.strategy,
-                        candidate.direction,
-                        entry,
-                        sl,
-                        tp2,
-                        "SL",
-                        -1.0,
-                        idx,
-                        tp1_hit,
-                        False,
-                        regime,
-                    )
-
-                if not tp1_hit and c.low <= tp1:
-                    tp1_hit = True
-                    sl = entry
-
-                if c.low <= tp2:
-                    return BacktestTrade(
-                        candidate.symbol,
-                        candidate.strategy,
-                        candidate.direction,
-                        entry,
-                        sl,
-                        tp2,
-                        "TP",
-                        1.5,
-                        idx,
-                        tp1_hit,
-                        False,
-                        regime,
-                    )
-
-            if idx >= max_hold_candles:
-                exit_price = c.close
-
-                if candidate.direction == "LONG":
-                    pnl_r = (exit_price - entry) / risk
-                else:
-                    pnl_r = (entry - exit_price) / risk
-
-                return BacktestTrade(
-                    candidate.symbol,
-                    candidate.strategy,
-                    candidate.direction,
-                    entry,
-                    sl,
-                    tp2,
-                    "TIME_EXIT",
-                    round(pnl_r, 2),
-                    idx,
-                    tp1_hit,
-                    True,
-                    regime,
-                )
-
-        return None
+    @staticmethod
+    def _trade_from_execution(candidate, record: ExecutionRecord, regime: str) -> BacktestTrade | None:
+        if record.fill_status != "FILLED" or record.final_exit_reason in {"", "OPEN_AT_DATA_END"}:
+            return None
+        pnl_pct = record.net_pnl / record.equity_before * 100.0 if record.equity_before else 0.0
+        result = "TP" if record.net_pnl > 0 else "SL" if record.net_pnl < 0 else "BE"
+        return BacktestTrade(
+            symbol=candidate.symbol, strategy=candidate.strategy, direction=candidate.direction,
+            entry=record.executed_entry, stop_loss=record.initial_stop,
+            take_profit=record.tp1_price, result=result, pnl_pct=pnl_pct,
+            candles_held=record.candles_held, tp1_hit=record.tp1_quantity > 0,
+            timed_exit=record.timed_exit, regime=regime, timeframe=record.timeframe,
+            signal_timestamp=record.signal_timestamp, requested_entry=record.requested_entry,
+            executed_entry=record.executed_entry, entry_type=record.entry_type,
+            fill_timestamp=record.fill_timestamp, fill_status=record.fill_status,
+            gross_pnl=record.gross_pnl, entry_fees=record.entry_fee,
+            exit_fees=record.total_fees - record.entry_fee, total_fees=record.total_fees,
+            net_pnl=record.net_pnl, initial_quantity=record.initial_quantity,
+            equity_before=record.equity_before, equity_after=record.equity_after,
+            intrabar_ambiguous=record.intrabar_ambiguous,
+            intrabar_policy_used=record.intrabar_policy_used,
+        )
 
     @staticmethod
     def _market_regime(snapshot: MarketSnapshot) -> str:
