@@ -1,6 +1,7 @@
 import logging
 from app.config import get_settings
 from clients.schemas import MarketSnapshot, StrategyCandidate, SweepDetection
+from market_features.engine import closed_window, latest_closed_candle, previous_closed_candle
 
 logger = logging.getLogger("StartupRunner")
 
@@ -287,8 +288,8 @@ class ContinuationStrategy:
         }
 
     def detect(self, market: MarketSnapshot) -> StrategyCandidate | None:
-        primary_candles = market.primary.candles
-        confirmation_candles = market.confirmation.candles
+        primary_candles = closed_window(market.primary)
+        confirmation_candles = closed_window(market.confirmation)
 
         if len(primary_candles) < 6 or len(confirmation_candles) < 3:
             self._reject(
@@ -299,9 +300,9 @@ class ContinuationStrategy:
             )
             return None
 
-        last = primary_candles[-1]
-        prev = primary_candles[-2]
-        prev2 = primary_candles[-3]
+        last = latest_closed_candle(market.primary)
+        prev = previous_closed_candle(market.primary)
+        prev2 = previous_closed_candle(market.primary, 2)
 
         notes: list[str] = []
         market_context_notes = [str(note) for note in (getattr(market, "notes", []) or [])]
@@ -959,7 +960,7 @@ class ContinuationStrategy:
             notes.append(f"alignment {market.alignment}")
 
         local_range = max(
-            max(c.high for c in primary_candles[-6:]) - min(c.low for c in primary_candles[-6:]),
+            max(c.high for c in closed_window(market.primary, 6)) - min(c.low for c in closed_window(market.primary, 6)),
             1e-9,
         )
         local_range_pct = (local_range / max(last.close, 1e-9)) * 100
@@ -1034,10 +1035,10 @@ class ContinuationStrategy:
 
         score = 0.0
 
-        if ratios[-1] >= self.MIN_CONTINUATION_VOLUME_RATIO:
+        if ratios[2] >= self.MIN_CONTINUATION_VOLUME_RATIO:
             score += 1.0
 
-        if ratios[-1] >= ratios[-2] >= ratios[-3] and ratios[-1] >= 1.0:
+        if ratios[2] >= ratios[1] >= ratios[0] and ratios[2] >= 1.0:
             score += 0.75
 
         if sum(1 for ratio in ratios if ratio >= 0.80) >= 2:
@@ -1045,10 +1046,10 @@ class ContinuationStrategy:
 
         if direction == "LONG":
             directional_closes = sum(1 for candle in candles_slice if candle.close > candle.open)
-            closes_progress = candles_slice[-1].close > candles_slice[-2].close >= candles_slice[-3].close
+            closes_progress = candles_slice[2].close > candles_slice[1].close >= candles_slice[0].close
         else:
             directional_closes = sum(1 for candle in candles_slice if candle.close < candle.open)
-            closes_progress = candles_slice[-1].close < candles_slice[-2].close <= candles_slice[-3].close
+            closes_progress = candles_slice[2].close < candles_slice[1].close <= candles_slice[0].close
 
         if directional_closes >= 2:
             score += 0.50

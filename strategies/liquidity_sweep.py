@@ -1,6 +1,7 @@
 import logging
 from app.config import Settings
 from clients.schemas import Candle, MarketSnapshot, StrategyCandidate, SweepDetection
+from market_features.engine import closed_window
 
 logger = logging.getLogger("StartupRunner")
 
@@ -189,7 +190,7 @@ class LiquiditySweepStrategy:
         return False, {**mtf_context, "mode": "blocked"}
 
     def detect(self, market: MarketSnapshot) -> StrategyCandidate | None:
-        candles = market.primary.candles
+        candles = closed_window(market.primary)
         if len(candles) < max(40, self.settings.sweep_pivot_lookback + self.settings.sweep_recent_bars + 5):
             return None
 
@@ -584,10 +585,10 @@ class LiquiditySweepStrategy:
 
         score = 0.0
 
-        if ratios[-1] >= self.settings.min_sweep_volume_ratio:
+        if ratios[2] >= self.settings.min_sweep_volume_ratio:
             score += 1.0
 
-        if ratios[-1] >= ratios[-2] >= ratios[-3]:
+        if ratios[2] >= ratios[1] >= ratios[0]:
             score += 0.75
 
         if sum(1 for ratio in ratios if ratio >= 0.80) >= 2:
@@ -595,10 +596,10 @@ class LiquiditySweepStrategy:
 
         if direction == "LONG":
             directional_closes = sum(1 for candle in candles_slice if candle.close > candle.open)
-            closes_progress = candles_slice[-1].close > candles_slice[-2].close >= candles_slice[-3].close
+            closes_progress = candles_slice[2].close > candles_slice[1].close >= candles_slice[0].close
         else:
             directional_closes = sum(1 for candle in candles_slice if candle.close < candle.open)
-            closes_progress = candles_slice[-1].close < candles_slice[-2].close <= candles_slice[-3].close
+            closes_progress = candles_slice[2].close < candles_slice[1].close <= candles_slice[0].close
 
         if directional_closes >= 2:
             score += 0.50

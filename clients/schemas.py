@@ -34,6 +34,7 @@ class SymbolSnapshot:
     granularity: str
     candles: list[Candle]
     contract_meta: dict[str, Any]
+    as_of_timestamp_ms: int | None = None
 
 
 @dataclass(slots=True)
@@ -48,6 +49,8 @@ class TimeframeSnapshot:
     ema50: float
     trend: str
     candles: list[Candle] = field(repr=False)
+    closed_candle_timestamp_ms: int = 0
+    as_of_timestamp_ms: int = 0
 
 
 @dataclass(slots=True)
