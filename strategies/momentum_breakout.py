@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from clients.schemas import Candle, MarketSnapshot, StrategyCandidate
+from candidate_lifecycle import deterministic_candidate_id
 from market_features.engine import closed_candle_at_offset, closed_window, latest_closed_candle
 
 
@@ -509,6 +510,8 @@ class MomentumBreakoutStrategy:
             prearmed_breakout,
         )
         return StrategyCandidate(
+            candidate_id=deterministic_candidate_id(self.name, market.symbol, "LONG", breakout_candle.timestamp_ms),
+            candidate_candle_open_timestamp_ms=breakout_candle.timestamp_ms,
             symbol=market.symbol,
             strategy=self.name,
             direction="LONG",
@@ -1279,6 +1282,8 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
             prearmed_breakdown,
         )
         return StrategyCandidate(
+            candidate_id=deterministic_candidate_id(self.name, market.symbol, "SHORT", breakdown_candle.timestamp_ms),
+            candidate_candle_open_timestamp_ms=breakdown_candle.timestamp_ms,
             symbol=market.symbol,
             strategy=self.name,
             direction="SHORT",

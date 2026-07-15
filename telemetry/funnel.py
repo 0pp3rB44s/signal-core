@@ -12,21 +12,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from candidate_lifecycle import deterministic_candidate_id, lifecycle_key
 from telemetry.safe_io import atomic_write_json, file_lock
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 GENESIS = "GENESIS"
 EVENT_TYPES = frozenset({
     "DETECTOR_ATTEMPT", "DETECTOR_DECISION", "SELECTOR_DECISION",
     "SCORING_DECISION", "RISK_DECISION", "PLANNER_DECISION",
     "EXECUTABLE_DECISION", "FORWARD_PAPER_LINK",
+    "OUTCOME_LINK",
 })
 EVENT_ORDER = {
     event_type: index for index, event_type in enumerate((
         "DETECTOR_ATTEMPT", "DETECTOR_DECISION", "SELECTOR_DECISION",
         "SCORING_DECISION", "RISK_DECISION", "PLANNER_DECISION",
-        "EXECUTABLE_DECISION", "FORWARD_PAPER_LINK",
+        "EXECUTABLE_DECISION", "FORWARD_PAPER_LINK", "OUTCOME_LINK",
     ))
 }
 PASS_FAIL = frozenset({"PASS", "FAIL"})
@@ -44,12 +47,13 @@ REASON_CODES = frozenset({
     "EXECUTION_COST", "NET_EDGE", "RR_GEOMETRY", "MIN_NOTIONAL",
 })
 REQUIRED_FIELDS = (
-    "schema_version", "event_id", "scan_id", "candidate_id", "event_type",
+    "schema_version", "event_id", "lifecycle_key", "scan_id", "candidate_id", "event_type",
     "event_timestamp_utc", "strategy", "symbol", "direction", "timeframe",
     "candle_open_timestamp", "signal_timestamp", "session", "regime",
     "pass_fail", "primary_reason_code", "secondary_reason_codes",
     "config_hash", "git_commit",
 )
+LEGACY_REQUIRED_FIELDS = tuple(field for field in REQUIRED_FIELDS if field != "lifecycle_key")
 
 log = logging.getLogger("funnel_telemetry")
 
@@ -73,18 +77,6 @@ def content_hash(value: Any) -> str:
 def stable_scan_id() -> str:
     """Create one opaque ID to be reused for an entire scan cycle."""
     return str(uuid.uuid4())
-
-
-def deterministic_candidate_id(
-    strategy: str, symbol: str, direction: str, candle_open_timestamp: str | int,
-    timeframe: str = "UNKNOWN",
-) -> str:
-    identity = "|".join((
-        str(strategy).strip().lower(), str(symbol).strip().upper(),
-        str(direction).strip().upper(), str(candle_open_timestamp).strip(),
-        str(timeframe).strip().lower(),
-    ))
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def deterministic_event_id(scan_id: str, candidate_id: str, event_type: str) -> str:
@@ -160,7 +152,12 @@ def classify_reason_codes(values: Iterable[Any]) -> list[str]:
 def _validate_stored_event(
     event: dict[str, Any], *, expected_sequence: int, previous_hash: str,
 ) -> None:
-    _validate_event(event)
+    if event.get("schema_version") == LEGACY_SCHEMA_VERSION:
+        missing = [key for key in LEGACY_REQUIRED_FIELDS if event.get(key) in (None, "")]
+        if missing:
+            raise FunnelTelemetryCorruptionError("legacy event missing fields")
+    else:
+        _validate_event(event)
     if event.get("sequence") != expected_sequence:
         raise FunnelTelemetryCorruptionError("invalid sequence")
     if event.get("previous_hash") != previous_hash:
@@ -172,19 +169,14 @@ def _validate_stored_event(
 
 
 def _advance_lifecycle(
-    event: dict[str, Any], stages: dict[tuple[str, str], tuple[int, str]],
+    event: dict[str, Any], stages: dict[str, tuple[int, str]],
 ) -> None:
-    key = (str(event["scan_id"]), str(event["candidate_id"]))
+    key = lifecycle_key(str(event["candidate_id"]), str(event["event_type"]))
+    if event.get("lifecycle_key") != key:
+        raise FunnelTelemetryCorruptionError("invalid lifecycle_key")
+    if key in stages:
+        raise FunnelTelemetryCorruptionError("duplicate lifecycle_key")
     rank = EVENT_ORDER[str(event["event_type"])]
-    previous_rank, previous_result = stages.get(key, (-1, "PASS"))
-    if previous_result == "FAIL" and previous_rank in {
-        EVENT_ORDER["DETECTOR_DECISION"], EVENT_ORDER["SELECTOR_DECISION"],
-    }:
-        raise FunnelTelemetryCorruptionError("event follows terminal rejection")
-    if rank != previous_rank + 1:
-        raise FunnelTelemetryCorruptionError(
-            f"invalid lifecycle transition {previous_rank}->{rank}"
-        )
     stages[key] = (rank, str(event["pass_fail"]))
 
 
@@ -204,8 +196,8 @@ class FunnelEventStore:
         self._sequence = 0
         self._last_hash = GENESIS
         self._event_ids: set[str] = set()
-        self._lifecycle_stages: dict[tuple[str, str], tuple[int, str]] = {}
-        self._lifecycle_tails: dict[tuple[str, str], tuple[str, str]] = {}
+        self._lifecycle_stages: dict[str, tuple[int, str]] = {}
+        self._lifecycle_tails: dict[str, tuple[str, str]] = {}
 
     def _reset_index(self) -> None:
         self._index_initialized = True
@@ -221,8 +213,9 @@ class FunnelEventStore:
         event_id = str(event["event_id"])
         if event_id in self._event_ids:
             raise FunnelTelemetryCorruptionError("duplicate event_id")
-        _advance_lifecycle(event, self._lifecycle_stages)
-        key = (str(event["scan_id"]), str(event["candidate_id"]))
+        if event.get("schema_version") == SCHEMA_VERSION:
+            _advance_lifecycle(event, self._lifecycle_stages)
+        key = str(event["candidate_id"])
         self._event_ids.add(event_id)
         self._lifecycle_tails[key] = (
             str(event["event_type"]), str(event["pass_fail"]),
@@ -272,7 +265,7 @@ class FunnelEventStore:
         events: list[dict[str, Any]] = []
         previous_hash = GENESIS
         event_ids: set[str] = set()
-        lifecycle_stages: dict[tuple[str, str], tuple[int, str]] = {}
+        lifecycle_stages: dict[str, tuple[int, str]] = {}
         try:
             handle = self.path.open("r", encoding="utf-8")
             with handle:
@@ -293,14 +286,19 @@ class FunnelEventStore:
                         )
                         if str(event["event_id"]) in event_ids:
                             raise FunnelTelemetryCorruptionError("duplicate event_id")
-                        _advance_lifecycle(event, lifecycle_stages)
+                        if event.get("schema_version") == SCHEMA_VERSION:
+                            _advance_lifecycle(event, lifecycle_stages)
                     except (ValueError, FunnelTelemetryCorruptionError) as exc:
                         raise FunnelTelemetryCorruptionError(
                             f"invalid event at line {line_number}: {exc}"
                         ) from exc
                     event_ids.add(str(event["event_id"]))
                     previous_hash = str(event["event_hash"])
-                    events.append(event)
+                    visible = dict(event)
+                    visible["identity_status"] = "LINKED" if event.get("schema_version") == SCHEMA_VERSION else "LEGACY_UNLINKED"
+                    if event.get("schema_version") == LEGACY_SCHEMA_VERSION:
+                        visible["candidate_id"] = ""
+                    events.append(visible)
         except UnicodeDecodeError as exc:
             raise FunnelTelemetryCorruptionError("invalid JSONL encoding") from exc
         return events
@@ -312,12 +310,17 @@ class FunnelEventStore:
     def append(self, event: dict[str, Any]) -> bool:
         event = dict(event)
         event.setdefault("schema_version", SCHEMA_VERSION)
+        if event.get("candidate_id") and event.get("event_type"):
+            event.setdefault("lifecycle_key", lifecycle_key(event["candidate_id"], event["event_type"]))
         _validate_event(event)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with file_lock(self.path):
             self._sync_index_unlocked()
             if str(event["event_id"]) in self._event_ids:
                 self._write_quality_from_index(duplicate_event_ids=1)
+                return False
+            if event["lifecycle_key"] in self._lifecycle_stages:
+                self._write_quality_from_index(duplicate_event_ids=0)
                 return False
             trial_stages = dict(self._lifecycle_stages)
             _advance_lifecycle(event, trial_stages)
@@ -362,6 +365,7 @@ class FunnelEventStore:
             ("SELECTOR_DECISION", "FAIL"),
             ("FORWARD_PAPER_LINK", "PASS"),
             ("FORWARD_PAPER_LINK", "FAIL"),
+            ("OUTCOME_LINK", "PASS"),
         }
         return sum(tail not in terminal for tail in self._lifecycle_tails.values())
 
@@ -382,7 +386,9 @@ class FunnelEventStore:
 class FunnelTelemetry:
     """Small fail-open facade used by the trading loop."""
 
-    def __init__(self, settings: Any, store: FunnelEventStore | None = None) -> None:
+    def __init__(self, settings: Any = None, store: FunnelEventStore | None = None) -> None:
+        if isinstance(settings, FunnelEventStore) and store is None:
+            store, settings = settings, None
         self.store = store or FunnelEventStore()
         self.config_hash = safe_config_hash(settings)
         self.git_commit = safe_git_commit()
@@ -404,6 +410,7 @@ class FunnelTelemetry:
         return self.emit_safe(
             schema_version=SCHEMA_VERSION,
             event_id=deterministic_event_id(scan_id, candidate_id, event_type),
+            lifecycle_key=lifecycle_key(candidate_id, event_type),
             scan_id=scan_id, candidate_id=candidate_id, event_type=event_type,
             event_timestamp_utc=utc_now(), strategy=strategy, symbol=symbol,
             direction=direction, timeframe=timeframe,
@@ -414,6 +421,41 @@ class FunnelTelemetry:
             secondary_reason_codes=list(secondary_reason_codes),
             config_hash=self.config_hash, git_commit=self.git_commit,
             details=details or {},
+        )
+
+    def record(
+        self, candidate: Any, event_type: str, *, scan_id: str, passed: bool,
+        reason: str, plan_id: str = "", trade_id: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        candidate_id = str(getattr(candidate, "candidate_id", "") or "")
+        if not candidate_id:
+            raise ValueError("schema v2 candidate requires candidate_id")
+        reason_codes = {
+            "DETECTOR_DECISION": "DETECTED" if passed else "NO_DETECTION",
+            "SELECTOR_DECISION": "SELECTED" if passed else "NOT_SELECTED",
+            "SCORING_DECISION": "SCORE_GO" if passed else "SCORE_NO_GO",
+            "RISK_DECISION": "RISK_ALLOWED" if passed else "RISK_BLOCKED",
+            "PLANNER_DECISION": "PLAN_EXECUTABLE" if passed else "PLAN_BLOCKED",
+            "EXECUTABLE_DECISION": "PLAN_EXECUTABLE" if passed else "PLAN_BLOCKED",
+            "FORWARD_PAPER_LINK": "FORWARD_LINKED" if passed else "FORWARD_NOT_ELIGIBLE",
+            "OUTCOME_LINK": "FORWARD_LINKED" if passed else "UNKNOWN_DECISION",
+        }
+        detail_payload = dict(details or {})
+        if plan_id:
+            detail_payload["plan_id"] = plan_id
+        if trade_id:
+            detail_payload["trade_id"] = trade_id
+        timestamp = str(getattr(candidate, "candidate_candle_open_timestamp_ms", "") or "")
+        return self.event(
+            scan_id=scan_id, candidate_id=candidate_id, event_type=event_type,
+            strategy=str(getattr(candidate, "strategy", "UNKNOWN")),
+            symbol=str(getattr(candidate, "symbol", "UNKNOWN")),
+            direction=str(getattr(candidate, "direction", "UNKNOWN")),
+            timeframe=str(getattr(candidate, "primary_granularity", "UNKNOWN")),
+            candle_open_timestamp=timestamp, signal_timestamp=utc_now(),
+            session="UNKNOWN", regime="UNKNOWN", passed=passed,
+            primary_reason_code=reason_codes[event_type], details={"reason": reason, **detail_payload},
         )
 
 

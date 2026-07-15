@@ -12,12 +12,15 @@ from unittest.mock import MagicMock
 
 from app.config import Settings
 from clients.schemas import TradePlan
+from candidate_lifecycle import deterministic_plan_id
 from forward_paper.service import ForwardPaperService
 from forward_paper.store import (
     ForwardPaperCorruptionError,
     ForwardPaperEventStore,
     ForwardPaperReconstructor,
+    ForwardPaperSemanticConflictError,
     content_hash,
+    semantic_transition_key,
 )
 from execution.execution_service import ExecutionService
 
@@ -37,6 +40,7 @@ def _settings() -> Settings:
 
 def _plan() -> TradePlan:
     return TradePlan(
+        candidate_id="candidate-test", candidate_candle_open_timestamp_ms=1_700_000_000_000, plan_id=deterministic_plan_id("candidate-test"),
         symbol="BTCUSDT", strategy="momentum_breakout", direction="LONG",
         verdict="EXECUTABLE", score=82.0, entry_prices=[100.0], stop_loss=99.0,
         take_profits=[101.0, 102.0, 103.0], risk_reward_ratio=3.0,
@@ -69,10 +73,13 @@ def _service(tmp_path: Path) -> ForwardPaperService:
 
 def _append_worker(path: str, index: int) -> None:
     store = ForwardPaperEventStore(path)
+    trade_id = f"trade-{index}"
+    payload = {"reason": "test"}
     store.append({
-        "event_id": f"event-{index}", "trade_id": f"trade-{index}",
+        "event_id": f"event-{index}", "semantic_key": semantic_transition_key(trade_id, "PAPER_REJECTED", payload),
+        "candidate_id": f"candidate-{index}", "trade_id": trade_id,
         "plan_id": f"plan-{index}", "event_type": "PAPER_REJECTED",
-        "timestamp": f"2026-07-14T00:00:{index:02d}+00:00", "payload": {"reason": "test"},
+        "timestamp": f"2026-07-14T00:00:{index:02d}+00:00", "payload": payload,
     })
 
 
@@ -109,7 +116,8 @@ def test_complete_trade_lifecycle_fee_r_and_mfe_mae_timing(tmp_path):
 def test_duplicate_event_is_idempotent(tmp_path):
     store = ForwardPaperEventStore(tmp_path / "events.jsonl")
     event = {
-        "event_id": "same", "trade_id": "trade", "plan_id": "plan",
+        "event_id": "same", "semantic_key": "trade:paper_rejected",
+        "candidate_id": "candidate", "trade_id": "trade", "plan_id": "plan",
         "event_type": "PAPER_REJECTED", "timestamp": "2026-07-14T00:00:00+00:00",
         "payload": {"reason": "missing"},
     }

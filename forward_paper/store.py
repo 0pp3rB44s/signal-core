@@ -13,11 +13,16 @@ from typing import Any
 from telemetry.safe_io import atomic_write_json, file_lock
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 DATASET = "forward_paper"
 
 
 class ForwardPaperCorruptionError(RuntimeError):
+    pass
+
+
+class ForwardPaperSemanticConflictError(ForwardPaperCorruptionError):
     pass
 
 
@@ -27,6 +32,32 @@ def canonical_json(payload: Any) -> str:
 
 def content_hash(payload: Any) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def semantic_transition_key(
+    trade_id: str, event_type: str, payload: dict[str, Any], timestamp: str = "",
+) -> str:
+    """Return the persistent identity of one paper lifecycle action."""
+    event_type = str(event_type).upper()
+    if event_type == "TRADE_OPENED":
+        action = "open"
+    elif event_type in {"TP_TOUCH", "PARTIAL_EXIT"}:
+        target = payload.get("target_index") or payload.get("reason")
+        action = f"{event_type.lower()}:{target}"
+    elif event_type == "TRADE_CLOSED":
+        action = "terminal_close"
+    elif event_type == "EXIT_REASON_TRANSITION":
+        action = f"exit_reason:{payload.get('from')}:{payload.get('to')}"
+    elif event_type == "STOP_UPDATED":
+        action = f"stop_update:{payload.get('reason')}"
+    elif event_type in {"SL_TOUCH", "BREAK_EVEN_ACTIVATED", "PROFIT_LOCK_ACTIVATED", "PAPER_REJECTED"}:
+        action = event_type.lower()
+    else:
+        # Observations are not state transitions; preserve distinct observations
+        # while making an exact replay idempotent.
+        observation = content_hash({"timestamp": timestamp, "payload": payload})[:24]
+        action = f"{event_type.lower()}:{observation}"
+    return f"{trade_id}:{action}"
 
 
 class ForwardPaperEventStore:
@@ -41,6 +72,8 @@ class ForwardPaperEventStore:
             return []
         events: list[dict[str, Any]] = []
         previous_hash = "GENESIS"
+        semantic_events: dict[str, dict[str, Any]] = {}
+        terminal_closes: dict[str, dict[str, Any]] = {}
         with self.path.open("r", encoding="utf-8") as handle:
             for line_number, raw in enumerate(handle, start=1):
                 if not raw.strip():
@@ -51,8 +84,12 @@ class ForwardPaperEventStore:
                     raise ForwardPaperCorruptionError(
                         f"invalid JSONL at line {line_number}"
                     ) from exc
-                if event.get("dataset") != DATASET or event.get("schema_version") != SCHEMA_VERSION:
+                if event.get("dataset") != DATASET or event.get("schema_version") not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
                     raise ForwardPaperCorruptionError(f"invalid dataset/schema at line {line_number}")
+                if event.get("schema_version") == SCHEMA_VERSION and not event.get("candidate_id"):
+                    raise ForwardPaperCorruptionError(f"schema v2 event missing candidate_id at line {line_number}")
+                if event.get("schema_version") == SCHEMA_VERSION and not event.get("semantic_key"):
+                    raise ForwardPaperCorruptionError(f"schema v2 event missing semantic_key at line {line_number}")
                 if event.get("sequence") != len(events) + 1:
                     raise ForwardPaperCorruptionError(f"non-contiguous sequence at line {line_number}")
                 if event.get("previous_hash") != previous_hash:
@@ -62,8 +99,25 @@ class ForwardPaperEventStore:
                 calculated_hash = content_hash(unsigned)
                 if supplied_hash != calculated_hash:
                     raise ForwardPaperCorruptionError(f"checksum mismatch at line {line_number}")
+                semantic_key = str(event.get("semantic_key") or "")
+                if semantic_key:
+                    if semantic_key in semantic_events:
+                        raise ForwardPaperSemanticConflictError(
+                            f"duplicate semantic transition at line {line_number}"
+                        )
+                    semantic_events[semantic_key] = event
+                if event.get("event_type") == "TRADE_CLOSED":
+                    trade_id = str(event.get("trade_id"))
+                    if trade_id in terminal_closes:
+                        raise ForwardPaperSemanticConflictError(
+                            f"multiple terminal closes for {trade_id}"
+                        )
+                    terminal_closes[trade_id] = event
                 previous_hash = str(supplied_hash)
-                events.append(event)
+                visible = dict(event)
+                visible["identity_status"] = "LINKED" if event.get("candidate_id") else "LEGACY_UNLINKED"
+                visible.setdefault("candidate_id", "")
+                events.append(visible)
         return events
 
     def read_events(self) -> list[dict[str, Any]]:
@@ -71,22 +125,42 @@ class ForwardPaperEventStore:
             return self._read_unlocked()
 
     def append(self, event: dict[str, Any]) -> bool:
-        required = {"event_id", "trade_id", "plan_id", "event_type", "timestamp", "payload"}
+        if event.get("dataset", DATASET) != DATASET:
+            raise ValueError("non-paper event rejected")
+        required = {"event_id", "semantic_key", "candidate_id", "trade_id", "plan_id", "event_type", "timestamp", "payload"}
         missing = sorted(key for key in required if event.get(key) in (None, ""))
         if missing:
             raise ValueError(f"forward-paper event missing fields: {','.join(missing)}")
-        if event.get("dataset", DATASET) != DATASET:
-            raise ValueError("non-paper event rejected")
-
         with file_lock(self.path):
             events = self._read_unlocked()
             if any(existing.get("event_id") == event["event_id"] for existing in events):
+                return False
+            semantic_match = next(
+                (existing for existing in events if existing.get("semantic_key") == event["semantic_key"]),
+                None,
+            )
+            if semantic_match is not None:
+                if (
+                    semantic_match.get("event_type") == event.get("event_type")
+                    and canonical_json(semantic_match.get("payload")) == canonical_json(event.get("payload"))
+                ):
+                    return False
+                raise ForwardPaperSemanticConflictError(
+                    f"conflicting semantic retry: {event['semantic_key']}"
+                )
+            if event["event_type"] == "TRADE_OPENED" and any(
+                existing.get("candidate_id") == event["candidate_id"]
+                and existing.get("event_type") == "TRADE_OPENED"
+                for existing in events
+            ):
                 return False
             stored = {
                 "schema_version": SCHEMA_VERSION,
                 "dataset": DATASET,
                 "sequence": len(events) + 1,
                 "event_id": str(event["event_id"]),
+                "semantic_key": str(event["semantic_key"]),
+                "candidate_id": str(event["candidate_id"]),
                 "trade_id": str(event["trade_id"]),
                 "plan_id": str(event["plan_id"]),
                 "event_type": str(event["event_type"]),
@@ -103,7 +177,7 @@ class ForwardPaperEventStore:
 
 
 OUTCOME_FIELDS = [
-    "schema_version", "dataset", "trade_id", "plan_id", "strategy", "symbol", "direction",
+    "schema_version", "dataset", "identity_status", "candidate_id", "candidate_candle_open_timestamp_ms", "trade_id", "plan_id", "strategy", "symbol", "direction",
     "timeframe", "regime", "session", "config_version_hash", "git_commit", "signal_timestamp",
     "entry_timestamp", "planned_entry", "simulated_fill", "initial_stop", "initial_targets",
     "initial_risk_price", "initial_risk_currency", "initial_risk_r", "expected_reward_to_risk", "expected_move_bps",
@@ -129,17 +203,52 @@ class ForwardPaperReconstructor:
         self.quality_path = Path(quality_path)
 
     def reconstruct(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        events = self.store.read_events()
+        try:
+            events = self.store.read_events()
+        except ForwardPaperSemanticConflictError as exc:
+            message = str(exc)
+            quality = {
+                "schema_version": SCHEMA_VERSION, "dataset": DATASET,
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "event_chain_valid": False,
+                "fragmented_transition_count": None,
+                "duplicate_semantic_transition_count": 1,
+                "unresolved_open_trade_count": None,
+                "terminal_close_conflict_count": 1 if "terminal close" in message else 0,
+                "error_type": type(exc).__name__,
+            }
+            atomic_write_json(self.quality_path, quality, indent=2, sort_keys=True)
+            raise
         by_trade: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             by_trade.setdefault(str(event["trade_id"]), []).append(event)
 
         outcomes: list[dict[str, Any]] = []
         incomplete: list[dict[str, Any]] = []
+        fragmented_transition_count = 0
+        unresolved_open_trade_count = 0
+        terminal_close_conflict_count = 0
         for trade_id, trade_events in sorted(by_trade.items()):
             opened = next((event for event in trade_events if event["event_type"] == "TRADE_OPENED"), None)
-            closed = next((event for event in reversed(trade_events) if event["event_type"] == "TRADE_CLOSED"), None)
+            closes = [event for event in trade_events if event["event_type"] == "TRADE_CLOSED"]
+            if len(closes) > 1:
+                terminal_close_conflict_count += 1
+                raise ForwardPaperSemanticConflictError(f"multiple terminal closes for {trade_id}")
+            closed = closes[0] if closes else None
             if opened is None or closed is None:
+                if opened is not None:
+                    unresolved_open_trade_count += 1
+                    partial_size = sum(
+                        float(event["payload"].get("exit_size", 0.0))
+                        for event in trade_events if event["event_type"] == "PARTIAL_EXIT"
+                    )
+                    opened_size = float(opened["payload"].get("position_size", 0.0))
+                    has_pending_transition = any(
+                        event["event_type"] in {"TP_TOUCH", "EXIT_REASON_TRANSITION"}
+                        for event in trade_events
+                    )
+                    if has_pending_transition or partial_size >= opened_size - 1e-12:
+                        fragmented_transition_count += 1
                 incomplete.append({
                     "trade_id": trade_id,
                     "has_open": opened is not None,
@@ -169,6 +278,12 @@ class ForwardPaperReconstructor:
             "complete_outcomes": len(outcomes),
             "incomplete_trades": incomplete,
             "duplicate_event_ids": len(events) - len({event["event_id"] for event in events}),
+            "duplicate_semantic_transition_count": len(events) - len({
+                event.get("semantic_key") or f"legacy:{event['event_id']}" for event in events
+            }),
+            "fragmented_transition_count": fragmented_transition_count,
+            "unresolved_open_trade_count": unresolved_open_trade_count,
+            "terminal_close_conflict_count": terminal_close_conflict_count,
             "event_type_counts": dict(sorted(Counter(event["event_type"] for event in events).items())),
             "event_chain_valid": True,
             "outcome_dataset_hash": dataset_hash,
@@ -176,11 +291,13 @@ class ForwardPaperReconstructor:
             "critical_outcome_field_coverage": {
                 field: round(sum(row.get(field) not in (None, "") for row in outcomes) / len(outcomes), 4) if outcomes else None
                 for field in (
-                    "trade_id", "plan_id", "strategy", "symbol", "direction", "timeframe",
+                    "candidate_id", "trade_id", "plan_id", "strategy", "symbol", "direction", "timeframe",
                     "signal_timestamp", "simulated_fill", "initial_stop", "initial_risk_currency",
                     "exit_timestamp", "exit_price", "net_pnl", "result_r", "final_exit_reason",
                 )
             },
+            "legacy_unlinked_events": sum(not event.get("candidate_id") for event in events),
+            "legacy_unlinked_outcomes": sum(not row.get("candidate_id") for row in outcomes),
             "config_version_hashes": sorted({row["config_version_hash"] for row in outcomes}),
             "git_commits": sorted({row["git_commit"] for row in outcomes}),
             "historical_migration": {
@@ -235,6 +352,9 @@ class ForwardPaperReconstructor:
         row = {
             "schema_version": SCHEMA_VERSION,
             "dataset": DATASET,
+            "identity_status": "LINKED" if opened.get("candidate_id") else "LEGACY_UNLINKED",
+            "candidate_id": opened.get("candidate_id", ""),
+            "candidate_candle_open_timestamp_ms": entry.get("candidate_candle_open_timestamp_ms", ""),
             "trade_id": opened["trade_id"],
             "plan_id": opened["plan_id"],
             "strategy": entry["strategy"],

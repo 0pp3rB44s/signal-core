@@ -7,6 +7,7 @@ from pathlib import Path
 from app.config import Settings
 from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore, TradePlan
+from candidate_lifecycle import deterministic_plan_id
 from execution.adaptive_tp_engine import AdaptiveTPContext, AdaptiveTPEngine
 
 
@@ -368,6 +369,9 @@ class TradePlanner:
             notes.append("adaptive_continuation_observe_only=true")
 
             return TradePlan(
+                candidate_id=candidate.candidate_id,
+                candidate_candle_open_timestamp_ms=candidate.candidate_candle_open_timestamp_ms,
+                plan_id=deterministic_plan_id(candidate.candidate_id),
                 symbol=candidate.symbol,
                 strategy=plan_strategy,
                 direction=candidate.direction,
@@ -809,6 +813,9 @@ class TradePlanner:
         notes.append(f"single_tp_target={single_tp:.8f}")
 
         return TradePlan(
+            candidate_id=candidate.candidate_id,
+            candidate_candle_open_timestamp_ms=candidate.candidate_candle_open_timestamp_ms,
+            plan_id=deterministic_plan_id(candidate.candidate_id),
             symbol=candidate.symbol,
             strategy=plan_strategy,
             direction=candidate.direction,

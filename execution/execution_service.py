@@ -1214,6 +1214,8 @@ class ExecutionService:
         take_profits: list[float] | None = None,
     ) -> ExecutionReport:
         return ExecutionReport(
+            candidate_id=plan.candidate_id,
+            plan_id=plan.plan_id,
             symbol=plan.symbol,
             direction=plan.direction,
             strategy=plan.strategy,

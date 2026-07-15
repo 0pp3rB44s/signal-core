@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any
+from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 
 
 @dataclass(slots=True)
@@ -86,6 +87,8 @@ class SweepDetection:
 
 @dataclass(slots=True)
 class StrategyCandidate:
+    candidate_id: str
+    candidate_candle_open_timestamp_ms: int
     symbol: str
     strategy: str
     direction: str
@@ -95,6 +98,16 @@ class StrategyCandidate:
     detection: SweepDetection = field(repr=False)
     notes: list[str] = field(default_factory=list)
     candidate_status: str = "candidate"
+
+    def __post_init__(self) -> None:
+        if not self.candidate_id or self.candidate_candle_open_timestamp_ms <= 0:
+            raise ValueError("schema v2 candidate requires candidate_id and candle timestamp")
+        expected = deterministic_candidate_id(
+            self.strategy, self.symbol, self.direction,
+            self.candidate_candle_open_timestamp_ms,
+        )
+        if self.candidate_id != expected:
+            raise ValueError("candidate_id does not match canonical identity")
 
 
 @dataclass(slots=True)
@@ -117,6 +130,9 @@ class RiskVerdict:
 
 @dataclass(slots=True)
 class TradePlan:
+    candidate_id: str
+    candidate_candle_open_timestamp_ms: int
+    plan_id: str
     symbol: str
     strategy: str
     direction: str
@@ -138,9 +154,17 @@ class TradePlan:
     # 2026-07-08: fill dreef structureel naar de stop -> mini-stops).
     geometry_entry: float = 0.0
 
+    def __post_init__(self) -> None:
+        if not self.candidate_id or self.candidate_candle_open_timestamp_ms <= 0:
+            raise ValueError("schema v2 plan requires candidate identity")
+        if self.plan_id != deterministic_plan_id(self.candidate_id):
+            raise ValueError("plan_id does not match candidate linkage")
+
 
 @dataclass(slots=True)
 class ExecutionReport:
+    candidate_id: str
+    plan_id: str
     symbol: str
     direction: str
     strategy: str
