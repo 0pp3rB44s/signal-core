@@ -9,6 +9,7 @@ strategieën, zodat de TP-engine-geometrie ook echt op de exchange belandt.
 from unittest.mock import MagicMock
 
 from planning.trade_planner import TradePlanner
+from candidate_lifecycle import deterministic_candidate_id
 
 
 def _settings() -> MagicMock:
@@ -34,6 +35,8 @@ def _candidate(strategy: str = "momentum_breakdown", direction: str = "SHORT") -
     c.symbol = "DOGEUSDT"
     c.strategy = strategy
     c.direction = direction
+    c.candidate_candle_open_timestamp_ms = 1_700_000_000_000
+    c.candidate_id = deterministic_candidate_id(strategy, c.symbol, direction, c.candidate_candle_open_timestamp_ms)
     c.notes = []
     c.detection.entry_hint = 100.0
     c.detection.invalidation = 100.6 if direction == "SHORT" else 99.4

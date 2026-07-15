@@ -16,6 +16,8 @@ from app.runtime_diagnostics import runtime_heartbeat
 from clients.bitget_rest import BitgetRestClient
 from clients.bitget_public_client import BitgetPublicClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
+from candidate_lifecycle import deterministic_candidate_id
+from market_features.engine import latest_closed_candle
 from data.market_fetcher import MarketFetcher
 from data.watchlist import get_watchlist
 from market_data.market_data_service import MarketDataService
@@ -48,7 +50,6 @@ from telemetry.market_context_logger import MarketContextLogger
 from telemetry.funnel import (
     FunnelTelemetry,
     classify_reason_codes,
-    deterministic_candidate_id,
     snapshot_context,
     stable_scan_id,
 )
@@ -258,6 +259,8 @@ def _build_fallback_candidate(snapshot: MarketSnapshot, settings: Settings) -> S
         return None
 
     return StrategyCandidate(
+        candidate_id=deterministic_candidate_id("adaptive_momentum_continuation", snapshot.symbol, direction, latest_closed_candle(snapshot.primary).timestamp_ms),
+        candidate_candle_open_timestamp_ms=latest_closed_candle(snapshot.primary).timestamp_ms,
         symbol=snapshot.symbol,
         strategy="adaptive_momentum_continuation",
         direction=direction,
@@ -300,7 +303,7 @@ class StartupRunner:
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
         self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
-        self.forward_paper = ForwardPaperService(settings=settings)
+        self.forward_paper = ForwardPaperService(settings=settings, funnel_telemetry=self.funnel_telemetry)
         self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
         self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
@@ -406,6 +409,10 @@ class StartupRunner:
             while True:
                 time.sleep(self.settings.scan_interval_sec)
                 self._scan_cycle()
+
+    def scan_once(self) -> None:
+        """Run one complete public detector-to-paper scan cycle."""
+        self._scan_cycle()
 
     def _position_monitor_loop(self) -> None:
         interval = max(1, int(self.settings.position_check_interval_sec))
@@ -732,10 +739,13 @@ class StartupRunner:
                             detected_candidate.direction if detected_candidate is not None
                             else attempted_direction
                         )
-                        candidate_id = deterministic_candidate_id(
-                            attempted_strategy, snapshot.symbol, direction,
-                            funnel_context["candle_open_timestamp"],
-                            funnel_context["timeframe"],
+                        candidate_id = (
+                            detected_candidate.candidate_id
+                            if detected_candidate is not None
+                            else deterministic_candidate_id(
+                                attempted_strategy, snapshot.symbol, direction,
+                                funnel_context["candle_open_timestamp"],
+                            )
                         )
                         common = dict(
                             scan_id=scan_id, candidate_id=candidate_id,
@@ -832,8 +842,9 @@ class StartupRunner:
                             fallback_id = deterministic_candidate_id(
                                 fallback_strategy_name, snapshot.symbol, fallback_direction,
                                 funnel_context["candle_open_timestamp"],
-                                funnel_context["timeframe"],
                             )
+                            if fallback_candidate is not None:
+                                fallback_id = fallback_candidate.candidate_id
                             fallback_common = dict(
                                 scan_id=scan_id, candidate_id=fallback_id,
                                 strategy=fallback_strategy_name, symbol=snapshot.symbol,
@@ -1026,11 +1037,7 @@ class StartupRunner:
                             selector_reject_code = "DUPLICATE_CONTINUATION"
 
                     for observed in observed_candidates:
-                        observed_id = deterministic_candidate_id(
-                            observed.strategy, observed.symbol, observed.direction,
-                            funnel_context["candle_open_timestamp"],
-                            funnel_context["timeframe"],
-                        )
+                        observed_id = observed.candidate_id
                         selected = observed is candidate
                         rejected_after_selection = (
                             candidate is None
@@ -1054,16 +1061,12 @@ class StartupRunner:
 
                     if candidate is not None:
                         score = self.scorer.score(candidate)
-                        candidate_id = deterministic_candidate_id(
-                            candidate.strategy, candidate.symbol, candidate.direction,
-                            funnel_context["candle_open_timestamp"],
-                            funnel_context["timeframe"],
-                        )
+                        candidate_id = candidate.candidate_id
                         funnel_common = dict(
                             scan_id=scan_id, candidate_id=candidate_id,
                             strategy=candidate.strategy, symbol=candidate.symbol,
                             direction=candidate.direction, timeframe=funnel_context["timeframe"],
-                            candle_open_timestamp=funnel_context["candle_open_timestamp"],
+                            candle_open_timestamp=str(candidate.candidate_candle_open_timestamp_ms),
                             signal_timestamp=funnel_context["signal_timestamp"],
                             session=funnel_context["session"], regime=funnel_context["regime"],
                         )
@@ -1091,7 +1094,7 @@ class StartupRunner:
                             secondary_reason_codes=classify_reason_codes(
                                 list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
                             ),
-                            details={"verdict": str(plan.verdict)}, **funnel_common,
+                            details={"verdict": str(plan.verdict), "plan_id": plan.plan_id}, **funnel_common,
                         )
                         self.funnel_telemetry.event(
                             event_type="EXECUTABLE_DECISION", passed=executable,
@@ -1099,15 +1102,7 @@ class StartupRunner:
                             secondary_reason_codes=classify_reason_codes(
                                 list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
                             ),
-                            **funnel_common,
-                        )
-                        self.funnel_telemetry.event(
-                            event_type="FORWARD_PAPER_LINK", passed=executable,
-                            primary_reason_code="FORWARD_LINKED" if executable else "FORWARD_NOT_ELIGIBLE",
-                            secondary_reason_codes=classify_reason_codes(
-                                list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
-                            ),
-                            details={"link_only": True}, **funnel_common,
+                            details={"plan_id": plan.plan_id}, **funnel_common,
                         )
                         self.strategy_performance_logger.append_setup_event(
                             symbol=plan.symbol,
@@ -1274,15 +1269,22 @@ class StartupRunner:
                                     fast_candidate.direction if fast_candidate is not None
                                     else default_direction
                                 )
-                                fast_candidate_id = deterministic_candidate_id(
-                                    fast_strategy, snap_fast.symbol, fast_direction,
-                                    fast_context["candle_open_timestamp"], fast_context["timeframe"],
+                                fast_candidate_id = (
+                                    fast_candidate.candidate_id if fast_candidate is not None
+                                    else deterministic_candidate_id(
+                                        fast_strategy, snap_fast.symbol, fast_direction,
+                                        fast_context["candle_open_timestamp"],
+                                    )
                                 )
                                 fast_common = dict(
                                     scan_id=scan_id, candidate_id=fast_candidate_id,
                                     strategy=fast_strategy, symbol=snap_fast.symbol,
                                     direction=fast_direction, timeframe=fast_context["timeframe"],
-                                    candle_open_timestamp=fast_context["candle_open_timestamp"],
+                                    candle_open_timestamp=(
+                                        str(fast_candidate.candidate_candle_open_timestamp_ms)
+                                        if fast_candidate is not None
+                                        else fast_context["candle_open_timestamp"]
+                                    ),
                                     signal_timestamp=fast_context["signal_timestamp"],
                                     session=fast_context["session"], regime=fast_context["regime"],
                                 )
@@ -1348,16 +1350,8 @@ class StartupRunner:
                                     event_type="EXECUTABLE_DECISION", passed=fast_executable,
                                     primary_reason_code=(
                                         "PLAN_EXECUTABLE" if fast_executable else "PLAN_BLOCKED"
-                                    ), secondary_reason_codes=fast_secondary, **fast_common,
-                                )
-                                self.funnel_telemetry.event(
-                                    event_type="FORWARD_PAPER_LINK", passed=fast_executable,
-                                    primary_reason_code=(
-                                        "FORWARD_LINKED" if fast_executable
-                                        else "FORWARD_NOT_ELIGIBLE"
                                     ), secondary_reason_codes=fast_secondary,
-                                    details={"link_only": True, "selection_path": "fast_lane_implicit"},
-                                    **fast_common,
+                                    details={"plan_id": fast_plan.plan_id}, **fast_common,
                                 )
                                 plans.append(fast_plan)
                                 fast_plans += 1
@@ -1390,7 +1384,7 @@ class StartupRunner:
                 self.trade_plan_logger.append_rows(plans)
 
             try:
-                self.forward_paper.process(plans, snapshots)
+                self.forward_paper.process(plans, snapshots, scan_id=scan_id)
             except Exception as exc:
                 # Paper telemetry must never interrupt scans or weaken live
                 # execution safety. Corruption fails the paper writer closed.

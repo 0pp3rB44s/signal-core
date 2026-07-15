@@ -1,6 +1,8 @@
 import logging
 from app.config import Settings
 from clients.schemas import Candle, MarketSnapshot, StrategyCandidate, SweepDetection
+from candidate_lifecycle import deterministic_candidate_id
+from market_features.engine import closed_candle_at_offset
 from market_features.engine import closed_window
 
 logger = logging.getLogger("StartupRunner")
@@ -204,6 +206,8 @@ class LiquiditySweepStrategy:
             notes.append(f"mtf_pressure_score={float(bull_mtf_context.get('pressure_score', 0.0)):.2f}")
             notes.append(f"mtf_expansion_prob={float(bull_mtf_context.get('expansion_prob', 0.0)):.1f}")
             return StrategyCandidate(
+                candidate_id=deterministic_candidate_id(self.name, market.symbol, "LONG", closed_candle_at_offset(market.primary, bull.bars_since_sweep).timestamp_ms),
+                candidate_candle_open_timestamp_ms=closed_candle_at_offset(market.primary, bull.bars_since_sweep).timestamp_ms,
                 symbol=market.symbol,
                 strategy=self.name,
                 direction="LONG",
@@ -231,6 +235,8 @@ class LiquiditySweepStrategy:
             notes.append(f"mtf_pressure_score={float(bear_mtf_context.get('pressure_score', 0.0)):.2f}")
             notes.append(f"mtf_expansion_prob={float(bear_mtf_context.get('expansion_prob', 0.0)):.1f}")
             return StrategyCandidate(
+                candidate_id=deterministic_candidate_id(self.name, market.symbol, "SHORT", closed_candle_at_offset(market.primary, bear.bars_since_sweep).timestamp_ms),
+                candidate_candle_open_timestamp_ms=closed_candle_at_offset(market.primary, bear.bars_since_sweep).timestamp_ms,
                 symbol=market.symbol,
                 strategy=self.name,
                 direction="SHORT",

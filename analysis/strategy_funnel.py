@@ -58,7 +58,7 @@ STRUCTURED_EVENT_ORDER = {
     ))
 }
 STRUCTURED_REQUIRED_FIELDS = {
-    "schema_version", "event_id", "scan_id", "candidate_id", "event_type",
+    "schema_version", "event_id", "lifecycle_key", "scan_id", "candidate_id", "event_type",
     "event_timestamp_utc", "config_hash", "git_commit",
     "strategy", "symbol", "direction", "timeframe", "candle_open_timestamp",
     "signal_timestamp", "session", "regime", "pass_fail", "primary_reason_code",
@@ -508,22 +508,23 @@ class StrategyFunnelAnalyzer:
     def _validate_structured_chain(self, events: list[dict[str, Any]]) -> bool:
         previous_hash = "GENESIS"
         event_ids: set[str] = set()
-        lifecycle: dict[tuple[str, str], tuple[int, str]] = {}
+        lifecycle_keys: set[str] = set()
         for sequence, event in enumerate(events, 1):
-            key = (str(event.get("scan_id")), str(event.get("candidate_id")))
+            key = f"{event.get('candidate_id')}:{str(event.get('event_type')).upper()}"
             missing = sorted(STRUCTURED_REQUIRED_FIELDS - event.keys())
             rank = STRUCTURED_EVENT_ORDER.get(str(event.get("event_type")))
-            previous_rank, previous_result = lifecycle.get(key, (-1, "PASS"))
             unsigned = {field: value for field, value in event.items() if field != "event_hash"}
             valid = (
                 not missing
-                and event.get("schema_version") == 1
+                and event.get("schema_version") == 2
                 and event.get("sequence") == sequence
                 and event.get("previous_hash") == previous_hash
                 and event.get("event_hash") == hashlib.sha256(
                     json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                 ).hexdigest()
                 and str(event.get("event_id")) not in event_ids
+                and event.get("lifecycle_key") == key
+                and key not in lifecycle_keys
                 and rank is not None
                 and event.get("pass_fail") in {"PASS", "FAIL"}
                 and event.get("primary_reason_code") in STRUCTURED_REASON_CODES
@@ -531,14 +532,6 @@ class StrategyFunnelAnalyzer:
                 and all(
                     reason in STRUCTURED_REASON_CODES
                     for reason in (event.get("secondary_reason_codes") or [])
-                )
-                and rank == previous_rank + 1
-                and not (
-                    previous_result == "FAIL"
-                    and previous_rank in {
-                        STRUCTURED_EVENT_ORDER["DETECTOR_DECISION"],
-                        STRUCTURED_EVENT_ORDER["SELECTOR_DECISION"],
-                    }
                 )
             )
             if not valid:
@@ -550,7 +543,7 @@ class StrategyFunnelAnalyzer:
                 return False
             event_ids.add(str(event["event_id"]))
             previous_hash = str(event["event_hash"])
-            lifecycle[key] = (int(rank), str(event.get("pass_fail")))
+            lifecycle_keys.add(key)
         return True
 
     def _structured_views(
@@ -568,7 +561,7 @@ class StrategyFunnelAnalyzer:
             return [], None, []
         valid = [
             event for event in events
-            if event.get("schema_version") == 1
+            if event.get("schema_version") == 2
             and event.get("candidate_id")
             and event.get("strategy") in ACTIVE_STRATEGIES
         ]
@@ -588,11 +581,11 @@ class StrategyFunnelAnalyzer:
             strategy_events = [event for event in valid if event["strategy"] == strategy]
             for event_type, (pass_field, fail_field) in stage_fields.items():
                 stage = {
-                    (event["scan_id"], event["candidate_id"], event.get("pass_fail"))
+                    (event["candidate_id"], event.get("pass_fail"))
                     for event in strategy_events if event.get("event_type") == event_type
                 }
-                passed = sum(result == "PASS" for _, _, result in stage)
-                failed = sum(result == "FAIL" for _, _, result in stage)
+                passed = sum(result == "PASS" for _, result in stage)
+                failed = sum(result == "FAIL" for _, result in stage)
                 row[pass_field] = passed
                 if fail_field:
                     row[fail_field] = failed

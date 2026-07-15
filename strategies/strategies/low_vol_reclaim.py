@@ -1,6 +1,7 @@
 import logging
 
 from clients.schemas import MarketSnapshot, StrategyCandidate, SweepDetection
+from candidate_lifecycle import deterministic_candidate_id
 from market_features.engine import closed_window, latest_closed_candle, previous_closed_candle
 
 logger = logging.getLogger("StartupRunner")
@@ -646,6 +647,8 @@ class LowVolReclaimStrategy:
         )
 
         return StrategyCandidate(
+            candidate_id=deterministic_candidate_id(self.name, market.symbol, direction, last.timestamp_ms),
+            candidate_candle_open_timestamp_ms=last.timestamp_ms,
             symbol=market.symbol,
             strategy=self.name,
             direction=direction,

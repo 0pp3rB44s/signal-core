@@ -15,11 +15,13 @@ from app.runner import StartupRunner
 from telemetry.funnel import (
     EVENT_ORDER,
     EVENT_TYPES,
+    SCHEMA_VERSION,
     FunnelEventStore,
     FunnelTelemetry,
     FunnelTelemetryCorruptionError,
     deterministic_candidate_id,
 )
+from candidate_lifecycle import deterministic_plan_id
 
 
 def _event(candidate: str, event_type: str, passed: bool = True, **overrides):
@@ -28,9 +30,10 @@ def _event(candidate: str, event_type: str, passed: bool = True, **overrides):
         "SELECTOR_DECISION": "SELECTED", "SCORING_DECISION": "SCORE_GO",
         "RISK_DECISION": "RISK_ALLOWED", "PLANNER_DECISION": "PLAN_EXECUTABLE",
         "EXECUTABLE_DECISION": "PLAN_EXECUTABLE", "FORWARD_PAPER_LINK": "FORWARD_LINKED",
+        "OUTCOME_LINK": "FORWARD_LINKED",
     }
     value = {
-        "schema_version": 1, "event_id": f"{candidate}-{event_type}",
+        "schema_version": SCHEMA_VERSION, "event_id": f"{candidate}-{event_type}",
         "scan_id": "scan-1", "candidate_id": candidate, "event_type": event_type,
         "event_timestamp_utc": "2026-01-01T00:00:00+00:00",
         "strategy": "momentum_breakout", "symbol": "BTCUSDT", "direction": "LONG",
@@ -67,7 +70,7 @@ def test_reject_at_each_decision_stage(event_type: str, tmp_path: Path) -> None:
         "DETECTOR_DECISION": "NO_DETECTION", "SELECTOR_DECISION": "NOT_SELECTED",
         "SCORING_DECISION": "SCORE_NO_GO", "RISK_DECISION": "RISK_BLOCKED",
         "PLANNER_DECISION": "PLAN_BLOCKED", "EXECUTABLE_DECISION": "PLAN_BLOCKED",
-        "FORWARD_PAPER_LINK": "FORWARD_NOT_ELIGIBLE",
+        "FORWARD_PAPER_LINK": "FORWARD_NOT_ELIGIBLE", "OUTCOME_LINK": "UNKNOWN_DECISION",
     }[event_type]
     store = FunnelEventStore(tmp_path / "events.jsonl", tmp_path / "quality.json")
     for prefix_type in sorted(EVENT_TYPES, key=EVENT_ORDER.get):
@@ -176,10 +179,11 @@ def test_instrumentation_has_no_private_calls_or_decision_mutation() -> None:
     assert ".verdict =" not in source and ".allowed =" not in source and ".total =" not in source
 
 
-def test_out_of_order_lifecycle_is_rejected(tmp_path: Path) -> None:
+def test_lifecycle_key_deduplicates_across_scans(tmp_path: Path) -> None:
     store = FunnelEventStore(tmp_path / "events", tmp_path / "quality")
-    with pytest.raises(FunnelTelemetryCorruptionError, match="lifecycle"):
-        store.append(_event("candidate", "SELECTOR_DECISION"))
+    assert store.append(_event("candidate", "SELECTOR_DECISION"))
+    duplicate = _event("candidate", "SELECTOR_DECISION", scan_id="scan-2", event_id="scan-2-selector")
+    assert store.append(duplicate) is False
 
 
 def test_append_uses_incremental_index_after_initial_sync(tmp_path: Path, monkeypatch) -> None:
@@ -251,9 +255,14 @@ def test_scan_planner_outcome_is_identical_when_telemetry_fails(
         notes=[], market=snapshot,
         detection=SimpleNamespace(entry_hint=101.0, invalidation=99.0),
     )
+    candidate.candidate_candle_open_timestamp_ms = 1767225600000
+    candidate.candidate_id = deterministic_candidate_id(candidate.strategy, candidate.symbol, candidate.direction, candidate.candidate_candle_open_timestamp_ms)
     score = SimpleNamespace(verdict="GO", total=82.0, reasons=[])
     risk = SimpleNamespace(allowed=True, status="ALLOWED", reasons=[])
     plan = SimpleNamespace(
+        candidate_id=candidate.candidate_id,
+        candidate_candle_open_timestamp_ms=candidate.candidate_candle_open_timestamp_ms,
+        plan_id=deterministic_plan_id(candidate.candidate_id),
         verdict="EXECUTABLE", symbol="BTCUSDT", strategy="momentum_breakout",
         direction="LONG", risk_reward_ratio=2.0, notes=[], score=82.0,
         entry_prices=[101.0], stop_loss=99.0, take_profits=[105.0],

@@ -42,7 +42,7 @@ Alle events bevatten:
 
 | Veld | Betekenis |
 |---|---|
-| `schema_version` | Integer schemaversie, momenteel `1`. |
+| `schema_version` | Integer schemaversie, momenteel `2`; schema 1 is read-only `LEGACY_UNLINKED`. |
 | `event_id` | Deterministische UUID per scan, kandidaat en eventtype. |
 | `scan_id` | Eén stabiele UUID voor de volledige scancyclus. |
 | `candidate_id` | Deterministische SHA-256 kandidaatidentiteit. |

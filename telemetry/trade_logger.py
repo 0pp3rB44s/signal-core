@@ -313,7 +313,7 @@ def _rotate_on_schema_change(path: Path, expected_header: list[str]) -> None:
 
 class StrategyCandidateCsvLogger:
     HEADER = [
-        "timestamp","symbol","strategy","direction","verdict","score","primary_tf","confirm_tf","alignment",
+        "timestamp","candidate_id","candidate_candle_open_timestamp_ms","symbol","strategy","direction","verdict","score","primary_tf","confirm_tf","alignment",
         "entry_hint","reclaim_level","invalidation","bars_since_sweep","volume_ratio_on_sweep",
         "displacement_pct","notes","reasons"
     ]
@@ -335,6 +335,7 @@ class StrategyCandidateCsvLogger:
             for candidate, score in rows:
                 writer.writerow([
                     now,
+                    candidate.candidate_id, candidate.candidate_candle_open_timestamp_ms,
                     candidate.symbol, candidate.strategy, candidate.direction, score.verdict, f"{score.total:.2f}",
                     candidate.primary_granularity, candidate.confirmation_granularity, candidate.market.alignment,
                     f"{candidate.detection.entry_hint:.8f}", f"{candidate.detection.reclaim_level:.8f}",
@@ -346,7 +347,7 @@ class StrategyCandidateCsvLogger:
 
 class TradePlanCsvLogger:
     HEADER = [
-        "timestamp","symbol","strategy","direction","verdict","score","entries","stop_loss","take_profits",
+        "timestamp","candidate_id","plan_id","symbol","strategy","direction","verdict","score","entries","stop_loss","take_profits",
         "risk_reward_ratio","account_risk_pct","leverage","position_notional_usdt","notes","reasons",
         "decision_snapshot"
     ]
@@ -368,6 +369,7 @@ class TradePlanCsvLogger:
             for plan in plans:
                 writer.writerow([
                     now,
+                    plan.candidate_id, plan.plan_id,
                     plan.symbol, plan.strategy, plan.direction, plan.verdict, f"{plan.score:.2f}",
                     " | ".join(f"{x:.8f}" for x in plan.entry_prices), f"{plan.stop_loss:.8f}",
                     " | ".join(f"{x:.8f}" for x in plan.take_profits), f"{plan.risk_reward_ratio:.2f}",
@@ -434,7 +436,7 @@ class ExecutionCsvLogger:
 
     def _fieldnames(self) -> list[str]:
         return [
-            "timestamp", "symbol", "direction", "strategy", "mode", "status", "message", "avg_entry", "expected_entry",
+            "timestamp", "candidate_id", "plan_id", "symbol", "direction", "strategy", "mode", "status", "message", "avg_entry", "expected_entry",
             "actual_entry", "slippage_pct", "fees_paid", "realized_pnl", "exchange_order_id", "stop_loss",
             "take_profits", "position_notional_usdt", "leverage",
         ]
@@ -486,6 +488,7 @@ class ExecutionCsvLogger:
             for report in reports:
                 writer.writerow([
                     now,
+                    report.candidate_id, report.plan_id,
                     report.symbol, report.direction, report.strategy, report.mode, report.status, report.message,
                     f"{report.avg_entry:.8f}",
                     f"{getattr(report, 'expected_entry', report.avg_entry):.8f}",
