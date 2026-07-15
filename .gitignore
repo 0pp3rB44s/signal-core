@@ -20,3 +20,5 @@ project_inventory.txt
 *.save
 0
 archive/
+# Historical datasets
+data/historical/
