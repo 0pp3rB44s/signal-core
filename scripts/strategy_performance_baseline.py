@@ -317,6 +317,7 @@ def main() -> int:
         default=ResearchRiskMode.PRODUCTION.value,
     )
     parser.add_argument("--require-clean-runtime", action="store_true")
+    parser.add_argument("--strategy-filter", action="append", choices=[row["strategy"] for row in STRATEGIES])
     args = parser.parse_args()
     if args.output_dir.exists():
         raise SystemExit(f"refusing to overwrite existing analysis: {args.output_dir}")
@@ -341,6 +342,7 @@ def main() -> int:
         settings,
         research_risk_mode=risk_mode,
         historical_proxy_config=proxy_config,
+        strategy_filter=frozenset(args.strategy_filter) if args.strategy_filter else None,
     )
     result = engine.run(market_data)
     records = list(result["execution_records"])
@@ -377,6 +379,7 @@ def main() -> int:
         } if risk_mode is ResearchRiskMode.HISTORICAL_CONSERVATIVE_PROXY else None,
         "runtime_isolation": "clean source export; _env_file=None; operational runtime files forbidden",
         "comparability_exception": "adaptive_momentum_continuation is a disabled fallback and cannot emit standalone signals",
+        "strategy_filter": sorted(args.strategy_filter) if args.strategy_filter else None,
     }
     (args.output_dir / "analysis_contract.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n")
     (args.output_dir / "data_quality.json").write_text(json.dumps(quality, indent=2, sort_keys=True) + "\n")

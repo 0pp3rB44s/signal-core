@@ -310,3 +310,15 @@ VOLGENDE FASE
 - Sweep attrition: 238 detector hits -> 54 selected -> 28 structural -> 11 proxy -> 10 closed. The 184 selector rejects are all mixed-alignment without MTF confirmation, not losses to another strategy; 151 reconstructable outcomes total -12.34.
 - Deterministic diagnosis hash `c42283851c0a0c04a57a75e3a385a12297475274dbac3863c80b4449d2936382` across two runs.
 - Single next experiment: add one non-overlapping year and rerun only the frozen sweep diagnostic without logic changes.
+
+# 2026-07-15 — Phase 2E independent sweep replication
+
+- Phase 2D was committed separately as `2405e8244c9eced57864561ed80b1cdbd7b6d52e`; diagnosis hash `c42283851c0a0c04a57a75e3a385a12297475274dbac3863c80b4449d2936382` reproduced before the commit.
+- Acquired the exact non-overlapping Bitget `USDT-FUTURES` year 2024-07-15/2025-07-15 for all eight symbols. Each has 35,040 candles; canonical gaps, duplicates, invalid OHLC, zero/negative volumes and alignment failures are all zero. Dataset hash `d7d7a7670b6bd5723cc5f0b7b279b099c3b0258659f2cfd384c9b9179b0953fb`.
+- Universe A, B and all per-symbol maximum windows coincide with the full requested year; no symbol was excluded. Raw/canonical payloads remain ignored; manifests, quality and checksums are reproducible metadata.
+- Frozen independent sweep funnel: 222 detector hits -> 30 selected -> 17 structural -> 7 proxy -> 7 fills/closed, with zero rejected or unresolved orders. Proxy configuration remains `722bb696`.
+- Two sweep-filtered replays produced result hash `8a6f13a1199dcf0a54a4a2755b46762265a833985cd8aabafea88e8f4a2ea53a` and byte-identical core hash `0175c9821237c544bc07bd0ba09a157d23f87ee8f1cd6e1efcd129a5cc61f222`.
+- Independent sweep: 7 trades, gross price PnL `+0.111832`, execution-adjusted gross `-0.205299`, total costs `0.610825`, net `-0.498993`, PF `0.605700`, expectancy `-0.071285`; both LONG and SHORT are negative.
+- Combined sweep: 17 trades, gross price PnL `+1.314301`, costs `1.467193`, net `-0.152892`, PF `0.903867`, expectancy `-0.008994`. The independent and combined bootstrap mean intervals cross zero.
+- Phase 2E artifact hash is `27541af8673d20baf646ae9fc671436069a97b4461244ad13c60100eada9a158` in two byte-identical runs. The explicit sweep-only execution filter produced the exact same seven sweep records and PnL as the unfiltered diagnostic run while preventing unrelated strategies from affecting research equity.
+- Decision: `FAILED INDEPENDENT VALIDATION — REJECT CURRENT STRATEGY`. Continuation remains `REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED` and was excluded. No current strategy is promoted to Phase 3.

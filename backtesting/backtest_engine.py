@@ -69,12 +69,14 @@ class BacktestEngine:
         *,
         research_risk_mode: ResearchRiskMode = ResearchRiskMode.PRODUCTION,
         historical_proxy_config: HistoricalProxyConfig | None = None,
+        strategy_filter: frozenset[str] | None = None,
     ) -> None:
         if not isinstance(research_risk_mode, ResearchRiskMode):
             raise TypeError("research_risk_mode must be explicitly selected with ResearchRiskMode")
         self.settings = settings
         self.research_risk_mode = research_risk_mode
         self.historical_proxy_config = historical_proxy_config or HistoricalProxyConfig()
+        self.strategy_filter = strategy_filter
         self.sweep = LiquiditySweepStrategy(settings)
         self.momentum = MomentumBreakoutStrategy(settings)
         self.momentum_breakdown = MomentumBreakdownStrategy(settings)
@@ -192,6 +194,10 @@ class BacktestEngine:
                 debug["selected_candidate"] += 1
                 debug_by_symbol[symbol]["selected_candidate"] += 1
                 debug[f"selected_strategy::{candidate.strategy}"] += 1
+                if self.strategy_filter is not None and candidate.strategy not in self.strategy_filter:
+                    debug["research_strategy_filtered"] += 1
+                    debug_by_symbol[symbol]["research_strategy_filtered"] += 1
+                    continue
 
                 risk_candidate = candidate
                 if self.research_risk_mode is not ResearchRiskMode.PRODUCTION:

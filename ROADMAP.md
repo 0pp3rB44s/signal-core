@@ -279,4 +279,13 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Prove continuation failure persists across every permitted exit diagnostic.
 - [x] Prove sweep scarcity is mainly selector alignment plus risk/proxy attrition, not detector competition.
 - [x] Quantify bootstrap, Wilson and resampled equity uncertainty with seed `20260715`.
-- [ ] Acquire one additional non-overlapping year solely to expand the frozen sweep sample.
+- [x] Acquire one additional non-overlapping year solely to expand the frozen sweep sample.
+
+# Phase 2E evidence — 2026-07-15
+
+- [x] Freeze Phase 2D separately at `2405e8244c9eced57864561ed80b1cdbd7b6d52e`.
+- [x] Acquire and validate the non-overlapping 2024-07-15/2025-07-15 Bitget futures year.
+- [x] Re-run the unchanged sweep contract with proxy hash `722bb696`.
+- [x] Keep continuation rejected and excluded from the validation decision.
+- [x] Classify sweep as `FAILED INDEPENDENT VALIDATION` after 7 independent trades, PF 0.606 and net expectancy -0.0713.
+- [ ] Do not promote or tune the current sweep or continuation definitions; only a separately pre-registered new hypothesis is permitted.
