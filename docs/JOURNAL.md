@@ -322,3 +322,14 @@ VOLGENDE FASE
 - Combined sweep: 17 trades, gross price PnL `+1.314301`, costs `1.467193`, net `-0.152892`, PF `0.903867`, expectancy `-0.008994`. The independent and combined bootstrap mean intervals cross zero.
 - Phase 2E artifact hash is `27541af8673d20baf646ae9fc671436069a97b4461244ad13c60100eada9a158` in two byte-identical runs. The explicit sweep-only execution filter produced the exact same seven sweep records and PnL as the unfiltered diagnostic run while preventing unrelated strategies from affecting research equity.
 - Decision: `FAILED INDEPENDENT VALIDATION — REJECT CURRENT STRATEGY`. Continuation remains `REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED` and was excluded. No current strategy is promoted to Phase 3.
+
+# 2026-07-15 — Phase 3A confirmation-entry hypothesis
+
+- Branched `research/liquidity-sweep-confirmation-entry` from frozen Phase 2E commit `4763c3ce5d9bd5793c3cde974458d905774d823e`; reproduced Phase 2E analysis hash `27541af8` and replay hash `8a6f13a1`.
+- Tested exactly one research-only change: after frozen sweep risk acceptance, wait at most two closed 15m candles for a close beyond the signal extreme and enter at the following open. Detector, selector, gates, original stop/absolute targets, costs, sizing and execution remain frozen.
+- Funnel: prior 11 accepted -> 6 confirmed -> 5 closed; independent 7 -> 5 -> 5; seven candidates expired. All pre-confirmation counts match control.
+- Independent confirmation: net `-0.843561`, PF `0.031998`, expectancy `-0.168712`, gross price PnL `-0.414459`; all materially worse than control.
+- Combined confirmation: 10 trades, gross price PnL `-0.131832`, costs `0.855604`, net `-0.987435`, PF `0.051776`, expectancy `-0.098744`. Mean MFE fell to `1.1812R`; adverse-first rose to 80%.
+- Paired confirmed-candidate mean difference is `-0.157336`, bootstrap 95% interval `[-0.281097, -0.064616]`. Four expired losers were avoided and three winners missed, but this selection benefit did not offset worse confirmed entries.
+- Verdict: `HYPOTHESIS REJECTED`. The experimental variant remains unregistered in production, paper and live paths.
+- Two complete runs are byte-identical with Phase 3A artifact hash `ddb74fedb1cdae6b1a0b4f603434aa714b886f60b1634bc7a3d162bd59244336`.

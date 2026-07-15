@@ -289,3 +289,11 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Keep continuation rejected and excluded from the validation decision.
 - [x] Classify sweep as `FAILED INDEPENDENT VALIDATION` after 7 independent trades, PF 0.606 and net expectancy -0.0713.
 - [ ] Do not promote or tune the current sweep or continuation definitions; only a separately pre-registered new hypothesis is permitted.
+
+# Phase 3A single hypothesis — 2026-07-15
+
+- [x] Preserve the frozen sweep control and test one two-closed-candle confirmation entry.
+- [x] Keep original invalidation, absolute targets, costs, sizing and execution contract.
+- [x] Prove identical detector, selector and risk-accepted cohorts before confirmation.
+- [x] Reject the hypothesis: independent expectancy worsened to `-0.168712` and combined gross price edge became negative.
+- [ ] Do not vary the confirmation window or promote the experimental variant.

@@ -1,6 +1,7 @@
 {
   "adaptive_momentum_continuation": "DISABLED",
-  "liquidity_sweep_reversal": "INDEPENDENT_VALIDATION_REQUIRED",
+  "liquidity_sweep_reversal": "REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED",
+  "liquidity_sweep_reversal_confirmation_v1": "HYPOTHESIS_REJECTED_RESEARCH_ONLY",
   "low_vol_reclaim": "NO_CANDIDATES_IN_FROZEN_SAMPLE",
   "momentum_breakdown": "ENTRY_FAILURE_WEAK_SAMPLE",
   "momentum_breakout": "INSUFFICIENT_SAMPLE",
