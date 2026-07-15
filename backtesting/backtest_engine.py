@@ -17,7 +17,7 @@ from strategies.strategies.low_vol_reclaim import LowVolReclaimStrategy
 
 from risk.risk_manager import RiskManager
 from backtesting.metrics import summarize
-from market_features.engine import FeatureInputs, aggregate_candles, build_market_snapshot
+from market_features.engine import CandleContractError, FeatureInputs, aggregate_candles, build_market_snapshot
 from backtesting.execution_contract import BacktestExecutionConfig, BacktestExecutionContract, ExecutionRecord
 
 
@@ -77,7 +77,19 @@ class BacktestEngine:
         for symbol, candles in market_data.items():
             debug_by_symbol[symbol] = Counter()
             for i in range(50, len(candles) - 1):
-                snapshot = self._build_snapshot(symbol, candles[: i + 1], as_of_timestamp_ms=candles[i + 1].timestamp_ms)
+                try:
+                    snapshot = self._build_snapshot(
+                        symbol, candles[: i + 1],
+                        as_of_timestamp_ms=candles[i + 1].timestamp_ms,
+                    )
+                except CandleContractError as exc:
+                    # Fail this analysis point closed. Hour-boundary alignment
+                    # means the first valid 20x1h context is not always exactly
+                    # source index 80.
+                    debug["snapshot_contract_rejected"] += 1
+                    debug_by_symbol[symbol]["snapshot_contract_rejected"] += 1
+                    debug[f"snapshot_contract_reason::{exc}"] += 1
+                    continue
 
                 sweep_cand = self.sweep.detect(snapshot)
                 momentum_cand = self.momentum.detect(snapshot)

@@ -245,3 +245,11 @@ N8 — FILL TRUTH (nieuw)
 [ ] Daarna: slippage-cijfers betrouwbaar → limit-entry beslissing (P5)
 
 TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
+# Phase 2A baseline — 2026-07-15
+
+- [x] Freeze deterministic execution baseline at `2009a4a5cc8525436df8fb4e09c93a5b2bd237f2`.
+- [x] Create isolated, versioned performance-analysis command and reports.
+- [x] Inventory all active/analysable strategies and aliases.
+- [x] Run the uniform contract on all eight available tracked datasets.
+- [ ] Acquire sufficient historical coverage: current 200 candles/symbol (~49h45m) yielded zero candidates and is insufficient for performance inference.
+- [ ] Repeat Phase 2A unchanged on the longer dataset before any Phase 3 diagnostics or optimisation.

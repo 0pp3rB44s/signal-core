@@ -270,3 +270,13 @@ VOLGENDE FASE
 - Basic contract constraints cover price tick, quantity step, minimum quantity and minimum notional; invalid/unfilled records retain explicit reasons.
 - Known limitations: no order-book queue, stochastic fill, portfolio margin, liquidation or funding model. Contract parameters are global unless a caller supplies symbol-specific settings. Live maker partial-fill handling remains a separate execution bugfix.
 - Added 16 deterministic numerical execution-contract tests. Phase 2 is permitted only if the complete validation remains green and controlled reconciliations match manual arithmetic.
+
+# 2026-07-15 — Phase 2A uniform performance baseline
+
+- Froze execution baseline commit `2009a4a5cc8525436df8fb4e09c93a5b2bd237f2`.
+- Ran `scripts/strategy_performance_baseline.py` from a clean source export with `_env_file=None` and operational runtime files forbidden.
+- Fixed analysis contract: eight tracked 15m datasets, UTC, 2026-07-03 10:15 through 2026-07-05 12:00, 200 candles per symbol, shared 1h aggregation, conservative execution defaults from the frozen commit.
+- Analysed momentum breakout, momentum breakdown, trend continuation, liquidity sweep reversal, low-vol reclaim, and the disabled adaptive fallback.
+- Result: 256 HTF warm-up points failed closed, 936 valid snapshots produced zero detector candidates, zero orders and zero trades. Every strategy is `INSUFFICIENT DATA`; cost, outlier, direction, symbol, timeframe, session, regime and calendar performance cannot be estimated.
+- Reports: `reports/analysis/phase2a_20260715_execution_2009a4a/`.
+- Known limitation: the available dataset covers only 49h45m and cannot support strategy ranking. Next diagnostic step is to obtain a substantially longer, gap-checked historical dataset under the same frozen contract; do not tune detectors to force trades in this sample.
