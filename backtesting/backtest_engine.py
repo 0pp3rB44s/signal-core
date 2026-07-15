@@ -89,6 +89,7 @@ class BacktestEngine:
         trades: List[BacktestTrade] = []
         execution_records: list[ExecutionRecord] = []
         gate_decisions: list[dict[str, Any]] = []
+        candidate_events: list[dict[str, Any]] = []
         equity = self.execution_config.starting_equity
         debug = Counter()
         debug_by_symbol: dict[str, Counter] = {}
@@ -155,6 +156,31 @@ class BacktestEngine:
                     momentum_cand,
                     momentum_breakdown_cand,
                 )
+
+                detected = [item for item in (
+                    sweep_cand, momentum_cand, momentum_breakdown_cand,
+                    continuation_cand, low_vol_reclaim_cand,
+                ) if item is not None]
+                if detected:
+                    candidate_events.append({
+                        "symbol": symbol,
+                        "snapshot_as_of_timestamp": candles[i + 1].timestamp_ms,
+                        "market_regime": self._market_regime(snapshot),
+                        "volatility_rank": snapshot.volatility_rank,
+                        "volatility_bucket": "high" if snapshot.volatility_rank >= 67 else "low" if snapshot.volatility_rank <= 33 else "mid",
+                        "detectors": [{
+                            "strategy": item.strategy,
+                            "direction": item.direction,
+                            "candidate_id": item.candidate_id,
+                            "signal_timestamp": item.candidate_candle_open_timestamp_ms,
+                            "entry": float(getattr(item.detection, "entry_hint", 0.0) or 0.0),
+                            "stop": float(getattr(item.detection, "invalidation", 0.0) or 0.0),
+                            "subtype": "|".join(str(flag) for flag in (getattr(item.detection, "reason_flags", []) or [])),
+                        } for item in detected],
+                        "selected_strategy": candidate.strategy if candidate else None,
+                        "selected_candidate_id": candidate.candidate_id if candidate else None,
+                        "selector_reason": selector_reason,
+                    })
 
                 if not candidate:
                     debug["selector_rejected"] += 1
@@ -234,6 +260,7 @@ class BacktestEngine:
         result["execution_records"] = [record.__dict__ for record in execution_records]
         result["trade_log"] = [asdict(trade) for trade in trades]
         result["gate_decisions"] = gate_decisions
+        result["candidate_events"] = candidate_events
         result["starting_equity"] = self.execution_config.starting_equity
         result["ending_equity"] = equity
         result["execution_assumptions"] = self.execution_config.__dict__

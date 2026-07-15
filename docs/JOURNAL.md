@@ -300,3 +300,13 @@ VOLGENDE FASE
 - Shadow results: production 0/475 accepted; structural 272 accepted and 212 closed; proxy 144 accepted and 123 closed. Proxy ending equity 986.31, net PnL -13.69; structural ending equity 981.65, net PnL -18.35.
 - Two isolated runs per mode produced identical result hashes: production `4ac865f9`, structural `6ef0a421`, proxy `2d898466`. Comparison hash `16605778`.
 - Phase 3 remains blocked: trend continuation is a 102-trade negative sample in the official proxy baseline; the positive sweep result has only 10 trades; all other strategies have negative or insufficient samples.
+
+# 2026-07-15 — Phase 2D entry/exit/gate attribution
+
+- Phase 2C frozen at `2ad6f73`; production fail-closed behavior and official proxy result hash `2d898466` reproduced unchanged.
+- Added observation-only candidate competition records plus offline MFE/MAE, stop/target, exit-counterfactual, cost, segment, gate and uncertainty analysis. No detector, gate, selector, stop, target or execution setting changed.
+- Trend continuation: 102 trades, 81.4% adverse-first, mean MFE 1.35R, mean MAE 1.46R, negative close displacement from candle 1 through 16. Every permitted exit counterfactual stays negative. Primary failure: `ENTRY FAILURE`; decision: `REJECT STRATEGY AS CURRENTLY DEFINED`.
+- Sweep: 10 trades, mean MFE 1.60R, mean MAE 0.72R, 9/10 TP1-capable and 7/10 final-target-capable over 16 candles. Bootstrap mean interval crosses zero; primary failure: `INSUFFICIENT SAMPLE`.
+- Sweep attrition: 238 detector hits -> 54 selected -> 28 structural -> 11 proxy -> 10 closed. The 184 selector rejects are all mixed-alignment without MTF confirmation, not losses to another strategy; 151 reconstructable outcomes total -12.34.
+- Deterministic diagnosis hash `c42283851c0a0c04a57a75e3a385a12297475274dbac3863c80b4449d2936382` across two runs.
+- Single next experiment: add one non-overlapping year and rerun only the frozen sweep diagnostic without logic changes.

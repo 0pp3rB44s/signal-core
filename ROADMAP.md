@@ -271,3 +271,12 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Prove no-lookahead proxy inputs and unchanged execution costs/constraints.
 - [x] Run production/structural/proxy shadows twice with deterministic hashes.
 - [ ] Do not start Phase 3: no strategy satisfies sample, expectancy, PF, robustness and drawdown criteria.
+
+# Phase 2D evidence — 2026-07-15
+
+- [x] Attribute candidate-to-trade loss without changing the frozen baseline.
+- [x] Measure MFE/MAE, stop/target reach, counterfactual exits and transaction costs.
+- [x] Prove continuation failure persists across every permitted exit diagnostic.
+- [x] Prove sweep scarcity is mainly selector alignment plus risk/proxy attrition, not detector competition.
+- [x] Quantify bootstrap, Wilson and resampled equity uncertainty with seed `20260715`.
+- [ ] Acquire one additional non-overlapping year solely to expand the frozen sweep sample.

@@ -352,6 +352,7 @@ def main() -> int:
     coverage = f"{start_iso}/{end_iso}"
 
     args.output_dir.mkdir(parents=True)
+    (args.output_dir / "trade_log.json").write_text(json.dumps(trades, indent=2, sort_keys=True) + "\n")
     assumptions = asdict(engine.execution_config)
     contract = {
         "analysis_id": args.output_dir.name,
@@ -453,6 +454,9 @@ def main() -> int:
     (args.output_dir / "risk_gate_decisions.json").write_text(json.dumps(gate_decisions, indent=2, sort_keys=True) + "\n")
     gate_fields = ["strategy", "symbol", "direction", "signal_timestamp", "risk_policy", "allowed", "reasons", "proxy_values"]
     _write_csv(args.output_dir / "risk_gate_decisions.csv", gate_decisions, gate_fields)
+    (args.output_dir / "candidate_events.json").write_text(
+        json.dumps(result.get("candidate_events", []), indent=2, sort_keys=True) + "\n"
+    )
     (args.output_dir / "run_diagnostics.json").write_text(json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
     return 0
 
