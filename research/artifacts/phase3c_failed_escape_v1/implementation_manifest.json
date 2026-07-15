@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "strategy": "failed_range_escape_reversal_v1",
+  "research_only": true,
+  "source_commit": "924e2a4789eb60555c7d08734893c7b4758f305c",
+  "preregistration_hash": "e7117eefbf5e387646f2a5bceb444d5125a46c56b438eb6f2c8d2e6f69077da9",
+  "detector_file": "research/failed_range_escape_reversal_v1.py",
+  "detector_file_hash": "db4887970bbf4d0f38db124237531f6b557f5d5870437f28e343e16def5b8ee7",
+  "runner_file": "scripts/phase3c_failed_escape_validation.py",
+  "runner_file_hash": "65ae7eb8ab6d3c309b559146b1a17c00a8bd0e8bd4f170bd3c21472efa351872",
+  "execution_contract_file_hash": "fd93cd8900ea4e36c68bda878bde895484ce32ee62e479b7f623245f8b04f0eb",
+  "execution_configuration_hash": "a3a2537bc53a283df5f793e32e3ad84616307c5ccaf4140d12a7dc16cd8b260a",
+  "execution_configuration": {
+    "available_equity_notional_pct": 100.0,
+    "break_even_fee_buffer_bps": 12.0,
+    "break_even_policy": "FEE_ADJUSTED",
+    "entry_slippage_bps": 2.0,
+    "entry_type": "MARKET",
+    "exit_slippage_bps": 2.0,
+    "leverage_cap": 5.0,
+    "limit_expiration_candles": 3,
+    "maker_fee_bps": 2.0,
+    "max_hold_candles": 8,
+    "maximum_notional": 35.0,
+    "minimum_notional": 10.0,
+    "minimum_quantity": 0.001,
+    "price_tick": 0.0001,
+    "quantity_step": 0.001,
+    "risk_per_trade_pct": 0.75,
+    "same_candle_policy": "CONSERVATIVE",
+    "spread_bps": 4.0,
+    "starting_equity": 1000.0,
+    "taker_fee_bps": 6.0,
+    "tp1_partial_pct": 40.0
+  },
+  "dataset_hashes": {
+    "development": "d7d7a7670b6bd5723cc5f0b7b279b099c3b0258659f2cfd384c9b9179b0953fb",
+    "locked_validation": "9053781ed26065ebb6cc693cfd363fd5f784493488916ab319675cbf199a0f76"
+  },
+  "exact_rules": {
+    "range_lookback": 20,
+    "atr": "SMA true range 14 ending at the fully closed re-entry candle",
+    "minimum_escape_atr": 0.1,
+    "minimum_reentry_atr": 0.15,
+    "minimum_body_fraction": 0.5,
+    "entry": "market at immediate next 15m open",
+    "stop": "escape extreme",
+    "maximum_stop_atr": 2.0,
+    "minimum_tp1_distance_bps": 72.0,
+    "tp1_r": 1.2,
+    "final_target_r": 2.0,
+    "tp1_partial_pct": 40.0,
+    "break_even": "fee-adjusted 12 bps after completed TP1",
+    "maximum_hold_candles": 8,
+    "htf": "fully closed 1h EMA20/EMA50 metadata only"
+  },
+  "development_reconciliation": {
+    "artifact_hash": "054d89961c9ccc869d6f6875ae1c98f96963413ba4096a0c9f660c8427501695",
+    "repeated_byte_identical": true,
+    "filled": 2239,
+    "closed": 2239,
+    "unresolved": 0
+  },
+  "tests": {
+    "focused_phase3c": 38,
+    "isolated_clean_suite": 347,
+    "compileall": "PASS",
+    "diff_check": "PASS"
+  },
+  "known_contract_completion": "Research-only candle-8 remainder close applies frozen cost and rounding semantics when TP1 first occurs on the terminal hold candle; generic execution contract source is unchanged.",
+  "implementation_hash": "6acdcfb183e4a94c590070a74c1801b57d609828bbe3e67246dcaf03c03006bb"
+}
