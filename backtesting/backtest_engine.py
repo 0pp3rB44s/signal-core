@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import List, Dict, Any
 
 from clients.schemas import MarketSnapshot, Candle
@@ -77,9 +77,14 @@ class BacktestEngine:
         for symbol, candles in market_data.items():
             debug_by_symbol[symbol] = Counter()
             for i in range(50, len(candles) - 1):
+                # Production requests a bounded candle array (default 200).
+                # Keep historical feature input identical instead of feeding an
+                # ever-growing prefix that changes semantics and becomes O(n²).
+                feature_window = max(80, int(getattr(self.settings, "bitget_candle_limit", 200) or 200))
+                history = candles[max(0, i + 1 - feature_window) : i + 1]
                 try:
                     snapshot = self._build_snapshot(
-                        symbol, candles[: i + 1],
+                        symbol, history,
                         as_of_timestamp_ms=candles[i + 1].timestamp_ms,
                     )
                 except CandleContractError as exc:
@@ -90,6 +95,8 @@ class BacktestEngine:
                     debug_by_symbol[symbol]["snapshot_contract_rejected"] += 1
                     debug[f"snapshot_contract_reason::{exc}"] += 1
                     continue
+                debug["snapshots_evaluated"] += 1
+                debug_by_symbol[symbol]["snapshots_evaluated"] += 1
 
                 sweep_cand = self.sweep.detect(snapshot)
                 momentum_cand = self.momentum.detect(snapshot)
@@ -175,6 +182,7 @@ class BacktestEngine:
         result["debug"] = dict(debug.most_common())
         result["debug_by_symbol"] = {sym: dict(counter.most_common()) for sym, counter in debug_by_symbol.items()}
         result["execution_records"] = [record.__dict__ for record in execution_records]
+        result["trade_log"] = [asdict(trade) for trade in trades]
         result["starting_equity"] = self.execution_config.starting_equity
         result["ending_equity"] = equity
         result["execution_assumptions"] = self.execution_config.__dict__

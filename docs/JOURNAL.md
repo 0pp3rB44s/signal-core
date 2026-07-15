@@ -280,3 +280,13 @@ VOLGENDE FASE
 - Result: 256 HTF warm-up points failed closed, 936 valid snapshots produced zero detector candidates, zero orders and zero trades. Every strategy is `INSUFFICIENT DATA`; cost, outlier, direction, symbol, timeframe, session, regime and calendar performance cannot be estimated.
 - Reports: `reports/analysis/phase2a_20260715_execution_2009a4a/`.
 - Known limitation: the available dataset covers only 49h45m and cannot support strategy ranking. Next diagnostic step is to obtain a substantially longer, gap-checked historical dataset under the same frozen contract; do not tune detectors to force trades in this sample.
+
+# 2026-07-15 — Phase 2B twelve-month futures baseline
+
+- Phase 2A tooling frozen at `235274958ff2a68052b9b43a8cddb6380478fcc4`; execution remains frozen at `2009a4a5cc8525436df8fb4e09c93a5b2bd237f2`.
+- Downloaded public Bitget `USDT-FUTURES` market-price candles from `/api/v2/mix/market/history-candles`, with candle-open UTC millisecond timestamps and closed candles only.
+- Dataset `20250715_20260715_acq20260715`: eight symbols, 35,040 15m candles each, common window 2025-07-15 00:00 through 2026-07-14 23:45 UTC. Dataset hash `9053781ed26065ebb6cc693cfd363fd5f784493488916ab319675cbf199a0f76`.
+- Quality: zero canonical duplicates, gaps, invalid OHLC rows, negative volumes or timestamp-alignment failures. Raw backward pages contain expected page-order transitions; canonical files are sorted.
+- Frozen baseline evaluated 279,680 valid snapshots. Raw candidates: momentum breakout 98, breakdown 98, continuation 401, sweep 238, low-vol reclaim 0. Selector accepted 475 candidates, but frozen risk rejected all on missing historical orderbook context (`orderbook risk-off`). No orders or trades were produced.
+- Two isolated runs completed in 199 seconds each; core reports were byte-identical. Result hash `4ac865f94f9df0a80c35ef169b34c87d34164c7289ba18dcbbc3c6209ca3bfe3`.
+- Reports: `reports/analysis/phase2b_20250715_20260715_dataset_9053781e/`. Phase 3 remains blocked: candle-only history cannot satisfy the production orderbook risk gate, and no candidate may be fabricated or gate disabled in this phase.

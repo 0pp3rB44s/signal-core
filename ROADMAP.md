@@ -253,3 +253,12 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Run the uniform contract on all eight available tracked datasets.
 - [ ] Acquire sufficient historical coverage: current 200 candles/symbol (~49h45m) yielded zero candidates and is insufficient for performance inference.
 - [ ] Repeat Phase 2A unchanged on the longer dataset before any Phase 3 diagnostics or optimisation.
+
+# Phase 2B evidence — 2026-07-15
+
+- [x] Acquire 12 months of Bitget USDT-futures 15m candles for all eight required symbols.
+- [x] Validate raw/canonical layers, hashes, common window, gaps, OHLC and alignment.
+- [x] Re-run the frozen baseline twice with byte-identical core outputs.
+- [x] Prove detectors are not permanently silent: 835 raw candidates across four active strategies.
+- [ ] Resolve the evidence gap for historical orderbook risk context before profitability analysis; all 475 selector-accepted candidates currently fail closed at risk.
+- [ ] Do not enter Phase 3 or alter gates until that missing historical context has an evidence-backed treatment.

@@ -20,3 +20,7 @@ project_inventory.txt
 *.save
 0
 archive/
+
+# Reproducible historical market payloads (manifests/quality reports stay tracked)
+data/historical/**/raw/
+data/historical/**/canonical/
