@@ -23,13 +23,13 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from market_data.breakout_engine import BreakoutEngine
+from clients.schemas import Candle
+from market_features.engine import FeatureInputs, aggregate_candles, build_market_snapshot
 from market_data.htf_regime import classify_htf_regime
 
 HISTORY = ROOT / "data" / "history"
@@ -43,21 +43,16 @@ STOP_BAND_PCT = (0.15, 1.2)    # realistische stopafstanden
 LOOKBACK = 20
 
 
-def resample(candles: list[dict], factor: int) -> list[dict]:
-    out = []
-    for i in range(0, len(candles) - factor + 1, factor):
-        chunk = candles[i:i + factor]
-        out.append({
-            "timestamp": chunk[0]["timestamp"],
-            "open": chunk[0]["open"],
-            "high": max(c["high"] for c in chunk),
-            "low": min(c["low"] for c in chunk),
-            "close": chunk[-1]["close"],
-        })
-    return out
+def normalized_candles(rows: list[dict]) -> list[Candle]:
+    return [Candle(int(row["timestamp"]), float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"]), float(row.get("volume_base", 0.0))) for row in rows]
 
 
-def simulate(candles: list[dict], i: int, direction: str, entry: float, stop: float, tp_r: float) -> tuple[str, float]:
+def validation_snapshot(symbol: str, candles: list[Candle], as_of_timestamp_ms: int, *, inputs: FeatureInputs | None = None):
+    hourly = aggregate_candles(candles, "15m", "1h", as_of_timestamp_ms)
+    return build_market_snapshot(symbol, candles, hourly, as_of_timestamp_ms=as_of_timestamp_ms, inputs=inputs or FeatureInputs())
+
+
+def simulate(candles: list[Candle], i: int, direction: str, entry: float, stop: float, tp_r: float) -> tuple[str, float]:
     """Uitkomst + netto R (incl. fees en profit-lock BE benadering)."""
     risk = abs(entry - stop)
     if risk <= 0:
@@ -70,9 +65,9 @@ def simulate(candles: list[dict], i: int, direction: str, entry: float, stop: fl
     locked = False
 
     for c in candles[i + 1:i + 1 + HORIZON_BARS]:
-        hit_tp = c["high"] >= tp if direction == "LONG" else c["low"] <= tp
-        hit_lock = c["high"] >= lock_level if direction == "LONG" else c["low"] <= lock_level
-        hit_sl = c["low"] <= stop if direction == "LONG" else c["high"] >= stop
+        hit_tp = c.high >= tp if direction == "LONG" else c.low <= tp
+        hit_lock = c.high >= lock_level if direction == "LONG" else c.low <= lock_level
+        hit_sl = c.low <= stop if direction == "LONG" else c.high >= stop
 
         if hit_tp and hit_sl:
             return "AMBIGUOUS", -(1.0 + fee_r)  # conservatief: telt als stop
@@ -88,34 +83,33 @@ def simulate(candles: list[dict], i: int, direction: str, entry: float, stop: fl
 
 
 def run() -> dict:
-    engine = BreakoutEngine()
     matrix: dict[str, dict] = {}
     total_entries = 0
 
     for path in sorted(HISTORY.glob("*_15m.json")):
-        candles = json.loads(path.read_text())
+        raw_candles = json.loads(path.read_text())
+        candles = normalized_candles(raw_candles)
         if len(candles) < 500:
             continue
-        candles_4h = resample(candles, 16)
-        candles_1d = resample(candles, 96)
-
         for i in range(200, len(candles) - HORIZON_BARS - 1):
-            window = candles[max(0, i - 39):i + 1]
-            ctx = engine.analyze([SimpleNamespace(**c) for c in window])
+            as_of = candles[i].timestamp_ms + 900_000
+            history = candles[:i + 1]
+            snapshot = validation_snapshot(path.stem.replace("_15m", ""), history, as_of)
+            ctx = snapshot.context["breakout"]
             pressure = float(ctx.get("pressure_score") or 0)
             ready = bool(ctx.get("breakout_ready"))
             hint = str(ctx.get("direction") or "").lower()
 
             # HTF-regime op dit historische punt (4H/1D t/m bar i)
-            h4 = [c for c in candles_4h if c["timestamp"] <= candles[i]["timestamp"]][-60:]
-            d1 = [c for c in candles_1d if c["timestamp"] <= candles[i]["timestamp"]][-40:]
+            h4 = aggregate_candles(history, "15m", "4h", as_of)[-60:]
+            d1 = aggregate_candles(history, "15m", "1d", as_of)[-40:]
             regime = classify_htf_regime(h4, d1)["htf_regime"]
 
-            close = candles[i]["close"]
+            close = snapshot.primary.latest_close
             prev = candles[i - LOOKBACK:i]
-            prev_high = max(c["high"] for c in prev)
-            prev_low = min(c["low"] for c in prev)
-            ema20 = _ema([c["close"] for c in candles[max(0, i - 60):i + 1]], 20)
+            prev_high = max(c.high for c in prev)
+            prev_low = min(c.low for c in prev)
+            ema20 = snapshot.primary.ema20
 
             fired: list[tuple[str, str, float]] = []  # (model, direction, stop)
 
@@ -123,24 +117,24 @@ def run() -> dict:
             bo_pct = (close - prev_high) / prev_high * 100
             bd_pct = (prev_low - close) / prev_low * 100
             if ready and pressure >= 55 and hint == "bullish" and -0.20 <= bo_pct <= 0.0:
-                fired.append(("coil", "LONG", min(c["low"] for c in candles[i - 6:i + 1])))
+                fired.append(("coil", "LONG", min(c.low for c in candles[i - 6:i + 1])))
             if ready and pressure >= 55 and hint == "bearish" and -0.20 <= bd_pct <= 0.0:
-                fired.append(("coil", "SHORT", max(c["high"] for c in candles[i - 6:i + 1])))
+                fired.append(("coil", "SHORT", max(c.high for c in candles[i - 6:i + 1])))
 
             # FRESH BREAKOUT/BREAKDOWN: eerste candle voorbij het niveau
-            prev_high_before = max(c["high"] for c in candles[i - LOOKBACK - 1:i - 1])
-            prev_low_before = min(c["low"] for c in candles[i - LOOKBACK - 1:i - 1])
-            if bo_pct >= 0.12 and candles[i - 1]["close"] <= prev_high_before:
-                fired.append(("fresh_breakout", "LONG", min(c["low"] for c in candles[i - 6:i + 1])))
-            if bd_pct >= 0.12 and candles[i - 1]["close"] >= prev_low_before:
-                fired.append(("fresh_breakout", "SHORT", max(c["high"] for c in candles[i - 6:i + 1])))
+            prev_high_before = max(c.high for c in candles[i - LOOKBACK - 1:i - 1])
+            prev_low_before = min(c.low for c in candles[i - LOOKBACK - 1:i - 1])
+            if bo_pct >= 0.12 and candles[i - 1].close <= prev_high_before:
+                fired.append(("fresh_breakout", "LONG", min(c.low for c in candles[i - 6:i + 1])))
+            if bd_pct >= 0.12 and candles[i - 1].close >= prev_low_before:
+                fired.append(("fresh_breakout", "SHORT", max(c.high for c in candles[i - 6:i + 1])))
 
             # EMA-RECLAIM (reclaim-proxy): close herovert EMA20 na verblijf eronder/erboven
-            prev_close = candles[i - 1]["close"]
+            prev_close = candles[i - 1].close
             if prev_close < ema20 <= close and abs(close - ema20) / close * 100 <= 0.25:
-                fired.append(("ema_reclaim", "LONG", min(c["low"] for c in candles[i - 6:i + 1])))
+                fired.append(("ema_reclaim", "LONG", min(c.low for c in candles[i - 6:i + 1])))
             if prev_close > ema20 >= close and abs(close - ema20) / close * 100 <= 0.25:
-                fired.append(("ema_reclaim", "SHORT", max(c["high"] for c in candles[i - 6:i + 1])))
+                fired.append(("ema_reclaim", "SHORT", max(c.high for c in candles[i - 6:i + 1])))
 
             for model, direction, stop in fired:
                 stop_pct = abs(close - stop) / close * 100
@@ -178,16 +172,6 @@ def run() -> dict:
     REPORTS.mkdir(parents=True, exist_ok=True)
     (REPORTS / "validation_matrix.json").write_text(json.dumps(payload, indent=1))
     return payload
-
-
-def _ema(values: list[float], period: int) -> float:
-    if not values:
-        return 0.0
-    alpha = 2.0 / (period + 1.0)
-    ema = values[0]
-    for v in values[1:]:
-        ema = v * alpha + ema * (1.0 - alpha)
-    return ema
 
 
 def main() -> int:

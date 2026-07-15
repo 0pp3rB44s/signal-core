@@ -642,7 +642,7 @@ class StartupRunner:
                 if self.settings.forward_paper_only:
                     runtime_heartbeat("symbol_scan_start", symbol=symbol)
                 try:
-                    snapshot = self.fetcher.build_market_snapshot(symbol)
+                    snapshot = self.fetcher.build_market_snapshot(symbol, as_of_timestamp_ms=int(time.time() * 1000))
                     multi_tf_snapshot = self.market_data_service.get_symbol_snapshot(symbol)
 
                     self.log.info(
@@ -1084,6 +1084,7 @@ class StartupRunner:
                         try:
                             snap_fast = self.fetcher.build_market_snapshot(
                                 base_snapshot.symbol,
+                                as_of_timestamp_ms=int(time.time() * 1000),
                                 primary_granularity=lane_primary,
                                 confirmation_granularity=lane_confirm,
                             )

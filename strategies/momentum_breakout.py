@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from clients.schemas import Candle, MarketSnapshot, StrategyCandidate
+from market_features.engine import closed_candle_at_offset, closed_window, latest_closed_candle
 
 
 logger = logging.getLogger("StartupRunner")
@@ -55,7 +56,7 @@ class MomentumBreakoutStrategy:
         self.context_high_prob_pressure_floor = settings.breakout_context_high_prob_pressure_floor
 
     def detect(self, market: MarketSnapshot) -> Optional[StrategyCandidate]:
-        candles = market.primary.candles
+        candles = closed_window(market.primary)
 
         if len(candles) < self.lookback + 5:
             return None
@@ -65,7 +66,7 @@ class MomentumBreakoutStrategy:
         self._coil_candidate = False
         self._coil_distance_pct = 0.0
 
-        entry_candle = candles[-1]
+        entry_candle = latest_closed_candle(market.primary)
 
         primary_trend = (market.primary.trend or "").lower()
         confirmation_trend = (market.confirmation.trend or "").lower()
@@ -169,9 +170,9 @@ class MomentumBreakoutStrategy:
 
         # Accept a fresh breakout from the last 3 closed candles instead of only candles[-2].
         # This prevents fast impulse moves from being missed when the confirmation candle arrives 1-2 scans later.
-        for offset in range(2, 5):
+        for offset in range(1, 4):
             candidate_index = len(candles) - offset
-            candidate_candle = candles[candidate_index]
+            candidate_candle = closed_candle_at_offset(market.primary, offset - 1)
             candidate_window = candles[candidate_index - self.lookback : candidate_index]
 
             if len(candidate_window) < self.lookback:
@@ -275,7 +276,7 @@ class MomentumBreakoutStrategy:
 
         if breakout_candle is None or breakout_index is None or prev_window is None:
             if prearmed_context.get("allowed"):
-                candidate_window = candles[-self.lookback - 1 : -1]
+                candidate_window = closed_window(market.primary, self.lookback + 1)[:-1]
 
                 if len(candidate_window) >= self.lookback:
                     candidate_prev_high = max(c.high for c in candidate_window)
@@ -779,15 +780,6 @@ class MomentumBreakoutStrategy:
 
         return last / avg if avg else 0.0
 
-    def _volume_ratio(self, candles: list[Candle], period: int = 20) -> float:
-        if len(candles) < period + 1:
-            return 0.0
-
-        last = candles[-1].volume_base
-        avg = sum(c.volume_base for c in candles[-period - 1 : -1]) / period
-
-        return last / avg if avg else 0.0
-
     def _participation_score(self, candles: list[Candle], index: int, direction: str) -> float:
         """Score sustained participation around breakout/breakdown, not just one candle."""
         if index < 3:
@@ -799,10 +791,10 @@ class MomentumBreakoutStrategy:
 
         score = 0.0
 
-        if ratios[-1] >= self.min_volume_ratio:
+        if ratios[2] >= self.min_volume_ratio:
             score += 1.0
 
-        if ratios[-1] >= ratios[-2] >= ratios[-3] and ratios[-1] >= 1.0:
+        if ratios[2] >= ratios[1] >= ratios[0] and ratios[2] >= 1.0:
             score += 0.75
 
         if sum(1 for ratio in ratios if ratio >= 0.80) >= 2:
@@ -810,10 +802,10 @@ class MomentumBreakoutStrategy:
 
         if direction == "LONG":
             directional_closes = sum(1 for candle in candles_slice if candle.close > candle.open)
-            closes_progress = candles_slice[-1].close > candles_slice[-2].close >= candles_slice[-3].close
+            closes_progress = candles_slice[2].close > candles_slice[1].close >= candles_slice[0].close
         else:
             directional_closes = sum(1 for candle in candles_slice if candle.close < candle.open)
-            closes_progress = candles_slice[-1].close < candles_slice[-2].close <= candles_slice[-3].close
+            closes_progress = candles_slice[2].close < candles_slice[1].close <= candles_slice[0].close
 
         if directional_closes >= 2:
             score += 0.50
@@ -870,7 +862,7 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         self.context_high_prob_pressure_floor = settings.breakout_context_high_prob_pressure_floor
 
     def detect(self, market: MarketSnapshot) -> Optional[StrategyCandidate]:
-        candles = market.primary.candles
+        candles = closed_window(market.primary)
 
         if len(candles) < self.lookback + 5:
             return None
@@ -879,7 +871,7 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
         self._coil_candidate = False
         self._coil_distance_pct = 0.0
 
-        entry_candle = candles[-1]
+        entry_candle = latest_closed_candle(market.primary)
 
         primary_trend = (market.primary.trend or "").lower()
         confirmation_trend = (market.confirmation.trend or "").lower()
@@ -965,9 +957,9 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
             )
             return None
 
-        for offset in range(2, 5):
+        for offset in range(1, 4):
             candidate_index = len(candles) - offset
-            candidate_candle = candles[candidate_index]
+            candidate_candle = closed_candle_at_offset(market.primary, offset - 1)
             candidate_window = candles[candidate_index - self.lookback : candidate_index]
 
             if len(candidate_window) < self.lookback:
@@ -1069,7 +1061,7 @@ class MomentumBreakdownStrategy(MomentumBreakoutStrategy):
 
         if breakdown_candle is None or breakdown_index is None or prev_window is None:
             if prearmed_context.get("allowed"):
-                candidate_window = candles[-self.lookback - 1 : -1]
+                candidate_window = closed_window(market.primary, self.lookback + 1)[:-1]
 
                 if len(candidate_window) >= self.lookback:
                     candidate_prev_high = max(c.high for c in candidate_window)

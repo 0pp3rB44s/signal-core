@@ -17,6 +17,7 @@ from strategies.strategies.low_vol_reclaim import LowVolReclaimStrategy
 
 from risk.risk_manager import RiskManager
 from backtesting.metrics import summarize
+from market_features.engine import FeatureInputs, aggregate_candles, build_market_snapshot
 
 
 @dataclass
@@ -54,7 +55,7 @@ class BacktestEngine:
         for symbol, candles in market_data.items():
             debug_by_symbol[symbol] = Counter()
             for i in range(50, len(candles) - 1):
-                snapshot = self._build_snapshot(symbol, candles[: i + 1])
+                snapshot = self._build_snapshot(symbol, candles[: i + 1], as_of_timestamp_ms=candles[i + 1].timestamp_ms)
 
                 sweep_cand = self.sweep.detect(snapshot)
                 momentum_cand = self.momentum.detect(snapshot)
@@ -286,48 +287,6 @@ class BacktestEngine:
         # Use advanced metrics (includes by_strategy and by_symbol)
         return summarize(trades)
 
-    def _build_snapshot(self, symbol: str, candles: List[Candle]) -> MarketSnapshot:
-        # Minimal snapshot builder (placeholder — later uitbreiden)
-        recent_20 = candles[-20:]
-        ema20 = sum(c.close for c in recent_20) / max(len(recent_20), 1)
-        recent_high = max(c.high for c in recent_20)
-        recent_low = min(c.low for c in recent_20)
-        atr_percent = ((recent_high - recent_low) / max(candles[-1].close, 1e-9)) * 100
-        volume_ratio_20 = 1.8
-        trend = "bullish" if candles[-1].close >= candles[-20].close else "bearish"
-        return MarketSnapshot(
-            symbol=symbol,
-            contract=None,
-            primary=type("obj", (), {
-                "candles": candles,
-                "trend": trend,
-                "range_pct": atr_percent,
-                "change_pct": ((candles[-1].close - candles[-20].close) / max(candles[-20].close, 1e-9)) * 100,
-                "volume_ratio_20": volume_ratio_20,
-                "atr_percent": atr_percent,
-                "ema20": ema20,
-                "granularity": "15m"
-            }),
-            confirmation=type("obj", (), {
-                "candles": candles,
-                "trend": trend,
-                "range_pct": atr_percent,
-                "change_pct": ((candles[-1].close - candles[-20].close) / max(candles[-20].close, 1e-9)) * 100,
-                "volume_ratio_20": volume_ratio_20,
-                "atr_percent": atr_percent,
-                "ema20": ema20,
-                "granularity": "1h"
-            }),
-            alignment="aligned_bullish" if trend == "bullish" else "aligned_bearish",
-            score_hint=75.0,
-            volatility_rank=20.0,
-            notes=[
-                "backtest synthetic snapshot",
-                "pressure_score=70.0",
-                "expansion_prob=75.0",
-                "breakout_context ready=true direction=bullish" if trend == "bullish" else "breakout_context ready=true direction=bearish",
-                "compression=true",
-                "spread 1.0bps",
-            ],
-
-        )
+    def _build_snapshot(self, symbol: str, candles: List[Candle], *, as_of_timestamp_ms: int, inputs: FeatureInputs | None = None) -> MarketSnapshot:
+        hourly = aggregate_candles(candles, "15m", "1h", as_of_timestamp_ms)
+        return build_market_snapshot(symbol, candles, hourly, as_of_timestamp_ms=as_of_timestamp_ms, inputs=inputs or FeatureInputs())

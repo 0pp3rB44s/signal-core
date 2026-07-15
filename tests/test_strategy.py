@@ -11,15 +11,15 @@ def _make_market(direction: str = "LONG") -> MarketSnapshot:
         high = price + 0.4
         low = price - 0.4
         close = price + 0.05
-        candles.append(Candle(timestamp_ms=i, open=price, high=high, low=low, close=close, volume_base=1000))
+        candles.append(Candle(timestamp_ms=i * 900_000, open=price, high=high, low=low, close=close, volume_base=1000))
         price += 0.05
 
     if direction == "LONG":
-        candles[-1] = Candle(timestamp_ms=999, open=101.5, high=101.8, low=99.2, close=100.4, volume_base=2500)
+        candles[-1] = Candle(timestamp_ms=39 * 900_000, open=101.5, high=101.8, low=99.2, close=100.4, volume_base=2500)
         alignment = "aligned_bullish"
         trend = "bullish"
     else:
-        candles[-1] = Candle(timestamp_ms=999, open=101.5, high=103.5, low=101.2, close=102.0, volume_base=2500)
+        candles[-1] = Candle(timestamp_ms=39 * 900_000, open=101.5, high=103.5, low=101.2, close=102.0, volume_base=2500)
         alignment = "aligned_bearish"
         trend = "bearish"
 
@@ -34,10 +34,12 @@ def _make_market(direction: str = "LONG") -> MarketSnapshot:
         ema50=99.5,
         trend=trend,
         candles=candles,
+        closed_candle_timestamp_ms=candles[-1].timestamp_ms,
+        as_of_timestamp_ms=candles[-1].timestamp_ms + 900_000,
     )
     confirm = TimeframeSnapshot(
         symbol="TESTUSDT",
-        granularity="1H",
+        granularity="1h",
         latest_close=candles[-1].close,
         change_pct=0.5,
         range_pct=1.4,
@@ -46,6 +48,8 @@ def _make_market(direction: str = "LONG") -> MarketSnapshot:
         ema50=99.0,
         trend=trend,
         candles=candles,
+        closed_candle_timestamp_ms=candles[-1].timestamp_ms,
+        as_of_timestamp_ms=candles[-1].timestamp_ms + 3_600_000,
     )
     contract = ContractSpec(
         symbol="TESTUSDT",

@@ -1,6 +1,7 @@
 import logging
 
 from clients.schemas import MarketSnapshot, StrategyCandidate, SweepDetection
+from market_features.engine import closed_window, latest_closed_candle, previous_closed_candle
 
 logger = logging.getLogger("StartupRunner")
 
@@ -194,8 +195,8 @@ class LowVolReclaimStrategy:
         }
 
     def detect(self, market: MarketSnapshot) -> StrategyCandidate | None:
-        primary_candles = market.primary.candles
-        confirmation_candles = market.confirmation.candles
+        primary_candles = closed_window(market.primary)
+        confirmation_candles = closed_window(market.confirmation)
 
         if len(primary_candles) < 8 or len(confirmation_candles) < 3:
             self._reject(
@@ -206,9 +207,9 @@ class LowVolReclaimStrategy:
             )
             return None
 
-        last = primary_candles[-1]
-        prev = primary_candles[-2]
-        prev2 = primary_candles[-3]
+        last = latest_closed_candle(market.primary)
+        prev = previous_closed_candle(market.primary)
+        prev2 = previous_closed_candle(market.primary, 2)
 
         notes: list[str] = ["low_vol_reclaim_mode"]
         notes.append("defensive_reclaim_gate_v6=true")
@@ -239,7 +240,11 @@ class LowVolReclaimStrategy:
             and 0.32 <= close_position <= 0.68
         )
 
-        spread_bps = self._extract_spread_bps(market_context_notes, 99.0)
+        spread_available = any(str(note).lower().startswith("spread_bps=") for note in market_context_notes)
+        if not spread_available:
+            self._reject(market, "DATA_QUALITY_MISSING_SPREAD", direction="UNKNOWN")
+            return None
+        spread_bps = self._extract_spread_bps(market_context_notes, 0.0)
         long_participation_score = self._participation_score(primary_candles, len(primary_candles) - 1, direction="LONG")
         short_participation_score = self._participation_score(primary_candles, len(primary_candles) - 1, direction="SHORT")
         followthrough_volume_ratio = self._volume_ratio_at(primary_candles, len(primary_candles) - 1)
@@ -599,7 +604,7 @@ class LowVolReclaimStrategy:
             return None
 
         local_range = max(
-            max(c.high for c in primary_candles[-8:]) - min(c.low for c in primary_candles[-8:]),
+            max(c.high for c in closed_window(market.primary, 8)) - min(c.low for c in closed_window(market.primary, 8)),
             1e-9,
         )
         local_range_pct = (local_range / max(last.close, 1e-9)) * 100
@@ -661,10 +666,10 @@ class LowVolReclaimStrategy:
 
         score = 0.0
 
-        if ratios[-1] >= self.MIN_VOLUME_RATIO:
+        if ratios[2] >= self.MIN_VOLUME_RATIO:
             score += 0.75
 
-        if ratios[-1] >= ratios[-2] >= ratios[-3]:
+        if ratios[2] >= ratios[1] >= ratios[0]:
             score += 0.50
 
         if sum(1 for ratio in ratios if ratio >= self.MIN_VOLUME_RATIO) >= 2:
@@ -672,10 +677,10 @@ class LowVolReclaimStrategy:
 
         if direction == "LONG":
             directional_closes = sum(1 for candle in candles_slice if candle.close > candle.open)
-            closes_progress = candles_slice[-1].close > candles_slice[-2].close >= candles_slice[-3].close
+            closes_progress = candles_slice[2].close > candles_slice[1].close >= candles_slice[0].close
         else:
             directional_closes = sum(1 for candle in candles_slice if candle.close < candle.open)
-            closes_progress = candles_slice[-1].close < candles_slice[-2].close <= candles_slice[-3].close
+            closes_progress = candles_slice[2].close < candles_slice[1].close <= candles_slice[0].close
 
         if directional_closes >= 2:
             score += 0.50

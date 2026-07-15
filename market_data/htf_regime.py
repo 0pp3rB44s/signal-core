@@ -13,6 +13,7 @@ een extra filter bovenop bestaande alignment-checks, geen vervanging.
 from __future__ import annotations
 
 from typing import Any
+from market_features.engine import ema
 
 
 def _closes(candles: list[Any]) -> list[float]:
@@ -30,26 +31,16 @@ def _closes(candles: list[Any]) -> list[float]:
     return out
 
 
-def _ema(values: list[float], period: int) -> float:
-    if not values:
-        return 0.0
-    alpha = 2.0 / (period + 1.0)
-    ema = values[0]
-    for v in values[1:]:
-        ema = v * alpha + ema * (1.0 - alpha)
-    return ema
-
-
 def classify_trend(candles: list[Any], ema_period: int = 20) -> str:
     """bullish / bearish / neutral op basis van EMA-positie + structuur."""
     closes = _closes(candles)
     if len(closes) < ema_period + 5:
         return "neutral"
 
-    ema = _ema(closes, ema_period)
+    ema_value = ema(closes, ema_period)
     last = closes[-1]
     # afstand tot EMA als percentage — vlak bij de EMA is geen trend
-    distance_pct = (last - ema) / ema * 100 if ema else 0.0
+    distance_pct = (last - ema_value) / ema_value * 100 if ema_value else 0.0
 
     # structuur: vergelijk recente helft met de helft ervoor
     recent = closes[-5:]
