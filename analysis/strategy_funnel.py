@@ -50,6 +50,34 @@ FUNNEL_FIELDS = (
     "be",
 )
 
+STRUCTURED_EVENT_ORDER = {
+    event_type: index for index, event_type in enumerate((
+        "DETECTOR_ATTEMPT", "DETECTOR_DECISION", "SELECTOR_DECISION",
+        "SCORING_DECISION", "RISK_DECISION", "PLANNER_DECISION",
+        "EXECUTABLE_DECISION", "FORWARD_PAPER_LINK",
+    ))
+}
+STRUCTURED_REQUIRED_FIELDS = {
+    "schema_version", "event_id", "scan_id", "candidate_id", "event_type",
+    "event_timestamp_utc", "config_hash", "git_commit",
+    "strategy", "symbol", "direction", "timeframe", "candle_open_timestamp",
+    "signal_timestamp", "session", "regime", "pass_fail", "primary_reason_code",
+    "secondary_reason_codes", "sequence", "previous_hash", "event_hash",
+}
+STRUCTURED_REASON_CODES = {
+    "ATTEMPTED", "DETECTED", "NO_DETECTION", "DETECTOR_ERROR",
+    "SELECTED", "NOT_SELECTED", "NO_CANDIDATES", "SELECTOR_ERROR",
+    "SCORE_GO", "SCORE_WATCH", "SCORE_NO_GO", "RISK_ALLOWED",
+    "RISK_BLOCKED", "PLAN_EXECUTABLE", "PLAN_BLOCKED", "FORWARD_LINKED",
+    "FORWARD_NOT_ELIGIBLE", "UNKNOWN_DECISION", "FALLBACK_ATTEMPTED",
+    "FALLBACK_DETECTED", "FALLBACK_NO_DETECTION", "SIGNAL_COOLDOWN",
+    "RECENT_CLOSE_COOLDOWN", "SYMBOL_COOLDOWN", "DUPLICATE_CONTINUATION",
+    "WEEKLY_FREEZE", "DAILY_DEFENSIVE", "CONSECUTIVE_LOSS_LIMIT",
+    "EXPECTANCY_BLOCK", "SYMBOL_EXPECTANCY_PAUSE", "HTF_OPPOSITION",
+    "SCORE_THRESHOLD", "ORDERBOOK_RISK", "EXECUTION_COST", "NET_EDGE",
+    "RR_GEOMETRY", "MIN_NOTIONAL",
+}
+
 STRATEGY_DEFINITIONS: dict[str, dict[str, Any]] = {
     "momentum_breakout": {
         "module": "strategies/momentum_breakout.py",
@@ -201,7 +229,7 @@ PIPELINE_ARCHITECTURE = [
         "module": "strategy-specific; see strategy_definitions",
         "functions": [item["entrypoint"] for item in STRATEGY_DEFINITIONS.values()],
         "output": "StrategyCandidate or None",
-        "observability": "No unified detector-attempt event; candidate CSV starts after selection/scoring path.",
+        "observability": "Structured DETECTOR_ATTEMPT and DETECTOR_DECISION events.",
     },
     {
         "stage": "selector",
@@ -219,7 +247,7 @@ PIPELINE_ARCHITECTURE = [
             "continuation_mtf_min_score": 74,
         },
         "output": "one selected StrategyCandidate or None",
-        "observability": "Rejects are text logs; no durable structured selector event dataset.",
+        "observability": "Structured SELECTOR_DECISION with fixed post-selector reject codes.",
     },
     {
         "stage": "scoring",
@@ -246,7 +274,7 @@ PIPELINE_ARCHITECTURE = [
             "probe_risk_multiplier": 0.5,
         },
         "output": "RiskVerdict(allowed, status, reasons, risk, leverage, max positions)",
-        "observability": "Risk status is embedded in plans/decision snapshots, not a separate event table.",
+        "observability": "Structured RISK_DECISION plus fixed secondary reason codes.",
     },
     {
         "stage": "planner",
@@ -270,7 +298,7 @@ PIPELINE_ARCHITECTURE = [
         "module": "app/runner.py",
         "functions": ["plan.verdict == 'EXECUTABLE'"],
         "output": "Executable plan count in SCAN_CYCLE_COMPLETED",
-        "observability": "Aggregate log marker; no standalone structured stage event.",
+        "observability": "Structured EXECUTABLE_DECISION event.",
     },
     {
         "stage": "forward_paper",
@@ -294,6 +322,7 @@ PIPELINE_ARCHITECTURE = [
 
 @dataclass(frozen=True)
 class SourcePaths:
+    structured_funnel: Path = Path("data_store/funnel_events.jsonl")
     backtest_funnel: Path = Path("reports/backtests/strategy_funnel.json")
     trade_funnel: Path = Path("data_store/trades/trade_funnel_report.json")
     decisions: Path = Path("data_store/decisions/latest_decisions.json")
@@ -475,6 +504,148 @@ class StrategyFunnelAnalyzer:
             ]
             views.append(row)
         return views
+
+    def _validate_structured_chain(self, events: list[dict[str, Any]]) -> bool:
+        previous_hash = "GENESIS"
+        event_ids: set[str] = set()
+        lifecycle: dict[tuple[str, str], tuple[int, str]] = {}
+        for sequence, event in enumerate(events, 1):
+            key = (str(event.get("scan_id")), str(event.get("candidate_id")))
+            missing = sorted(STRUCTURED_REQUIRED_FIELDS - event.keys())
+            rank = STRUCTURED_EVENT_ORDER.get(str(event.get("event_type")))
+            previous_rank, previous_result = lifecycle.get(key, (-1, "PASS"))
+            unsigned = {field: value for field, value in event.items() if field != "event_hash"}
+            valid = (
+                not missing
+                and event.get("schema_version") == 1
+                and event.get("sequence") == sequence
+                and event.get("previous_hash") == previous_hash
+                and event.get("event_hash") == hashlib.sha256(
+                    json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                ).hexdigest()
+                and str(event.get("event_id")) not in event_ids
+                and rank is not None
+                and event.get("pass_fail") in {"PASS", "FAIL"}
+                and event.get("primary_reason_code") in STRUCTURED_REASON_CODES
+                and isinstance(event.get("secondary_reason_codes"), list)
+                and all(
+                    reason in STRUCTURED_REASON_CODES
+                    for reason in (event.get("secondary_reason_codes") or [])
+                )
+                and rank == previous_rank + 1
+                and not (
+                    previous_result == "FAIL"
+                    and previous_rank in {
+                        STRUCTURED_EVENT_ORDER["DETECTOR_DECISION"],
+                        STRUCTURED_EVENT_ORDER["SELECTOR_DECISION"],
+                    }
+                )
+            )
+            if not valid:
+                self.quality_issues.append({
+                    "code": "STRUCTURED_FUNNEL_INVALID", "severity": "ERROR",
+                    "source": str(self.paths.structured_funnel), "sequence": sequence,
+                    "missing_fields": missing,
+                })
+                return False
+            event_ids.add(str(event["event_id"]))
+            previous_hash = str(event["event_hash"])
+            lifecycle[key] = (int(rank), str(event.get("pass_fail")))
+        return True
+
+    def _structured_views(
+        self,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
+        issue_start = len(self.quality_issues)
+        events = self._jsonl(self.paths.structured_funnel)
+        if any(
+            issue.get("severity") == "ERROR"
+            and issue.get("source") == str(self.paths.structured_funnel)
+            for issue in self.quality_issues[issue_start:]
+        ):
+            return [], None, []
+        if events and not self._validate_structured_chain(events):
+            return [], None, []
+        valid = [
+            event for event in events
+            if event.get("schema_version") == 1
+            and event.get("candidate_id")
+            and event.get("strategy") in ACTIVE_STRATEGIES
+        ]
+        if not valid:
+            return [], None, []
+        stage_fields = {
+            "DETECTOR_DECISION": ("detected", None),
+            "SELECTOR_DECISION": ("selector_pass", "selector_fail"),
+            "SCORING_DECISION": ("score_pass", "score_fail"),
+            "RISK_DECISION": ("risk_pass", "risk_fail"),
+            "PLANNER_DECISION": ("planner_pass", "planner_fail"),
+            "EXECUTABLE_DECISION": ("executable", None),
+        }
+        views: list[dict[str, Any]] = []
+        for strategy in ACTIVE_STRATEGIES:
+            row = self._dataset_row("structured_funnel_current", strategy)
+            strategy_events = [event for event in valid if event["strategy"] == strategy]
+            for event_type, (pass_field, fail_field) in stage_fields.items():
+                stage = {
+                    (event["scan_id"], event["candidate_id"], event.get("pass_fail"))
+                    for event in strategy_events if event.get("event_type") == event_type
+                }
+                passed = sum(result == "PASS" for _, _, result in stage)
+                failed = sum(result == "FAIL" for _, _, result in stage)
+                row[pass_field] = passed
+                if fail_field:
+                    row[fail_field] = failed
+            row["provenance"] = [str(self.paths.structured_funnel)]
+            row["missing_stages"] = [field for field in FUNNEL_FIELDS if row[field] is None]
+            views.append(row)
+
+        detected = [
+            event for event in valid
+            if event.get("event_type") == "DETECTOR_DECISION" and event.get("pass_fail") == "PASS"
+        ]
+        groups: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+        for event in detected:
+            groups[(
+                str(event.get("candle_open_timestamp")), str(event.get("symbol")),
+                str(event.get("direction")),
+            )].add(str(event["strategy"]))
+        pairs: Counter[tuple[str, str]] = Counter()
+        for strategies in groups.values():
+            for pair in itertools.combinations(sorted(strategies), 2):
+                pairs[pair] += 1
+        overlap = {
+            "status": "MEASURED", "source": str(self.paths.structured_funnel),
+            "key": ["candle_open_timestamp", "symbol", "direction"],
+            "pairs": [
+                {"strategy_a": a, "strategy_b": b, "same_candle_count": count}
+                for (a, b), count in sorted(pairs.items())
+            ],
+        }
+        reject_groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for event in valid:
+            if event.get("pass_fail") != "FAIL":
+                continue
+            codes = [event.get("primary_reason_code"), *(event.get("secondary_reason_codes") or [])]
+            for code in filter(None, codes):
+                key = (str(event["strategy"]), str(code))
+                item = reject_groups.setdefault(key, {
+                    "strategy": key[0], "reason": key[1], "count": 0,
+                    "symbols": Counter(), "sessions": Counter(), "timeframes": Counter(),
+                    "classification": "BLOCKING_OR_ADVERSE",
+                })
+                item["count"] += 1
+                item["symbols"][str(event.get("symbol") or "UNKNOWN")] += 1
+                item["sessions"][str(event.get("session") or "UNKNOWN")] += 1
+                item["timeframes"][str(event.get("timeframe") or "UNKNOWN")] += 1
+        rejects = [{
+            **item,
+            "symbols": dict(sorted(item["symbols"].items())),
+            "sessions": dict(sorted(item["sessions"].items())),
+            "timeframes": dict(sorted(item["timeframes"].items())),
+        } for item in reject_groups.values()]
+        rejects.sort(key=lambda item: (-item["count"], item["strategy"], item["reason"]))
+        return views, overlap, rejects
 
     def _forward_view(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         events = self._jsonl(self.paths.forward_events)
@@ -816,12 +987,13 @@ class StrategyFunnelAnalyzer:
     def analyze(self) -> dict[str, Any]:
         self.quality_issues = []
         self.source_manifest = []
-        backtest_views = self._backtest_views()
+        structured_views, structured_overlap, structured_rejects = self._structured_views()
+        backtest_views = structured_views or self._backtest_views()
         forward_views, forward_quality = self._forward_view()
         exchange_views, exchange_quality = self._exchange_views()
         decision_quality = self._decision_quality()
-        reject_rows = self._reject_analysis()
-        overlap = self._overlap()
+        reject_rows = structured_rejects or self._reject_analysis()
+        overlap = structured_overlap or self._overlap()
 
         backtest_map = {row["strategy"]: row for row in backtest_views}
         forward_map = {row["strategy"]: row for row in forward_views}
@@ -838,9 +1010,14 @@ class StrategyFunnelAnalyzer:
                 {"reason": item["reason"], "count": item["count"], "classification": item["classification"]}
                 for item in reject_rows
                 if item["strategy"] == row["strategy"] and item["classification"] == "BLOCKING_OR_ADVERSE"
-            ] if row["dataset_scope"].startswith("backtest") else []
+            ] if row["dataset_scope"].startswith(("backtest", "structured")) else []
 
         findings: list[str] = []
+        primary_label = (
+            "structured funnel"
+            if backtest_views and backtest_views[0]["dataset_scope"] == "structured_funnel_current"
+            else "backtest funnel snapshot"
+        )
         for row in backtest_views:
             detected = row["detected"]
             executable = row["executable"]
@@ -848,10 +1025,10 @@ class StrategyFunnelAnalyzer:
                 not_executable = max(0, detected - executable)
                 findings.append(
                     f"{row['strategy']}: {not_executable}/{detected} observed candidates "
-                    f"({not_executable / detected:.1%}) did not become executable in the backtest funnel snapshot."
+                    f"({not_executable / detected:.1%}) did not become executable in the {primary_label}."
                 )
             else:
-                findings.append(f"{row['strategy']}: no candidate row exists in the backtest funnel snapshot.")
+                findings.append(f"{row['strategy']}: no candidate row exists in the {primary_label}.")
         if forward_quality["outcome_count"] == 0:
             findings.append("The current forward-paper dataset contains no completed outcome.")
         findings.append(
@@ -860,6 +1037,8 @@ class StrategyFunnelAnalyzer:
             f"{decision_quality['invalid_rows']} otherwise invalid rows."
         )
         findings.append(
+            "Selector-pass and risk-pass conversion rates are measured from structured events."
+            if structured_views else
             "Selector-pass and risk-pass conversion rates are not measurable from the available structured datasets."
         )
         findings.append(
@@ -890,14 +1069,15 @@ class StrategyFunnelAnalyzer:
                 "forward_paper": forward_quality,
                 "exchange_internal": exchange_quality,
                 "decision_snapshots": decision_quality,
-                "missing_stage_events": ["detector attempts", "selector pass/fail", "risk pass/fail"],
+                "missing_stage_events": [] if structured_views else [
+                    "detector attempts", "selector pass/fail", "risk pass/fail"
+                ],
                 "source_manifest": self.source_manifest,
             },
             "findings": findings,
             "remaining_questions": [
-                "Which durable event should define a detector attempt before selector competition?",
-                "Where should selector and risk gate outcomes be stored with candle timestamp, session and timeframe?",
                 "Which exchange export rows can be mapped to strategy without inference?",
+                "Which upstream source should provide session when MarketSnapshot.context omits it?",
             ],
         }
         reproducible = {key: value for key, value in report.items() if key != "generated_at_utc"}

@@ -45,6 +45,13 @@ from telemetry.trade_logger import (
 )
 
 from telemetry.market_context_logger import MarketContextLogger
+from telemetry.funnel import (
+    FunnelTelemetry,
+    classify_reason_codes,
+    deterministic_candidate_id,
+    snapshot_context,
+    stable_scan_id,
+)
 
 
 # --- Execution-Aware Scoring Helpers ---
@@ -285,6 +292,7 @@ class StartupRunner:
         self.strategy_performance_logger = StrategyPerformanceLogger()
         self.execution_logger = ExecutionCsvLogger()
         self.position_logger = PositionUpdateCsvLogger()
+        self.funnel_telemetry = FunnelTelemetry(settings)
         self.strategy = LiquiditySweepStrategy(settings=settings)
         self.momentum_strategy = MomentumBreakoutStrategy(settings=settings)
         self.momentum_breakdown_strategy = MomentumBreakdownStrategy(settings=settings)
@@ -533,6 +541,7 @@ class StartupRunner:
         scan_completed = False
         plans: list[TradePlan] = []
         snapshots: list[MarketSnapshot] = []
+        scan_id = stable_scan_id()
 
         try:
             os.makedirs("state", exist_ok=True)
@@ -709,6 +718,48 @@ class StartupRunner:
                         )
                         low_vol_reclaim_candidate = None
 
+                    funnel_context = snapshot_context(snapshot)
+                    detector_results = (
+                        ("liquidity_sweep_reversal", "UNKNOWN", sweep_candidate),
+                        ("momentum_breakout", "LONG", momentum_candidate),
+                        ("momentum_breakdown", "SHORT", momentum_breakdown_candidate),
+                        ("trend_continuation", "UNKNOWN", continuation_candidate),
+                        ("low_vol_reclaim", "UNKNOWN", low_vol_reclaim_candidate),
+                    )
+                    observed_candidates: list[StrategyCandidate] = []
+                    for attempted_strategy, attempted_direction, detected_candidate in detector_results:
+                        direction = (
+                            detected_candidate.direction if detected_candidate is not None
+                            else attempted_direction
+                        )
+                        candidate_id = deterministic_candidate_id(
+                            attempted_strategy, snapshot.symbol, direction,
+                            funnel_context["candle_open_timestamp"],
+                            funnel_context["timeframe"],
+                        )
+                        common = dict(
+                            scan_id=scan_id, candidate_id=candidate_id,
+                            strategy=attempted_strategy, symbol=snapshot.symbol,
+                            direction=direction, **{
+                                key: funnel_context[key] for key in (
+                                    "timeframe", "candle_open_timestamp", "signal_timestamp",
+                                    "session", "regime",
+                                )
+                            },
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="DETECTOR_ATTEMPT", passed=True,
+                            primary_reason_code="ATTEMPTED", **common,
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="DETECTOR_DECISION",
+                            passed=detected_candidate is not None,
+                            primary_reason_code=("DETECTED" if detected_candidate else "NO_DETECTION"),
+                            **common,
+                        )
+                        if detected_candidate is not None:
+                            observed_candidates.append(detected_candidate)
+
                     debug_symbols = self.settings.strategy_debug_symbol_set
                     if snapshot.symbol.upper() in debug_symbols:
                         self.log.info(
@@ -775,9 +826,39 @@ class StartupRunner:
                             )
                         else:
                             fallback_candidate = _build_fallback_candidate(snapshot, self.settings)
+                            fallback_direction = (
+                                fallback_candidate.direction if fallback_candidate is not None else "UNKNOWN"
+                            )
+                            fallback_id = deterministic_candidate_id(
+                                fallback_strategy_name, snapshot.symbol, fallback_direction,
+                                funnel_context["candle_open_timestamp"],
+                                funnel_context["timeframe"],
+                            )
+                            fallback_common = dict(
+                                scan_id=scan_id, candidate_id=fallback_id,
+                                strategy=fallback_strategy_name, symbol=snapshot.symbol,
+                                direction=fallback_direction, timeframe=funnel_context["timeframe"],
+                                candle_open_timestamp=funnel_context["candle_open_timestamp"],
+                                signal_timestamp=funnel_context["signal_timestamp"],
+                                session=funnel_context["session"], regime=funnel_context["regime"],
+                            )
+                            self.funnel_telemetry.event(
+                                event_type="DETECTOR_ATTEMPT", passed=True,
+                                primary_reason_code="FALLBACK_ATTEMPTED", **fallback_common,
+                            )
+                            self.funnel_telemetry.event(
+                                event_type="DETECTOR_DECISION",
+                                passed=fallback_candidate is not None,
+                                primary_reason_code=(
+                                    "FALLBACK_DETECTED" if fallback_candidate is not None
+                                    else "FALLBACK_NO_DETECTION"
+                                ),
+                                **fallback_common,
+                            )
 
                             if fallback_candidate is not None:
                                 candidate = fallback_candidate
+                                observed_candidates.append(fallback_candidate)
                                 selector_reason = (
                                     f"fallback adaptive continuation bridge | execution_score="
                                     f"{_execution_aware_score(snapshot):.1f}"
@@ -793,6 +874,8 @@ class StartupRunner:
                                     snapshot.confirmation.trend,
                                 )
 
+                    selector_choice = candidate
+                    selector_reject_code = None
                     if candidate is not None:
                         signal_cooldown_key = f"signal::{candidate.symbol}::{candidate.direction}::{candidate.strategy}"
                         recent_close_key = f"recent_close::{candidate.symbol}"
@@ -809,6 +892,7 @@ class StartupRunner:
                             )
                             candidate = None
                             selector_reason = "duplicate_signal_cooldown"
+                            selector_reject_code = "SIGNAL_COOLDOWN"
                         elif self._cooldown_is_on(
                             recent_close_key,
                             minutes=self.recent_close_cooldown_minutes,
@@ -821,6 +905,7 @@ class StartupRunner:
                             )
                             candidate = None
                             selector_reason = "recent_close_cooldown"
+                            selector_reject_code = "RECENT_CLOSE_COOLDOWN"
 
                     if candidate is not None and selector_reason:
                         candidate.notes.append(f"selector: {selector_reason}")
@@ -925,6 +1010,7 @@ class StartupRunner:
 
                             candidate.notes.append(f"symbol cooldown active ({remaining_minutes}m)")
                             candidate = None
+                            selector_reject_code = "SYMBOL_COOLDOWN"
 
 
                     if candidate is not None:
@@ -937,12 +1023,92 @@ class StartupRunner:
                             )
                             candidate.notes.append(f"duplicate continuation blocked ({duplicate_block})")
                             candidate = None
+                            selector_reject_code = "DUPLICATE_CONTINUATION"
+
+                    for observed in observed_candidates:
+                        observed_id = deterministic_candidate_id(
+                            observed.strategy, observed.symbol, observed.direction,
+                            funnel_context["candle_open_timestamp"],
+                            funnel_context["timeframe"],
+                        )
+                        selected = observed is candidate
+                        rejected_after_selection = (
+                            candidate is None
+                            and observed is selector_choice
+                            and selector_reject_code is not None
+                        )
+                        self.funnel_telemetry.event(
+                            scan_id=scan_id, candidate_id=observed_id,
+                            event_type="SELECTOR_DECISION", strategy=observed.strategy,
+                            symbol=observed.symbol, direction=observed.direction,
+                            timeframe=funnel_context["timeframe"],
+                            candle_open_timestamp=funnel_context["candle_open_timestamp"],
+                            signal_timestamp=funnel_context["signal_timestamp"],
+                            session=funnel_context["session"], regime=funnel_context["regime"],
+                            passed=selected,
+                            primary_reason_code=(
+                                "SELECTED" if selected else
+                                selector_reject_code if rejected_after_selection else "NOT_SELECTED"
+                            ),
+                        )
 
                     if candidate is not None:
                         score = self.scorer.score(candidate)
+                        candidate_id = deterministic_candidate_id(
+                            candidate.strategy, candidate.symbol, candidate.direction,
+                            funnel_context["candle_open_timestamp"],
+                            funnel_context["timeframe"],
+                        )
+                        funnel_common = dict(
+                            scan_id=scan_id, candidate_id=candidate_id,
+                            strategy=candidate.strategy, symbol=candidate.symbol,
+                            direction=candidate.direction, timeframe=funnel_context["timeframe"],
+                            candle_open_timestamp=funnel_context["candle_open_timestamp"],
+                            signal_timestamp=funnel_context["signal_timestamp"],
+                            session=funnel_context["session"], regime=funnel_context["regime"],
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="SCORING_DECISION", passed=score.verdict == "GO",
+                            primary_reason_code={"GO": "SCORE_GO", "WATCH": "SCORE_WATCH"}.get(
+                                score.verdict, "SCORE_NO_GO"
+                            ), details={"score": float(score.total)}, **funnel_common,
+                        )
                         candidates.append((candidate, score))
                         risk = self.risk_manager.evaluate(candidate, score)
+                        self.funnel_telemetry.event(
+                            event_type="RISK_DECISION", passed=bool(risk.allowed),
+                            primary_reason_code="RISK_ALLOWED" if risk.allowed else "RISK_BLOCKED",
+                            secondary_reason_codes=classify_reason_codes(
+                                getattr(risk, "reasons", []) or []
+                            ),
+                            details={"status": str(risk.status)}, **funnel_common,
+                        )
                         plan = self.trade_planner.build(candidate, score, risk)
+                        executable = plan.verdict == "EXECUTABLE"
+                        self.funnel_telemetry.event(
+                            event_type="PLANNER_DECISION", passed=executable,
+                            primary_reason_code="PLAN_EXECUTABLE" if executable else "PLAN_BLOCKED",
+                            secondary_reason_codes=classify_reason_codes(
+                                list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
+                            ),
+                            details={"verdict": str(plan.verdict)}, **funnel_common,
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="EXECUTABLE_DECISION", passed=executable,
+                            primary_reason_code="PLAN_EXECUTABLE" if executable else "PLAN_BLOCKED",
+                            secondary_reason_codes=classify_reason_codes(
+                                list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
+                            ),
+                            **funnel_common,
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="FORWARD_PAPER_LINK", passed=executable,
+                            primary_reason_code="FORWARD_LINKED" if executable else "FORWARD_NOT_ELIGIBLE",
+                            secondary_reason_codes=classify_reason_codes(
+                                list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
+                            ),
+                            details={"link_only": True}, **funnel_common,
+                        )
                         self.strategy_performance_logger.append_setup_event(
                             symbol=plan.symbol,
                             strategy=plan.strategy,
@@ -1088,27 +1254,111 @@ class StartupRunner:
                                 primary_granularity=lane_primary,
                                 confirmation_granularity=lane_confirm,
                             )
-                            detected: list = []
-                            for detector in (
-                                self.strategy.detect,
-                                self.momentum_strategy.detect,
-                                self.momentum_breakdown_strategy.detect,
-                                detect_continuation,
-                                detect_low_vol_reclaim,
-                            ):
+                            detected: list[tuple[StrategyCandidate, dict]] = []
+                            fast_context = snapshot_context(snap_fast)
+                            fast_detectors = (
+                                ("liquidity_sweep_reversal", "UNKNOWN", self.strategy.detect),
+                                ("momentum_breakout", "LONG", self.momentum_strategy.detect),
+                                ("momentum_breakdown", "SHORT", self.momentum_breakdown_strategy.detect),
+                                ("trend_continuation", "UNKNOWN", detect_continuation),
+                                ("low_vol_reclaim", "UNKNOWN", detect_low_vol_reclaim),
+                            )
+                            for fast_strategy, default_direction, detector in fast_detectors:
+                                fast_candidate = None
+                                detector_error = False
                                 try:
                                     fast_candidate = detector(snap_fast)
-                                    if fast_candidate is not None:
-                                        detected.append(fast_candidate)
                                 except Exception:
-                                    continue
-                            for fast_candidate in detected:
+                                    detector_error = True
+                                fast_direction = (
+                                    fast_candidate.direction if fast_candidate is not None
+                                    else default_direction
+                                )
+                                fast_candidate_id = deterministic_candidate_id(
+                                    fast_strategy, snap_fast.symbol, fast_direction,
+                                    fast_context["candle_open_timestamp"], fast_context["timeframe"],
+                                )
+                                fast_common = dict(
+                                    scan_id=scan_id, candidate_id=fast_candidate_id,
+                                    strategy=fast_strategy, symbol=snap_fast.symbol,
+                                    direction=fast_direction, timeframe=fast_context["timeframe"],
+                                    candle_open_timestamp=fast_context["candle_open_timestamp"],
+                                    signal_timestamp=fast_context["signal_timestamp"],
+                                    session=fast_context["session"], regime=fast_context["regime"],
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="DETECTOR_ATTEMPT", passed=True,
+                                    primary_reason_code="ATTEMPTED", **fast_common,
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="DETECTOR_DECISION",
+                                    passed=fast_candidate is not None,
+                                    primary_reason_code=(
+                                        "DETECTOR_ERROR" if detector_error else
+                                        "DETECTED" if fast_candidate is not None else "NO_DETECTION"
+                                    ),
+                                    **fast_common,
+                                )
+                                if fast_candidate is not None:
+                                    detected.append((fast_candidate, fast_common))
+                            for fast_candidate, fast_common in detected:
+                                self.funnel_telemetry.event(
+                                    event_type="SELECTOR_DECISION", passed=True,
+                                    primary_reason_code="SELECTED",
+                                    details={"selection_path": "fast_lane_implicit"},
+                                    **fast_common,
+                                )
                                 fast_candidate.notes.append("fast_lane=true")
                                 fast_candidate.notes.append(f"fast_lane_granularity={lane_primary}")
                                 fast_score = self.scorer.score(fast_candidate)
+                                self.funnel_telemetry.event(
+                                    event_type="SCORING_DECISION",
+                                    passed=fast_score.verdict == "GO",
+                                    primary_reason_code={
+                                        "GO": "SCORE_GO", "WATCH": "SCORE_WATCH",
+                                    }.get(fast_score.verdict, "SCORE_NO_GO"),
+                                    details={"score": float(fast_score.total)}, **fast_common,
+                                )
                                 candidates.append((fast_candidate, fast_score))
                                 fast_risk = self.risk_manager.evaluate(fast_candidate, fast_score)
+                                fast_secondary = classify_reason_codes(
+                                    getattr(fast_risk, "reasons", []) or []
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="RISK_DECISION", passed=bool(fast_risk.allowed),
+                                    primary_reason_code=(
+                                        "RISK_ALLOWED" if fast_risk.allowed else "RISK_BLOCKED"
+                                    ), secondary_reason_codes=fast_secondary,
+                                    details={"status": str(fast_risk.status)}, **fast_common,
+                                )
                                 fast_plan = self.trade_planner.build(fast_candidate, fast_score, fast_risk)
+                                fast_executable = fast_plan.verdict == "EXECUTABLE"
+                                fast_secondary = classify_reason_codes(
+                                    list(getattr(fast_risk, "reasons", []) or [])
+                                    + list(fast_plan.notes or [])
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="PLANNER_DECISION", passed=fast_executable,
+                                    primary_reason_code=(
+                                        "PLAN_EXECUTABLE" if fast_executable else "PLAN_BLOCKED"
+                                    ), secondary_reason_codes=fast_secondary,
+                                    details={"verdict": str(fast_plan.verdict)}, **fast_common,
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="EXECUTABLE_DECISION", passed=fast_executable,
+                                    primary_reason_code=(
+                                        "PLAN_EXECUTABLE" if fast_executable else "PLAN_BLOCKED"
+                                    ), secondary_reason_codes=fast_secondary, **fast_common,
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="FORWARD_PAPER_LINK", passed=fast_executable,
+                                    primary_reason_code=(
+                                        "FORWARD_LINKED" if fast_executable
+                                        else "FORWARD_NOT_ELIGIBLE"
+                                    ), secondary_reason_codes=fast_secondary,
+                                    details={"link_only": True, "selection_path": "fast_lane_implicit"},
+                                    **fast_common,
+                                )
                                 plans.append(fast_plan)
                                 fast_plans += 1
                                 self.log.info(

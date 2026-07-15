@@ -43,13 +43,14 @@ def validate_report(json_path: str | Path, csv_path: str | Path) -> list[str]:
     if len(views) != expected_rows:
         errors.append(f"dataset view count {len(views)} != {expected_rows}")
     view_keys = {(row.get("dataset_scope"), row.get("strategy")) for row in views}
-    backtest_scopes = {
+    primary_scopes = {
         str(row.get("dataset_scope")) for row in views
         if str(row.get("dataset_scope", "")).startswith("backtest_funnel_")
+        or row.get("dataset_scope") == "structured_funnel_current"
     }
-    if len(backtest_scopes) != 1:
-        errors.append("expected exactly one backtest funnel scope")
-    expected_scopes = backtest_scopes | {"forward_paper_current", "exchange_internal_attribution"}
+    if len(primary_scopes) != 1:
+        errors.append("expected exactly one structured or legacy funnel scope")
+    expected_scopes = primary_scopes | {"forward_paper_current", "exchange_internal_attribution"}
     if view_keys != {(scope, strategy) for scope in expected_scopes for strategy in ACTIVE_STRATEGIES}:
         errors.append("dataset view scope/strategy matrix incomplete")
 
