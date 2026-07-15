@@ -349,3 +349,18 @@ VOLGENDE FASE
 - Froze one hypothesis, `failed_range_escape_reversal_v1`, with document hash
   `e7117eefbf5e387646f2a5bceb444d5125a46c56b438eb6f2c8d2e6f69077da9`.
   It is neither implemented nor registered; Phase 3C criteria are immutable.
+
+# 2026-07-15 — Phase 3C failed-range-escape locked validation
+
+- Verified preregistration hash `e7117eef` and froze the research-only
+  implementation in commit `dbfafe6`, implementation hash `6acdcfb1`.
+- Development reconciliation: 24,945 raw escapes, 4,349 valid re-entries,
+  2,314 candidates, 3 overlaps, 72 exchange rejects, 2,239 closed and zero
+  unresolved. Two pre-freeze runs were deterministic.
+- Official locked validation: 22,592 raw escapes, 3,723 valid re-entries,
+  1,510 candidates, 4 overlaps, 67 exchange rejects and 1,439 closed trades.
+- Locked result: gross price PnL `-1.797002`, costs `127.299386`, net
+  `-129.096388`, PF `0.566146`, net expectancy `-0.089713`, drawdown `12.92%`.
+  Both directions, every traded symbol, all sessions and both HTF contexts lose.
+- Nine of thirteen immutable acceptance criteria fail. Verdict:
+  `REJECTED — FAILED LOCKED VALIDATION`. No production/paper/live promotion.

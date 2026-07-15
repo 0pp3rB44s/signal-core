@@ -1,0 +1,17 @@
+{
+  "active_overlap_suppressed": 4,
+  "closed": 1439,
+  "cost_distance_rejected": 1787,
+  "duplicate_suppressed": 0,
+  "execution_attempted": 1506,
+  "execution_rejected": 67,
+  "filled": 1439,
+  "insufficient_history": 168,
+  "long_candidates": 749,
+  "raw_failed_escapes": 22592,
+  "short_candidates": 761,
+  "snapshots": 280320,
+  "stop_distance_rejected": 426,
+  "unresolved": 0,
+  "valid_reentries": 3723
+}

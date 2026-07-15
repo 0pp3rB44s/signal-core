@@ -305,3 +305,12 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Freeze exactly one new hypothesis: `failed_range_escape_reversal_v1`.
 - [x] Freeze its split, deterministic rules, parameter register, cost screen and Phase 3C rejection criteria.
 - [ ] Phase 3C may implement only this research contract; any deviation requires a new version and invalidates v1.
+
+# Phase 3C locked validation — 2026-07-15
+
+- [x] Freeze research-only implementation at commit `dbfafe6` before validation.
+- [x] Execute exactly one locked validation over all eight symbols.
+- [x] Reconcile 1,510 candidates to 1,439 closed trades with zero unresolved.
+- [x] Reject `failed_range_escape_reversal_v1`: validation gross expectancy
+  `-0.001249`, net expectancy `-0.089713`, PF `0.5661`, drawdown `12.92%`.
+- [ ] Do not rescue v1 with a symbol, direction, session, regime or parameter subset.

@@ -1,5 +1,6 @@
 {
   "adaptive_momentum_continuation": "DISABLED",
+  "failed_range_escape_reversal_v1": "REJECTED — FAILED LOCKED VALIDATION",
   "liquidity_sweep_reversal": "REJECTED_FOR_RESEARCH_AS_CURRENTLY_DEFINED",
   "liquidity_sweep_reversal_v1": "REJECTED — FAILED INDEPENDENT VALIDATION",
   "liquidity_sweep_reversal_confirmation_v1": "REJECTED — LATE ENTRY DESTROYED GROSS EDGE",

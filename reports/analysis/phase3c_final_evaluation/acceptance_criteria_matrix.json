@@ -1,0 +1,83 @@
+[
+  {
+    "actual": 1439,
+    "criterion": "closed_trades >= 30",
+    "required": "closed_trades >= 30",
+    "status": "PASS"
+  },
+  {
+    "actual": -0.0012487851288117936,
+    "criterion": "gross_price_expectancy > 0",
+    "required": "gross_price_expectancy > 0",
+    "status": "FAIL"
+  },
+  {
+    "actual": -0.08971256969562182,
+    "criterion": "net_expectancy > 0",
+    "required": "net_expectancy > 0",
+    "status": "FAIL"
+  },
+  {
+    "actual": 0.5661456139255195,
+    "criterion": "profit_factor > 1.15",
+    "required": "profit_factor > 1.15",
+    "status": "FAIL"
+  },
+  {
+    "actual": -130.3557693984598,
+    "criterion": "net_result_without_best_trade > 0",
+    "required": "net_result_without_best_trade > 0",
+    "status": "FAIL"
+  },
+  {
+    "actual": null,
+    "criterion": "largest_profitable_symbol_share <= 0.50",
+    "required": "largest_profitable_symbol_share <= 0.50",
+    "status": "FAIL"
+  },
+  {
+    "actual": 1.0,
+    "criterion": "largest_profitable_month_share <= 0.40",
+    "required": "largest_profitable_month_share <= 0.40",
+    "status": "FAIL"
+  },
+  {
+    "actual": 0.6541407629463429,
+    "criterion": "total_costs / gross_profit < 0.70",
+    "required": "total_costs / gross_profit < 0.70",
+    "status": "PASS"
+  },
+  {
+    "actual": 0.12917773513123995,
+    "criterion": "maximum_drawdown_pct <= 0.05",
+    "required": "maximum_drawdown_pct <= 0.05",
+    "status": "FAIL"
+  },
+  {
+    "actual": null,
+    "criterion": "maximum_drawdown / total_net_profit <= 1.50",
+    "required": "maximum_drawdown / total_net_profit <= 1.50",
+    "status": "FAIL"
+  },
+  {
+    "actual": {
+      "development": 0.00859907056991529,
+      "validation": -0.0012487851288117936
+    },
+    "criterion": "development_and_validation_gross_expectancy_have_same_sign",
+    "required": "development_and_validation_gross_expectancy_have_same_sign",
+    "status": "FAIL"
+  },
+  {
+    "actual": -0.015589255862162792,
+    "criterion": "bootstrap_95pct_mean_net_expectancy_lower_bound_r >= -0.05",
+    "required": "bootstrap_95pct_mean_net_expectancy_lower_bound_r >= -0.05",
+    "status": "PASS"
+  },
+  {
+    "actual": 4,
+    "criterion": "at_least_3_symbols_each_have_5_trades_and_positive_gross_price_expectancy",
+    "required": "at_least_3_symbols_each_have_5_trades_and_positive_gross_price_expectancy",
+    "status": "PASS"
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "average_gross_price_edge_per_trade": -0.0012487851288117936,
+  "average_transaction_cost_per_trade": 0.08846378456681003,
+  "best_month_positive_profit_share": 1.0,
+  "best_symbol_positive_profit_share": null,
+  "costs_pct_gross_profit": 65.4140762946343,
+  "direction_contribution": {
+    "LONG": -59.85106413353995,
+    "SHORT": -69.24532365845982
+  },
+  "edge_to_cost_ratio": -0.014116343031522467,
+  "top_10pct_trade_contribution": -0.6551342328201164,
+  "without_best_three": -132.6429774148198,
+  "without_best_trade": -130.3557693984598,
+  "without_worst_trade": -127.8045863342798
+}
