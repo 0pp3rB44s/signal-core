@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() { echo "usage: $0 <annotated-runner-tag-or-full-main-commit> | --rollback <backup-ref>" >&2; exit 2; }
+usage() { echo "usage: $0 <annotated-runner-tag-or-full-main-commit> | --preflight <target> | --rollback <backup-ref>" >&2; exit 2; }
 [[ $# -ge 1 ]] || usage
 
 repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
+source "$repo/scripts/lib/platform_preflight.sh"
 [[ -z "$(git status --porcelain)" ]] || { echo "ERROR: dirty runner checkout" >&2; exit 1; }
 
 git fetch origin --prune --tags
 target="$1"
 rollback="no"
-if [[ "$target" == "--rollback" ]]; then
+preflight="no"
+if [[ "$target" == "--preflight" ]]; then
+  [[ $# -eq 2 ]] || usage
+  target="$2"
+  preflight="yes"
+elif [[ "$target" == "--rollback" ]]; then
   [[ $# -eq 2 ]] || usage
   target="$2"
   rollback="yes"
@@ -39,10 +45,24 @@ fi
 
 required="$(git show "$commit:.python-version" 2>/dev/null | tr -d '[:space:]')"
 [[ -n "$required" ]] || { echo "ERROR: target has no Python version contract" >&2; exit 1; }
-python_bin="${PYTHON_BIN:-python3}"
-actual="$($python_bin -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-[[ "$actual" == "$required" ]] || { echo "ERROR: Python $required required; found $actual" >&2; exit 1; }
+require_macos_platform
+arch="$(detect_architecture)"
+require_homebrew >/dev/null
+python_bin="$(find_compatible_python "$required")"
 git cat-file -e "$commit:requirements.txt" 2>/dev/null || { echo "ERROR: target has no dependency lock" >&2; exit 1; }
+config_path="${CGC_ENV_FILE:-.env}"
+[[ -f "$config_path" ]] || { echo "ERROR: local configuration is missing; create .env manually from the generated runner template" >&2; exit 1; }
+
+if [[ "$preflight" == "yes" ]]; then
+  echo "preflight=PASS"
+  echo "architecture=$arch"
+  echo "python_path=$python_bin"
+  echo "target_commit=$commit"
+  echo "configuration_present=yes"
+  echo "checkout_changed=no"
+  echo "processes_started=no"
+  exit 0
+fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 previous="$(git rev-parse HEAD)"

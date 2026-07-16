@@ -8,6 +8,12 @@ The Runner executes only an explicit approved commit reachable from
 `origin/main`, preferably an annotated `runner-vYYYY.MM.DD.N` tag. A newer Work
 Mac research checkout is not runner drift.
 
+Runner audit baseline: macOS 14.8.7, Intel `x86_64`, system Python 3.9.6,
+existing virtualenv Python 3.11.15, clean `main` at
+`6f1b93edc8d3df443bef9a4bc7e633bf43a3ec17`, no source drift, completed local
+backups, no active bot/monitor/launch service, and no local `.env`. No Runner
+checkout or process was changed during this infrastructure fix.
+
 GitHub stores source, tests, pinned requirements, docs, small manifests and
 hashes. It never transports `.env`, credentials, logs, operational reports,
 state, positions, order history, freeze/kill-switch state, PID/socket files,
@@ -26,16 +32,34 @@ PR. Keep multi-phase research on archive branches; never merge it wholesale.
 
 ## Work Mac setup
 
-Apple Silicon macOS and `.python-version` are required. `requirements.txt` is
-fully pinned.
+Both Apple Silicon (`arm64`, Homebrew in `/opt/homebrew`) and Intel (`x86_64`,
+Homebrew in `/usr/local`) macOS are supported. Other architectures fail
+preflight. Rosetta is never installed or assumed. `.python-version` selects one
+shared Python version and `requirements.txt` is fully pinned.
 
 ```bash
 scripts/bootstrap_mac.sh
+scripts/bootstrap_mac.sh --recreate-venv  # preserves an incompatible .venv first
 scripts/verify_checkout.sh
 ```
 
-Bootstrap creates/reuses `.venv`, installs dependencies, creates ignored local
-folders, compiles and tests. It does not source `.env`.
+Bootstrap refuses Apple system Python 3.9 and selects the architecture-correct
+Homebrew Python. An incompatible `.venv` is rejected unless
+`--recreate-venv` is explicit; then it is moved to a timestamped backup before
+replacement. It creates ignored folders, verifies hygiene, compiles and tests.
+It does not source `.env`.
+
+Python 3.12 is the shared contract. Locked-wheel resolution succeeds for both
+macOS arm64 and x86_64. Python 3.13 is currently blocked by the locked
+Streamlit/pyarrow dependency chain, which has no matching CPython 3.13 macOS
+wheel in the resolver. Python 3.11 is compatible but is not selected because
+3.12 is the highest common validated version.
+
+| Python | Locked dependencies | Tests | arm64 | x86_64 | Verdict |
+|---|---|---|---|---|---|
+| 3.11 | wheels resolve | not executed in isolated environment | metadata/wheels | metadata/wheels | compatible, not selected |
+| 3.12 | wheels resolve | 237 pass on M4 | executed | wheels + architecture tests; final Runner run pending | selected |
+| 3.13 | pyarrow wheel unresolved | prior suite ran only in an already-provisioned environment | resolver fails | resolver fails | rejected |
 
 ## Release, Runner audit and deployment
 
@@ -77,6 +101,12 @@ Only in a separately approved maintenance step:
 scripts/deploy_runner.sh runner-vYYYY.MM.DD.N
 ```
 
+Before deployment, run the non-mutating preflight:
+
+```bash
+scripts/deploy_runner.sh --preflight runner-vYYYY.MM.DD.N
+```
+
 The script requires a clean tree, fetches, verifies an annotated tag or full
 main-reachable SHA, creates `refs/runner-backups/<UTC timestamp>`, validates
 Python/dependencies before checkout, deploys detached, compiles, runs no-order
@@ -100,6 +130,28 @@ schema; local `.env` stays ignored. Explicit operational roots are:
 Tests use temporary roots, research uses explicit isolated roots, and Runner
 values point to Runner-local folders. Git never synchronizes their contents.
 Current production defaults are not rewired by this infrastructure change.
+
+Generate a names-only Runner template only while `.env` is absent:
+
+```bash
+scripts/create_runner_env_template.sh
+```
+
+The script blanks all values except the documented safe local-root suggestions.
+Enter required Bitget values manually on the Runner or use macOS Keychain, an
+encrypted password manager, or a user-initiated encrypted local transfer.
+Secrets must never travel through GitHub, commits, patches, chat, logs or shared
+reports. No script extracts secrets from the Work Mac.
+
+After both local files exist, compare names/presence without values:
+
+```bash
+scripts/compare_env_presence.sh .env.example /path/to/work/.env /path/to/runner/.env
+```
+
+GitHub CLI is optional and is not used by Runner deployment. The Runner needs
+only Git, Homebrew and the selected Python. PR administration remains on the
+Work Mac.
 
 | Variable | Work present | Runner present | Required | Secret | Action |
 |---|---|---|---|---|---|
@@ -129,3 +181,23 @@ Checklist:
 - Checkout is clean; `.env` and operational state are untracked.
 - CI and no-order smoke tests pass.
 - Rollback resolves without starting trading.
+
+## Intel Runner preparation after PR approval
+
+These commands prepare and preflight; they do not deploy or start processes:
+
+```bash
+cd /path/to/signal-core
+git fetch origin --prune --tags
+git switch --detach origin/infra/github-runner-synchronization
+/usr/local/bin/brew install python@3.12
+scripts/bootstrap_mac.sh --recreate-venv
+scripts/create_runner_env_template.sh
+cp .env.runner.template .env
+# Manually complete .env using a secure local method; never paste values into chat.
+scripts/verify_checkout.sh
+scripts/deploy_runner.sh --preflight <approved-full-main-sha-or-runner-tag>
+```
+
+If `/usr/local/bin/brew` is absent, stop and install Homebrew manually from its
+official instructions first. The scripts do not install Homebrew or Rosetta.
