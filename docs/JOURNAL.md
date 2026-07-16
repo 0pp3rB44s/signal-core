@@ -380,3 +380,20 @@ VOLGENDE FASE
 - Verdict: `NO REPLICATED ECONOMIC EDGE FAMILY FOUND`. The single next
   investigation is synchronized historical funding and open-interest data.
 - Two full runs are byte-identical with artifact hash `b3759b5a`.
+
+# 2026-07-16 — Phase 4B funding/OI feasibility and foundation
+
+- Froze Phase 4A at `878356a` and reproduced artifact hash `b3759b5a`.
+- Official Bitget funding history supplies only 89 days: 265 realised 8h
+  settlements per symbol, or 531 4h settlements for WIF, through 2026-07-14.
+- Bitget exposes current OI only. Tardis has exchange-native Bitget funding/OI
+  from 2024-11-08, but continuous access requires a subscription/API key;
+  isolated free monthly sample days are unusable for replication.
+- Added fail-closed canonical funding/OI schemas, unit normalization,
+  pagination/quality and no-lookahead synchronization contracts. Acquired and
+  hashed the available public funding records without using credentials.
+- Outcome discovery remained closed because no valid synchronized OI window
+  exists. Verdict: `NO REPLICATED FUNDING/OI EDGE FAMILY FOUND` as a
+  data-availability stop, not evidence of absence.
+- The one next research direction is basis/mark-index divergence. Two
+  feasibility builds are byte-identical with hash `5d579c80`.

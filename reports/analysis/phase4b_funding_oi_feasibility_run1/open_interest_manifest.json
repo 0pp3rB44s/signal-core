@@ -1,0 +1,11 @@
+{
+  "bitget_endpoint_is_snapshot_only": true,
+  "continuous_access": "REQUIRES_SUBSCRIPTION",
+  "dataset": "open_interest",
+  "external_available_since_ms": 1731024000000,
+  "external_candidate": "Tardis.dev bitget-futures derivative_ticker",
+  "fabricated_records": 0,
+  "records": 0,
+  "schema_version": 1,
+  "status": "UNAVAILABLE"
+}

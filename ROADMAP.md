@@ -314,3 +314,19 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Reject `failed_range_escape_reversal_v1`: validation gross expectancy
   `-0.001249`, net expectancy `-0.089713`, PF `0.5661`, drawdown `12.92%`.
 - [ ] Do not rescue v1 with a symbol, direction, session, regime or parameter subset.
+
+# Phase 4A OHLCV edge map — 2026-07-16
+
+- [x] Map transparent OHLCV states over two frozen years without strategy PnL.
+- [x] Use development-frozen bins and dependency-aware daily inference.
+- [x] Stop after zero of 3,528 replication hypotheses survive FDR.
+- [ ] Do not create another OHLCV strategy from unreplicated raw effects.
+
+# Phase 4B funding/OI foundation — 2026-07-16
+
+- [x] Audit official Bitget funding and OI semantics before implementation.
+- [x] Acquire the available 89-day realised-funding tail with canonical hashes.
+- [x] Prove Bitget OI is snapshot-only and Tardis continuous history requires access.
+- [x] Freeze schemas, synchronization rules and eight primary hypotheses.
+- [ ] Keep outcome analysis closed until a continuous approved OI dataset passes quality checks.
+- [ ] Investigate historical basis/mark-index divergence as the single next direction.

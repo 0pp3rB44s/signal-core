@@ -1,0 +1,79 @@
+{
+  "audit_timestamp_utc": "2026-07-16T10:45:00Z",
+  "implementation_gate": "CLOSED: no approved continuous OI source is locally accessible",
+  "requested_window": [
+    1721001600000,
+    1784073600000
+  ],
+  "sources": [
+    {
+      "authentication": "public",
+      "available_window": [
+        1776441600000,
+        1784044800000
+      ],
+      "dataset": "funding",
+      "endpoint": "/api/v2/mix/market/history-fund-rate",
+      "limitation": "endpoint returned 270 8h records per symbol (540 4h WIF), only 2026-04-17 through requested end",
+      "pagination": "pageNo 1..100, pageSize max 100",
+      "provider": "Bitget",
+      "rate_limit": "20 requests/second/IP",
+      "symbols": [
+        "ADAUSDT",
+        "AVAXUSDT",
+        "BTCUSDT",
+        "ETHUSDT",
+        "LINKUSDT",
+        "SOLUSDT",
+        "SUIUSDT",
+        "WIFUSDT"
+      ],
+      "timestamp_semantics": "realised settlement timestamp",
+      "verdict": "PARTIALLY AVAILABLE"
+    },
+    {
+      "authentication": "public",
+      "dataset": "open_interest",
+      "endpoint": "/api/v2/mix/market/open-interest",
+      "granularity": "current snapshot only",
+      "limitation": "no historical timestamp, range or pagination parameters",
+      "provider": "Bitget",
+      "symbols": [
+        "ADAUSDT",
+        "AVAXUSDT",
+        "BTCUSDT",
+        "ETHUSDT",
+        "LINKUSDT",
+        "SOLUSDT",
+        "SUIUSDT",
+        "WIFUSDT"
+      ],
+      "unit": "base coin size",
+      "verdict": "UNAVAILABLE FROM BITGET"
+    },
+    {
+      "authentication": "API key/subscription required except first day of each month",
+      "available_window": [
+        1731024000000,
+        1784073600000
+      ],
+      "dataset": "funding_and_open_interest",
+      "endpoint": "bitget-futures derivative_ticker",
+      "exchange_specific": true,
+      "limitation": "starts 2024-11-08, omits first 116 requested days; continuous download requires paid access",
+      "methodology": "captured Bitget public ticker WebSocket; funding, OI, mark and index fields",
+      "provider": "Tardis.dev",
+      "symbols": [
+        "ADAUSDT",
+        "AVAXUSDT",
+        "BTCUSDT",
+        "ETHUSDT",
+        "LINKUSDT",
+        "SOLUSDT",
+        "SUIUSDT",
+        "WIFUSDT"
+      ],
+      "verdict": "REQUIRES EXTERNAL SOURCE"
+    }
+  ]
+}

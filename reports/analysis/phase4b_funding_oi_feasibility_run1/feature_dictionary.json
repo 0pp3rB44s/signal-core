@@ -1,0 +1,40 @@
+{
+  "funding_change": [
+    "previous_settlement_change",
+    "acceleration",
+    "cumulative_8h",
+    "cumulative_24h",
+    "cumulative_72h"
+  ],
+  "funding_level": [
+    "realised_rate",
+    "absolute_rate",
+    "sign",
+    "development_percentile",
+    "rolling_zscore",
+    "consecutive_sign"
+  ],
+  "interactions": [
+    "price_x_oi_state",
+    "funding_x_oi_state",
+    "crowding_proxy",
+    "unwind_proxy"
+  ],
+  "interpretation_warning": "No state is labelled liquidation or new long/short without direct data.",
+  "oi_change": [
+    "15m",
+    "1h",
+    "4h",
+    "8h",
+    "24h",
+    "log_change",
+    "change_relative_to_volume"
+  ],
+  "oi_level": [
+    "development_percentile",
+    "rolling_zscore",
+    "relative_to_rolling_median",
+    "notional_usdt"
+  ],
+  "status": "FROZEN_BEFORE_OUTCOMES"
+}

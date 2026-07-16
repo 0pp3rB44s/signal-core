@@ -1,0 +1,19 @@
+{
+  "largest_accessible_synchronized_ohlcv_funding_oi_window": null,
+  "largest_common_funding_window": [
+    1776441600000,
+    1784044800000
+  ],
+  "largest_common_oi_window": null,
+  "potential_external_common_window": [
+    1731024000000,
+    1784073600000
+  ],
+  "potential_split": "must be frozen only after paid-source acquisition and quality validation",
+  "reason": "No continuous historical Bitget open-interest dataset is accessible from an approved source; outcome analysis was not opened.",
+  "requested_window": [
+    1721001600000,
+    1784073600000
+  ],
+  "status": "BLOCKED_DATA_FOUNDATION"
+}

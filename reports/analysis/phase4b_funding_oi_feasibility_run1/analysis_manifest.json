@@ -1,0 +1,26 @@
+{
+  "artifacts": [
+    "data_quality.json",
+    "development_bin_boundaries.json",
+    "economic_screen.json",
+    "feature_dictionary.json",
+    "funding_event_study.json",
+    "funding_manifest.json",
+    "funding_oi_interaction_results.json",
+    "multiple_testing_correction.json",
+    "open_interest_manifest.json",
+    "primary_hypothesis_registry.json",
+    "replication_results.json",
+    "shortlist.json",
+    "single_factor_results.json",
+    "source_feasibility_audit.json",
+    "stability_results.json",
+    "synchronization_report.json"
+  ],
+  "outcome_analysis_opened": false,
+  "phase": "4B",
+  "phase4a_artifact_hash": "b3759b5ab034616b7b7e192caa5a593552633d56ed77dea90edd4d0172302286",
+  "source_commit": "878356a471fdb228e815638ce4f61e9103b79bf7",
+  "strategy_created": false,
+  "trade_pnl_calculated": false
+}

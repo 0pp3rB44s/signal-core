@@ -1,0 +1,300 @@
+{
+  "exchange": "BITGET",
+  "manifest_hash": "329e9f4bcce403bca38ab66ab6dfda5089f79811f753289983d4dbd90011721a",
+  "market_type": "USDT-FUTURES",
+  "reports": [
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/ADAUSDT.json",
+      "canonical_sha256": "1361c1fb3f465280c15be1c3b1c0f24faadf314592353d044971749e9a701117",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/ADAUSDT/page_001.json",
+          "records": 100,
+          "sha256": "4c29a6c04ac6e7c2c6a503e1d3bc254c56c9455efec6767c512822273235b532"
+        },
+        {
+          "path": "raw/ADAUSDT/page_002.json",
+          "records": 100,
+          "sha256": "69b8fe5d483b0bf08d23ccb391c6ec9ce2baae696625893edbb561da9a71243c"
+        },
+        {
+          "path": "raw/ADAUSDT/page_003.json",
+          "records": 70,
+          "sha256": "16d541c0bf53d0deeaccaf864d28d58ef25cb7b17286f9bee8069835c79ba15a"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "ADAUSDT"
+    },
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/AVAXUSDT.json",
+      "canonical_sha256": "18c9c8dd3f61ed635144119e9e4bf12052c670dec4dbff71d409f5fd13096edb",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/AVAXUSDT/page_001.json",
+          "records": 100,
+          "sha256": "ae513ad0d3e912f7f719d3624a5c7b075a8e068bc2bcd52519a7fe54ac356cc6"
+        },
+        {
+          "path": "raw/AVAXUSDT/page_002.json",
+          "records": 100,
+          "sha256": "77c8a7dbf15cb9b8124a6ed635a813b8d83e2a5d015a8ce55defe6c3bc166008"
+        },
+        {
+          "path": "raw/AVAXUSDT/page_003.json",
+          "records": 70,
+          "sha256": "a01aa7654fad96ed42a73278a59cb92eeb753479993a8931b5862c8807985396"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "AVAXUSDT"
+    },
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/BTCUSDT.json",
+      "canonical_sha256": "19fd655b11fa1d6547bf8816c5788663581446c6cc52258faa63fafea2231bfc",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/BTCUSDT/page_001.json",
+          "records": 100,
+          "sha256": "d7554db93223bb958c8ba714973a99dacace2124c7cbbd29d5f2eba06f6e6751"
+        },
+        {
+          "path": "raw/BTCUSDT/page_002.json",
+          "records": 100,
+          "sha256": "62e0d45c5555e06899c86f8345a135c7d41cb476f3506d84111325d7b838f7b3"
+        },
+        {
+          "path": "raw/BTCUSDT/page_003.json",
+          "records": 70,
+          "sha256": "06c29a8165da29fb8534fac1e04ba57f8140e438b588057aed578ae4c6246077"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "BTCUSDT"
+    },
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/ETHUSDT.json",
+      "canonical_sha256": "92c6c2671eaa2afb4d306fd4257d5d9302ec5eb636fdf1525814b1b1946f2608",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/ETHUSDT/page_001.json",
+          "records": 100,
+          "sha256": "22c9a31d1a1581b34be08bad414bb58dee294ec32d408f69fb4ea2313024627b"
+        },
+        {
+          "path": "raw/ETHUSDT/page_002.json",
+          "records": 100,
+          "sha256": "0814fda4d7d647d496df2493ed9afc044655cef56fa6fc5a1c003231e1c3684c"
+        },
+        {
+          "path": "raw/ETHUSDT/page_003.json",
+          "records": 70,
+          "sha256": "c8cab0802db62f0dac070421a3d4dc84ea979a24bf112ae285156e6deac74451"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "ETHUSDT"
+    },
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/LINKUSDT.json",
+      "canonical_sha256": "62a2828be7a4a457e4ef35d196e0786f03e43eaaa682c80026e96e8830cc4f8c",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/LINKUSDT/page_001.json",
+          "records": 100,
+          "sha256": "bdf0e92aaee0aa6a90e8df4f5e86ac82c9cbd3f349ac9556210827c7c8daa748"
+        },
+        {
+          "path": "raw/LINKUSDT/page_002.json",
+          "records": 100,
+          "sha256": "b05076e1693d10d1ab5a0bf80e70b764934a359f866ddb93835a88ef74aa2a4d"
+        },
+        {
+          "path": "raw/LINKUSDT/page_003.json",
+          "records": 70,
+          "sha256": "822cb4cec83d397363225b58807b0dd943ef66150f34f8e240f71a33d3c97602"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "LINKUSDT"
+    },
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/SOLUSDT.json",
+      "canonical_sha256": "ce2fd11982f56ce931a107cb80b2829c5583438ec20f196aacd1ddb99026a0ee",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/SOLUSDT/page_001.json",
+          "records": 100,
+          "sha256": "783d2e0bb9762f9a5728e925482851a59eddffeb819a492e20c136df126b19ee"
+        },
+        {
+          "path": "raw/SOLUSDT/page_002.json",
+          "records": 100,
+          "sha256": "18f7a8f49442c782ebf019f4b386c35197aac583ab6e63560a08768f141a6068"
+        },
+        {
+          "path": "raw/SOLUSDT/page_003.json",
+          "records": 70,
+          "sha256": "a80f059f8b881c5c6cd112ac7cf62c3b4e46cc48c2a88f8b41ccdcb68884f4ec"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "SOLUSDT"
+    },
+    {
+      "actual_first_ms": 1776441600000,
+      "actual_last_ms": 1784044800000,
+      "canonical_path": "canonical/SUIUSDT.json",
+      "canonical_sha256": "e65caf71c2dcd8697d51c7c2a78d1a12bfbc439b44704aa0b82e9c48f4c9bd10",
+      "coverage_pct_requested": 12.100456621004566,
+      "duplicates": 0,
+      "funding_interval_hours": 8,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/SUIUSDT/page_001.json",
+          "records": 100,
+          "sha256": "6d53aac4a2ad6507a3ba0063207287f41adccc1505a75cf0619ef66429b85b2c"
+        },
+        {
+          "path": "raw/SUIUSDT/page_002.json",
+          "records": 100,
+          "sha256": "3a642043d9e51a76c2519a3d19911476c12fb7292986784162008dd98249be1a"
+        },
+        {
+          "path": "raw/SUIUSDT/page_003.json",
+          "records": 70,
+          "sha256": "d096df63bd698a0f1979948fe90015eee5a4d315bb7164972df73550d124ccee"
+        }
+      ],
+      "record_count": 265,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "SUIUSDT"
+    },
+    {
+      "actual_first_ms": 1776427200000,
+      "actual_last_ms": 1784059200000,
+      "canonical_path": "canonical/WIFUSDT.json",
+      "canonical_sha256": "b4bed386b817c3f8af8e6f147fe621fe230e1e7db4162eea18adb7e13002330d",
+      "coverage_pct_requested": 12.123287671232877,
+      "duplicates": 0,
+      "funding_interval_hours": 4,
+      "invalid_values": 0,
+      "longest_gap_ms": 0,
+      "missing_intervals": 0,
+      "raw_files": [
+        {
+          "path": "raw/WIFUSDT/page_001.json",
+          "records": 100,
+          "sha256": "b1404fa91ee07f0984d4b6cad88caf3eeec3a2fc9ad1a79708dbc4b9972b9291"
+        },
+        {
+          "path": "raw/WIFUSDT/page_002.json",
+          "records": 100,
+          "sha256": "9d44e7f52b2e602a54884ecf4fd77cf792944702bf9ffab19492e10c274b2e2d"
+        },
+        {
+          "path": "raw/WIFUSDT/page_003.json",
+          "records": 100,
+          "sha256": "9ea73a5f7b4b648b011d9ecb02f018b223d1110c39306f0db0ca7dadd176441b"
+        },
+        {
+          "path": "raw/WIFUSDT/page_004.json",
+          "records": 100,
+          "sha256": "a138a1fc7dba84503689f20750b92dd334d2a83722a9f59cbab6b3eaa02ee173"
+        },
+        {
+          "path": "raw/WIFUSDT/page_005.json",
+          "records": 100,
+          "sha256": "8adef594dcc44f19609f7c2e3b5ad936de8f313a8230fc050a67a47659030fa3"
+        },
+        {
+          "path": "raw/WIFUSDT/page_006.json",
+          "records": 40,
+          "sha256": "4c9fcc223cb1541dcb06c866886de0db0a3543c7b6a61135e3516a597f1a84a4"
+        }
+      ],
+      "record_count": 531,
+      "requested_end_ms": 1784073600000,
+      "requested_start_ms": 1721001600000,
+      "symbol": "WIFUSDT"
+    }
+  ],
+  "retrieval_timestamp_ms": 1784198700000,
+  "schema_version": 1,
+  "source_endpoint": "https://api.bitget.com/api/v2/mix/market/history-fund-rate",
+  "source_semantics": "realised settlement funding",
+  "symbols": [
+    "ADAUSDT",
+    "AVAXUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "LINKUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "WIFUSDT"
+  ]
+}

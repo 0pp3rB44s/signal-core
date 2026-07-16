@@ -1,0 +1,12 @@
+{
+  "phase4a_market_edge_discovery": {
+    "artifact_hash": "b3759b5ab034616b7b7e192caa5a593552633d56ed77dea90edd4d0172302286",
+    "commit": "878356a471fdb228e815638ce4f61e9103b79bf7",
+    "status": "NO REPLICATED ECONOMIC EDGE FAMILY FOUND"
+  },
+  "phase4b_funding_open_interest": {
+    "artifact_hash": "5d579c800126fd3f8268e8e5f4a45667f030f461ce137bb0a2103e4108588bc2",
+    "outcome_analysis_opened": false,
+    "status": "BLOCKED_DATA_FOUNDATION"
+  }
+}

@@ -1,0 +1,98 @@
+[
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "SHORT",
+    "expected_sign": "positive",
+    "family": "extreme_positive_funding_mean_reversion",
+    "feature": "funding_percentile=TOP_10",
+    "horizon": 16,
+    "id": "P1",
+    "minimum_sample": 500,
+    "rationale": "crowded long carry may mean-revert"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "LONG",
+    "expected_sign": "positive",
+    "family": "extreme_negative_funding_mean_reversion",
+    "feature": "funding_percentile=BOTTOM_10",
+    "horizon": 16,
+    "id": "P2",
+    "minimum_sample": 500,
+    "rationale": "crowded short carry may mean-revert"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "LONG",
+    "expected_sign": "positive",
+    "family": "price_up_oi_up_continuation",
+    "feature": "price_1h>0 and oi_change_1h>0",
+    "horizon": 8,
+    "id": "P3",
+    "minimum_sample": 500,
+    "rationale": "price and positioning expand together"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "SHORT",
+    "expected_sign": "positive",
+    "family": "price_down_oi_up_continuation",
+    "feature": "price_1h<0 and oi_change_1h>0",
+    "horizon": 8,
+    "id": "P4",
+    "minimum_sample": 500,
+    "rationale": "down move and positioning expand together"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "SHORT",
+    "expected_sign": "positive",
+    "family": "price_up_oi_down_exhaustion",
+    "feature": "price_1h>0 and oi_change_1h<0",
+    "horizon": 8,
+    "id": "P5",
+    "minimum_sample": 500,
+    "rationale": "price rise with contracting positioning may exhaust"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "LONG",
+    "expected_sign": "positive",
+    "family": "price_down_oi_down_exhaustion",
+    "feature": "price_1h<0 and oi_change_1h<0",
+    "horizon": 8,
+    "id": "P6",
+    "minimum_sample": 500,
+    "rationale": "price fall with contracting positioning may exhaust"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "AGAINST_FUNDING_SIGN",
+    "expected_sign": "positive",
+    "family": "funding_extreme_oi_acceleration_reversal",
+    "feature": "absolute_funding=TOP_10 and oi_acceleration=TOP_10",
+    "horizon": 16,
+    "id": "P7",
+    "minimum_sample": 500,
+    "rationale": "extreme carry with accelerating positioning proxies crowding"
+  },
+  {
+    "analysis_family": "PRIMARY_PREREGISTERED",
+    "contradiction_rule": "development/replication sign reversal or magnitude ratio below 0.25",
+    "direction": "WITH_PRIOR_PRICE_DIRECTION",
+    "expected_sign": "positive",
+    "family": "funding_normalization_falling_oi_unwind",
+    "feature": "funding_abs_change<0 and oi_change_4h<0",
+    "horizon": 8,
+    "id": "P8",
+    "minimum_sample": 500,
+    "rationale": "normalizing carry and contracting positioning may extend unwind"
+  }
+]
