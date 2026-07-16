@@ -1,0 +1,29 @@
+{
+  "bootstrap_unit": "UTC day blocks",
+  "bootstraps": 200,
+  "cost_reference_pct": 0.24,
+  "development": [
+    1721001600000,
+    1752537600000
+  ],
+  "phase": "4A",
+  "replication": [
+    1752537600000,
+    1784073600000
+  ],
+  "seed": 20260716,
+  "source_commit": "cad0693d24ee245245d479a5d23a066d32ed50f4",
+  "source_timeframe": "15m",
+  "strategy_execution": false,
+  "strategy_performance_loaded": false,
+  "symbols": [
+    "ADAUSDT",
+    "AVAXUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "LINKUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "WIFUSDT"
+  ]
+}

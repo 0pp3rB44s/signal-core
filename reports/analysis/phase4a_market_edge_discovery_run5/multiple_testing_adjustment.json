@@ -1,0 +1,13 @@
+{
+  "development_adjusted_005": 24,
+  "development_hypotheses": 3528,
+  "method": "Benjamini-Hochberg FDR independently within each year and analysis family",
+  "pair_development_hypotheses": 0,
+  "pair_replication_hypotheses": 0,
+  "replicated_economic_adjusted": 0,
+  "replicated_statistical": 0,
+  "replication_adjusted_005": 0,
+  "replication_hypotheses": 3528,
+  "stable_replicated_economic": 0,
+  "stable_replicated_economic_pairs": 0
+}

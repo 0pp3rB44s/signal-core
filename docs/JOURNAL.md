@@ -364,3 +364,19 @@ VOLGENDE FASE
   Both directions, every traded symbol, all sessions and both HTF contexts lose.
 - Nine of thirteen immutable acceptance criteria fail. Verdict:
   `REJECTED — FAILED LOCKED VALIDATION`. No production/paper/live promotion.
+
+# 2026-07-16 — Phase 4A market edge discovery map
+
+- Froze Phase 3C at `cad0693d` and archived failed range escape v1 as
+  `PERMANENTLY REJECTED — NEGATIVE LOCKED GROSS EDGE` without deleting history.
+- Mapped 15m closed-candle forward return, MFE/MAE and threshold ordering over
+  two disjoint frozen years, eight symbols, six horizons and transparent
+  development-frozen state bins. No execution, trade or PnL model ran.
+- Dependency-aware inference uses UTC-day standard errors/bootstrap blocks.
+  Development has 24/3,528 BH-adjusted effects; replication has 0/3,528.
+- No factor passed single-factor replication, so the preregistered causal
+  pair-selection gate selected zero interactions rather than searching around
+  the failure. No state passed the 24 bps economic and stability contract.
+- Verdict: `NO REPLICATED ECONOMIC EDGE FAMILY FOUND`. The single next
+  investigation is synchronized historical funding and open-interest data.
+- Two full runs are byte-identical with artifact hash `b3759b5a`.

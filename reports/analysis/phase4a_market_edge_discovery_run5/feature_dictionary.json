@@ -1,0 +1,81 @@
+{
+  "categorical": [
+    "trend15",
+    "trend1h",
+    "structure",
+    "consecutive_direction",
+    "body_direction",
+    "volatility_transition",
+    "high_volume_expansion",
+    "low_volume_drift",
+    "inside_bar",
+    "outside_bar",
+    "engulfing_body",
+    "range_expansion",
+    "utc_hour",
+    "session",
+    "overlap",
+    "weekday",
+    "month",
+    "broad_direction"
+  ],
+  "continuous": [
+    "ema20_slope_atr",
+    "distance_ema20_atr",
+    "return_1",
+    "return_2",
+    "return_4",
+    "return_8",
+    "rsi14",
+    "roc8",
+    "atr_pct",
+    "realized_vol20",
+    "range_pct",
+    "bb_width",
+    "compression_duration",
+    "volume_ratio",
+    "volume_percentile",
+    "movement_per_volume",
+    "range_position20",
+    "range_position48",
+    "range_position96",
+    "distance_recent_high_atr",
+    "distance_recent_low_atr",
+    "distance_vwap_atr",
+    "distance_session_high_atr",
+    "distance_session_low_atr",
+    "distance_prev_day_high_atr",
+    "distance_prev_day_low_atr",
+    "body_ratio",
+    "upper_wick_ratio",
+    "lower_wick_ratio",
+    "close_location",
+    "btc_return_4",
+    "btc_atr_pct",
+    "broad_fraction_up",
+    "broad_dispersion",
+    "relative_return_btc",
+    "volatility_relative_btc"
+  ],
+  "definitions": "See transparent formulas in scripts/phase4a_market_edge_discovery.py; candle volume is participation only, never orderbook liquidity.",
+  "outcomes": {
+    "horizons": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32
+    ],
+    "orientations": [
+      "LONG",
+      "SHORT"
+    ],
+    "thresholds_pct": [
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ]
+  }
+}
