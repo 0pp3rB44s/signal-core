@@ -1,14 +1,22 @@
 .env
+.env.*
+!.env.example
 .venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .DS_Store
 logs/
 state/
 state_backup/
 backups/
 data_store/
+runtime/
+pids/
+*.pid
 reports/runtime_snapshots/
 *.bak*
 *.backup*
@@ -22,3 +30,4 @@ project_inventory.txt
 archive/
 # Historical datasets
 data/historical/
+.worktrees/
