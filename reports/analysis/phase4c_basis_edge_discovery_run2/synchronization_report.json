@@ -1,0 +1,18 @@
+{
+  "common_window": [
+    1721001600000,
+    1784073600000
+  ],
+  "percentage_synchronized": 100.0,
+  "symbols": [
+    "ADAUSDT",
+    "AVAXUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "LINKUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "WIFUSDT"
+  ],
+  "synchronized_candles": 560640
+}

@@ -1,0 +1,16 @@
+{
+  "basis_change_offsets": {
+    "15m": 1,
+    "1h": 4,
+    "24h": 96,
+    "4h": 16,
+    "8h": 32
+  },
+  "event_cooldown_candles": 32,
+  "formulas": {
+    "mark_close_basis_bps": "10000*(mark_close-index_close)/index_close",
+    "market_close_basis_bps": "10000*(market_close-index_close)/index_close",
+    "market_mark_divergence_bps": "10000*(market_close-mark_close)/mark_close"
+  },
+  "intracandle_divergence": "UNAVAILABLE: OHLC extrema times are unknown; high/low series are not paired"
+}

@@ -8,5 +8,12 @@
     "artifact_hash": "5d579c800126fd3f8268e8e5f4a45667f030f461ce137bb0a2103e4108588bc2",
     "outcome_analysis_opened": false,
     "status": "BLOCKED_DATA_FOUNDATION"
+  },
+  "phase4c_basis_mark_index": {
+    "artifact_hash": "6072ac1e14e6cbc69990fa5774e20e464bb7267a27d1587f3f6a17fd6ed19d92",
+    "dataset_hash": "21bcbc83ebdc26430bbc259c4db9d1929a99d70bad8dcc1272a58692bce57b6a",
+    "primary_hypotheses": 8,
+    "replicated_economic_families": 0,
+    "status": "NO REPLICATED BASIS / MARK–INDEX EDGE FAMILY FOUND"
   }
 }

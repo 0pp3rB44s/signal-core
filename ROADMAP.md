@@ -330,3 +330,11 @@ TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
 - [x] Freeze schemas, synchronization rules and eight primary hypotheses.
 - [ ] Keep outcome analysis closed until a continuous approved OI dataset passes quality checks.
 - [ ] Investigate historical basis/mark-index divergence as the single next direction.
+
+# Phase 4C basis/mark–index discovery — 2026-07-16
+
+- [x] Synchronize two years of Bitget MARKET, MARK and INDEX 15m candles for eight symbols.
+- [x] Freeze eight primary hypotheses and development-only bins before replication outcomes.
+- [x] Reject all families: zero pass sign, adjusted evidence, 24-bps economics and timing together.
+- [x] Keep the realised-funding tail supplemental-only and fail closed without canonical records.
+- [ ] Test the same transparent basis information at a higher timeframe as the single next direction.

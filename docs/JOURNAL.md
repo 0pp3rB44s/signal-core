@@ -397,3 +397,14 @@ VOLGENDE FASE
   data-availability stop, not evidence of absence.
 - The one next research direction is basis/mark-index divergence. Two
   feasibility builds are byte-identical with hash `5d579c80`.
+
+# 2026-07-16 — Phase 4C basis and mark–index discovery
+
+- Froze Phase 4B at `aaeb856e`, reproduced both hashes and retained its data-availability stop.
+- Acquired 24 complete Bitget 15m series: 70,080 MARKET, MARK and INDEX candles per symbol for eight symbols, with zero gaps, duplicates, invalid OHLC or alignment errors.
+- Exactly synchronized 560,640 observations over two frozen years; dataset hash `21bcbc83`.
+- Tested eight preregistered primaries with development-only bins, UTC-day inference and a separate replication year.
+- One sign-reversal result is BH-significant in both periods but points against its registered direction, is roughly 2 bps, and is adverse-first dominated.
+- Event effects reverse or collapse in replication. No interaction or conditional stability search opened.
+- Verdict: `NO REPLICATED BASIS / MARK–INDEX EDGE FAMILY FOUND`; the one next direction is a higher-timeframe test.
+- Two builds are byte-identical with artifact hash `6072ac1e`.

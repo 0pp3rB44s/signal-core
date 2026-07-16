@@ -1,0 +1,650 @@
+[
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 2071,
+    "horizon": 1,
+    "mean_market_drift_pct": 0.006591213544001663,
+    "median_market_drift_pct": -0.01910523801942343,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 2071,
+    "horizon": 2,
+    "mean_market_drift_pct": 0.02540812160541746,
+    "median_market_drift_pct": 0.0,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 2071,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.01808216159725005,
+    "median_market_drift_pct": -0.03678499172337091,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 2069,
+    "horizon": 8,
+    "mean_market_drift_pct": 0.03910577826697089,
+    "median_market_drift_pct": -0.029617343916599204,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 2068,
+    "horizon": 16,
+    "mean_market_drift_pct": 0.05913198103379449,
+    "median_market_drift_pct": 0.0,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 2068,
+    "horizon": 32,
+    "mean_market_drift_pct": 0.17755860479205818,
+    "median_market_drift_pct": 0.004717743633742,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3245,
+    "horizon": 1,
+    "mean_market_drift_pct": 0.042570782341673545,
+    "median_market_drift_pct": 0.04129129129126774,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3245,
+    "horizon": 2,
+    "mean_market_drift_pct": 0.04213754035572175,
+    "median_market_drift_pct": 0.023535040952915587,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3245,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.039799173891450795,
+    "median_market_drift_pct": 0.02287631538813173,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3245,
+    "horizon": 8,
+    "mean_market_drift_pct": 0.060803056956360395,
+    "median_market_drift_pct": 0.043447440031085804,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3245,
+    "horizon": 16,
+    "mean_market_drift_pct": 0.1404652805927229,
+    "median_market_drift_pct": 0.10850848017360804,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3244,
+    "horizon": 32,
+    "mean_market_drift_pct": 0.18560626701229585,
+    "median_market_drift_pct": 0.04632780228457367,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 3827,
+    "horizon": 1,
+    "mean_market_drift_pct": 0.02457699593226384,
+    "median_market_drift_pct": 0.007846214201667756,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 3827,
+    "horizon": 2,
+    "mean_market_drift_pct": 0.019072298506882267,
+    "median_market_drift_pct": -0.008587745287469417,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 3827,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.0011410852791355788,
+    "median_market_drift_pct": -0.003561887800529462,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 3826,
+    "horizon": 8,
+    "mean_market_drift_pct": -0.0004993105848396413,
+    "median_market_drift_pct": 0.0,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 3824,
+    "horizon": 16,
+    "mean_market_drift_pct": 0.027767936094597292,
+    "median_market_drift_pct": -0.024525309114992178,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 3821,
+    "horizon": 32,
+    "mean_market_drift_pct": 0.08843152959865098,
+    "median_market_drift_pct": -0.06738750880631583,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 3831,
+    "horizon": 1,
+    "mean_market_drift_pct": -0.015357880294729388,
+    "median_market_drift_pct": -0.025652536394538128,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 3831,
+    "horizon": 2,
+    "mean_market_drift_pct": -0.0012253536497388241,
+    "median_market_drift_pct": -0.02539747041195861,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 3831,
+    "horizon": 4,
+    "mean_market_drift_pct": -0.025468577098779668,
+    "median_market_drift_pct": -0.01995564575338893,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 3830,
+    "horizon": 8,
+    "mean_market_drift_pct": -0.020433439142067366,
+    "median_market_drift_pct": -0.06350362331953296,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 3827,
+    "horizon": 16,
+    "mean_market_drift_pct": 0.007954553682749575,
+    "median_market_drift_pct": -0.044006109083383205,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 3826,
+    "horizon": 32,
+    "mean_market_drift_pct": 0.06070323545788116,
+    "median_market_drift_pct": -0.09836861690719623,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 4280,
+    "horizon": 1,
+    "mean_market_drift_pct": 0.01941064753732244,
+    "median_market_drift_pct": 0.010758159975032822,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 4280,
+    "horizon": 2,
+    "mean_market_drift_pct": 0.0243824318574074,
+    "median_market_drift_pct": 0.012068863607850311,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 4280,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.01629519845484593,
+    "median_market_drift_pct": 0.014106608313979585,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 4279,
+    "horizon": 8,
+    "mean_market_drift_pct": 0.019098039312069347,
+    "median_market_drift_pct": 0.026522384892846418,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 4279,
+    "horizon": 16,
+    "mean_market_drift_pct": 0.07559210778661402,
+    "median_market_drift_pct": 0.050465838509317074,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 4277,
+    "horizon": 32,
+    "mean_market_drift_pct": 0.16160605501044314,
+    "median_market_drift_pct": 0.03349923430320256,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6060,
+    "horizon": 1,
+    "mean_market_drift_pct": -0.00014251706246494589,
+    "median_market_drift_pct": -0.0056111429217520215,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6060,
+    "horizon": 2,
+    "mean_market_drift_pct": -0.0017020038580870167,
+    "median_market_drift_pct": -0.013301959530204188,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6060,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.0007973673022028611,
+    "median_market_drift_pct": -0.0007180543544815787,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6060,
+    "horizon": 8,
+    "mean_market_drift_pct": 0.02735439075937834,
+    "median_market_drift_pct": 0.017636944973853375,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6058,
+    "horizon": 16,
+    "mean_market_drift_pct": 0.033340074182018044,
+    "median_market_drift_pct": -0.01100803842506437,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6055,
+    "horizon": 32,
+    "mean_market_drift_pct": 0.015921728831100403,
+    "median_market_drift_pct": -0.02888503755054117,
+    "period": "development"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 1084,
+    "horizon": 1,
+    "mean_market_drift_pct": -0.08065635692467069,
+    "median_market_drift_pct": -0.047759423876286844,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 1084,
+    "horizon": 2,
+    "mean_market_drift_pct": -0.18579463779025088,
+    "median_market_drift_pct": -0.06367544044800222,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 1084,
+    "horizon": 4,
+    "mean_market_drift_pct": -0.10997941552753698,
+    "median_market_drift_pct": -0.05245867005718163,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 1084,
+    "horizon": 8,
+    "mean_market_drift_pct": -0.13145627148919956,
+    "median_market_drift_pct": -0.08596791696994233,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 1084,
+    "horizon": 16,
+    "mean_market_drift_pct": -0.17863316839489704,
+    "median_market_drift_pct": -0.15641001774345242,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_positive_top_decile",
+    "events": 1084,
+    "horizon": 32,
+    "mean_market_drift_pct": -0.10277043507064944,
+    "median_market_drift_pct": -0.05630846640277132,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3447,
+    "horizon": 1,
+    "mean_market_drift_pct": 0.044435674601874066,
+    "median_market_drift_pct": 0.025777182038466684,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3447,
+    "horizon": 2,
+    "mean_market_drift_pct": 0.04296654738215384,
+    "median_market_drift_pct": 0.02555583950933915,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3447,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.03775685315414721,
+    "median_market_drift_pct": 0.02608922515001666,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3447,
+    "horizon": 8,
+    "mean_market_drift_pct": 0.01258161573192159,
+    "median_market_drift_pct": 0.03414523104938727,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3445,
+    "horizon": 16,
+    "mean_market_drift_pct": -0.0099194112552141,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "enter_negative_bottom_decile",
+    "events": 3444,
+    "horizon": 32,
+    "mean_market_drift_pct": -0.05204319357391572,
+    "median_market_drift_pct": -0.057517347840874145,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 2776,
+    "horizon": 1,
+    "mean_market_drift_pct": 0.014982948049243518,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 2776,
+    "horizon": 2,
+    "mean_market_drift_pct": 0.037050952931468886,
+    "median_market_drift_pct": 0.027891076099162415,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 2776,
+    "horizon": 4,
+    "mean_market_drift_pct": 0.0398413894661905,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 2776,
+    "horizon": 8,
+    "mean_market_drift_pct": 0.019254458246616396,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 2774,
+    "horizon": 16,
+    "mean_market_drift_pct": -0.01681855474227279,
+    "median_market_drift_pct": -0.018224852177739503,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "positive_to_negative",
+    "events": 2772,
+    "horizon": 32,
+    "mean_market_drift_pct": -0.05990713774034989,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 2763,
+    "horizon": 1,
+    "mean_market_drift_pct": -0.0199241613236541,
+    "median_market_drift_pct": -0.030109145652990055,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 2763,
+    "horizon": 2,
+    "mean_market_drift_pct": -0.023238264586184634,
+    "median_market_drift_pct": -0.038647342995168366,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 2763,
+    "horizon": 4,
+    "mean_market_drift_pct": -0.032026176058456604,
+    "median_market_drift_pct": -0.030728259756218623,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 2763,
+    "horizon": 8,
+    "mean_market_drift_pct": -0.023011926760491474,
+    "median_market_drift_pct": -0.03519061583578953,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 2761,
+    "horizon": 16,
+    "mean_market_drift_pct": -0.022112899816998197,
+    "median_market_drift_pct": -0.051539012168944076,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "negative_to_positive",
+    "events": 2759,
+    "horizon": 32,
+    "mean_market_drift_pct": -0.06795700732447034,
+    "median_market_drift_pct": -0.005108295872502389,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 3056,
+    "horizon": 1,
+    "mean_market_drift_pct": -0.008495957675009547,
+    "median_market_drift_pct": -0.006011472102057658,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 3056,
+    "horizon": 2,
+    "mean_market_drift_pct": -0.0165517368853368,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 3055,
+    "horizon": 4,
+    "mean_market_drift_pct": -0.03811215345231357,
+    "median_market_drift_pct": -0.0381242851696495,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 3055,
+    "horizon": 8,
+    "mean_market_drift_pct": -0.06373638608385629,
+    "median_market_drift_pct": -0.015923456636268707,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 3054,
+    "horizon": 16,
+    "mean_market_drift_pct": -0.03676883789430233,
+    "median_market_drift_pct": -0.08195614079603564,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_expansion",
+    "events": 3054,
+    "horizon": 32,
+    "mean_market_drift_pct": -0.06795351338818695,
+    "median_market_drift_pct": -0.0707296907542565,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6423,
+    "horizon": 1,
+    "mean_market_drift_pct": -0.005757916870040361,
+    "median_market_drift_pct": -0.0002320559811974654,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6422,
+    "horizon": 2,
+    "mean_market_drift_pct": -0.01731565769118528,
+    "median_market_drift_pct": -0.009312298658864515,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6422,
+    "horizon": 4,
+    "mean_market_drift_pct": -0.031067292709181647,
+    "median_market_drift_pct": -0.009315802951603835,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6422,
+    "horizon": 8,
+    "mean_market_drift_pct": -0.02026951304164473,
+    "median_market_drift_pct": -0.0037202683541182058,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6421,
+    "horizon": 16,
+    "mean_market_drift_pct": -0.03293758439683807,
+    "median_market_drift_pct": -0.02269246043001827,
+    "period": "replication"
+  },
+  {
+    "cooldown_candles": 32,
+    "event": "rapid_compression",
+    "events": 6418,
+    "horizon": 32,
+    "mean_market_drift_pct": -0.05695103550209391,
+    "median_market_drift_pct": 0.0,
+    "period": "replication"
+  }
+]

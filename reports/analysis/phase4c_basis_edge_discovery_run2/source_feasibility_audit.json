@@ -1,0 +1,13 @@
+{
+  "closed_candles_only": true,
+  "index": "FULLY AVAILABLE",
+  "limit": 200,
+  "mark": "FULLY AVAILABLE",
+  "market": "FULLY AVAILABLE",
+  "official_endpoints": [
+    "history-candles",
+    "history-mark-candles",
+    "history-index-candles"
+  ],
+  "rate_limit_per_second": 20
+}
