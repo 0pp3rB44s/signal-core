@@ -118,3 +118,69 @@ symbolen of 1 dag; effect verdwijnt na uitsluiten spread>mediaan-snapshots
 Taker roundtrip 12 bps + 2 bps slippage-buffer. Signaal op 2,5-min snapshot
 is uitvoerbaar (geen tick-latency vereist). Turnover @15m-horizon is hoog →
 economische drempel daar navenant streng.
+
+### Amendement databron (2026-07-16, vóór enige testrun)
+market_context.csv bleek de orderbook-kolommen nooit te vullen (0 van 79.719
+rijen — logger-defect, apart gemeld). Identieke metingen staan als tekst in
+de notes van strategy_performance.csv-scanrijen (zelfde producent:
+bitget_market_client top-50 merge-depth, zelfde cadans). Bron vervangen,
+protocol ongewijzigd. Resultaat: 71.725 gededuplicedeerde snapshots,
+40 symbolen, 07-08 15:37 → 07-15 07:48 UTC.
+
+### RESULTATEN (run 2026-07-16, research/h4d1_imbalance_study.py)
+
+| Horizon | DEV n/clusters | DEV bps | t | BH-p | REP n/clusters | REP bps | t |
+|---|---|---|---|---|---|---|---|
+| 15m | 6523/248 | +2,45 | 2,26 | 0,072 | 6731/207 | +1,15 | 1,24 |
+| 1h | 1819/85 | −4,16 | −1,00 | 0,476 | 1883/71 | −2,82 | −0,76 |
+| 4h | 504/24 | +4,62 | 0,25 | 0,805 | 567/23 | −19,0 | −1,84 |
+
+### Verdict: **VERWORPEN** (alle drie de vooraf vastgelegde poorten falen)
+- Statistisch: geen enkele horizon haalt BH-p < 0,05 in DEV; REP-|t| < 2 overal.
+- Replicatie: 4h wisselt van teken; 1h heeft het verkeerde (niet-geregistreerde)
+  teken in beide periodes.
+- Economisch: het enige teken-consistente signaal (15m: +2,45 → +1,15 bps) is
+  ~5× kleiner dan de drempel (8 bps) en ~6× kleiner dan de kosten (14 bps).
+
+### Falsificatie-analyse
+Het zwakke positieve 15m-signaal is richting-consistent met de theorie maar
+economisch dood; bij deze power (detecteerbaar ~2-3 bps) is dit een
+informatieve verwerping, geen power-probleem. Waarschijnlijkste duiding: de
+informatie in top-50 notional-imbalance is op 2,5-min cadans vrijwel volledig
+ingeprijsd; wat rest is een fluistering onder het kostenniveau.
+
+**Bevroren. Niet recyclen** op deze data-resolutie. Her-opening vereist
+fundamenteel andere data (tick/L2-historie of hogere snapshot-cadans) én een
+nieuw mechanisme — geen parametervariatie.
+
+Confidence in verwerping: hoog (adequate power, schone pre-registratie).
+Restonzekerheid: één marktregime (chop, 8 dagen); effect zou in trend-regimes
+kunnen bestaan — her-toetsbaar zodra de archivering meer regimes dekt.
+
+---
+
+## H-4D-2 — Time-of-day / sessie-structuur (PRE-REGISTRATIE)
+
+**Status: GEREGISTREERD 2026-07-16. Nog niet getest.**
+
+- **Theorie**: crypto-perps hebben een vaste dagcyclus (Azië/EU/US-sessies,
+  US-equity-open, funding-settlements 00/08/16 UTC). Als liquiditeits- en
+  flowcycli systematische drift veroorzaken, is die zichtbaar als
+  uur-van-de-dag-conditionele returns.
+- **Data**: 1H OHLCV, ≥ 400 dagen, 12 vaste symbolen (BTC, ETH, SOL, BNB,
+  XRP, DOGE, LINK, AVAX, ADA, SUI, LTC, DOT — vooraf vastgelegd, geen
+  watchlist-conditionering). Gepagineerd op te halen; dekt meerdere regimes
+  (bull/bear/chop) — sterker dan H-4D-1 op dit punt.
+- **Features**: per-timestamp cross-sectioneel gemiddelde 1H-return (doodt
+  cross-correlatie), gebucket naar 24 UTC-uren + 6 vooraf benoemde vensters
+  (Azië-open 00-02, EU-open 07-09, US-open 13-15, US-close 20-22, en ±1h
+  rond funding 00/08/16).
+- **Protocol**: DEV = eerste helft van de periode, REP = tweede helft
+  (kalender-split, vooraf). Primaire tests: 24+6 = 30 → BH. Cluster op dag.
+- **Succes**: BH-p<0,05 in DEV; zelfde teken + |t|≥2 in REP; |effect| ≥ 4 bps
+  per uur bruto (een uur-effect is 1×/dag verhandelbaar met 1 roundtrip →
+  economische lat: > 14 bps per trade betekent venster-effecten optellen of
+  verwerpen); maand-tekenconsistentie ≥ 65%.
+- **Faal**: anders → verwerpen; geen post-hoc venster-shopping.
+- **Bias-bronnen**: seizoenaliteit van het sample; DST-verschuivingen (UTC
+  gebruiken, equity-open venster ruim nemen); autocorrelatie (dag-clusters).
