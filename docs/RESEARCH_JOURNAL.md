@@ -306,3 +306,83 @@ Restonzekerheid: gelijkgewogen cross-sectie; een symboolspecifiek klokeffect
 zijn, geen heropening.
 
 Reproductie: `python3 research/h4d2_data.py && python3 research/h4d2_session_study.py`
+
+---
+
+## H-4D-3 — VWAP-deviation reversie (PRE-REGISTRATIE)
+
+**Status: GEREGISTREERD 2026-07-17, vóór enige datafetch of test.**
+
+### Theorie & mechanisme
+Institutionele executie (VWAP/TWAP-algo's) en MM-inventarisbeheer ankeren aan
+de sessie-VWAP. Sterk uitgerekte prijs t.o.v. de dag-VWAP creëert
+benchmark-tracking-flow en inventarisdruk terug richting VWAP (gedocumenteerd
+intraday-effect in equities; onbekend in crypto-perps op 15m-resolutie).
+**Richting (vooraf): REVERSIE** — laagste-deviatie-kwintiel presteert beter
+dan hoogste over de volgende 1h/4h (Q1−Q5 > 0). Continuatie-uitkomst telt als
+falsificatie van dit mechanisme.
+
+**Waarom geen recycling**: 4A verwierp *onconditionele* mean reversion op
+kale OHLCV-percentielen. Dit toetst een specifiek, volume-gewogen anker
+(executie-benchmark-mechanisme) met intraday-reset — de triagelijst voert dit
+als aparte, ongeteste familie (prioriteit 6). Zelfde kalendervenster en
+universum als H-4D-2 (vast, geen keuzevrijheid).
+
+### Data
+15m OHLCV mét volume, zelfde 12 symbolen, zelfde venster
+[2024-07-17T00:00Z, 2026-07-17T00:00Z), Bitget USDT-FUTURES,
+/api/v2/mix/market/history-candles, UTC, geen forward-fill, zelfde
+audit-standaard (verwacht 70.080 candles/symbool). Uitvoering:
+research/h4d3_data.py → data/historical/h4d3_{SYM}_15m.json (gitignored).
+
+### Signaal (exact)
+- VWAP_d(t) = Σ_{i∈dag d, i≤t} tp_i·v_i / Σ v_i met tp = (H+L+C)/3,
+  dag = UTC-kalenderdag (reset 00:00 UTC), v = basisvolume.
+- dev(t) = ln(close_t / VWAP_d(t)).
+- Geldigheid: candle-open ≥ 04:00 UTC van de eigen dag (≥ 16 candles VWAP-
+  opbouw) én dagvolume tot t > 0.
+
+### Protocol
+1. Kwintielgrenzen van dev **per symbool, alléén op DEV** (voorkomt dat
+   hoog-volatiele symbolen Q1/Q5 domineren).
+2. Thinning per symbool: non-overlappend per horizon (max 1 obs per 1h resp.
+   4h), chronologisch.
+3. Forward return: entry = OPEN van candle t+1 (strikt na signaal-close);
+   exit = CLOSE van candle t+N (N=4 @1h, N=16 @4h); log-returns.
+4. Q1−Q5-spread per 15m-timestampbucket; **cluster op UTC-dag** (conservatiever
+   dan H-4D-1's bucketclustering, vanwege 4h-overlap over buckets heen).
+5. DEV = [2024-07-17, 2025-07-17), REP = [2025-07-17, 2026-07-17).
+6. Primaire familie: 2 tests (1h, 4h) → BH over 2.
+
+### Succescriteria (vooraf, alle verplicht)
+- BH-p < 0,05 in DEV; zelfde teken + |t| ≥ 2 in REP (dag-geclusterd).
+- Economisch (verhandelbare enkelzijdige constructie, taker 12 + 2 slippage
+  = 14 bps roundtrip): |gemiddelde Q1- of Q5-poot| ≥ 20 bps @1h of ≥ 25 bps
+  @4h bruto in DEV én REP; long-short-interpretatie (2 poten, 28 bps kosten)
+  alleen gerapporteerd, niet vereist.
+- Maand-tekenconsistentie spread ≥ 65% (volle periode).
+- Stabiliteit: niet gedreven door ≤ 2 symbolen (leave-two-out), niet door één
+  maand; teken consistent in ≥ 3 van 4 subperioden én ≥ 3 van 4 regimes
+  (bull/bear via BTC-90d; hoog/laag-vol via mediaan 30d realized vol).
+
+### Falsificatie (kan alleen verwerpen, nooit redden)
+Entry +1 extra candle vertraagd (30 min totaal); kostenstress ×1,5 (21 bps
+enkelzijdig); LOO/L2O; beste maand eruit; 10%-trimmed mean; volume-conditie
+(effect moet overleven binnen de bovenste helft van dag-volume — anders
+illiquiditeitsartefact); placebo: dev t.o.v. simpele 4h-SMA i.p.v. VWAP moet
+NIET hetzelfde patroon geven als het mechanisme echt VWAP-anker-flow is
+(rapportage; zwakke discriminator, geen harde poort).
+
+### Power (vooraf)
+~12×730×~20 geldige uren/dag → na thinning ~O(10⁵) obs @1h, 730 dagclusters;
+verwachte SE op de spread: enkele bps → drempels (20-25 bps poten) liggen ruim
+binnen detectiebereik. "Geen effect" is dus informatief.
+
+### Executie-aannames
+Signaal op candle-close; entry volgende candle-open (≤ 15 min latentie,
+ruim uitvoerbaar). Turnover: max 1 trade/symbool/uur bij 1h-horizon;
+kostenlat daarop afgestemd (20 bps > 14 bps kosten).
+
+### Faalcondities → verwerp permanent
+Tekenwissel DEV→REP; poot onder economische drempel; concentratie in ≤ 2
+symbolen of 1 maand; verdwijnt in laag-volume-helft (artefact); BH-p ≥ 0,05.
