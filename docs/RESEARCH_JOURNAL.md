@@ -19,6 +19,8 @@ Dit bestand is git-tracked (permanent). Ruwe run-artefacten staan in
 | 4B | Funding / Open Interest | GEBLOKKEERD/VERWORPEN | historische OI onbeschikbaar; funding partieel; geen betrouwbare positioning-edge |
 | 4C | Basis / mark-index divergentie | VERWORPEN | 2 jaar gesynchroniseerd, BH-gecorrigeerd, geen economisch betekenisvolle edge |
 | — | Sweep-and-reverse gemechaniseerd (1H/4H, met/zonder HTF-filter) | VERWORPEN | consistent ≈ −0,3R over alle doorsnedes (sessie 2026-07-13) |
+| 4D-1 | Microstructuur orderbook-imbalance (2,5-min snapshots) | VERWORPEN | H-4D-1 hieronder; reproductie-audit 2026-07-17: exact bevestigd |
+| 4D-2 | Time-of-day / sessie-structuur (1H, 730 d, 12 symbolen) | VERWORPEN | H-4D-2 hieronder; 0 van 30 tests BH-significant in DEV |
 
 Verworpen families worden niet gerecycled zonder aantoonbare methodologische
 fout in het oorspronkelijke onderzoek.
@@ -245,3 +247,62 @@ Uitvoering: research/h4d2_data.py (databouw+audit), research/h4d2_session_study.
 8. **Datavolgorde**: databouw + kwaliteitsaudit draaien vóór de studie; de
    studie-uitvoer wordt pas daarna berekend. Dit amendement is gecommit
    voordat resultaten bestonden (zie commit-historie).
+
+### Data-audit (2026-07-17, research/h4d2_data.py)
+
+Bitget USDT-FUTURES, /api/v2/mix/market/history-candles, 1H, UTC epoch-ms.
+Alle 12 symbolen: n=17.520 (exact verwacht), 0 missend, 0 duplicaat, 0 invalide,
+0 gaps, volledige dekking 2024-07-17T00 → 2026-07-16T23 UTC. Geen reparaties,
+geen uitsluitingen, geen forward-fill. Cross-endpoint-verificatie: 178
+overlappende candles vs /candles-endpoint, 0 mismatches. Pipeline-zelftest op
+synthetische data: geïnjecteerd +10 bps-effect exact teruggevonden, 0
+vals-positieven op 25 ruistests, cluster-SE = theoretische SE, BH exact.
+Per-symbool cache-SHA256: reports/analysis/h4d2_time_of_day/data_audit.json
+(sha256 b81e37023f57c068…).
+
+### RESULTATEN (run 2026-07-17, research/h4d2_session_study.py)
+
+17.520 cross-sectie-timestamps (DEV 8.760 / REP 8.760), overal 12/12 symbolen.
+
+**Geen enkele van de 30 primaire tests haalt BH-p < 0,05 in DEV.**
+Minimum BH-p = 0,924; grootste DEV-|t| = 1,31 (h03). Volledige tabel:
+reports/analysis/h4d2_time_of_day/results.json (sha256 334f5bed7d6be876…).
+Uittreksel (grootste effecten):
+
+| Test | DEV bps | t | BH-p | REP bps | t | teken gelijk |
+|---|---|---|---|---|---|---|
+| h03 | +4,74 | +1,31 | 0,92 | +1,46 | +0,47 | ja |
+| h22 | +4,48 | +1,07 | 0,92 | +5,24 | +1,62 | ja |
+| h23 | −2,55 | −0,85 | 0,92 | −9,54 | −3,30 | ja |
+| h10 | −2,30 | −0,69 | 0,92 | −6,52 | −2,57 | ja |
+| funding_00 | −2,25 | −0,76 | 0,92 | −4,66 | −2,13 | ja |
+
+### Verdict: **VERWORPEN** (poort 1 faalt voor alle 30 tests)
+
+- Poort 1 (BH-p<0,05 DEV): FAIL over de hele linie → per protocol verworpen;
+  poorten 2-6 en falsificatie niet van toepassing (geen kandidaten).
+- Tekens wisselen DEV→REP in 14 van 30 tests — geen stabiele klokstructuur.
+- **Expliciet niet geselecteerd**: h23 (REP t=−3,30), h10 (REP t=−2,57) en
+  funding_00 (REP t=−2,13; deelt uur 23 met h23) tonen |t|≥2 alléén in REP.
+  Verwachte vals-positieven bij 30 tweezijdige tests: ~1,5 per periode. Selectie
+  op REP-uitkomsten is exact het post-hoc venster-shoppen dat de registratie
+  verbiedt. Bevroren als niet-bevinding; alleen her-toetsbaar als een
+  toekomstige, geheel nieuwe pre-registratie (nieuwe data, DEV opnieuw
+  gedefinieerd) dit onafhankelijk aanwijst.
+
+### Power & economische duiding
+SE per uur-bucket ≈ 3,4-3,7 bps per helft (365 dagclusters). Detecteerbaar:
+~7 bps (ongecorrigeerd) tot ~12 bps (BH-worst-case). Economisch levensvatbaar
+vereist > 14 bps per trade = > 7 bps/uur voor een 2-uursvenster of > 14 bps
+voor een enkel uur — beide binnen het detecteerbare bereik. Een economisch
+verhandelbaar klokeffect zou dus zichtbaar zijn geweest; sub-economische
+effecten (< ~7 bps/uur) blijven onbeslisbaar maar zijn per definitie geen edge
+na kosten. Informatieve verwerping.
+
+Confidence in verwerping: hoog (730 dagen, meerdere regimes — bull/bear/chop —
+perfecte datadekking, schone pre-registratie met vooraf gecommit amendement).
+Restonzekerheid: gelijkgewogen cross-sectie; een symboolspecifiek klokeffect
+(bijv. alleen BTC) valt buiten deze registratie en zou een nieuwe hypothese
+zijn, geen heropening.
+
+Reproductie: `python3 research/h4d2_data.py && python3 research/h4d2_session_study.py`
