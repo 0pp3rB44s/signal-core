@@ -157,6 +157,34 @@ Confidence in verwerping: hoog (adequate power, schone pre-registratie).
 Restonzekerheid: één marktregime (chop, 8 dagen); effect zou in trend-regimes
 kunnen bestaan — her-toetsbaar zodra de archivering meer regimes dekt.
 
+### Onafhankelijke reproductie-audit (2026-07-17)
+
+Herrun van research/h4d1_imbalance_study.py, ongewijzigd, tegen dezelfde
+immutabele inputs (logs/strategy_performance.csv*, laatste rij 07-15 07:48:45,
+sindsdien geen nieuwe rijen; 15m-candles opnieuw via API — historisch immutabel).
+Commando: `python3 research/h4d1_imbalance_study.py`.
+
+| Metric | Gerapporteerd | Gereproduceerd | Δ | Oordeel |
+|---|---|---|---|---|
+| snapshots / symbolen / bereik | 71.725 / 40 / 07-08 15:37→07-15 07:48 | identiek | 0 | PASS |
+| 15m DEV n/cl, bps, t, BH-p | 6523/248, +2,45, 2,26, 0,072 | 6523/248, +2,45, 2,26, 0,0720 | 0 | PASS |
+| 15m REP n/cl, bps, t | 6731/207, +1,15, 1,24 | identiek | 0 | PASS |
+| 1h DEV n/cl, bps, t, BH-p | 1819/85, −4,16, −1,00, 0,476 | 1819/85, −4,16, −1,00, 0,4764 | 0 | PASS |
+| 1h REP n/cl, bps, t | 1883/71, −2,82, −0,76 | identiek | 0 | PASS |
+| 4h DEV n/cl, bps, t, BH-p | 504/24, +4,62, 0,25, 0,805 | 504/24, +4,62, 0,25, 0,8046 | afronding | PASS |
+| 4h REP n/cl, bps, t | 567/23, −19,0, −1,84 | identiek | 0 | PASS |
+
+BH-rekenwerk onafhankelijk geverifieerd vanuit de t-stats (0,0238×3/1;
+0,317×3/2; 0,803×3/3) — klopt, monotonie niet geschonden. Methodologische
+checks: entry via bisect_right (strikt ná snapshot, geen look-ahead); exit
+alleen op gesloten candles (i+nfwd < len); kwintielgrenzen alleen op DEV;
+thinning per symbool non-overlappend; dedupe (symbool, seconde).
+Kanttekening: pre-registratiecommit (27537ea, 10:17) ligt slechts 5 min vóór
+resultatencommit (0ca49f3, 10:22) — commit-discipline dun, maar de inhoud van
+27537ea bevat protocol+succescriteria zonder resultaten, en de exacte
+reproductie vanaf immutabele inputs draagt het bewijs.
+**Audit-verdict: VERWERPING H-4D-1 BEVESTIGD; geen discrepanties.**
+
 ---
 
 ## H-4D-2 — Time-of-day / sessie-structuur (PRE-REGISTRATIE)
@@ -184,3 +212,36 @@ kunnen bestaan — her-toetsbaar zodra de archivering meer regimes dekt.
 - **Faal**: anders → verwerpen; geen post-hoc venster-shopping.
 - **Bias-bronnen**: seizoenaliteit van het sample; DST-verschuivingen (UTC
   gebruiken, equity-open venster ruim nemen); autocorrelatie (dag-clusters).
+
+### Interpretatie-amendement (2026-07-17, vastgelegd en gecommit VÓÓR enige testrun)
+
+De registratie hierboven laat details open; die worden hier ex ante gefixeerd.
+Uitvoering: research/h4d2_data.py (databouw+audit), research/h4d2_session_study.py.
+
+1. **Periode vast**: [2024-07-17T00:00Z, 2026-07-17T00:00Z) = 730 dagen.
+   DEV = [2024-07-17, 2025-07-17), REP = [2025-07-17, 2026-07-17) (kalenderhelften).
+2. **Return**: log(close/open) van de 1H-candle die op uur h opent
+   (entry = open uur h, exit = close uur h). Cross-sectioneel gelijkgewogen
+   gemiddelde per timestamp; timestamp telt alleen mee bij ≥ 8/12 symbolen
+   aanwezig; nooit forward-fill.
+3. **De 6 vensters** (elk 2 candle-open-uren): asia_open {0,1};
+   eu_open_funding08 {7,8}; us_open {13,14}; us_close {20,21};
+   funding_00 {23,0}; funding_16 {15,16}. De registratie telt 24+6=30:
+   EU-open (07-09) en funding-08 (±1h rond 08) vallen samen → één venster.
+4. **Statistiek**: cluster = UTC-dag van candle-open, CR0-SE, tweezijdige p
+   (normale benadering; ≥300 clusters), BH step-up (monotoon) over 30 DEV-tests.
+5. **Economische poort**: zelfde teken DEV/REP én min(|DEV|,|REP|) ≥ 4 bps/uur.
+   Kostenpoort: verhandelbare constructie = het venster zelf, 1 roundtrip;
+   |uursom per trade| > 14 bps (12 taker + 2 slippage). Stress: ×1,5 = 21 bps.
+6. **Maand-tekenconsistentie**: ≥ 65% van de kalendermaanden (volle periode)
+   heeft maandgemiddelde met hetzelfde teken als het volle-periode-effect.
+7. **Falsificatie** (kan alleen verwerpen, nooit redden): leave-one-out en
+   leave-two-out op best-bijdragende symbolen; beste maand eruit; regimes
+   (bull/bear via BTC-90d-trend, hoog/laag-vol via mediaan 30d realized vol);
+   placebo ±3h; entry +1h vertraagd; 10%-trimmed mean; subperiode-verval (4
+   kwartalen); DST-split voor US-vensters. NB ex ante: voor klok-effecten is
+   het signaal oneindig ver vooraf bekend (klok, geen berekening); de
+   +1h-vertraagde test meet randscherpte/placebo, geen signaallatentie.
+8. **Datavolgorde**: databouw + kwaliteitsaudit draaien vóór de studie; de
+   studie-uitvoer wordt pas daarna berekend. Dit amendement is gecommit
+   voordat resultaten bestonden (zie commit-historie).
