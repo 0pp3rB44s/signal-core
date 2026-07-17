@@ -21,6 +21,7 @@ Dit bestand is git-tracked (permanent). Ruwe run-artefacten staan in
 | — | Sweep-and-reverse gemechaniseerd (1H/4H, met/zonder HTF-filter) | VERWORPEN | consistent ≈ −0,3R over alle doorsnedes (sessie 2026-07-13) |
 | 4D-1 | Microstructuur orderbook-imbalance (2,5-min snapshots) | VERWORPEN | H-4D-1 hieronder; reproductie-audit 2026-07-17: exact bevestigd |
 | 4D-2 | Time-of-day / sessie-structuur (1H, 730 d, 12 symbolen) | VERWORPEN | H-4D-2 hieronder; 0 van 30 tests BH-significant in DEV |
+| 4D-3 | VWAP-deviation reversie (15m, 730 d, 12 symbolen) | VERWORPEN | H-4D-3 hieronder; BH-p ≥ 0,26, richting tegengesproken |
 
 Verworpen families worden niet gerecycled zonder aantoonbare methodologische
 fout in het oorspronkelijke onderzoek.
@@ -386,3 +387,53 @@ kostenlat daarop afgestemd (20 bps > 14 bps kosten).
 ### Faalcondities → verwerp permanent
 Tekenwissel DEV→REP; poot onder economische drempel; concentratie in ≤ 2
 symbolen of 1 maand; verdwijnt in laag-volume-helft (artefact); BH-p ≥ 0,05.
+
+### Data-audit (2026-07-17, research/h4d3_data.py)
+Alle 12 symbolen: n=70.080 (exact verwacht), 0 missend, 0 duplicaat, 0
+invalide, 0 gaps, 0 nul-volume-candles. Geen reparaties of uitsluitingen.
+Cache-SHA256's: reports/analysis/h4d3_vwap/data_audit.json (4b786735c73147b5…).
+Pipeline-zelftest: handmatige VWAP-verificatie exact; forward-return-alignment
+(entry open t+1, exit close t+N) analytisch geverifieerd; geïnjecteerde
+reversie teruggevonden (t≈90); pure random walk → 0 kandidaten.
+
+### RESULTATEN (run 2026-07-17, research/h4d3_vwap_study.py)
+
+700.800 geldige signalen. Q1−Q5-spread (reversie ⇒ positief, dag-geclusterd):
+
+| Horizon | DEV bps | t | BH-p | REP bps | t | Poot-max (DEV/REP) |
+|---|---|---|---|---|---|---|
+| 1h | −3,23 | −1,06 | 0,290 | −5,58 | −1,46 | +3,8 / −1,4 bps |
+| 4h | −21,34 | −1,52 | 0,257 | +4,65 | +0,32 | +9,4 / −8,1 bps |
+
+### Verdict: **VERWORPEN**
+- Poort 1 (BH-p<0,05 DEV): FAIL beide horizonnen.
+- Geregistreerde richting (reversie, spread>0): tegengesproken — DEV-punt-
+  schattingen negatief (continuatie-getint), zelf ook insignificant.
+- 4h wisselt van teken DEV→REP; geen enkele poot komt in de buurt van de
+  economische drempels (20 bps @1h / 25 bps @4h); poot-tekens flippen.
+- Power: SE spread ≈ 3 bps @1h → detecteerbaar ~6-9 bps; de economische
+  drempels lagen ruim binnen bereik. Informatieve verwerping.
+
+Bevroren. Geen parametervariatie (andere ankers, andere drempels, andere
+horizonnen) zonder nieuwe pre-registratie én nieuw mechanisme-argument.
+Confidence: hoog (730 dagen, meerdere regimes, perfecte datadekking,
+registratie gecommit vóór datafetch). Restonzekerheid: dag-anker 00:00 UTC is
+één keuze; sessie-ankers zouden een nieuwe hypothese zijn, geen heropening.
+
+Reproductie: `python3 research/h4d3_data.py && python3 research/h4d3_vwap_study.py`
+Artefact-hash: results.json 9daf9f41a320b1a0…
+
+---
+
+## PROGRAMMA-STAND na fase 4D (2026-07-17)
+
+Drie cycli in deze sessie: H-4D-1 reproductie-audit (verwerping exact
+bevestigd), H-4D-2 uitgevoerd → VERWORPEN, H-4D-3 geregistreerd + uitgevoerd →
+VERWORPEN. Resterende toetsbare families uit de triage zijn expliciet
+laag-prior (liquidity-void-proxy, cross-exchange op 1m) of hoog-overfit-risico
+(regime/HMM); elke extra familie verhoogt bovendien de programmabrede
+vals-positiefkans. **Conclusie: met de huidige publieke data bestaat er geen
+aantoonbare, economisch levensvatbare edge.** De hoogste-verwachtingsroute
+blijft de al aanbevolen live-archivering (orderbook diepte+cadans, liquidaties
+via WS, funding) die families 7-9/13 over 4-8 weken toetsbaar maakt.
+Executie blijft observe-only (eigenaar-besluit 2026-07-13).
