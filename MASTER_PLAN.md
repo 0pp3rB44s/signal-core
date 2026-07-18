@@ -46,9 +46,11 @@ controleerbaar.
   hoogfrequente imbalance) vereisen data die niemand ons kan naleveren —
   we moeten haar zelf bouwen. Dit is het kritieke pad naar edge.
 - **Werkzaamheden**: archiver 24/7 (runner), bot 24/7 in strict
-  forward-paper-only, dagelijkse 5-min-healthcheck, wekelijks
-  geautomatiseerd datakwaliteitsrapport, forward-paper-pariteitsmeting
-  (signaaltijd vs uitvoerbare tijd, spread/slippage-aannames).
+  forward-paper-only (**actief sinds 2026-07-18**, bewaakt door
+  `scripts/forward_paper_keepalive.sh`), dagelijkse healthcheck via
+  `scripts/daily_ops_check.sh`, wekelijks geautomatiseerd
+  datakwaliteitsrapport, forward-paper-pariteitsmeting (signaaltijd vs
+  uitvoerbare tijd, spread/slippage-aannames).
 - **Afhankelijkheden**: runner operationeel (morgen); supervisor-run bot.
 - **Risico's**: stille datagaten (mitigatie: SOURCE_STALE-monitoring +
   wekelijks rapport); diskdruk (disk-guard + retentie); klokdrift

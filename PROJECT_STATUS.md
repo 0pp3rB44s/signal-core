@@ -26,7 +26,7 @@ runner-deployment — géén live trading.
 | 4A-4C | OHLCV-directioneel, funding/OI, basis/mark-index | **AFGEROND — VERWORPEN** |
 | 4D | Microstructuur (H-4D-1), time-of-day (H-4D-2), VWAP (H-4D-3) | **AFGEROND — VERWORPEN** (schone pre-registraties, reproducties exact) |
 | 4E | Live-archivering microstructuurdata | **ACTIEF** — archiver stabiel in productie sinds 2026-07-18 |
-| 5 | Forward-paper-validatie 24/7 (strict FORWARD_PAPER_ONLY) | **GESTART, GEPAUZEERD** — bot bewust gestopt 07-15 (nette SIGTERM); herstart onder supervisor kan zodra gewenst |
+| 5 | Forward-paper-validatie 24/7 (strict FORWARD_PAPER_ONLY) | **ACTIEF sinds 2026-07-18** — strict-mode HEALTHY, keepalive + daily-ops-check beschikbaar (`scripts/daily_ops_check.sh`) |
 | 6 | Runner-deployment (Intel MacBook) | **VOORBEREID** — infra gemerged (PR #10), eerste deploy-tag ontbreekt nog |
 | 7 | Nieuwe hypothesecycli op gearchiveerde data | **NIET BEGONNEN** — wacht op ≥4 weken data + nieuwe pre-registratie |
 | — | Live trading | **GEBLOKKEERD** — zie live-gate-checklist onderaan |

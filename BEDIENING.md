@@ -65,6 +65,28 @@ De backgroundlauncher plaatst de bot in een nieuwe OS-session. Daardoor blijft
 het proces leven wanneer de startende shell sluit; `nohup` alleen is hiervoor
 niet voldoende in process-group-isolerende omgevingen.
 
+## Dagelijkse operationele cyclus
+
+Eén commando controleert platformgezondheid, datakwaliteit, runtime en
+tradingstatus (alleen-lezen; exit 0 = alles PASS):
+
+```bash
+scripts/daily_ops_check.sh
+```
+
+Continuïteit van de strict forward-paper-run wordt bewaakt door de
+keepalive, die uitsluitend via de strict launcher kan herstarten en
+fail-closed stopt na 3 snelle herstarts binnen 30 minuten:
+
+```bash
+scripts/forward_paper_keepalive.sh              # eenmalige controle
+tmux new -s fp-keepalive 'bash scripts/forward_paper_keepalive.sh --loop 120'
+touch state/forward_paper_keepalive.stop        # keepalive uitschakelen
+```
+
+Periodieke inplanning (cron/launchd) is een bewuste eigenaar-actie en
+staat niet standaard aan.
+
 ## Microstructuur-archiver (los van de bot)
 
 De archiver (orderbook/funding/liquidations) draait als apart proces,
