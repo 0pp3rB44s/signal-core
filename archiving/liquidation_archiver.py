@@ -13,6 +13,23 @@ log = logging.getLogger("archiving.liquidation")
 STABLE_RESET_S = 300.0  # verbinding >5 min stabiel -> backoff resetten
 
 
+def build_sslopt() -> dict:
+    """TLS-opties voor websocket-client: verificatie AAN, certifi-CA-bundel.
+
+    De kale OpenSSL-store is op macOS-Python vaak leeg, waardoor elke keten
+    als 'self-signed' faalt; certifi (al aanwezig via requests) levert de
+    publieke CA-bundel. Verificatie wordt nooit uitgeschakeld.
+    """
+    import ssl
+    opts: dict = {"cert_reqs": ssl.CERT_REQUIRED}
+    try:
+        import certifi
+        opts["ca_certs"] = certifi.where()
+    except ImportError:
+        pass  # systeem-store als fallback; verificatie blijft vereist
+    return opts
+
+
 def parse_force_order(frame: str) -> dict | None:
     """Parseert één Binance USDT-M forceOrder-frame naar een archiveringsrecord.
 
@@ -114,7 +131,8 @@ class LiquidationArchiver(threading.Thread):
                                          on_message=on_message, on_error=on_error)
             self._app = app
             try:
-                app.run_forever(ping_interval=0)  # server pingt; client pongt automatisch
+                # server pingt; client pongt automatisch
+                app.run_forever(ping_interval=0, sslopt=build_sslopt())
             except Exception as exc:
                 self.health.fail(exc)
                 log.warning("LIQUIDATION_WS_CRASH | %s", exc)

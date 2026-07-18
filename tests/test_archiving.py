@@ -211,6 +211,15 @@ def test_liquidation_handle_frame_dedupes(tmp_path: Path) -> None:
     archiver.writer.close()
 
 
+def test_sslopt_requires_verification_with_ca_bundle() -> None:
+    import ssl
+    from archiving.liquidation_archiver import build_sslopt
+    opts = build_sslopt()
+    assert opts["cert_reqs"] == ssl.CERT_REQUIRED
+    if "ca_certs" in opts:  # certifi aanwezig
+        assert Path(opts["ca_certs"]).exists()
+
+
 def test_backoff_doubles_and_caps() -> None:
     gen = backoff_delays(base=1.0, cap=8.0)
     assert [next(gen) for _ in range(6)] == [1.0, 2.0, 4.0, 8.0, 8.0, 8.0]
