@@ -1,9 +1,10 @@
 # PROJECT STATUS — signal-core
 
 **Peildatum: 2026-07-18** · Dit is het autoritatieve statusdocument.
-Historie: [docs/JOURNAL.md](docs/JOURNAL.md) (verhalend), [CHANGELOG.md](CHANGELOG.md)
+Koers en Path-to-Live: [MASTER_PLAN.md](MASTER_PLAN.md). Historie:
+[docs/JOURNAL.md](docs/JOURNAL.md) (verhalend), [CHANGELOG.md](CHANGELOG.md)
 (per release/PR), [docs/RESEARCH_JOURNAL.md](docs/RESEARCH_JOURNAL.md)
-(hypothese-grootboek). Planning: [ROADMAP.md](ROADMAP.md).
+(hypothese-grootboek). Checklists: [ROADMAP.md](ROADMAP.md).
 
 ## Kernstand in één alinea
 

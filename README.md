@@ -8,7 +8,8 @@ pre-geregistreerde toetsing verworpen (zie
 daarom **observe-only** en verzamelt microstructuurdata voor de volgende
 onderzoekscycli.
 
-**Actuele stand: [PROJECT_STATUS.md](PROJECT_STATUS.md)** · Planning:
+**Koers en Path-to-Live: [MASTER_PLAN.md](MASTER_PLAN.md)** · Actuele
+stand: [PROJECT_STATUS.md](PROJECT_STATUS.md) · Checklists:
 [ROADMAP.md](ROADMAP.md) · Bediening: [BEDIENING.md](BEDIENING.md) ·
 Wijzigingen: [CHANGELOG.md](CHANGELOG.md)
 

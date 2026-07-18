@@ -1,11 +1,11 @@
-# SIGNAL-CORE — MASTER ROADMAP
+# SIGNAL-CORE — OPERATIONELE ROADMAP (kortetermijn-checklists)
 
 VERSIE: 2026-07-18 · STATUS: ACTIEF · VORIGE VERSIE: 2026-07-07 (git-historie)
 
-De operationele logboekinhoud van eerdere versies staat in git-historie en
-[docs/JOURNAL.md](docs/JOURNAL.md); de actuele stand staat in
-[PROJECT_STATUS.md](PROJECT_STATUS.md). Dit document bevat uitsluitend de
-koers vooruit.
+**De centrale koers staat in [MASTER_PLAN.md](MASTER_PLAN.md)** (missie,
+Path-to-Live A-F, edge-roadmap, planninghorizonten). Dit document bevat de
+uitvoerbare kortetermijn-checklists die daarbij horen. Actuele stand:
+[PROJECT_STATUS.md](PROJECT_STATUS.md); historie: [docs/JOURNAL.md](docs/JOURNAL.md).
 
 ═══════════════════════════════════
 NORTH STAR (ongewijzigd)
