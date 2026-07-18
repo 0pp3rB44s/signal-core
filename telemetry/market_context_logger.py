@@ -26,10 +26,12 @@ class MarketContextLogger:
         confirmation_trend: str,
         volatility_rank: float,
         notes: list[str],
+        orderbook_context: dict[str, Any] | None = None,
         selected_candidate: bool = False,
         trade_opened: bool = False,
     ) -> None:
         parsed = self._parse_notes(notes)
+        parsed.update(self._orderbook_fields(orderbook_context))
 
         row = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -115,6 +117,41 @@ class MarketContextLogger:
                 writer.writeheader()
             writer.writerow(row)
 
+    @staticmethod
+    def _orderbook_fields(orderbook_context: dict[str, Any] | None) -> dict[str, Any]:
+        """Structured OrderbookAnalyzer output; overrides values parsed from notes."""
+        if not isinstance(orderbook_context, dict):
+            return {}
+
+        fields: dict[str, Any] = {}
+
+        spread = MarketContextLogger._safe_float(orderbook_context.get("spread_bps"))
+        if spread != "":
+            fields["spread_bps"] = spread
+
+        imbalance_raw = orderbook_context.get("imbalance")
+        if imbalance_raw is None:
+            imbalance_raw = orderbook_context.get("depth_imbalance")
+        imbalance = MarketContextLogger._safe_float(imbalance_raw)
+        if imbalance != "":
+            fields["orderbook_imbalance"] = imbalance
+
+        bias = orderbook_context.get("continuation_bias")
+        if bias:
+            fields["orderbook_bias"] = str(bias)
+
+        for wall_key, column in (
+            ("largest_bid_wall", "largest_bid_wall_ratio"),
+            ("largest_ask_wall", "largest_ask_wall_ratio"),
+        ):
+            wall = orderbook_context.get(wall_key)
+            if isinstance(wall, dict):
+                ratio = MarketContextLogger._safe_float(wall.get("wall_ratio"))
+                if ratio != "":
+                    fields[column] = ratio
+
+        return fields
+
     def _parse_notes(self, notes: list[str]) -> dict[str, Any]:
         parsed: dict[str, Any] = {}
         volatility_notes: list[str] = []
@@ -126,11 +163,20 @@ class MarketContextLogger:
             if lower.startswith("spread ") and "bps" in lower:
                 parsed["spread_bps"] = self._extract_first_float(text)
 
+            elif lower.startswith("spread_bps="):
+                parsed["spread_bps"] = self._safe_float(text.split("=", 1)[1])
+
             elif lower.startswith("orderbook imbalance"):
                 parsed["orderbook_imbalance"] = self._extract_first_float(text)
 
+            elif lower.startswith("orderbook_imbalance="):
+                parsed["orderbook_imbalance"] = self._safe_float(text.split("=", 1)[1])
+
             elif lower.startswith("orderbook bias"):
                 parsed["orderbook_bias"] = text.split("orderbook bias", 1)[1].strip()
+
+            elif lower.startswith("orderbook_bias="):
+                parsed["orderbook_bias"] = text.split("=", 1)[1].strip()
 
             elif lower.startswith("significant bid wall"):
                 parsed["largest_bid_wall_ratio"] = self._extract_after_token(text, "ratio")
