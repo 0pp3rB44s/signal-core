@@ -16,7 +16,10 @@ from archiving import common
 from archiving.common import (ArchiveWriter, ArchiverConfig, DiskGuardTripped,
                               SourceHealth, backoff_delays, utc_now)
 from archiving.funding_archiver import FundingArchiver
-from archiving.liquidation_archiver import LiquidationArchiver, parse_force_order
+from archiving.liquidation_archiver import (LiquidationArchiver,
+                                            parse_bybit_liquidations,
+                                            parse_force_order,
+                                            provider_settings)
 from archiving.orderbook_archiver import OrderbookArchiver, build_record
 
 
@@ -201,14 +204,67 @@ def test_parse_force_order_and_malformed_frames() -> None:
     assert parse_force_order('{"e":"forceOrder","o":{"s":"","T":0}}') is None
 
 
-def test_liquidation_handle_frame_dedupes(tmp_path: Path) -> None:
+BYBIT_LIQ = json.dumps({
+    "topic": "allLiquidation.BTCUSDT", "type": "snapshot", "ts": 1789000001000,
+    "data": [{"T": 1789000000900, "s": "BTCUSDT", "S": "Sell", "v": "0.5", "p": "64000"},
+             {"T": 1789000000950, "s": "BTCUSDT", "S": "Buy", "v": "1.2", "p": "64010"}]})
+
+
+def test_parse_bybit_liquidations() -> None:
+    records = parse_bybit_liquidations(BYBIT_LIQ)
+    assert len(records) == 2
+    assert records[0]["exchange"] == "BYBIT" and records[0]["symbol"] == "BTCUSDT"
+    assert records[0]["side"] == "Sell" and records[0]["notional_usdt"] == 32000.0
+    assert records[1]["trade_ts_ms"] == 1789000000950
+    assert parse_bybit_liquidations('{"op":"pong"}') is None
+    assert parse_bybit_liquidations("{kapot") is None
+    # malformed item wordt overgeslagen, valide item blijft
+    frame = json.dumps({"topic": "allLiquidation.ETHUSDT", "ts": 1,
+                        "data": [{"T": 0, "s": "", "v": "x", "p": "1"},
+                                 {"T": 5, "s": "ETHUSDT", "S": "Buy", "v": "2", "p": "3000"}]})
+    assert len(parse_bybit_liquidations(frame)) == 1
+
+
+def test_provider_settings_and_validation(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    archiver = LiquidationArchiver(config, threading.Event(), SourceHealth())
-    assert archiver.handle_frame(FORCE_ORDER) is True
-    assert archiver.handle_frame(FORCE_ORDER) is False  # duplicate delivery
-    assert archiver.handle_frame("garbage") is False
+    bybit = provider_settings("bybit", config)
+    assert len(bybit["subscribe"]["args"]) == 12
+    assert bybit["subscribe"]["args"][0] == "allLiquidation.BTCUSDT"
+    assert bybit["client_ping"] == '{"op": "ping"}'
+    binance = provider_settings("binance", config)
+    assert binance["subscribe"] is None
+    with pytest.raises(ValueError, match="provider"):
+        LiquidationArchiver(config, threading.Event(), SourceHealth(),
+                            provider="kraken")
+
+
+def test_liquidation_handle_frame_dedupes_binance(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    archiver = LiquidationArchiver(config, threading.Event(), SourceHealth(),
+                                   provider="binance")
+    assert archiver.handle_frame(FORCE_ORDER) == 1
+    assert archiver.handle_frame(FORCE_ORDER) == 0  # duplicate delivery
+    assert archiver.handle_frame("garbage") == 0
     assert archiver.frames_malformed == 1
     archiver.writer.close()
+
+
+def test_liquidation_bybit_frames_dedupe_and_heartbeat(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    health = SourceHealth()
+    archiver = LiquidationArchiver(config, threading.Event(), health,
+                                   provider="bybit")
+    assert archiver.handle_frame(BYBIT_LIQ) == 2
+    assert archiver.handle_frame(BYBIT_LIQ) == 0  # volledige dedupe
+    # ack/pong-frames archiveren niets maar bewijzen verbindingsleven
+    assert archiver.handle_frame('{"op":"pong"}') == 0
+    assert health.last_success_utc is not None
+    assert health.extra["provider"] == "bybit"
+    archiver.writer.close()
+    rows = [json.loads(l) for l in
+            list((Path(config.archive_dir) / "liquidations").glob("*.jsonl"))[0]
+            .read_text().splitlines()]
+    assert len(rows) == 2 and all(r["exchange"] == "BYBIT" for r in rows)
 
 
 def test_sslopt_requires_verification_with_ca_bundle() -> None:

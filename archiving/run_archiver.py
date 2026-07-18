@@ -63,7 +63,9 @@ def main() -> int:
     ]
     liq: LiquidationArchiver | None = None
     if config.ws_liquidations_enabled:
-        liq = LiquidationArchiver(config, stop_event, health["liquidations"])
+        provider = os.environ.get("ARCHIVE_LIQ_PROVIDER", "bybit").lower()
+        liq = LiquidationArchiver(config, stop_event, health["liquidations"],
+                                  provider=provider)
         threads.append(liq)
     else:
         log.info("LIQUIDATION_ARCHIVER_DISABLED")

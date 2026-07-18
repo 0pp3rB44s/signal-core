@@ -29,13 +29,22 @@ levelaantallen).
 `funding_settlements`: gesettelde waarden via history-fund-rate, dedupe op
 (symbool, fundingTime) — authoritative reeks.
 
-### liquidations — Binance USDT-M forceOrder WebSocket
+### liquidations — Bybit v5 allLiquidation WebSocket (12 symbolen)
 **Bitget biedt geen publiek liquidatiekanaal** (v2 public channels:
-tickers/candlesticks/order book/trades; gecontroleerd 2026-07-18). Daarom
-archiveren we het publieke Binance-forceOrder-kanaal als marktbreed
-liquidatiesignaal, per record expliciet `exchange=BINANCE` gelabeld.
-Bitget-native liquidaties blijven een ontbrekende bron. Velden: symbool,
-side (SELL = long geliquideerd), qty, prijs, notional, event-/trade-ts.
+tickers/candlesticks/order book/trades; gecontroleerd 2026-07-18).
+Default-provider is **Bybit** (`ARCHIVE_LIQ_PROVIDER=bybit`): publieke
+v5-topic `allLiquidation.{SYM}` voor de 12 onderzoekssymbolen, volledige
+feed, per record expliciet `exchange=BYBIT` gelabeld. Client stuurt elke
+20 s een tekst-ping (Bybit-vereiste); elk inkomend frame (ook pong/ack)
+telt als verbindingsleven voor de healthstatus.
+
+Alternatief `binance` (!forceOrder@arr, marktbreed) is aanwezig maar niet
+default: op dit netwerk bleken Binance-WS-pushes uit te blijven (REST
+werkt en subscribe-ack slaagt, maar 0 frames op een controle-stream die
+elders vele frames/s levert; getest 2026-07-18). Bitget- en Binance-native
+liquidaties blijven dus ontbrekende bronnen; Bybit is het gearchiveerde,
+eerlijk gelabelde liquidatiesignaal. Velden: symbool, side (Sell = long
+geliquideerd), qty, prijs, notional, event-/trade-ts.
 
 ## Betrouwbaarheid
 - **Reconnects/backoff**: WS exponentieel 1→60 s (reset na 5 min stabiel);
