@@ -676,6 +676,7 @@ class StartupRunner:
                         confirmation_trend=snapshot.confirmation.trend,
                         volatility_rank=getattr(snapshot, "volatility_rank", 0.0),
                         notes=snapshot.notes,
+                        orderbook_context=(getattr(snapshot, "context", None) or {}).get("orderbook"),
                     )
                     scan_signature = (
                         snapshot.alignment,
