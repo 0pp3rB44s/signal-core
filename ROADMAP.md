@@ -245,3 +245,15 @@ N8 — FILL TRUTH (nieuw)
 [ ] Daarna: slippage-cijfers betrouwbaar → limit-entry beslissing (P5)
 
 TODO — Dashboard V5 Refactor (ongewijzigd, na freeze alleen bugfixes)
+
+# GitHub/Runner synchronization — 2026-07-16
+
+- [x] Define GitHub `main` and annotated runner tags as the code/deployment authority.
+- [x] Add Apple Silicon bootstrap, checkout verification, hygiene and no-start deploy/rollback scripts.
+- [x] Add isolated CI without credentials, runtime state or live endpoints.
+- [ ] Audit and back up the Runner locally before any checkout change.
+- [ ] Create an approved deployment tag only after PR review and merge.
+- [ ] Deploy only in a separately approved maintenance step.
+- [x] Support both arm64 Work Mac and x86_64 Runner with a shared Python 3.12 contract.
+- [x] Add non-mutating Runner preflight and secure names-only environment preparation.
+- [ ] Execute Python 3.12 bootstrap/tests on the Intel Runner after PR approval.

@@ -261,3 +261,14 @@ VOLGENDE FASE
 - N7/N8 valideren op echte fills
 - entry-context backfill afronden → L3 setup-quality learning
 - confluence-regels liquidity heatmap (na backtest + goedkeuring)
+
+# 2026-07-16 — GitHub and Runner synchronization foundation
+
+- Audited the Work Mac repository, remote, worktrees, ignored operational data and local research history.
+- Defined reviewed `main` plus immutable annotated runner tags as deployment authority; research branches are never deployable.
+- Added Work Mac bootstrap, checkout verification, tracked-file hygiene and explicit Runner deploy/rollback contracts.
+- Deployment requires a clean checkout and explicit main-reachable tag/SHA, preserves ignored `.env`/state, records the deployed SHA and never starts trading.
+- Added no-secret/no-live CI and documented the required on-device Runner audit and separate maintenance approval.
+- Follow-up Runner audit identified Intel `x86_64`, macOS 14.8.7 and a Python 3.11 virtualenv. The architecture contract now supports both Intel and Apple Silicon.
+- Selected Python 3.12: all locked wheels resolve on both architectures and 237 tests pass natively on the M4; Python 3.13 is blocked by the pyarrow wheel chain.
+- Added non-mutating deployment preflight, preserved-venv recreation, names-only environment templating and presence-only configuration comparison. No Runner deployment occurred.

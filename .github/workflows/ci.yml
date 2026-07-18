@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+      - run: python -m pip install --requirement requirements.txt
+      - run: python -m compileall -q .
+      - run: bash -n scripts/bootstrap_mac.sh scripts/deploy_runner.sh scripts/verify_checkout.sh scripts/verify_repository_hygiene.sh scripts/create_runner_env_template.sh scripts/compare_env_presence.sh scripts/lib/platform_preflight.sh
+      - name: Exercise supported architecture branches
+        run: |
+          CGC_UNAME_S=Darwin CGC_UNAME_M=arm64 bash -c 'source scripts/lib/platform_preflight.sh; test "$(detect_architecture)" = arm64; test "$(homebrew_prefix_for_architecture arm64)" = /opt/homebrew'
+          CGC_UNAME_S=Darwin CGC_UNAME_M=x86_64 bash -c 'source scripts/lib/platform_preflight.sh; test "$(detect_architecture)" = x86_64; test "$(homebrew_prefix_for_architecture x86_64)" = /usr/local'
+          echo "ci_host_architecture=$(uname -m)"
+      - run: python -m pytest -q
+      - run: scripts/verify_repository_hygiene.sh
+      - run: git diff --check
+      - name: Verify research strategies are not production-registered
+        run: |
+          if git grep -n 'failed_range_escape_reversal_v1' -- strategies app execution; then
+            echo 'research-only strategy is production-registered' >&2
+            exit 1
+          fi
