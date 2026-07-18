@@ -65,6 +65,21 @@ De backgroundlauncher plaatst de bot in een nieuwe OS-session. Daardoor blijft
 het proces leven wanneer de startende shell sluit; `nohup` alleen is hiervoor
 niet voldoende in process-group-isolerende omgevingen.
 
+## Microstructuur-archiver (los van de bot)
+
+De archiver (orderbook/funding/liquidations) draait als apart proces,
+gebruikt alleen publieke endpoints en kan geen orders plaatsen:
+
+```bash
+scripts/start_archiver.sh          # weigert dubbele start via pid-file
+cat data/archive/status.json       # health per bron, elke 30 s ververst
+scripts/stop_archiver.sh           # nette stop (SIGTERM)
+```
+
+Volledig runbook, formaten en retentie: docs/ARCHIVING.md. De archiver
+draait onafhankelijk van bot en dashboard; stoppen van de bot raakt de
+archiver niet en omgekeerd.
+
 ## Stoppen
 
 ```bash
