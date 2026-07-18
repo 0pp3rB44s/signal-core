@@ -1,9 +1,13 @@
 # MASTER PLAN — signal-core → live autonome tradingbot
 
 **VERSIE 2026-07-18 · Dit is de centrale bron van waarheid voor de koers.**
-Actuele stand: [PROJECT_STATUS.md](PROJECT_STATUS.md) ·
-Hypothese-grootboek: [docs/RESEARCH_JOURNAL.md](docs/RESEARCH_JOURNAL.md) ·
-Bediening: [BEDIENING.md](BEDIENING.md) · Wijzigingen: [CHANGELOG.md](CHANGELOG.md)
+**Huidige operationele modus: MODE 1 — Strict Forward Paper (24/7, actief).**
+Modusdefinities en overgangen: [GO_LIVE_RUNBOOK.md](GO_LIVE_RUNBOOK.md) ·
+Live-poorten: [GO_LIVE_CHECKLIST.md](GO_LIVE_CHECKLIST.md) · Operatie:
+[DAILY_OPERATIONS.md](DAILY_OPERATIONS.md) · Actuele stand:
+[PROJECT_STATUS.md](PROJECT_STATUS.md) · Hypothese-grootboek:
+[docs/RESEARCH_JOURNAL.md](docs/RESEARCH_JOURNAL.md) · Bediening:
+[BEDIENING.md](BEDIENING.md) · Wijzigingen: [CHANGELOG.md](CHANGELOG.md)
 
 ## Missie
 
@@ -127,20 +131,54 @@ controleerbaar.
   watchdog, dagelijkse check).
 - **Duur**: 4-8 weken.
 
-### FASE F — SCALING (status: TOEKOMST)
+### FASE F — PRODUCTION LIVE (status: TOEKOMST)
+- **Doel**: van limited live naar normale productieallocatie op de
+  gevalideerde strategie, met automatische monitoring en onafhankelijke
+  stopmechanismen.
+- **Bewijs nodig vooraf**: volledige MODE 2-validatie (geregistreerde
+  duur + minimum trades, resultaat binnen band, 0 kritieke incidenten) +
+  nieuwe expliciete autorisatie.
+- **Verboden shortcuts**: overslaan van limited live; opschalen zonder
+  band-check; risicolimieten versoepelen.
+- **Duur**: instap 4-8 weken na E-exit.
+
+### FASE G — CONTROLLED SCALING (status: TOEKOMST)
 - **Doel**: gecontroleerde groei van risico/universum zolang de edge
   aantoonbaar standhoudt; capaciteits- en turnover-grenzen respecteren.
+- **Stappen**: exchange-minimum → kleine vaste risicofractie → beperkte
+  uitbreiding → productieallocatie; per stap minimumduur, minimumtrades,
+  band-check én afzonderlijke autorisatie.
 - **Exitcriteria per stap**: expectancy blijft binnen band na elke
   verhoging; drawdown-limieten nooit versoepeld zonder bewijs.
 - **Risico's**: capaciteitsverval, zelfimpact, regimeverandering —
-  doorlopende monitoring + maandelijkse her-toetsing.
+  doorlopende monitoring + maandelijkse her-toetsing. Nooit opschalen na
+  winst-euforie of om verlies terug te winnen.
 
 ## Operationele strategie tijdens B (instrument, geen edge)
 
 Alle detectors blijven actief in de scan; **low_vol_reclaim** is de
-primaire forward-paper-workhorse (historisch ~73% van de signalen →
-hoogste funnel-doorstroom voor pipeline-/logging-/lifecycle-validatie).
-Expliciet: observatie-instrument; live-activering blijft geblokkeerd.
+primaire forward-paper-workhorse. Kwantitatieve onderbouwing (gemeten
+2026-07-18, eerste 25 cycli na herstart): 63 van 93 kandidaten (68%;
+historisch 73% van 367 live trades), alle 5 detectors leveren
+funnel-events, 24 volledige pipeline-passages
+(SCORING→RISK→PLANNER→EXECUTABLE) in ~25 min — hoogste doorstroom voor
+pipeline-/logging-/lifecycle-validatie. Expliciet: observatie-instrument
+(24,5% WR historisch, fee-drag > edge); **GEEN LIVE KANDIDAAT
+BESCHIKBAAR** — er bestaat momenteel geen strategie die de
+GO_LIVE_CHECKLIST-poorten haalt.
+
+## Actieve processen, PR's en eigenaar-acties (2026-07-18)
+
+- Bot: strict forward paper actief (Work Mac), keepalive beschikbaar.
+- Archiver: actief (Work Mac); migreert morgen naar de Intel-runner.
+- Open PR: [#12](https://github.com/0pp3rB44s/signal-core/pull/12)
+  (docs + ops-tooling) — wacht op eigenaar-review.
+- **Eigenaar-acties**: (1) PR #12 reviewen/mergen; (2) morgen op de
+  runner: `.env` lokaal vullen via template en de geannoteerde tag
+  `runner-v2026.07.19.1` aanmaken/pushen (of expliciet autoriseren);
+  (3) optioneel: keepalive inplannen (cron/launchd of tmux).
+- **Volgende opdracht**: runner-deploy uitvoeren (ROADMAP §MORGEN),
+  daarna fase B-cadans draaien (DAILY_OPERATIONS.md).
 
 ## Planning
 
