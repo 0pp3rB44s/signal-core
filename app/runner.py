@@ -321,6 +321,7 @@ class StartupRunner:
         self._last_continuation_reject_log = {}
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
+        self._consecutive_scan_failures = 0
         self._learning_refresh_proc: subprocess.Popen | None = None
         self._position_snapshots: list[MarketSnapshot] = []
         self._position_snapshots_lock = threading.Lock()
@@ -402,13 +403,49 @@ class StartupRunner:
             )
 
         if self.settings.scan_on_start:
-            self._scan_cycle()
+            self._scan_cycle_iteration()
 
         if self.settings.scan_loop_enabled:
             self.log.info("Scan loop enabled | interval=%ss", self.settings.scan_interval_sec)
             while True:
                 time.sleep(self.settings.scan_interval_sec)
-                self._scan_cycle()
+                self._scan_cycle_iteration()
+
+    def _scan_cycle_iteration(self) -> bool:
+        """Run one scan cycle without allowing a transient failure to kill the loop.
+
+        Mirrors _position_monitor_iteration. Before this existed, any exception
+        escaping _scan_cycle terminated the process: on 2026-07-24 a DNS blip
+        raised BitgetRetryableError out of fetch_contracts and the bot stayed
+        down for 20 hours. A long-running collector must outlive the network.
+
+        Failures are never silent: each one is logged with a distinct marker and
+        the consecutive-failure count is published to the runtime heartbeat so
+        health checks can fail on a wedged loop.
+        """
+        try:
+            self._scan_cycle()
+        except Exception as exc:
+            self._consecutive_scan_failures += 1
+            self.log.exception(
+                "SCAN_CYCLE_FAILED | consecutive=%s | network=%s | error=%s",
+                self._consecutive_scan_failures,
+                self._is_network_resolution_error(exc),
+                exc,
+            )
+            runtime_heartbeat(
+                "scan_cycle_failed",
+                consecutive_scan_failures=self._consecutive_scan_failures,
+                error_type=type(exc).__name__,
+            )
+            return False
+
+        if self._consecutive_scan_failures:
+            self.log.info(
+                "SCAN_CYCLE_RECOVERED | after_failures=%s", self._consecutive_scan_failures
+            )
+            self._consecutive_scan_failures = 0
+        return True
 
     def scan_once(self) -> None:
         """Run one complete public detector-to-paper scan cycle."""
@@ -607,7 +644,24 @@ class StartupRunner:
             except Exception as exc:
                 self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
 
-            contracts = self.fetcher.fetch_contracts(force_refresh=False)
+            try:
+                contracts = self.fetcher.fetch_contracts(force_refresh=False)
+            except Exception as exc:
+                # Sat directly above the guarded refresh_many block and was the
+                # only unprotected network call in the cycle; a DNS failure here
+                # killed the process on 2026-07-24.
+                if self._is_network_resolution_error(exc):
+                    error_signature = ("fetch_contracts", str(exc)[:180])
+                    if self._last_network_error_log != error_signature:
+                        self.log.error(
+                            "API_NETWORK_UNAVAILABLE | stage=fetch_contracts | action=skip_scan_cycle_preserve_local_state | error=%s",
+                            exc,
+                        )
+                        self._last_network_error_log = error_signature
+                else:
+                    self.log.warning("FETCH_CONTRACTS_FAILED | error=%s", exc)
+                return
+
             symbols = get_watchlist(self.settings, contracts=contracts)
             if self.settings.forward_paper_only:
                 runtime_heartbeat("market_refresh_start", symbol_count=len(symbols))
