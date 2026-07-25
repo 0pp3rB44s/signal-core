@@ -1,5 +1,8 @@
-# Generated runtime evidence stays out of git; only the run harness is tracked.
+# Generated runtime evidence and pids stay out of git so the strict launcher's
+# clean-tree gate keeps passing across supervisor restarts. Only the harness is
+# tracked. A dirty tree makes every automatic restart fail closed.
 snapshots/
 manifest.json
 incidents.log
 *.log
+*.pid
