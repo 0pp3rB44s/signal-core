@@ -1,0 +1,5 @@
+# Generated runtime evidence stays out of git; only the run harness is tracked.
+snapshots/
+manifest.json
+incidents.log
+*.log
