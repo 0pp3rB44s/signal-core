@@ -1,8 +1,16 @@
 # Generated runtime evidence and pids stay out of git so the strict launcher's
-# clean-tree gate keeps passing across supervisor restarts. Only the harness is
-# tracked. A dirty tree makes every automatic restart fail closed.
+# clean-tree gate keeps passing across supervisor restarts. Only the harness and
+# the human-written run verdicts are tracked. A dirty tree makes every automatic
+# restart fail closed.
 snapshots/
 manifest.json
 incidents.log
 *.log
 *.pid
+*.out
+*.jsonl
+*.json
+# Preserved evidence from invalidated runs: keep the written verdict, ignore the raw
+# artefacts it describes.
+invalidated_run_*/**
+!invalidated_run_*/INVALID.md
