@@ -3,9 +3,9 @@
 Phases 0–5 complete. The clock is running. The Phase 10 verdict is **not** issuable
 until 72 real hours have elapsed.
 
-- **Clock start:** 2026-07-25T14:02:10Z (local 16:02:10 CEST, +0200)
-- **Planned end:** 2026-07-28T14:02:10Z
-- **Baseline commit:** `221efa0` on `main`, working tree clean
+- **Clock start (run 2):** 2026-07-25T16:09:41Z (local 18:09:41 CEST, +0200)
+- **Planned end:** 2026-07-28T16:09:41Z
+- **Baseline commit:** `cda8187` on `main`, working tree clean
 - **Config hash:** `17524444fcd68923…`
 
 ---
@@ -182,3 +182,95 @@ memory, log growth). It never restarts or steers the bot.
 
 **UNATTENDED FORWARD-PAPER RELIABILITY: NOT YET PROVEN** — 72 hours have not
 elapsed. This is the only honest statement available at this point.
+
+---
+
+# ADDENDUM — RUN 1 INVALIDATED, RUN 2 STARTED
+
+**Run 1 (2026-07-25T14:02:10Z) is INVALID.** It is preserved untouched in
+`validation_72h/invalidated_run_2026-07-25T140210Z/` with its own `INVALID.md`.
+
+## Why run 1 produced no evidence
+
+Every scan failed for the whole run. The confirmation timeframe reached Bitget as
+`granularity=1h`; only `1H` is accepted, so the API returned **HTTP 400 code 400171
+742 times** in 1 h 51 m. Zero market data was ever fetched.
+
+The process stayed alive and the health check reported `HEALTHY` throughout:
+
+```json
+"stage": "scan_cycle_complete",
+"scan_cycles_completed": 106,
+"details": {"snapshot_count": 0, "plan_count": 0, "executable_plan_count": 0}
+```
+
+106 cycles reported **completed** having built **zero** snapshots. Both hourly
+monitor snapshots recorded `health=HEALTHY`. A live process is not a working process.
+
+## Repairs (PR-2, PR-3)
+
+**PR-2 — one canonical timeframe boundary.** `get_candles` passed `granularity`
+straight to the API; `get_multi_timeframe_candles` held a private partial map that
+knew `1h -> 1H` for two timeframes only, so every other path sent a rejected value.
+`clients/bitget_market_client.py:api_granularity()` is now the single boundary,
+applied at the top of `get_candles` **ahead of the request**, so an unsupported
+timeframe raises `UnsupportedGranularityError` before any network call. The duplicate
+per-method map is deleted and a test asserts no such map returns.
+
+Minutes stay lowercase, hours/days/weeks/months are uppercased, and `1M` (month) is
+matched case-sensitively so it can never collapse into `1m` (minute). All 18
+supported aliases were verified against the live public endpoint — every one returns
+HTTP 200.
+
+**PR-3 — a failed scan can no longer report success.** Per-symbol errors are
+swallowed by design so one bad symbol cannot stop the others, which meant a fault
+hitting *every* symbol reached the end of the cycle and published
+`scan_cycle_complete`. A non-empty symbol list yielding no snapshot now raises
+`ScanCycleProducedNoMarketData`, which the existing resilience wrapper counts and
+publishes as `scan_cycle_failed`. The health check gained three verdicts:
+
+| Heartbeat condition | Status | Exit |
+|---|---|---|
+| `scan_cycle_complete` with `snapshot_count=0` | `SCAN_PRODUCED_NO_MARKET_DATA` | 10 |
+| `consecutive_scan_failures >= 3` | `SCAN_LOOP_FAILING` | 11 |
+| `consecutive_scan_failures > 0` | `DEGRADED` | 12 |
+
+All three were reproduced live against injected heartbeats, and the real heartbeat
+still returns `HEALTHY`. Note the keepalive deliberately does **not** restart on
+these statuses: it fail-closes for a human, because restarting cannot fix a
+code-level defect and would only mask it.
+
+## Verification
+
+- 37 new regression tests in `tests/test_timeframe_normalization.py`.
+- **Both defects reproduce with their fix reverted:** `'1h'` reaches the API, and the
+  iteration returns success while publishing
+  `{'scan_completed': True, 'snapshot_count': 0}` with zero failures counted — the
+  exact production signature.
+- Full suite **339 passed, twice** (302 before; +37).
+
+## Run 2 live probe
+
+| Check | Result |
+|---|---|
+| Scan cycles completed | 4, monotonically increasing (~62 s apart) |
+| Scan cycles failed | 0 |
+| HTTP 400171 | **0** (was 742) |
+| Any `BITGET_HTTP_ERROR` | 0 |
+| Timeframes available | `['1m','5m','15m','1h','4h']` — hour frames now fetch |
+| Heartbeat | `snapshot_count=1`, `scan_cycles_completed=4` — truthful |
+| Health | `HEALTHY` on real data |
+| Private/order calls | **0** |
+| Detached supervisor recovery | **121 s**, 1 bot, assertion rebound, tree clean |
+
+## Run 2 identity
+
+- **Clock start:** 2026-07-25T16:09:41Z → **planned end 2026-07-28T16:09:41Z**
+- **Commit:** `cda8187`, tree clean
+- **Pids:** bot 96180, power assertion 96296, supervisor 90257, monitor 90258, archiver 49787
+
+Unchanged risks from the main report still apply: disk at 23 Gi / 89 %, archiver
+throughput has no defined threshold, and live network-outage resilience remains proven
+only at the code seam.
+
+**UNATTENDED FORWARD-PAPER RELIABILITY: NOT PROVEN** — 72 hours have not elapsed.
