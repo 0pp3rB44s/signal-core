@@ -98,7 +98,30 @@ if heartbeat_path.exists():
     executable = int((heartbeat.get("details") or {}).get("executable_plan_count", 0) or 0)
     rejected = sum(1 for event in events if event["event_type"] == "PAPER_REJECTED")
     if executable > 0 and not opened_ids and not rejected:
-        raise SystemExit("status=FORWARD_PAPER_OUTPUT_MISSING")
+        print("status=FORWARD_PAPER_OUTPUT_MISSING")
+        raise SystemExit(9)
+
+    # A live process is not a working process. On 2026-07-25 an invalid confirmation
+    # granularity returned HTTP 400 for every symbol: the bot reported 106 "completed"
+    # cycles with snapshot_count=0 and this check said HEALTHY for two hours. Treat a
+    # cycle that produced no market data, and repeated scan failures, as hard failures.
+    details = heartbeat.get("details") or {}
+    failures = int(details.get("consecutive_scan_failures", 0) or 0)
+    snapshot_count = details.get("snapshot_count")
+    stage = str(heartbeat.get("stage") or "")
+    print("consecutive_scan_failures=" + str(failures))
+    print("last_snapshot_count=" + ("unknown" if snapshot_count is None else str(snapshot_count)))
+
+    if stage == "scan_cycle_complete" and snapshot_count is not None and int(snapshot_count) == 0:
+        print("status=SCAN_PRODUCED_NO_MARKET_DATA")
+        raise SystemExit(10)
+    if failures >= 3:
+        print("status=SCAN_LOOP_FAILING")
+        raise SystemExit(11)
+    if failures > 0:
+        print("degraded_reason=consecutive_scan_failures=" + str(failures))
+        print("status=DEGRADED")
+        raise SystemExit(12)
 PY
 
 echo "status=HEALTHY"

@@ -56,6 +56,15 @@ from telemetry.funnel import (
 )
 
 
+class ScanCycleProducedNoMarketData(RuntimeError):
+    """A scan cycle requested symbols but could not build a single snapshot.
+
+    Raised so a total market-data failure is counted as a failed cycle instead of
+    being reported as a successful one. Per-symbol errors are swallowed by design,
+    so without this a fault hitting every symbol looks like a healthy empty scan.
+    """
+
+
 # --- Execution-Aware Scoring Helpers ---
 def _extract_note_float(notes: list[str], marker: str, default: float = 0.0) -> float:
     note_text = " ".join(str(note).lower() for note in (notes or []))
@@ -1279,6 +1288,21 @@ class StartupRunner:
                             self._last_network_error_log = error_signature
                         break
                     self.log.exception("Scan failed for %s: %s", symbol, exc)
+
+            # A cycle that requested symbols but built no snapshot did not succeed,
+            # however far it got. The per-symbol handler above deliberately swallows
+            # failures so one bad symbol cannot stop the others, which means a fault
+            # affecting EVERY symbol would otherwise reach the end of the cycle and
+            # publish scan_cycle_complete with snapshot_count=0. That is exactly what
+            # happened on 2026-07-25: an invalid confirmation granularity returned
+            # HTTP 400 for all 106 cycles while the heartbeat reported success and the
+            # health check reported HEALTHY. Fail loudly so _scan_cycle_iteration
+            # counts it and the health check can see a wedged loop.
+            if symbols and not snapshots:
+                raise ScanCycleProducedNoMarketData(
+                    f"no market snapshot could be built for any of {len(symbols)} "
+                    f"requested symbol(s): {', '.join(map(str, symbols[:5]))}"
+                )
 
             if snapshots:
                 self._emit_summary(snapshots)
