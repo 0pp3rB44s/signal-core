@@ -157,6 +157,19 @@ class Settings(BaseSettings):
     forward_paper_enabled: bool = Field(default=True, alias="FORWARD_PAPER_ENABLED")
     forward_paper_roundtrip_fee_bps: float = Field(default=12.0, alias="FORWARD_PAPER_ROUNDTRIP_FEE_BPS")
     forward_paper_liquidity_assumption: str = Field(default="taker", alias="FORWARD_PAPER_LIQUIDITY_ASSUMPTION")
+    forward_paper_events_path: str = Field(default="data_store/forward_paper_events.jsonl", alias="FORWARD_PAPER_EVENTS_PATH")
+    forward_paper_outcomes_path: str = Field(default="data_store/forward_paper_outcomes.csv", alias="FORWARD_PAPER_OUTCOMES_PATH")
+    forward_paper_quality_path: str = Field(default="reports/forward_paper_data_quality.json", alias="FORWARD_PAPER_QUALITY_PATH")
+
+    # NON-PRODUCTION engineering test strategy. It exists only to validate that the
+    # paper execution lifecycle can open, manage, close, persist and restore a
+    # position. It is not an edge claim and is forcibly disabled unless the runtime
+    # is strict forward-paper-only (see enforce_forward_paper_only below).
+    forward_paper_smoke_strategy_enabled: bool = Field(default=False, alias="FORWARD_PAPER_SMOKE_STRATEGY_ENABLED")
+    forward_paper_smoke_symbol: str = Field(default="SOLUSDT", alias="FORWARD_PAPER_SMOKE_SYMBOL")
+    forward_paper_smoke_stop_pct: float = Field(default=0.35, alias="FORWARD_PAPER_SMOKE_STOP_PCT")
+    forward_paper_smoke_target_pct: float = Field(default=0.35, alias="FORWARD_PAPER_SMOKE_TARGET_PCT")
+    forward_paper_smoke_notional_usdt: float = Field(default=25.0, alias="FORWARD_PAPER_SMOKE_NOTIONAL_USDT")
 
     position_manager_enabled: bool = Field(default=True, alias="POSITION_MANAGER_ENABLED")
 
@@ -184,6 +197,15 @@ class Settings(BaseSettings):
             self.position_manager_enabled = False
             self.position_loop_enabled = False
             self.position_sync_on_start = False
+        # The smoke strategy fabricates entries, so it must never be reachable by
+        # anything that can place a real order. Strict forward-paper-only is the
+        # only runtime that guarantees no private exchange surface is in play.
+        if self.forward_paper_smoke_strategy_enabled and not (
+            self.forward_paper_only
+            and self.forward_paper_enabled
+            and not self.execution_enabled
+        ):
+            self.forward_paper_smoke_strategy_enabled = False
         return self
 
     @property

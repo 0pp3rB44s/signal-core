@@ -31,6 +31,7 @@ from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
 from risk.cooldown_manager import SymbolCooldownManager
 from agents_v2.learning.coach_rules import run as run_coach_rules
+from strategies.forward_paper_smoke import smoke_plan
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
 from strategies.strategies.continuation import detect_continuation
@@ -303,7 +304,13 @@ class StartupRunner:
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
         self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
-        self.forward_paper = ForwardPaperService(settings=settings, funnel_telemetry=self.funnel_telemetry)
+        self.forward_paper = ForwardPaperService(
+            settings=settings,
+            events_path=settings.forward_paper_events_path,
+            outcomes_path=settings.forward_paper_outcomes_path,
+            quality_path=settings.forward_paper_quality_path,
+            funnel_telemetry=self.funnel_telemetry,
+        )
         self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
         self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
@@ -1376,6 +1383,14 @@ class StartupRunner:
                         )
                 except Exception as lane_exc:
                     self.log.warning("FAST_LANE_FAILED | error=%s", lane_exc)
+
+            # NON-PRODUCTION lifecycle validation. Config forces this off unless the
+            # runtime is strict forward-paper-only, so it can never reach execution.
+            if self.settings.forward_paper_smoke_strategy_enabled:
+                for snapshot in snapshots:
+                    smoke = smoke_plan(self.settings, snapshot)
+                    if smoke is not None:
+                        plans.append(smoke)
 
             if candidates:
                 self._emit_candidate_summary(candidates)
