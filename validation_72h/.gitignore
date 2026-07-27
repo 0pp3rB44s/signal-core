@@ -14,3 +14,13 @@ incidents.log
 # artefacts it describes.
 invalidated_run_*/**
 !invalidated_run_*/INVALID.md
+
+# --- Permanent evidence archive (RC1) -------------------------------------
+# The validation campaign is preserved as ONE checksummed, compressed bundle so
+# the evidence lives in repository history rather than only on one machine.
+# 912 KB compressed from 12 MB. The expanded working copy stays ignored; the
+# bundle, its digest and the archive index are tracked.
+archive/*
+!archive/README.md
+!archive/RC1_forward_paper_validation.tar.gz
+!archive/RC1_forward_paper_validation.tar.gz.sha256
