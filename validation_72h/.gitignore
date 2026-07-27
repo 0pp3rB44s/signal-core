@@ -24,3 +24,7 @@ archive/*
 !archive/README.md
 !archive/RC1_forward_paper_validation.tar.gz
 !archive/RC1_forward_paper_validation.tar.gz.sha256
+# Raw audit capture directories: fully contained in the RC evidence bundle above,
+# so they are not tracked separately. A clean tree is a hard precondition for the
+# strict launcher's restart path.
+closeout_*/
