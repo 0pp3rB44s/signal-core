@@ -31,3 +31,7 @@ archive/
 # Historical datasets
 data/historical/
 .worktrees/
+
+# Live credentials: never committed. Only .env.live.example is tracked.
+.env.live
+state/LIVE_PILOT_AUTHORISATION
