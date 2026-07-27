@@ -122,6 +122,22 @@ during the run, so this did not bite. **Status:** OPEN, low priority.
 
 ---
 
+## Mitigated in RC2 (2026-07-27) — not yet closed
+
+Mitigation is not resolution. Each entry below has a control in place that is
+tested, but none has been proven under the real-world condition it guards
+against. Statuses above remain OPEN until that proof exists.
+
+| Risk | Control added | Commit | Verification |
+|---|---|---|---|
+| **R1** no recovery after host restart | `launchd` agent `com.cgc.forward` (RunAtLoad + KeepAlive) supervising the keepalive | `5f862ef` | plist valid, scripts pass syntax; **NOT yet verified by a real reboot** |
+| **R3** nothing monitors the monitor | `scripts/watchdog.sh`, independent of supervisor and monitor, with its own heartbeat | `71f931a` | verified against the real post-mortem state: detected the 31.7 h dead monitor |
+| **R4** heartbeat freshness unused | watchdog enforces `MAX_HEARTBEAT_AGE_SEC` and alerts | `71f931a` | verified: detected a 9 h stale heartbeat |
+| Config single-variable exposure (audit F2) | `.env.forward` / `.env.live` separation, `env_guard.sh` invariants, 4 authorisation layers | `a316d45`, `bd5bf03` | 8 isolation tests pass; guard rejects the ambient 40-symbol posture |
+| Alerting absent | `scripts/lib/alert.sh` (telegram/discord/email) | `4dcea38` | self-test passes; **no provider configured — DEGRADED** |
+
+**R2 (host sleep) is untouched and remains a hard blocker.**
+
 ## Resolved
 
 *(none yet — append here with date and resolving commit)*
