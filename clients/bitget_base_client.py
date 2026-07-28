@@ -29,6 +29,46 @@ class PrivateExchangeCallBlocked(BitgetAPIError):
     """Raised before transport when strict forward-paper mode sees a private call."""
 
 
+# --- Order-submission outcome classification -----------------------------
+# Order creation is NOT idempotent at the transport layer: a blind retry after a
+# lost response can create a second real position. Requests made with
+# allow_blind_retry=False are therefore never retried automatically; instead the
+# outcome is classified so the caller can reconcile by clientOid.
+
+
+class BitgetOrderSubmissionError(BitgetAPIError):
+    """Base class for classified order-submission outcomes."""
+
+    classification = "UNCLASSIFIED"
+
+    def __init__(self, message: str, *, client_oid: str = "", status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.client_oid = client_oid
+        self.status_code = status_code
+
+
+class BitgetOrderSubmissionAmbiguous(BitgetOrderSubmissionError):
+    """The exchange may or may not have accepted the order. Reconcile, never retry blindly."""
+
+    classification = "AMBIGUOUS"
+
+
+class BitgetOrderNotSent(BitgetOrderSubmissionError):
+    """The request provably never reached the exchange (no connection established)."""
+
+    classification = "NOT_SENT"
+
+
+class BitgetOrderRejected(BitgetOrderSubmissionError):
+    """The exchange processed the request and refused it. No order was created."""
+
+    classification = "REJECTED"
+
+
+#: HTTP statuses that leave the fate of a submitted order unknown.
+AMBIGUOUS_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
 class BitgetBaseClient:
     """Base Bitget REST layer: auth, request, retry, rate-limit and validation."""
 
@@ -102,6 +142,28 @@ class BitgetBaseClient:
         if hold_side is not None and str(hold_side).lower() not in {"long", "short"}:
             raise BitgetAPIError(f"Invalid holdSide value: {hold_side}")
 
+    @staticmethod
+    def _connection_never_established(exc: Exception) -> bool:
+        """True only when the request provably never reached the exchange.
+
+        A read timeout or a reset mid-response is NOT in this category: the
+        exchange may already have accepted the order.
+        """
+        if isinstance(exc, requests.exceptions.ConnectTimeout):
+            return True
+        error_text = str(exc).lower()
+        return any(
+            marker in error_text
+            for marker in (
+                "failed to resolve",
+                "nameresolutionerror",
+                "temporary failure in name resolution",
+                "nodename nor servname provided",
+                "failed to establish a new connection",
+                "connection refused",
+            )
+        )
+
     def _request(
         self,
         method: str,
@@ -109,7 +171,16 @@ class BitgetBaseClient:
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         private: bool = False,
+        allow_blind_retry: bool = True,
+        client_oid: str = "",
     ) -> dict[str, Any]:
+        """Perform one Bitget REST call.
+
+        ``allow_blind_retry=False`` marks the call as a non-idempotent
+        order-creating request: it is attempted exactly once and every failure is
+        classified (NOT_SENT / AMBIGUOUS / REJECTED) so the caller can reconcile
+        by clientOid instead of POSTing again.
+        """
         if private and self.settings.forward_paper_only:
             raise PrivateExchangeCallBlocked(
                 "Private exchange call blocked: FORWARD_PAPER_ONLY is active"
@@ -168,7 +239,9 @@ class BitgetBaseClient:
                 except requests.HTTPError as exc:
                     status_code = response.status_code
                     error_code, safe_message = self._safe_response_error(response, private=private)
-                    retryable_status = status_code in {408, 429, 500, 502, 503, 504}
+                    retryable_status = (
+                        status_code in AMBIGUOUS_HTTP_STATUSES and allow_blind_retry
+                    )
                     log_method = self.log.warning if retryable_status else self.log.error
                     log_method(
                         "BITGET_HTTP_ERROR | method=%s | path=%s | status=%s | code=%s | retryable=%s | attempt=%s | msg=%s",
@@ -193,6 +266,16 @@ class BitgetBaseClient:
                         time.sleep(sleep_seconds)
                         continue
 
+                    if not allow_blind_retry:
+                        raise self._classify_http_failure(
+                            method=method,
+                            path=path,
+                            status_code=status_code,
+                            error_code=error_code,
+                            safe_message=safe_message,
+                            client_oid=client_oid,
+                        ) from exc
+
                     raise BitgetAPIError(
                         f"Bitget HTTP error: status={status_code} code={error_code} msg={safe_message}"
                     ) from exc
@@ -201,7 +284,9 @@ class BitgetBaseClient:
                 code = str(payload.get("code", ""))
 
                 if code not in {"00000", "0", "success"}:
-                    retryable_code = code in {"429", "40015", "40010", "40725", "45001"}
+                    retryable_code = (
+                        code in {"429", "40015", "40010", "40725", "45001"} and allow_blind_retry
+                    )
                     log_method = self.log.warning if retryable_code else self.log.error
                     log_method(
                         "BITGET_API_ERROR | method=%s | path=%s | code=%s | retryable=%s | attempt=%s | msg=%s",
@@ -226,10 +311,26 @@ class BitgetBaseClient:
                         time.sleep(sleep_seconds)
                         continue
 
-                    raise BitgetAPIError(
-                        "Bitget error: "
-                        f"code={code} msg={SensitiveDataFilter.redact(str(payload.get('msg') or 'upstream error'))[:self._MAX_ERROR_MESSAGE_LENGTH]}"
-                    )
+                    safe_business_message = SensitiveDataFilter.redact(
+                        str(payload.get("msg") or "upstream error")
+                    )[: self._MAX_ERROR_MESSAGE_LENGTH]
+
+                    if not allow_blind_retry:
+                        # The exchange answered on the business layer: it saw the
+                        # request and refused it, so no order was created.
+                        self.log.error(
+                            "ORDER_SUBMISSION_CLASSIFIED | method=%s | path=%s | classification=REJECTED | code=%s | client_oid=%s",
+                            method.upper(),
+                            path,
+                            code,
+                            client_oid or "-",
+                        )
+                        raise BitgetOrderRejected(
+                            f"Bitget rejected order: code={code} msg={safe_business_message}",
+                            client_oid=client_oid,
+                        )
+
+                    raise BitgetAPIError(f"Bitget error: code={code} msg={safe_business_message}")
 
                 return payload
 
@@ -251,7 +352,7 @@ class BitgetBaseClient:
                         self.max_request_retries,
                         exc,
                     )
-                retryable = attempt < self.max_request_retries
+                retryable = attempt < self.max_request_retries and allow_blind_retry
                 self.log.warning(
                     "BITGET_REQUEST_EXCEPTION | method=%s | path=%s | attempt=%s | retryable=%s | error=%s",
                     method.upper(),
@@ -273,6 +374,14 @@ class BitgetBaseClient:
                     time.sleep(sleep_seconds)
                     continue
 
+                if not allow_blind_retry:
+                    raise self._classify_transport_failure(
+                        method=method,
+                        path=path,
+                        exc=exc,
+                        client_oid=client_oid,
+                    ) from exc
+
                 raise BitgetRetryableError(
                     f"Bitget request failed after retries: {exc}"
                 ) from exc
@@ -281,3 +390,72 @@ class BitgetBaseClient:
             raise BitgetRetryableError(str(last_exception)) from last_exception
 
         raise BitgetAPIError("Bitget request failed with unknown state")
+
+    def _classify_http_failure(
+        self,
+        *,
+        method: str,
+        path: str,
+        status_code: int,
+        error_code: str,
+        safe_message: str,
+        client_oid: str,
+    ) -> BitgetOrderSubmissionError:
+        """Classify a non-2xx response to a non-idempotent order request."""
+        if status_code in AMBIGUOUS_HTTP_STATUSES:
+            # 408/5xx: the exchange may already hold the order. 429 is included
+            # deliberately - reconciliation is cheap, a duplicate position is not.
+            error: BitgetOrderSubmissionError = BitgetOrderSubmissionAmbiguous(
+                f"Ambiguous order submission: status={status_code} code={error_code} msg={safe_message}",
+                client_oid=client_oid,
+                status_code=status_code,
+            )
+        else:
+            error = BitgetOrderRejected(
+                f"Order rejected by exchange: status={status_code} code={error_code} msg={safe_message}",
+                client_oid=client_oid,
+                status_code=status_code,
+            )
+
+        self.log.error(
+            "ORDER_SUBMISSION_CLASSIFIED | method=%s | path=%s | classification=%s | status=%s | code=%s | client_oid=%s",
+            method.upper(),
+            path,
+            error.classification,
+            status_code,
+            error_code,
+            client_oid or "-",
+        )
+        return error
+
+    def _classify_transport_failure(
+        self,
+        *,
+        method: str,
+        path: str,
+        exc: Exception,
+        client_oid: str,
+    ) -> BitgetOrderSubmissionError:
+        """Classify a transport failure on a non-idempotent order request."""
+        if self._connection_never_established(exc):
+            error: BitgetOrderSubmissionError = BitgetOrderNotSent(
+                f"Order request never reached the exchange: {exc}",
+                client_oid=client_oid,
+            )
+        else:
+            # Read timeouts and mid-response failures are ambiguous by
+            # definition: silence is not evidence that the order was not filled.
+            error = BitgetOrderSubmissionAmbiguous(
+                f"Ambiguous order submission (no usable response): {exc}",
+                client_oid=client_oid,
+            )
+
+        self.log.critical(
+            "ORDER_SUBMISSION_CLASSIFIED | method=%s | path=%s | classification=%s | client_oid=%s | error=%s",
+            method.upper(),
+            path,
+            error.classification,
+            client_oid or "-",
+            exc,
+        )
+        return error

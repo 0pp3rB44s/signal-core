@@ -4,6 +4,18 @@ import time
 from typing import Any
 
 
+#: Bitget business codes / messages that definitively mean "no such order".
+#: Anything outside this set leaves the exchange state UNKNOWN, which must never
+#: be treated as "safe to submit again".
+_ORDER_ABSENT_CODES = frozenset({"22001", "43001", "40109", "40768"})
+_ORDER_ABSENT_MARKERS = (
+    "does not exist",
+    "not exist",
+    "no order",
+    "order not found",
+)
+
+
 class BitgetOrderClientMixin:
     """Market order, order detail/history, fill metrics, leverage, and close logic only."""
 
@@ -33,6 +45,143 @@ class BitgetOrderClientMixin:
             "orderId": str(order_id),
         }
         return self._request("GET", "/api/v2/mix/order/detail", params=params, private=True)
+
+    def get_order_detail_by_client_oid(
+        self,
+        symbol: str,
+        client_oid: str,
+        product_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Look up one order by the clientOid we chose before submitting it."""
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "clientOid": str(client_oid),
+        }
+        return self._request("GET", "/api/v2/mix/order/detail", params=params, private=True)
+
+    def get_pending_orders(
+        self,
+        symbol: str | None = None,
+        product_type: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "limit": str(limit),
+        }
+        if symbol:
+            params["symbol"] = symbol.upper()
+        return self._request(
+            "GET", "/api/v2/mix/order/orders-pending", params=params, private=True
+        )
+
+    @staticmethod
+    def _order_rows(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+        data = (payload or {}).get("data")
+        if isinstance(data, dict):
+            entrust = data.get("entrustedList") or data.get("orderList") or data.get("list")
+            if isinstance(entrust, list):
+                return [row for row in entrust if isinstance(row, dict)]
+            return [data]
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        return []
+
+    @classmethod
+    def _is_definitive_absent_error(cls, exc: Exception) -> bool:
+        """True only when the exchange explicitly said the order does not exist."""
+        text = str(exc).lower()
+        if any(marker in text for marker in _ORDER_ABSENT_MARKERS):
+            return True
+        return any(f"code={code}" in text for code in _ORDER_ABSENT_CODES)
+
+    def find_order_by_client_oid(
+        self,
+        symbol: str,
+        client_oid: str,
+        product_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve what the exchange knows about ``client_oid``.
+
+        Returns ``{"status": FOUND|ABSENT|UNKNOWN, "order": dict|None,
+        "source": str, "errors": list[str]}``.
+
+        ABSENT is only returned when every lookup route explicitly reported "no
+        such order". Any inconclusive route yields UNKNOWN, because guessing
+        "there is no order" is exactly how a duplicate position gets created.
+        """
+        symbol_upper = symbol.upper()
+        client_oid = str(client_oid)
+        errors: list[str] = []
+        absent_votes = 0
+        routes = 0
+
+        lookups = (
+            ("order_detail", lambda: self.get_order_detail_by_client_oid(
+                symbol=symbol_upper, client_oid=client_oid, product_type=product_type)),
+            ("orders_pending", lambda: self.get_pending_orders(
+                symbol=symbol_upper, product_type=product_type)),
+            ("orders_history", lambda: self.get_order_history(
+                symbol=symbol_upper, product_type=product_type, limit=100)),
+        )
+
+        for source, lookup in lookups:
+            routes += 1
+            try:
+                payload = lookup()
+            except Exception as exc:
+                if self._is_definitive_absent_error(exc):
+                    absent_votes += 1
+                    continue
+                errors.append(f"{source}={exc}")
+                self.log.warning(
+                    "ORDER_LOOKUP_INCONCLUSIVE | %s | source=%s | client_oid=%s | error=%s",
+                    symbol_upper,
+                    source,
+                    client_oid,
+                    exc,
+                )
+                continue
+
+            for row in self._order_rows(payload):
+                row_oid = str(row.get("clientOid") or row.get("client_oid") or "")
+                if row_oid and row_oid == client_oid:
+                    self.log.critical(
+                        "ORDER_LOOKUP_FOUND | %s | source=%s | client_oid=%s | order_id=%s | state=%s",
+                        symbol_upper,
+                        source,
+                        client_oid,
+                        row.get("orderId") or row.get("order_id") or "",
+                        row.get("state") or row.get("status") or "",
+                    )
+                    return {
+                        "status": "FOUND",
+                        "order": row,
+                        "source": source,
+                        "errors": errors,
+                    }
+
+            absent_votes += 1
+
+        if absent_votes == routes and not errors:
+            self.log.critical(
+                "ORDER_LOOKUP_ABSENT | %s | client_oid=%s | routes=%s",
+                symbol_upper,
+                client_oid,
+                routes,
+            )
+            return {"status": "ABSENT", "order": None, "source": "all_routes", "errors": []}
+
+        self.log.critical(
+            "ORDER_LOOKUP_UNKNOWN | %s | client_oid=%s | absent_votes=%s/%s | errors=%s",
+            symbol_upper,
+            client_oid,
+            absent_votes,
+            routes,
+            " | ".join(errors) or "-",
+        )
+        return {"status": "UNKNOWN", "order": None, "source": "inconclusive", "errors": errors}
 
     def extract_fill_metrics(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = payload.get("data") or {}
@@ -147,20 +296,25 @@ class BitgetOrderClientMixin:
         self._validate_futures_order_flags(body)
 
         self.log.warning(
-            "BITGET_PLACE_MARKET_ORDER | %s | direction=%s | side=%s | hold_side=%s | size=%s | margin_mode=%s",
+            "BITGET_PLACE_MARKET_ORDER | %s | direction=%s | side=%s | hold_side=%s | size=%s | margin_mode=%s | client_oid=%s",
             symbol.upper(),
             direction_upper,
             side,
             hold_side,
             formatted_size,
             margin_mode,
+            client_oid or "-",
         )
 
+        # Entry creation is not idempotent at the transport layer: never retry
+        # blindly. Failures are classified for clientOid reconciliation instead.
         return self._request(
             method="POST",
             path="/api/v2/mix/order/place-order",
             body=body,
             private=True,
+            allow_blind_retry=False,
+            client_oid=client_oid or "",
         )
 
     def place_futures_limit_order(
@@ -213,14 +367,18 @@ class BitgetOrderClientMixin:
 
         self._validate_futures_order_flags(body)
         self.log.warning(
-            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s",
+            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s | client_oid=%s",
             symbol.upper(), direction_upper, side, formatted_size, formatted_price, post_only,
+            client_oid or "-",
         )
+        # Same rule as the market entry: one attempt, classified outcome.
         return self._request(
             method="POST",
             path="/api/v2/mix/order/place-order",
             body=body,
             private=True,
+            allow_blind_retry=False,
+            client_oid=client_oid or "",
         )
 
     def cancel_futures_order(
