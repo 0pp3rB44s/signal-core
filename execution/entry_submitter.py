@@ -66,6 +66,16 @@ MAX_ENTRY_SUBMISSIONS = 2
 _DEAD_ORDER_STATES = {"cancelled", "canceled", "rejected", "expired", "invalid"}
 
 
+def _may_resubmit(resolved: "EntrySubmissionResult") -> bool:
+    """Only a definitive "this order never existed" verdict unlocks a resubmission.
+
+    An order that exists but is cancelled/rejected/expired is *not* a lost
+    message: the exchange saw the intent and it is gone. Resending would be a
+    new trading decision, not a recovery, so it stays terminal.
+    """
+    return resolved.status == RESULT_ABANDONED and resolved.classification == "ABSENT"
+
+
 @dataclass
 class EntrySubmissionResult:
     status: str
@@ -213,7 +223,7 @@ class EntryOrderSubmitter:
                 symbol=symbol, plan_id=plan_id, client_oid=client_oid,
                 submissions=attempts_so_far,
             )
-            if resolved.status != RESULT_ABANDONED:
+            if not _may_resubmit(resolved):
                 return resolved
             if attempts_so_far >= MAX_ENTRY_SUBMISSIONS:
                 return resolved
@@ -282,7 +292,7 @@ class EntryOrderSubmitter:
                 resolved = self._reconcile(
                     symbol=symbol, plan_id=plan_id, client_oid=client_oid, submissions=submissions
                 )
-                if resolved.status != RESULT_ABANDONED:
+                if not _may_resubmit(resolved):
                     return resolved
                 continue  # definitively absent -> one controlled resubmission
             except BitgetOrderNotSent as exc:
@@ -298,7 +308,7 @@ class EntryOrderSubmitter:
                 resolved = self._reconcile(
                     symbol=symbol, plan_id=plan_id, client_oid=client_oid, submissions=submissions
                 )
-                if resolved.status != RESULT_ABANDONED:
+                if not _may_resubmit(resolved):
                     return resolved
                 continue
             except (PrivateExchangeCallBlocked, ValueError) as exc:
@@ -328,7 +338,7 @@ class EntryOrderSubmitter:
                 resolved = self._reconcile(
                     symbol=symbol, plan_id=plan_id, client_oid=client_oid, submissions=submissions
                 )
-                if resolved.status != RESULT_ABANDONED:
+                if not _may_resubmit(resolved):
                     return resolved
                 return EntrySubmissionResult(
                     status=RESULT_NOT_SENT, client_oid=client_oid,
