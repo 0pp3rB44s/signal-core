@@ -22,7 +22,13 @@ commit that resolved them.
 - **Impact:** in live trading a reboot leaves open positions unmanaged indefinitely —
   stops and targets stop being enforced by the bot.
 - **Likelihood:** High (observed once in 43 h).
-- **Status:** PARTIALLY RESOLVED 2026-07-28 (commit `d4f1c62`).
+- **Status:** ACCEPTED by owner (Bryon Kolkman) 2026-07-28 — pending first reboot
+  verification. Implemented and component-verified (see "Verification round 2"
+  below). The composite proof — launchd restoring the engine across a real boot —
+  requires a live session that does not exist before the first launch, so it cannot
+  be obtained beforehand. The owner accepts this residual for the first live
+  session. Convert to RESOLVED once `logs/launchd_live.out` shows the agent
+  restoring the engine after a real reboot. Implementation commit `7c0fb07`.
 
 **Update 2026-07-28 — supervision implemented, reboot proof outstanding.**
 
@@ -100,7 +106,7 @@ credentials present); heartbeat writes `process_started` on engine start.
 - **Impact:** an open position is unmanaged for hours while the process believes it is
   running; stop-losses are never evaluated.
 - **Likelihood:** High on this hardware.
-- **Status:** RESOLVED 2026-07-28 (commit `d4f1c62`; host reconfigured by owner).
+- **Status:** RESOLVED 2026-07-28 (commit `7c0fb07`; host reconfigured by owner).
   The original mechanism was never fully established — whether the assertion process
   died first or was held and proved insufficient is **evidence not available**
   (process table lost at reboot; OS sleep records rotated).
