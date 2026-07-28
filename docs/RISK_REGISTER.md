@@ -138,6 +138,51 @@ against. Statuses above remain OPEN until that proof exists.
 
 **R2 (host sleep) is untouched and remains a hard blocker.**
 
+---
+
+## Live-execution blocker (2026-07-28)
+
+### R14 — Duplicate live entry order after an ambiguous response
+
+- **Evidence:** `clients/bitget_base_client.py:151` retried every HTTP method,
+  including the order POST, on 408/429/500/502/503/504 and on transport errors.
+  `execution/execution_service.py` contained zero occurrences of
+  `client_oid`/`clientOid`, so Bitget had no key with which to deduplicate.
+  Recorded as a live-deployment blocker in `8cdf51e`.
+- **Impact:** an entry that Bitget accepted but whose response was lost would be
+  resent, creating a **second real position** — breaching `MAX_OPEN_POSITIONS`,
+  possibly unprotected.
+- **Likelihood:** Certain over time; every 5xx or read timeout on the entry POST
+  was a coin flip.
+- **Status:** **RESOLVED 2026-07-28** — commits `f50dab5` (deterministic
+  clientOid), `e679250` (intent persistence), `d1837e0` (retry classification),
+  `612110e` (reconciliation + restart recovery), `2f86561` (deterministic tests).
+  Design: `docs/LIVE_ENTRY_IDEMPOTENCY.md`.
+- **Residual:** mocked tests prove code behaviour, not Bitget's. The first real
+  order is owner-operated final verification (evidence list in §6 of the design
+  doc). Bitget's own duplicate-`clientOid` rejection semantics are **not**
+  exercised by these tests.
+
+### R15 — Fail-safe close opened an opposite position instead of closing
+
+- **Evidence:** `ExecutionService._fail_safe_close()` called
+  `place_futures_market_order(trade_side="close")`. That function swallows
+  `trade_side` in `**_` and hardcodes `"tradeSide": "open"`, deriving `holdSide`
+  from the (inverted) side — so the emergency close of an unprotected position
+  submitted a **new opening order in the opposite direction**.
+- **Impact:** the safety mechanism guarding an unprotected position would have
+  doubled exposure rather than removing it. Never triggered live (execution has
+  been disabled since 2026-07-13).
+- **Likelihood:** Certain whenever the fail-safe fired.
+- **Status:** **RESOLVED 2026-07-28** — `612110e` routes the fail-safe through
+  the verified reduce-only `close_futures_position()` path; regression test
+  `tests/test_entry_path_audit.py::test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order`.
+
+---
+
 ## Resolved
 
-*(none yet — append here with date and resolving commit)*
+| Risk | Date | Resolving commits |
+|---|---|---|
+| **R14** duplicate live entry order | 2026-07-28 | `f50dab5`, `e679250`, `d1837e0`, `612110e`, `2f86561` |
+| **R15** fail-safe close opened a position | 2026-07-28 | `612110e` |
