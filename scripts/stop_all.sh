@@ -35,6 +35,11 @@ STOP_REASON="${1:-manual_stop}"
 # in plaats van de bot direct te herstarten.
 touch state/supervisor.stop
 
+# Idem voor de launchd live-agent (com.cgc.live, risico R1): zonder deze vlag
+# ziet KeepAlive een niet-nul exit en zet de engine gewoon weer aan. Een
+# bewuste stop moet een reboot overleven; `rm state/live.stop` hervat.
+touch state/live.stop
+
 # The launchd notifier (scripts/install_launchd.sh) doesn't restart the
 # bot, but bootout it anyway so a deliberate stop doesn't get a "bot is
 # down" notification 5 minutes later.

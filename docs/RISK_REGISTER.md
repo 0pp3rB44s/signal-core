@@ -22,7 +22,39 @@ commit that resolved them.
 - **Impact:** in live trading a reboot leaves open positions unmanaged indefinitely —
   stops and targets stop being enforced by the bot.
 - **Likelihood:** High (observed once in 43 h).
-- **Status:** OPEN.
+- **Status:** PARTIALLY RESOLVED 2026-07-28 (commit `d4f1c62`).
+
+**Update 2026-07-28 — supervision implemented, reboot proof outstanding.**
+
+*What was actually wrong:* there was no live supervisor at all. `com.cgc.tradingbot`
+is notify-only — its `ProgramArguments` are `pgrep -f app.main || osascript -e
+'display notification …'`, it has `RunAtLoad` and `StartInterval` but **no
+`KeepAlive`**, and it starts nothing. The only job carrying `KeepAlive` was
+`com.cgc.forward` (forward paper), which was not loaded. So both failure paths were
+real: a reboot left the engine offline, and a crash left it offline.
+
+*Implemented:* `com.cgc.live` — `deploy/launchd/com.cgc.live.plist.template`,
+`deploy/launchd/live_agent.sh`, `install_live_agent.sh`, `uninstall_live_agent.sh`.
+`RunAtLoad=true` covers boot; `KeepAlive/SuccessfulExit=false` covers crashes; the
+agent stays in the foreground for the engine's lifetime so `KeepAlive` tracks the
+engine rather than a script that already returned; `ThrottleInterval=60` prevents a
+crash-loop. `scripts/stop_all.sh` now writes `state/live.stop` so a deliberate stop
+is not resurrected.
+
+*Authorisation is never self-granted:* the agent **restores** a session the owner
+already authorised and cannot create one. It exits 0 (no respawn) unless
+`state/LIVE_PILOT_AUTHORISATION` **and** `state/live_runtime.state` both exist, the
+stop flag is absent, the tree is clean, and the host cannot idle-sleep.
+
+*Verified:* `plutil -lint` OK; `bash -n` OK on all three scripts; both refusal paths
+exercised and returned exit 0 with the correct reason (no session on record; stop
+flag present).
+
+- **Residual risk:** boot persistence is proven **by configuration only**. No actual
+  reboot has been performed, which is precisely the event R1 names. It stays
+  PARTIALLY RESOLVED — and therefore still blocks LAYER 1 — until an owner reboots
+  the host and confirms `com.cgc.live` restored the engine. A wedged-but-alive engine
+  is also not covered by `KeepAlive`; that case belongs to R2 and to the watchdog.
 
 ### R2 — Host sleep suspends the trading process undetected
 
@@ -33,9 +65,51 @@ commit that resolved them.
 - **Impact:** an open position is unmanaged for hours while the process believes it is
   running; stop-losses are never evaluated.
 - **Likelihood:** High on this hardware.
-- **Status:** OPEN. Mechanism not fully established — whether the assertion process
-  died first or was held and proved insufficient is **evidence not available** (process
-  table lost at reboot; OS sleep records rotated).
+- **Status:** RESOLVED 2026-07-28 (commit `d4f1c62`; host reconfigured by owner).
+  The original mechanism was never fully established — whether the assertion process
+  died first or was held and proved insufficient is **evidence not available**
+  (process table lost at reboot; OS sleep records rotated).
+
+**Update 2026-07-28 — idle sleep eliminated at the host and enforced at launch.**
+
+*Host state, measured:* `pmset -g custom` now reports `sleep 0` on **both** AC and
+Battery. Earlier in this same session it read `sleep 1` on both; the owner applied
+`sudo pmset -a sleep 0` in between. `pmset -g` confirms the effective value
+`sleep 0`. The documented 22.19 h failure was an **idle** sleep, and idle sleep is
+now off at the OS level, not merely papered over by `caffeinate` (which
+`scripts/lib/power_assertion.sh` records as insufficient — the gap occurred with an
+assertion held).
+
+*What was missing:* nothing in the live path even checked. `assert_power_settings_sane`
+existed but was called only by `start_archiver.sh` and `start_forward_paper.sh` —
+`launch_live.sh` never called it, and it only printed a warning in any case.
+
+*Implemented:* `guard_assert_power_continuous()` in `scripts/lib/env_guard.sh`, wired
+into `launch_live.sh` LAYER 3, and re-checked by `live_agent.sh` before it restores a
+session. It reads the host's actual `pmset` state and **aborts** unless
+`disablesleep=1` or idle `sleep=0`. R2 is therefore enforced against the machine, not
+against this document. A live engine can no longer be started — or resurrected by the
+supervisor — onto a host that will suspend it.
+
+- **Residual risk (two vectors, both narrower than the original):**
+  1. **Clamshell sleep is still possible.** `disablesleep` is **not** set (`pmset -g`
+     shows no `disablesleep` entry; 0 occurrences in `pmset -g custom`). `sleep 0`
+     stops *idle* sleep only — closing the lid still suspends the host, and
+     `caffeinate` cannot block that. Sustained operation requires the lid open, an
+     external display, or `sudo pmset -a disablesleep 1`. Note that
+     `guard_assert_power_continuous()` accepts `disablesleep=1` as well as
+     `sleep=0`, so applying it is a strict improvement and needs no code change.
+  2. **Detection of a wedged-but-alive engine is logged, not alerted.**
+     `scripts/watchdog.sh` flags heartbeat age > 600 s, but alerting is
+     **DEGRADED — no provider configured** (telegram/discord/email all unset), so a
+     suspension that does occur is recorded locally and nobody is told. Tracked
+     separately as R3/R4; it is the reason "undetected" is only partly retired here.
+
+  **This risk depends on owner configuration and can silently regress.** If anyone
+  later runs `sudo pmset -a sleep <n>` with n>0, the host becomes unsafe again — but
+  `guard_assert_power_continuous()` re-reads `pmset` at every launch and inside
+  `live_agent.sh` before any restart, so the regression blocks startup instead of
+  producing another silent multi-hour gap.
 
 ---
 

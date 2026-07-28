@@ -16,11 +16,11 @@ CONFIRM_PHRASE="START LIVE PILOT"
 echo "=== LIVE LAUNCH — AUTHORISATION REQUIRED ==="
 
 # LAYER 1: every Critical risk resolved or explicitly accepted.
-if grep -qE '^\- \*\*Status:\*\* OPEN' docs/RISK_REGISTER.md 2>/dev/null; then
-  OPEN_CRIT=$(awk '/^## CRITICAL/,/^## HIGH/' docs/RISK_REGISTER.md | grep -c 'Status:\*\* OPEN' || echo 0)
-  [ "$OPEN_CRIT" -eq 0 ] || guard_die "LAYER 1: $OPEN_CRIT Critical risk(s) still OPEN in docs/RISK_REGISTER.md"
-fi
-echo "layer 1: no open Critical risks"
+# The inline grep this replaces was doubly wrong: it aborted even with zero open
+# Critical risks ("grep -c || echo 0" -> "0\n0" breaks -eq), and it skipped the
+# Critical section entirely unless some line-start "- **Status:** OPEN" existed
+# somewhere in the file. The parser now lives in env_guard.sh and fails closed.
+guard_assert_critical_risks_cleared "docs/RISK_REGISTER.md"
 
 # LAYER 2: owner-created authorisation token.
 [ -f "$AUTH_FILE" ] || guard_die "LAYER 2: missing $AUTH_FILE — owner authorisation required. This file must be created by the owner, dated and signed. It is not created by any script."
@@ -34,6 +34,8 @@ guard_assert_disk
 guard_load_env ".env.live"
 guard_assert_live_mode
 guard_assert_pilot_limits
+# R2 is enforced against the host's actual pmset state, not against the register.
+guard_assert_power_continuous
 echo "layer 3: live configuration invariants OK"
 
 # LAYER 4: interactive human confirmation.

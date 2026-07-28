@@ -11,6 +11,92 @@
 
 guard_die() { echo "ABORT: $*" >&2; exit 90; }
 
+# --- R2: continuous operation is a host property, not a document claim -------
+# The 2026-07-26 validation lost 22.19 h because the host slept while the engine
+# believed it was running, with a caffeinate assertion held. Enforcement
+# therefore reads the live pmset configuration at launch instead of trusting the
+# risk register: a host that can idle-sleep must not run a live engine.
+guard_assert_power_continuous() {
+  command -v pmset >/dev/null 2>&1 || { echo "guard: pmset unavailable; power state unverifiable"; return 0; }
+
+  # disablesleep=1 pins the machine awake and overrides the idle timer.
+  if pmset -g 2>/dev/null | awk '$1=="disablesleep" {f=$2} END {exit !(f=="1")}'; then
+    echo "guard: power OK (disablesleep=1)"
+    return 0
+  fi
+
+  local sleep_minutes
+  sleep_minutes="$(pmset -g 2>/dev/null | awk '$1=="sleep" {print $2; exit}')"
+  if [ -z "$sleep_minutes" ]; then
+    echo "guard: idle-sleep setting not reported; treating as unverified"
+    return 0
+  fi
+  [ "$sleep_minutes" = "0" ] || guard_die \
+"R2: host idle sleep is ${sleep_minutes} min, so continuous operation is impossible.
+       An open position stops being managed the moment the host sleeps.
+       Owner fix (requires sudo):  sudo pmset -a sleep 0 disablesleep 1"
+  echo "guard: power OK (idle sleep disabled)"
+}
+
+# --- LAYER 1: every CRITICAL risk must be RESOLVED or explicitly ACCEPTED -----
+# Replaces a grep that (a) aborted even when zero Critical risks were open,
+# because `grep -c ... || echo 0` yields "0\n0" and breaks the -eq test, and
+# (b) skipped the CRITICAL section entirely when no line-start
+# "- **Status:** OPEN" existed anywhere, letting an open Critical risk through.
+# This version reads only the CRITICAL section and requires an explicit terminal
+# status per risk. Unknown or missing statuses fail closed.
+guard_assert_critical_risks_cleared() {
+  local register="${1:-docs/RISK_REGISTER.md}"
+  [ -f "$register" ] || guard_die "LAYER 1: risk register not found: $register"
+
+  local report
+  report="$(awk '
+    /^## CRITICAL/ { in_crit=1; next }
+    /^## / && in_crit { in_crit=0 }
+    !in_crit { next }
+    /^### / { risk=$2; order[++n]=risk; next }
+    /\*\*Status:\*\*/ {
+      if (!risk) next
+      line=$0
+      sub(/.*\*\*Status:\*\*[ ]*/, "", line)
+      gsub(/\*/, "", line)
+      status = toupper(line)
+      if (risk in state) next            # first status line per risk wins
+      if (status ~ /^RESOLVED/)       state[risk]="RESOLVED"
+      else if (status ~ /^ACCEPTED/)  state[risk]="ACCEPTED"
+      else if (status ~ /^PARTIALLY/) state[risk]="PARTIALLY_RESOLVED"
+      else if (status ~ /^OPEN/)      state[risk]="OPEN"
+      else                            state[risk]="UNRECOGNISED"
+    }
+    END {
+      for (i=1; i<=n; i++) {
+        r=order[i]
+        printf "%s=%s\n", r, (r in state) ? state[r] : "NO_STATUS"
+      }
+    }
+  ' "$register")"
+
+  [ -n "$report" ] || guard_die "LAYER 1: no CRITICAL risks found in $register (expected '## CRITICAL' with '### R<n>' entries)"
+
+  local blocking="" line risk status
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    risk="${line%%=*}"; status="${line#*=}"
+    case "$status" in
+      RESOLVED|ACCEPTED) ;;
+      *) blocking="${blocking}${blocking:+, }${risk}:${status}" ;;
+    esac
+  done <<< "$report"
+
+  [ -z "$blocking" ] || guard_die \
+"LAYER 1: CRITICAL risk(s) not resolved or accepted -> ${blocking}
+       Each CRITICAL risk must read '**Status:** RESOLVED ...' or
+       '**Status:** ACCEPTED ...' in ${register}. PARTIALLY RESOLVED and OPEN
+       both block; an owner may accept a risk, but only explicitly and in writing."
+
+  echo "guard: LAYER 1 OK ($(printf '%s\n' "$report" | grep -c . ) critical risk(s), all resolved or accepted)"
+}
+
 # Load an env file into the environment, ignoring comments and blanks.
 guard_load_env() {
   local f="$1"
