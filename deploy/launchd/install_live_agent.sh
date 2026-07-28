@@ -15,14 +15,15 @@ echo "wrote $DEST"
 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$DEST" || { echo "ABORT: bootstrap failed"; exit 1; }
 launchctl enable "gui/$(id -u)/$LABEL"
-# RunAtLoad fires immediately and the agent may exit 0 (declining to start)
-# before we look, so poll rather than sampling once.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  launchctl list | grep -q "$LABEL" && break
-  sleep 1
-done
-launchctl list | grep -q "$LABEL" || { echo "ABORT: agent not in launchctl list"; exit 1; }
-echo "loaded: $(launchctl list | grep "$LABEL")"
+# Verify with `launchctl print`, not `launchctl list`. RunAtLoad fires
+# immediately and this agent exits 0 when it declines to start, so its presence
+# in `list` races with its own execution; `print` answers the real question
+# ("is the service bootstrapped?") and is stable across that window.
+launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 \
+  || { echo "ABORT: $LABEL is not bootstrapped"; exit 1; }
+echo "bootstrapped: $LABEL"
+launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null \
+  | grep -E "^\s*(state|runs|last exit code) " | sed 's/^/  /' 
 printf '%s | LAUNCHD_INSTALL | label=%s | commit=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LABEL" "$(git rev-parse --short HEAD)" >> logs/runtime.log
 echo
