@@ -41,7 +41,12 @@ def test_single_production_entry_point_pins_the_forward_env() -> None:
     assert 'guard_load_env ".env.forward"' in text
     assert "guard_assert_forward_mode" in text
     assert "guard_assert_pilot_limits" in text
-    assert ".env.live" not in text, "the forward launcher must never reference the live config"
+    # Only executable lines matter: the header comment legitimately explains that
+    # this launcher never reads .env.live.
+    code = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    assert not any(".env.live" in ln for ln in code), (
+        "the forward launcher must never load the live config"
+    )
 
 
 def test_ops_scripts_contain_no_order_or_secret_words() -> None:
