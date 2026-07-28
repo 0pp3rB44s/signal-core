@@ -50,11 +50,46 @@ stop flag is absent, the tree is clean, and the host cannot idle-sleep.
 exercised and returned exit 0 with the correct reason (no session on record; stop
 flag present).
 
-- **Residual risk:** boot persistence is proven **by configuration only**. No actual
-  reboot has been performed, which is precisely the event R1 names. It stays
-  PARTIALLY RESOLVED — and therefore still blocks LAYER 1 — until an owner reboots
-  the host and confirms `com.cgc.live` restored the engine. A wedged-but-alive engine
-  is also not covered by `KeepAlive`; that case belongs to R2 and to the watchdog.
+**Verification round 2, 2026-07-28 — restart mechanics proven by experiment.**
+
+A throwaway agent (`com.cgc.r1probe`) mirroring the live plist's exit contract was
+bootstrapped on this host and this macOS build, and then removed:
+
+| Experiment | Expected | Observed |
+|---|---|---|
+| A — job exits 0 (mirrors an agent refusal) | exactly 1 run, no respawn | **1 run in 25 s** |
+| B — job exits 1 (mirrors an engine crash) | respawn every `ThrottleInterval`=10 s | **5 runs in 45 s**, at 21:26:17/27/37/47/57 |
+| C — flip back to exit 0 | respawn loop stops | **0 runs in the following 25 s** |
+
+So `KeepAlive/SuccessfulExit=false` + `ThrottleInterval` behave exactly as the live
+agent's contract requires: a refusal never loops, a crash always restarts.
+
+Also verified directly against `com.cgc.live`: bootstrapped (`state = active`,
+`runs = 1`, `last exit code = 0`); plist on disk at
+`~/Library/LaunchAgents/com.cgc.live.plist` with `RunAtLoad = true`,
+`KeepAlive.SuccessfulExit = false`, `WorkingDirectory` = the repo; stop-flag branch
+refuses with exit 0; no-session branch refuses with exit 0; `.env.live` sources
+cleanly (`EXECUTION_MODE=LIVE`, `MAX_SYMBOLS=1`, `MAX_OPEN_POSITIONS=1`,
+credentials present); heartbeat writes `process_started` on engine start.
+
+- **Residual risk — one link, and it cannot be closed yet.** Every component of the
+  restart chain is now proven independently. What is *not* proven is the composite at
+  a real boot: launchd loading the agent at login → the agent restoring the engine.
+  A reboot performed **now** would not prove it either: `state/live_runtime.state`
+  does not exist, so the agent would correctly hit the "no session on record" branch
+  and exit 0. That demonstrates agent loading, not engine recovery — which is the
+  substance of R1.
+
+  The proof therefore requires this order: (1) an authorised live session runs and
+  writes `live_runtime.state`; (2) the host reboots; (3) `logs/launchd_live.out`
+  shows the agent restoring the engine. Step 1 is gated by LAYER 1, which blocks on
+  R1 — a genuine circular dependency. **The designed exit is the one LAYER 1 already
+  supports: an owner may record `**Status:** ACCEPTED …` in writing, launch, and then
+  convert this entry to RESOLVED with the reboot evidence from step 3.** Until one of
+  those two things happens, R1 stays PARTIALLY RESOLVED and correctly blocks.
+
+  A wedged-but-alive engine remains outside `KeepAlive`'s reach; that case belongs to
+  R2 and to the watchdog.
 
 ### R2 — Host sleep suspends the trading process undetected
 
