@@ -88,3 +88,41 @@ guard_log_start() {
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$mode" "$envfile" \
     "$(git rev-parse --short HEAD)" "${USER:-unknown}" "$(hostname)" >> logs/runtime.log
 }
+
+# Sleep-safety pre-flight (R2). Root cause established 2026-07-28:
+#   * `caffeinate -s` is "valid only when system is running on AC power" (man page)
+#   * `caffeinate -i` blocks idle sleep only; clamshell (lid-close) sleep is NOT
+#     blocked -- already documented in scripts/lib/power_assertion.sh:14-17
+#   * this host has `sleep 1` (1-minute idle) on BOTH AC and Battery
+# So on battery, or with the lid closed, the power assertion cannot keep the host
+# awake. That is what suspended the engine for 22.19 h on 2026-07-26.
+#
+# This guard does not fix it -- the fix needs sudo (owner action). It makes the
+# condition VISIBLE at launch instead of silent.
+#
+# Default is WARN, not abort: defaulting to abort on a battery-powered laptop
+# would silently break every automatic restart, which is the same class of
+# failure this whole effort exists to remove. Production should set
+# CGC_REQUIRE_AC=1 to turn the warning into a hard gate.
+guard_assert_sleep_safe() {
+  local on_battery=0 prevent_system=0
+  pmset -g batt 2>/dev/null | grep -q "Battery Power" && on_battery=1
+  prevent_system=$(pmset -g assertions 2>/dev/null | awk '/PreventSystemSleep/{print $2; exit}')
+  prevent_system=${prevent_system:-0}
+  local idle_sleep; idle_sleep=$(pmset -g custom 2>/dev/null | awk '/^ *sleep /{print $2; exit}')
+
+  echo "guard: power state | on_battery=$on_battery | PreventSystemSleep=$prevent_system | idle_sleep=${idle_sleep:-?}min"
+  if [ "$on_battery" -eq 1 ]; then
+    echo "guard: WARNING R2 -- host is on BATTERY. 'caffeinate -s' is inert on battery," >&2
+    echo "       so the engine can be suspended without warning (22.19 h on 2026-07-26)." >&2
+    echo "       Owner fix: connect AC power, keep the lid open, and/or run:" >&2
+    echo "         sudo pmset -a sleep 0 disksleep 0" >&2
+    if [ "${CGC_REQUIRE_AC:-0}" = "1" ]; then
+      guard_die "CGC_REQUIRE_AC=1 and host is on battery; refusing to start unattended"
+    fi
+    echo "guard: proceeding on battery (set CGC_REQUIRE_AC=1 to make this a hard gate)"
+  fi
+  if [ "${idle_sleep:-1}" != "0" ]; then
+    echo "guard: NOTE idle sleep is ${idle_sleep}min; lid-close sleep is never blocked by caffeinate" >&2
+  fi
+}

@@ -15,6 +15,7 @@ guard_assert_repo_clean
 guard_assert_venv
 guard_assert_no_duplicate
 guard_assert_disk
+guard_assert_sleep_safe            # R2: surfaces battery/lid sleep exposure
 guard_load_env ".env.forward"
 guard_assert_forward_mode          # aborts if live execution is reachable
 guard_assert_pilot_limits
