@@ -19,8 +19,9 @@ set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$PROJECT_DIR"
 mkdir -p logs state
-LOG="logs/launchd_live.out"
-log() { printf '%s | LIVE_AGENT | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" | tee -a "$LOG"; }
+# stdout only: launchd already captures it to logs/launchd_live.out via
+# StandardOutPath. Tee-ing to that same file duplicated every line.
+log() { printf '%s | LIVE_AGENT | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
 
 log "starting (commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown))"
 

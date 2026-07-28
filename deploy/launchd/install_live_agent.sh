@@ -15,7 +15,12 @@ echo "wrote $DEST"
 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$DEST" || { echo "ABORT: bootstrap failed"; exit 1; }
 launchctl enable "gui/$(id -u)/$LABEL"
-sleep 2
+# RunAtLoad fires immediately and the agent may exit 0 (declining to start)
+# before we look, so poll rather than sampling once.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl list | grep -q "$LABEL" && break
+  sleep 1
+done
 launchctl list | grep -q "$LABEL" || { echo "ABORT: agent not in launchctl list"; exit 1; }
 echo "loaded: $(launchctl list | grep "$LABEL")"
 printf '%s | LAUNCHD_INSTALL | label=%s | commit=%s\n' \
