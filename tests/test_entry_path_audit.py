@@ -281,3 +281,17 @@ def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monke
     kwargs = service.client.close_futures_position.call_args.kwargs
     assert kwargs["hold_side"] == "long"
     assert kwargs["size"] == 0.5
+
+
+def test_empty_pending_orders_envelope_is_not_read_as_an_order():
+    """Bitget sends {"entrustedList": null} when flat; that is zero orders, not one."""
+    from clients.bitget_order_client import BitgetOrderClientMixin as M
+
+    assert M._order_rows({"data": {"entrustedList": None, "endId": None}}) == []
+    assert M._order_rows({"data": {"entrustedList": [], "endId": None}}) == []
+    assert M._order_rows({"data": {"entrustedList": [{"orderId": "1"}]}}) == [{"orderId": "1"}]
+    # A bare order object (order/detail) is still one row.
+    assert M._order_rows({"data": {"orderId": "9", "clientOid": "x"}}) == [
+        {"orderId": "9", "clientOid": "x"}
+    ]
+    assert M._order_rows({"data": None}) == []

@@ -80,9 +80,14 @@ class BitgetOrderClientMixin:
     def _order_rows(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
         data = (payload or {}).get("data")
         if isinstance(data, dict):
-            entrust = data.get("entrustedList") or data.get("orderList") or data.get("list")
-            if isinstance(entrust, list):
-                return [row for row in entrust if isinstance(row, dict)]
+            # Bitget returns a list-envelope ({"entrustedList": null, "endId": null})
+            # when there are no orders. Treating that envelope as an order row
+            # invents a phantom order in every readout, so detect the envelope by
+            # its keys rather than by whether the list happens to be populated.
+            for key in ("entrustedList", "orderList", "list"):
+                if key in data:
+                    entrust = data.get(key)
+                    return [row for row in entrust if isinstance(row, dict)] if isinstance(entrust, list) else []
             return [data]
         if isinstance(data, list):
             return [row for row in data if isinstance(row, dict)]
