@@ -106,10 +106,57 @@ credentials present); heartbeat writes `process_started` on engine start.
 - **Impact:** an open position is unmanaged for hours while the process believes it is
   running; stop-losses are never evaluated.
 - **Likelihood:** High on this hardware.
-- **Status:** RESOLVED 2026-07-28 (commit `7c0fb07`; host reconfigured by owner).
-  The original mechanism was never fully established — whether the assertion process
-  died first or was held and proved insufficient is **evidence not available**
-  (process table lost at reboot; OS sleep records rotated).
+- **Status:** PARTIALLY RESOLVED — reopened 2026-07-29. Marked RESOLVED on
+  2026-07-28; that verdict was **wrong** and is retracted below with evidence.
+  The original 2026-07-27 mechanism was never fully established — whether the
+  assertion process died first or was held and proved insufficient is **evidence
+  not available** (process table lost at reboot; OS sleep records rotated).
+
+**RETRACTION 2026-07-29 — R2 recurred in production, 8 hours after being closed.**
+
+*What happened.* The host suspended the live engine for **3 h 00 m 29 s**, from
+`03:25:52Z` (last API call) to `06:26:21Z` (funnel resumed). Evidence:
+
+| Source | Record |
+|---|---|
+| `pmset -g log` | `2026-07-29 05:29:32 +0200  Sleep  Entering Sleep state due to 'Low Power Sleep': Using Batt (Charge:1%)` |
+| `pmset -g log` | `2026-07-29 08:25:09 +0200  Wake from Hibernate [CDNVA] : due to acattach ... (Charge:3%)` |
+| `logs/live.out` | last line `03:25:52Z`, first line after `06:25:05Z` (DNS failure, then recovery) |
+| `funnel_events.jsonl` | single gap of 181.1 min, the only gap >7 min in the session |
+| process table | PID 67526 unchanged throughout — the process never died, it was frozen |
+
+*Why the 2026-07-28 fix did not cover it.* `sudo pmset -a sleep 0` disables
+**idle** sleep. The event that fired was **critical-battery emergency sleep**,
+which macOS performs regardless of `sleep 0` and regardless of held power
+assertions. A `caffeinate` process (PID 67568) held `PreventUserIdleSystemSleep`
+*and* `PreventSystemSleep` for the entire 9 h 13 m and did not prevent it.
+Recovery required a human to physically attach the charger — `acattach` is the
+wake reason. Nothing woke it on its own.
+
+*Why nothing reported it.* `launchd` interval jobs do not fire while the host is
+asleep, so a host-resident watchdog cannot observe its own host's suspension.
+The engine heartbeat was also frozen at `process_started` (schema v1), so even
+after wake there was no signal. Both are now improved (`com.cgc.watchdog` at 60 s;
+heartbeat v2 committed but **not yet running**), and neither closes this vector.
+
+*What is actually in place today.* `pmset -g custom` reports `sleep 0` and
+`disksleep 0` on both AC and Battery. `guard_assert_power_continuous()` refuses
+to launch, and `live_agent.sh` refuses to restore a session, whenever idle sleep
+is enabled — so a *regression* to `sleep > 0` blocks startup. The host is
+currently on AC and charging.
+
+- **Residual risk — the reason this is not RESOLVED:**
+  1. **`disablesleep` is not set** (`pmset -g` shows no such entry). Both
+     lid-close and critical-battery sleep remain possible, and neither is
+     prevented by `sleep 0` or by `caffeinate`.
+  2. **No sleep test has been performed since any change.** Per the register's
+     own standard, a control is not a resolution until the guarded condition has
+     been exercised and observed.
+  3. **Detection remains host-local.** See `docs/OFF_HOST_DEADMAN.md`; an
+     off-host dead-man is designed but not deployed.
+
+  Owner action to close vector 1: `sudo pmset -c disablesleep 1` (AC), keep the
+  machine on mains, then re-test and record the result here.
 
 **Update 2026-07-28 — idle sleep eliminated at the host and enforced at launch.**
 
