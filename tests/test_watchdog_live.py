@@ -348,3 +348,16 @@ def test_state_tool_never_captures_provider_response_bodies():
     assert ">/dev/null 2>&1" in src, "alert.sh output must be discarded"
     # Only the exit status may be consulted.
     assert "proc.stdout" not in src and "proc.stderr" not in src
+
+
+# --- launchctl race regression ------------------------------------------
+
+def test_supervisor_check_uses_print_not_list():
+    """`launchctl list` intermittently omits a job that exited 0 and is idle.
+    It produced a false SUPERVISOR_MISSING during scheduler validation."""
+    src = WATCHDOG.read_text()
+    block = src.split("# 9. supervisor")[1].split("# 10.")[0]
+    code = [ln for ln in block.splitlines() if not ln.strip().startswith("#")]
+    assert any("launchctl print" in ln for ln in code)
+    assert not any("launchctl list" in ln for ln in code), \
+        "supervisor check must not use the racy `launchctl list`"

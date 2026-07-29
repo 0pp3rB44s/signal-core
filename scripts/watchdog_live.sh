@@ -176,11 +176,16 @@ fi
 # 9. supervisor, selected by mode
 case "$MODE" in
   LIVE)
-    if launchctl list 2>/dev/null | grep -q com.cgc.live; then
-      report OK "live supervisor loaded (com.cgc.live)"
+    # `launchctl list` is racy for a job that exits 0 and is not currently
+    # running: it intermittently omits the label, which produced a false
+    # SUPERVISOR_MISSING at 12:56:23Z during scheduler validation. `launchctl
+    # print` answers the real question — is the service bootstrapped — and is
+    # stable across that window.
+    if launchctl print "gui/$(id -u)/com.cgc.live" >/dev/null 2>&1; then
+      report OK "live supervisor bootstrapped (com.cgc.live)"
     else
-      report FAIL "live supervisor com.cgc.live NOT loaded"
-      raise SUPERVISOR_MISSING HIGH "com.cgc.live not loaded — no crash/boot recovery"
+      report FAIL "live supervisor com.cgc.live NOT bootstrapped"
+      raise SUPERVISOR_MISSING HIGH "com.cgc.live not bootstrapped — no crash/boot recovery"
     fi ;;
   DRY_RUN|FORWARD_PAPER)
     if pgrep -f forward_paper_keepalive >/dev/null 2>&1; then
