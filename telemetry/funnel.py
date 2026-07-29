@@ -45,6 +45,7 @@ REASON_CODES = frozenset({
     "CONSECUTIVE_LOSS_LIMIT", "EXPECTANCY_BLOCK", "SYMBOL_EXPECTANCY_PAUSE",
     "HTF_OPPOSITION", "SCORE_THRESHOLD", "ORDERBOOK_RISK",
     "EXECUTION_COST", "NET_EDGE", "RR_GEOMETRY", "MIN_NOTIONAL",
+    "SHORTS_DISABLED",
 })
 REQUIRED_FIELDS = (
     "schema_version", "event_id", "lifecycle_key", "scan_id", "candidate_id", "event_type",
@@ -133,6 +134,10 @@ def classify_reason_codes(values: Iterable[Any]) -> list[str]:
     """Map existing human-readable reasons to stable telemetry-only codes."""
     text = " | ".join(str(value).lower() for value in values if value not in (None, ""))
     rules = (
+        # Distinctive full phrase: this is a true hard rejection and must never
+        # be inferred from a loose token the way EXPECTANCY_BLOCK matches the
+        # bare word "expectancy" inside non-blocking PROBE text.
+        ("SHORTS_DISABLED", ("shorts disabled by configuration",)),
         ("WEEKLY_FREEZE", ("weekly freeze",)),
         ("DAILY_DEFENSIVE", ("daily defensive", "day_defensive")),
         ("CONSECUTIVE_LOSS_LIMIT", ("consecutive loss",)),

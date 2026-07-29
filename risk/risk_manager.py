@@ -1024,12 +1024,50 @@ class RiskManager:
         hard_blocks = [r for r in reasons if "momentum-quality blocked" in r]
         return not hard_blocks, reasons, momentum_probe and not hard_blocks
 
+    def shorts_permitted(self) -> bool:
+        """Authoritative answer to "may this deployment open SHORT positions?".
+
+        Reads the parsed Settings value, never an env string or note substring.
+        Anything that is not an explicit boolean True is treated as "no" while
+        EXECUTION_MODE is LIVE, so a missing or corrupted value fails closed with
+        real money rather than silently permitting the opposite side.
+        """
+        value = getattr(self.settings, "enable_shorts", None)
+        if isinstance(value, bool):
+            return value
+        # Unresolvable value: fail closed in LIVE, keep prior behaviour elsewhere.
+        live = str(getattr(self.settings, "execution_mode", "")).strip().upper() == "LIVE"
+        return not live
+
     def evaluate(self, candidate: StrategyCandidate, score: StrategyScore) -> RiskVerdict:
         reasons: list[str] = []
 
         note_text = self._note_text(candidate)
         leverage = min(self.settings.default_leverage, self.settings.max_leverage, self.SAFE_ALPHA_MAX_LEVERAGE)
         account_risk_pct = min(self.settings.account_risk_per_trade_pct, self.SAFE_ALPHA_MAX_RISK_PCT)
+
+        # --- short-side enforcement -------------------------------------
+        # ENABLE_SHORTS existed in config but was never wired into any decision
+        # path, so a deployment with ENABLE_SHORTS=false still produced, scored
+        # and risk-evaluated SHORT candidates (39/39 in the 2026-07-29 pilot).
+        # They were only stopped by an unrelated expectancy pause. This gate is
+        # evaluated before anything else and before the planner is ever called.
+        if str(candidate.direction or "").strip().upper() == "SHORT" and not self.shorts_permitted():
+            logger.warning(
+                "SHORTS_DISABLED | %s | strategy=%s | side=SHORT | stage=risk_gate | mode=%s",
+                candidate.symbol,
+                candidate.strategy,
+                str(getattr(self.settings, "execution_mode", "UNKNOWN")),
+            )
+            reasons.append("blocked: shorts disabled by configuration (ENABLE_SHORTS=false)")
+            return RiskVerdict(
+                allowed=False,
+                status="BLOCKED",
+                reasons=reasons,
+                account_risk_pct=account_risk_pct,
+                leverage=leverage,
+                max_open_positions=self.settings.max_open_positions,
+            )
 
         if "orderbook_risk_off=true" in note_text or "orderbook_available=false" in note_text:
             reasons.append("blocked: orderbook risk-off")

@@ -376,6 +376,31 @@ class ExecutionService:
             effective_leverage = plan.leverage
 
             if self.settings.execution_mode.upper() == "LIVE":
+                # --- defence in depth: short-side invariant ---------------
+                # RiskManager rejects SHORT candidates before the planner runs,
+                # so this must be unreachable in normal operation. It exists so
+                # that no future change to the risk layer, and no directly
+                # injected plan, can put a forbidden SHORT on the exchange.
+                # Reached before any client call: zero exchange mutation.
+                if plan.direction.upper() == "SHORT" and not self._shorts_permitted():
+                    self.log.critical(
+                        "SHORTS_DISABLED_EXECUTION_INVARIANT | %s | strategy=%s | side=SHORT | "
+                        "stage=execution_service | mode=LIVE | submission_refused=True",
+                        plan.symbol,
+                        plan.strategy,
+                    )
+                    reports.append(
+                        self._report(
+                            plan=plan,
+                            status="SKIPPED",
+                            message="blocked: shorts disabled by configuration (ENABLE_SHORTS=false)",
+                            avg_entry=avg_entry,
+                            notional=min(plan.position_notional_usdt, hard_cap_notional),
+                            leverage=plan.leverage,
+                        )
+                    )
+                    continue
+
                 side = "buy" if plan.direction.upper() == "LONG" else "sell"
                 close_side = "sell" if plan.direction.upper() == "LONG" else "buy"
                 trade_side = "open"
@@ -1189,6 +1214,19 @@ class ExecutionService:
         self.store.save(existing)
         self.event_store.save(execution_events)
         return reports
+
+    def _shorts_permitted(self) -> bool:
+        """Mirror of RiskManager.shorts_permitted for the execution invariant.
+
+        Deliberately duplicated rather than imported: this is a defence-in-depth
+        check, and it must not stop working because the risk layer was changed,
+        refactored or bypassed.
+        """
+        value = getattr(self.settings, "enable_shorts", None)
+        if isinstance(value, bool):
+            return value
+        live = str(getattr(self.settings, "execution_mode", "")).strip().upper() == "LIVE"
+        return not live
 
     def _entry_guard_reason(self) -> str:
         """Return a non-empty reason when no new live entry may be created.
