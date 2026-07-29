@@ -30,6 +30,29 @@ class RuntimeDiagnostics:
         self._scan_started = 0
         self._scan_completed = 0
         self._previous_thread_hook = threading.excepthook
+        # Liveness context: makes the heartbeat answer "is this engine actually
+        # working?" instead of only "did the process start?".
+        self._mode = "UNKNOWN"
+        self._last_successful_scan_utc: str | None = None
+        self._last_error_utc: str | None = None
+        self._last_error_type: str | None = None
+        self._commit: str | None = None
+
+    def set_runtime_mode(self, mode: str) -> None:
+        """Record the runtime mode (LIVE / DRY_RUN / FORWARD_PAPER ...)."""
+        with self._lock:
+            self._mode = str(mode or "UNKNOWN")
+
+    def _git_commit(self) -> str:
+        """Cached short-circuit; never raises and never blocks a heartbeat."""
+        if self._commit is None:
+            try:
+                from telemetry.funnel import safe_git_commit
+
+                self._commit = str(safe_git_commit() or "unknown")
+            except Exception:
+                self._commit = "unknown"
+        return self._commit
 
     @staticmethod
     def _now() -> str:
@@ -56,24 +79,52 @@ class RuntimeDiagnostics:
         self.heartbeat("process_started")
 
     def heartbeat(self, stage: str, **fields: Any) -> None:
+        """Write one liveness breadcrumb. Never raises: observability must not
+        be able to stop trading."""
         with self._lock:
             if not self._installed:
                 return
+            now = self._now()
+
             if fields.pop("scan_started", False):
                 self._scan_started += 1
+            # Only an explicitly successful cycle advances the completed
+            # counter, so a failed scan can never look like a healthy one.
             if fields.pop("scan_completed", False):
                 self._scan_completed += 1
+                self._last_successful_scan_utc = now
+
+            error_type = fields.pop("error_type", None)
+            if error_type:
+                self._last_error_utc = now
+                self._last_error_type = str(error_type)
+
             payload = {
-                "schema_version": 1,
-                "timestamp": self._now(),
+                "schema_version": 2,
+                "timestamp": now,
                 "stage": str(stage),
+                "mode": self._mode,
+                "commit": self._git_commit(),
                 **self._process_identity(),
                 "thread": threading.current_thread().name,
                 "scan_cycles_started": self._scan_started,
                 "scan_cycles_completed": self._scan_completed,
+                "last_successful_scan_utc": self._last_successful_scan_utc,
+                "last_error_utc": self._last_error_utc,
+                "last_error_type": self._last_error_type,
                 "details": fields,
             }
-            atomic_write_json(self.heartbeat_path, payload, indent=2, sort_keys=True)
+            try:
+                atomic_write_json(self.heartbeat_path, payload, indent=2, sort_keys=True)
+            except Exception as exc:
+                # A read-only disk, a full volume or a permissions problem must
+                # degrade observability, never halt the engine.
+                self.log.warning(
+                    "HEARTBEAT_WRITE_FAILED | stage=%s | path=%s | error=%s",
+                    stage,
+                    self.heartbeat_path,
+                    exc,
+                )
 
     def record_shutdown(
         self,
@@ -86,6 +137,9 @@ class RuntimeDiagnostics:
         with self._lock:
             if self._shutdown_written and not force:
                 return
+            # Mark the heartbeat as shutting down so an external monitor can
+            # distinguish a deliberate stop from a silent suspension.
+            self.heartbeat("shutdown_started", reason=str(reason), signal=signal_name)
             payload = {
                 "schema_version": 1,
                 "timestamp": self._now(),
@@ -96,8 +150,14 @@ class RuntimeDiagnostics:
                 "scan_cycles_started": self._scan_started,
                 "scan_cycles_completed": self._scan_completed,
             }
-            atomic_write_json(self.shutdown_path, payload, indent=2, sort_keys=True)
+            try:
+                atomic_write_json(self.shutdown_path, payload, indent=2, sort_keys=True)
+            except Exception as exc:
+                self.log.warning(
+                    "SHUTDOWN_RECORD_WRITE_FAILED | reason=%s | error=%s", reason, exc
+                )
             self._shutdown_written = True
+            self.heartbeat("shutdown_completed", reason=str(reason), exit_code=exit_code)
             self._flush_logs()
 
     def _signal_handler(self, signum: int, _frame: FrameType | None) -> None:
@@ -142,3 +202,7 @@ def get_runtime_diagnostics() -> RuntimeDiagnostics:
 
 def runtime_heartbeat(stage: str, **fields: Any) -> None:
     _runtime.heartbeat(stage, **fields)
+
+
+def set_runtime_mode(mode: str) -> None:
+    _runtime.set_runtime_mode(mode)

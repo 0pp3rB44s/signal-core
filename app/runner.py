@@ -12,7 +12,7 @@ from collections import Counter
 
 from app.config import Settings
 from app.equity import write_equity_snapshot
-from app.runtime_diagnostics import runtime_heartbeat
+from app.runtime_diagnostics import runtime_heartbeat, set_runtime_mode
 from clients.bitget_rest import BitgetRestClient
 from clients.bitget_public_client import BitgetPublicClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
@@ -403,7 +403,12 @@ class StartupRunner:
         if self.settings.forward_paper_only:
             self.log.warning("FORWARD_PAPER_ONLY ACTIVE")
             self.log.warning("PRIVATE EXCHANGE CALLS DISABLED")
-            runtime_heartbeat("startup_checks")
+        # Record the runtime mode once so every later heartbeat is attributable,
+        # then beat immediately: startup is a lifecycle stage in every mode.
+        set_runtime_mode(
+            "FORWARD_PAPER" if self.settings.forward_paper_only else str(self.settings.execution_mode)
+        )
+        runtime_heartbeat("startup_checks")
         self._startup_checks()
 
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
@@ -612,8 +617,10 @@ class StartupRunner:
                 self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
                 return
 
-            if self.settings.forward_paper_only:
-                runtime_heartbeat("scan_cycle_start", scan_started=True)
+            # Liveness telemetry is mode-independent. It used to be emitted only
+            # in forward-paper mode, which left LIVE with no heartbeat at all --
+            # a 3 h host suspension on 2026-07-29 went undetected as a result.
+            runtime_heartbeat("scan_cycle_start", scan_started=True)
 
             try:
                 agent_report = run_coach_rules()
@@ -1500,21 +1507,20 @@ class StartupRunner:
                 self._sync_positions(snapshots, use_snapshot_context=True)
 
             scan_completed = True
-            if self.settings.forward_paper_only:
-                executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
-                runtime_heartbeat(
-                    "scan_cycle_complete",
-                    scan_completed=True,
-                    snapshot_count=len(snapshots),
-                    plan_count=len(plans),
-                    executable_plan_count=executable_count,
-                )
-                self.log.info(
-                    "SCAN_CYCLE_COMPLETED | snapshots=%s | plans=%s | executable=%s",
-                    len(snapshots),
-                    len(plans),
-                    executable_count,
-                )
+            executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
+            runtime_heartbeat(
+                "scan_cycle_complete",
+                scan_completed=True,
+                snapshot_count=len(snapshots),
+                plan_count=len(plans),
+                executable_plan_count=executable_count,
+            )
+            self.log.info(
+                "SCAN_CYCLE_COMPLETED | snapshots=%s | plans=%s | executable=%s",
+                len(snapshots),
+                len(plans),
+                executable_count,
+            )
 
 
         finally:
@@ -1525,7 +1531,9 @@ class StartupRunner:
                 except Exception:
                     pass
             self._scan_in_progress = False
-            if self.settings.forward_paper_only and not scan_completed:
+            # Mode-independent: a started-but-unfinished cycle must be visible,
+            # and must never advance scan_cycles_completed.
+            if not scan_completed:
                 runtime_heartbeat("scan_cycle_incomplete")
 
     def _active_symbol_cooldown(self, symbol: str) -> dict | None:
