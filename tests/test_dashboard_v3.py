@@ -505,3 +505,43 @@ def test_stop_all_terminates_both_dashboards():
     stopper = (REPO / "scripts" / "stop_all.sh").read_text()
     assert "dashboard_v3.app" in stopper
     assert "dashboard_v2.app" in stopper
+
+
+# --- bind safety: never publish to the LAN by accident -------------------
+
+def test_public_bind_is_refused_by_default(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password")
+    import importlib
+    import dashboard_v3.app as mod
+    importlib.reload(mod)
+    host, note = mod.resolve_bind_host("0.0.0.0", allow_public=False)
+    assert host == "127.0.0.1"
+    assert "ignored" in note
+
+
+def test_loopback_is_passed_through_without_a_warning(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password")
+    import importlib
+    import dashboard_v3.app as mod
+    importlib.reload(mod)
+    for value in ("127.0.0.1", "localhost", "::1"):
+        host, note = mod.resolve_bind_host(value, allow_public=False)
+        assert host == value and note == ""
+
+
+def test_explicit_opt_in_allows_public_bind_but_warns(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password")
+    import importlib
+    import dashboard_v3.app as mod
+    importlib.reload(mod)
+    host, note = mod.resolve_bind_host("0.0.0.0", allow_public=True)
+    assert host == "0.0.0.0"
+    assert "WARNING" in note
+
+
+def test_empty_host_defaults_to_loopback(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password")
+    import importlib
+    import dashboard_v3.app as mod
+    importlib.reload(mod)
+    assert mod.resolve_bind_host("", allow_public=False)[0] == "127.0.0.1"

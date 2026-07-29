@@ -246,6 +246,39 @@ def _500(_e):
                            message="Interne fout. Andere panelen blijven werken."), 500
 
 
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def resolve_bind_host(configured: str, allow_public: bool) -> tuple[str, str]:
+    """Return (host, note). Refuses a non-loopback bind unless opted in.
+
+    The ambient config carries DASHBOARD_HOST=0.0.0.0, which would publish this
+    console to every interface on the LAN over plain HTTP with only a form
+    password in front. Binding is therefore forced to loopback unless the
+    operator explicitly sets DASHBOARD_ALLOW_PUBLIC_BIND=true, and even then a
+    warning is emitted. Tunnel with SSH rather than opening the port.
+    """
+    configured = (configured or "").strip() or "127.0.0.1"
+    if configured in LOOPBACK:
+        return configured, ""
+    if allow_public:
+        return configured, (
+            f"WARNING: binding to {configured} — this console is reachable from "
+            "the network over plain HTTP. Terminate TLS and authenticate in front of it."
+        )
+    return "127.0.0.1", (
+        f"NOTE: DASHBOARD_HOST={configured} ignored; bound to 127.0.0.1. "
+        "Set DASHBOARD_ALLOW_PUBLIC_BIND=true to override, or tunnel: "
+        "ssh -N -L 8501:127.0.0.1:8501 <host>"
+    )
+
+
 if __name__ == "__main__":
-    app.run(host=settings.dashboard_host, port=settings.dashboard_port,
-            debug=False, threaded=True)
+    import os
+
+    allow_public = os.environ.get("DASHBOARD_ALLOW_PUBLIC_BIND", "").lower() == "true"
+    host, note = resolve_bind_host(settings.dashboard_host, allow_public)
+    if note:
+        print(note, flush=True)
+    print(f"dashboard_v3 on http://{host}:{settings.dashboard_port}", flush=True)
+    app.run(host=host, port=settings.dashboard_port, debug=False, threaded=True)
