@@ -53,6 +53,8 @@ pkill -f "python3 -u -m app.main" >/dev/null 2>&1 || true
 pkill -f "python3 -m app.main" >/dev/null 2>&1 || true
 pkill -f "python3 -u -m dashboard_v2.app" >/dev/null 2>&1 || true
 pkill -f "python3 -m dashboard_v2.app" >/dev/null 2>&1 || true
+pkill -f "python3 -u -m dashboard_v3.app" >/dev/null 2>&1 || true
+pkill -f "python3 -m dashboard_v3.app" >/dev/null 2>&1 || true
 
 STOP_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "$STOP_TS | ALL_PROCESSES_STOPPED | reason=$STOP_REASON" >> logs/runtime.log

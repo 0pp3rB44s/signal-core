@@ -465,3 +465,43 @@ def test_signal_hint_is_block_level():
     css = (REPO / "dashboard_v3" / "static" / "terminal.css").read_text()
     hint = css.split(".signal .hint")[1].split("}")[0]
     assert "display: block" in hint
+
+
+# --- promotion guards: v2 retired, v3 is production ----------------------
+
+def test_dashboard_v2_control_endpoints_are_removed():
+    src = (REPO / "dashboard_v2" / "app.py").read_text()
+    for route in ("/api/bot/start", '"/api/bot/stop"'):
+        assert f'@app.route("{route}"' not in src
+    assert "bot_control.start_bot" not in src
+    assert "bot_control.stop_bot" not in src
+
+
+def test_dashboard_v2_bot_control_cannot_spawn_a_process():
+    """The retired module must not shell out to any launcher script."""
+    src = (REPO / "dashboard_v2" / "bot_control.py").read_text()
+    for script in ("start_bot.sh", "stop_all.sh", "launch_live.sh"):
+        # Only allowed inside the explanatory message / docstring, never as an
+        # argument list handed to subprocess.
+        assert f'["{script}' not in src and f"['{script}" not in src
+    assert "pgrep" in src, "read-only status check should remain"
+
+
+def test_retired_control_functions_never_report_success():
+    import dashboard_v2.bot_control as bc
+    for fn in (bc.start_bot, bc.stop_bot):
+        result = fn("anything")
+        assert result["ok"] is False
+        assert result["pid"] is None
+
+
+def test_production_launcher_starts_v3():
+    launcher = (REPO / "scripts" / "start_dashboard.sh").read_text()
+    assert "-m dashboard_v3.app" in launcher
+    assert "nohup python3 -u -m dashboard_v2.app" not in launcher
+
+
+def test_stop_all_terminates_both_dashboards():
+    stopper = (REPO / "scripts" / "stop_all.sh").read_text()
+    assert "dashboard_v3.app" in stopper
+    assert "dashboard_v2.app" in stopper
