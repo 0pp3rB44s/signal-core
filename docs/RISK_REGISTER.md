@@ -106,8 +106,11 @@ credentials present); heartbeat writes `process_started` on engine start.
 - **Impact:** an open position is unmanaged for hours while the process believes it is
   running; stop-losses are never evaluated.
 - **Likelihood:** High on this hardware.
-- **Status:** PARTIALLY RESOLVED — reopened 2026-07-29. Marked RESOLVED on
-  2026-07-28; that verdict was **wrong** and is retracted below with evidence.
+- **Status:** RESOLVED FOR AC-POWERED OPERATION — 2026-07-29, verified by test.
+  `disablesleep=1`, `sleep=0`; the Mac must remain connected to mains during LIVE
+  operation. **Lid-close, AC loss and critical-battery outage remain operational
+  constraints and are NOT covered.** Scope and evidence below. This entry was
+  briefly and wrongly marked fully RESOLVED on 2026-07-28; that is retracted.
   The original 2026-07-27 mechanism was never fully established — whether the
   assertion process died first or was held and proved insufficient is **evidence
   not available** (process table lost at reboot; OS sleep records rotated).
@@ -145,18 +148,54 @@ to launch, and `live_agent.sh` refuses to restore a session, whenever idle sleep
 is enabled — so a *regression* to `sleep > 0` blocks startup. The host is
 currently on AC and charging.
 
-- **Residual risk — the reason this is not RESOLVED:**
-  1. **`disablesleep` is not set** (`pmset -g` shows no such entry). Both
-     lid-close and critical-battery sleep remain possible, and neither is
-     prevented by `sleep 0` or by `caffeinate`.
-  2. **No sleep test has been performed since any change.** Per the register's
-     own standard, a control is not a resolution until the guarded condition has
-     been exercised and observed.
-  3. **Detection remains host-local.** See `docs/OFF_HOST_DEADMAN.md`; an
-     off-host dead-man is designed but not deployed.
+**MITIGATION VERIFIED 2026-07-29 — scope is AC-powered idle sleep only.**
 
-  Owner action to close vector 1: `sudo pmset -c disablesleep 1` (AC), keep the
-  machine on mains, then re-test and record the result here.
+*Owner applied* `sudo pmset -c disablesleep 1`. Measured afterwards:
+
+```
+pmset -g   : SleepDisabled  1          (system-wide)
+pmset -g custom : sleep 0, disksleep 0 on BOTH AC Power and Battery Power
+pmset -g batt   : "Now drawing from 'AC Power'"; battery charging
+pmset -g sched  : no scheduled sleep or shutdown (two wake timers only)
+```
+
+*Controlled observation, 11 minutes, 13:53:26Z → 14:05:09Z.* Deliberately longer
+than `displaysleep=10`, so the display slept while the system did not — the
+discriminating test for idle sleep.
+
+| Signal | Before | After |
+|---|---|---|
+| Engine PID / uptime | 67526 / 16:03:10 | 67526 / **16:14:53** |
+| `logs/live.out` | 9 388 881 B | **9 528 316 B**, 9 s old |
+| Funnel decisions | 78 708 | **78 728** |
+| Watchdog runs (60 s) | 58 | **70** |
+| Watchdog heartbeat age | — | **19 s** |
+| Dashboard loopback | HTTP 200 | **HTTP 200** |
+| Order attempts | 0 | **0** |
+
+`pmset -g log`: the most recent `Entering Sleep state` remains
+`2026-07-29 05:29:32 +0200` — the original battery outage. **No new sleep
+transition occurred during the window.**
+
+- **Verified:** idle-sleep protection while on AC. The 2026-07-27 (22.19 h) and
+  2026-07-29 (3.00 h) outages were both sleep events that this configuration
+  now prevents for the idle case.
+- **NOT verified — lid-close.** The lid was not closed; doing so would be an
+  uncontrolled test against a live engine. `disablesleep=1` is expected to cover
+  clamshell, but that is an expectation, not a measurement.
+- **NOT verified — critical battery.** Not exercised, and deliberately so:
+  reproducing it means draining the machine that is trading. The 2026-07-29
+  outage fired at 1% charge; macOS performs that sleep regardless of
+  `disablesleep`. **Battery was 12–16% and charging during this test — a thin
+  buffer. AC loss would reach the critical threshold quickly.**
+- **NOT solved — total power loss / network loss.** Out of scope for any
+  host-resident control.
+- **Detection remains host-local.** `launchd` interval jobs do not run while the
+  host sleeps, so `com.cgc.watchdog` cannot report its own host's suspension.
+  See `docs/OFF_HOST_DEADMAN.md` — designed, not deployed.
+
+  **Operating constraint for the LIVE pilot: the Mac must stay on mains with the
+  lid open.** Loss of AC converts this back to the unmitigated failure mode.
 
 **Update 2026-07-28 — idle sleep eliminated at the host and enforced at launch.**
 
