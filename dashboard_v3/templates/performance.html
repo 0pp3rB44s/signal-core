@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Performance{% endblock %}
+{% block heading %}Prestaties &amp; handelsgeschiedenis{% endblock %}
+{% set h = d.panels.history %}
+{% set L = h.live_stats %}
+{% block content %}
+
+<div class="card" style="margin-bottom:14px"><div class="body">
+  <div class="notice t-warn"><span class="nt">▲ COHORT-SCHEIDING</span>
+    <p>Alleen <b>LIVE</b>-fills tellen mee in de cijfers hieronder.
+       Recovery/low-confidence trades ({{ h.recovery_stats.trades }}) staan apart,
+       backtest-resultaten staan op de pagina Risk. Cohorten worden nooit opgeteld.</p></div>
+</div></div>
+
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Gerealiseerd', money(L.total), h.window_days ~ 'd venster', 'neg' if (L.total or 0) < 0 else 'pos') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Trades', L.trades, 'LIVE cohort') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Winrate', pct(L.winrate), L.wins ~ 'W / ' ~ L.losses ~ 'V') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Profit factor', num(L.profit_factor,3), 'bruto winst / verlies', 'neg' if (L.profit_factor or 1) < 1 else 'pos') }}</div></div>
+</div>
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Expectancy', num(L.expectancy,4), 'per trade', 'neg' if (L.expectancy or 0) < 0 else 'pos') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Gem. winst', num(L.avg_win,4)) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Gem. verlies', num(L.avg_loss,4), '', 'neg') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('TP1 hit-rate', pct(L.tp1_hit_rate),
+      (L.tp1_tracked ~ ' gemeten, ' ~ L.tp1_missing ~ ' onbekend')) }}</div></div>
+</div>
+
+<div class="grid g2" style="margin-bottom:14px">
+  <div class="card">
+    <header><h3>Equity-curve (LIVE cohort)</h3></header>
+    <div class="body">
+      {% if h.equity_curve|length > 1 %}
+        {% set pts = h.equity_curve %}
+        {% set vals = pts|map(attribute='equity')|list %}
+        {% set lo = vals|min %}{% set hi = vals|max %}
+        {% set span = (hi - lo) if (hi - lo) != 0 else 1 %}
+        <svg class="spark" viewBox="0 0 600 90" preserveAspectRatio="none">
+          {% set zero_y = 90 - ((0 - lo) / span * 80) - 5 %}
+          {% if lo <= 0 <= hi %}<line class="zero" x1="0" y1="{{ zero_y|round(2) }}" x2="600" y2="{{ zero_y|round(2) }}"/>{% endif %}
+          {% set coords = [] %}
+          {% for p in pts %}
+            {% set x = loop.index0 / ((pts|length - 1) or 1) * 600 %}
+            {% set y = 90 - ((p.equity - lo) / span * 80) - 5 %}
+            {% set _ = coords.append(x|round(2) ~ ',' ~ y|round(2)) %}
+          {% endfor %}
+          <path class="area" d="M0,90 L{{ coords|join(' L') }} L600,90 Z"/>
+          <path class="line" d="M{{ coords|join(' L') }}"/>
+        </svg>
+        <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-top:6px">
+          <span>{{ num(lo,2) }}</span><span>{{ pts|length }} trades</span><span>{{ num(hi,2) }}</span>
+        </div>
+      {% else %}{{ ui.empty('Onvoldoende trades', 'Minimaal twee gesloten LIVE-trades nodig.') }}{% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <header><h3>Per strategie (LIVE)</h3></header>
+    <div class="body flush">
+      {% if h.by_strategy %}
+      <div class="scroll"><table>
+        <thead><tr><th>Strategie</th><th class="n">Trades</th><th class="n">Winrate</th><th class="n">Expectancy</th><th class="n">Totaal</th></tr></thead>
+        <tbody>{% for r in h.by_strategy %}
+          <tr><td>{{ r.key }}</td><td class="n">{{ r.trades }}</td><td class="n">{{ pct(r.winrate) }}</td>
+              <td class="n {{ 'neg' if (r.expectancy or 0) < 0 else 'pos' }}">{{ num(r.expectancy,4) }}</td>
+              <td class="n {{ 'neg' if (r.total or 0) < 0 else 'pos' }}">{{ num(r.total,2) }}</td></tr>
+        {% endfor %}</tbody>
+      </table></div>
+      {% else %}{{ ui.empty('Geen LIVE-trades in venster') }}{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <header><h3>Handelsgeschiedenis</h3><span class="spacer"></span>
+    <input id="q" placeholder="filter symbool / strategie / reden…" style="background:var(--panel-2);border:1px solid var(--line);color:var(--ink);padding:5px 9px;border-radius:4px;font-size:12px;font-family:var(--mono);min-width:230px">
+  </header>
+  <div class="body flush">
+  {% if h.trades %}
+    <div class="scroll tall"><table id="tt">
+      <thead><tr>
+        <th>Gesloten</th><th>Symbool</th><th>Strategie</th><th>Richting</th>
+        <th class="n">Entry</th><th class="n">Exit</th><th class="n">PnL</th>
+        <th class="n">R</th><th>Reden</th><th>TP1</th><th>Cohort</th>
+      </tr></thead>
+      <tbody>
+      {% for t in h.trades %}
+        <tr>
+          <td style="font-family:var(--mono);font-size:11px">{{ dt_utc(t.closed_at) }}</td>
+          <td><b>{{ t.symbol }}</b></td>
+          <td>{{ t.strategy }}</td>
+          <td>{{ t.direction }}</td>
+          <td class="n">{{ num(t.entry,4) }}</td>
+          <td class="n">{{ num(t.exit,4) if t.exit else 'UNKNOWN' }}</td>
+          <td class="n {{ 'pos' if t.pnl > 0 else ('neg' if t.pnl < 0 else '') }}">{{ num(t.pnl,4) }}</td>
+          <td class="n">{{ num(t.r_multiple,2) if t.r_multiple is not none else '—' }}</td>
+          <td>{{ t.exit_reason }}</td>
+          <td>{% if t.tp1_hit is none %}<span class="tag">UNKNOWN</span>{% elif t.tp1_hit %}<span class="badge t-ok">● ja</span>{% else %}<span class="tag">nee</span>{% endif %}</td>
+          <td>{% if t.cohort == 'LIVE' %}<span class="badge t-ok">LIVE</span>{% else %}<span class="badge t-warn">{{ t.cohort }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}{{ ui.empty('Geen handelsgeschiedenis', 'Er zijn geen gesloten trades met bruikbare PnL gevonden.') }}{% endif %}
+  </div>
+  {{ ui.provenance(h.provenance, h.trade_count ~ ' gesloten trades, ' ~ h.undated ~ ' zonder datum') }}
+</div>
+<script>
+(function(){
+  var q=document.getElementById('q'),t=document.getElementById('tt');
+  if(!q||!t)return;
+  q.addEventListener('input',function(){
+    var v=q.value.toLowerCase();
+    t.querySelectorAll('tbody tr').forEach(function(r){
+      r.style.display = r.textContent.toLowerCase().indexOf(v)>-1 ? '' : 'none';
+    });
+  });
+})();
+</script>
+{% endblock %}

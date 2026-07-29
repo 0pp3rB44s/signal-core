@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Incidenten{% endblock %}
+{% block heading %}Incidenten &amp; meldingen{% endblock %}
+{% set inc = d.panels.incidents %}
+{% block content %}
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Actief', inc.real_active|length, 'laatste uur, echte incidenten', 'neg' if inc.real_active else 'pos') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Ruis', inc.noise_count, 'forward-paper checks in live') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Aflevering', 'ACTIEF' if inc.delivery_configured else 'GEEN', 'externe provider', 'pos' if inc.delivery_configured else 'neg') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Watchdog', inc.watchdog_provenance.age_label if inc.watchdog_provenance.exists else 'NOOIT', 'laatste run') }}</div></div>
+</div>
+<div class="card" style="margin-bottom:14px">
+  <header><h3>Meldketen</h3><span class="spacer"></span>{{ ui.badge(inc.status) }}</header>
+  {{ ui.signals(inc.signals) }}
+  <div class="body">
+    <div class="notice t-warn"><span class="nt">▲ STRUCTURELE BLINDE VLEK</span><p>{{ inc.blind_spot }}</p></div>
+  </div>
+</div>
+<div class="card">
+  <header><h3>Incidentgeschiedenis</h3></header>
+  <div class="body flush">
+  {% if inc.incidents %}
+    <div class="scroll"><table>
+      <thead><tr><th>Event</th><th>Ernst</th><th class="n">Aantal</th><th>Eerst gezien</th>
+        <th>Laatst gezien</th><th class="n">Duur</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for i in inc.incidents %}
+        <tr>
+          <td><b>{{ i.event }}</b>{% if i.noise %} <span class="tag">RUIS</span>{% endif %}
+              <br><span style="color:var(--ink-faint);font-size:11px">{{ i.message[:90] }}</span></td>
+          <td>{{ ui.badge(i.status, i.severity) }}</td>
+          <td class="n">{{ i.count }}</td>
+          <td style="font-family:var(--mono);font-size:11px">{{ dt_utc(i.first_seen) }}</td>
+          <td style="font-family:var(--mono);font-size:11px">{{ dt_utc(i.last_seen) }}</td>
+          <td class="n">{{ ago(i.duration_seconds) }}</td>
+          <td>{% if i.active %}<span class="badge t-block">■ ACTIEF</span>{% else %}<span class="badge t-ok">● opgelost</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}{{ ui.empty('Geen incidenten', 'logs/alerts.log bevat geen leesbare regels.') }}{% endif %}
+  </div>
+  {{ ui.provenance(inc.provenance) }}
+</div>
+{% endblock %}
