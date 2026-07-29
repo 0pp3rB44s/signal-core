@@ -32,9 +32,20 @@ STAGES = [
 REASON_LABELS = {
     "NO_DETECTION": "No setup detected",
     "SYMBOL_EXPECTANCY_PAUSE": "Symbol paused by expectancy kill-switch",
-    "EXPECTANCY_BLOCK": "Strategy expectancy negative",
-    "HTF_OPPOSITION": "Higher-timeframe trend opposes the entry",
+    "EXPECTANCY_BLOCK": "Strategy hard-paused by expectancy",
+    "HTF_OPPOSITION": "Alignment / higher-timeframe rejection",
+    "MOMENTUM_QUALITY": "Momentum quality too weak",
     "EXECUTION_COST": "Spread / entry quality too expensive",
+    "SHORTS_DISABLED": "Shorts disabled by configuration",
+    "SAFE_MODE_STRATEGY": "Strategy not permitted in Safe Mode",
+    "ORDERBOOK_RISK": "Orderbook risk-off",
+    "WEEKLY_FREEZE": "Weekly loss freeze",
+    "DAILY_DEFENSIVE": "Daily defensive mode",
+    "CONSECUTIVE_LOSS_LIMIT": "Consecutive loss limit",
+    "SCORE_THRESHOLD": "Score below minimum",
+    "NET_EDGE": "Net edge below fee buffer",
+    "RR_GEOMETRY": "Risk/reward geometry rejected",
+    "MIN_NOTIONAL": "Notional below minimum",
     "RISK_BLOCKED": "Risk gate blocked the candidate",
     "PLAN_BLOCKED": "Plan blocked downstream of risk",
 }
@@ -85,10 +96,15 @@ def build(session_start: datetime | None = None) -> dict[str, Any]:
         if stage == "RISK_DECISION":
             codes = e.get("secondary_reason_codes") or []
             if isinstance(codes, list):
-                for c in codes:
-                    secondary[str(c)] += 1
-                if codes:
-                    combos[tuple(sorted(str(c) for c in codes))] += 1
+                # Candidate-based, not reason-based: one decision counts at most
+                # once per hard gate even if the same code appears twice in the
+                # event. Only hard gates reach this list; soft/PROBE reasons are
+                # filtered out upstream by classify_reason_codes.
+                unique = {str(c) for c in codes}
+                for c in unique:
+                    secondary[c] += 1
+                if unique:
+                    combos[tuple(sorted(unique))] += 1
         if e.get("strategy"):
             strategies[str(e["strategy"])] += 1
         if e.get("symbol"):
