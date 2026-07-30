@@ -10,6 +10,7 @@ from pathlib import Path
 from app.config import Settings
 from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
+from risk import symbol_expectancy
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
@@ -138,7 +139,10 @@ class RiskManager:
         symbol = (candidate.symbol or "").upper()
 
         by_strategy = summary.get("by_strategy") or {}
-        by_symbol = summary.get("by_symbol") or {}
+        # by_symbol is deliberately NOT read. Symbol gating moved to
+        # risk.symbol_expectancy, which is keyed by (symbol, direction) and
+        # sourced from exchange-confirmed live closes. latest_summary.json is
+        # offline backtest output and must never gate live money again.
 
         clean_expectancy = self._latest_strategy_expectancy()
         clean_by_strategy = clean_expectancy.get("strategies") or {}
@@ -146,7 +150,6 @@ class RiskManager:
             by_strategy = clean_by_strategy
 
         strategy_stats = by_strategy.get(strategy_name) or {}
-        symbol_stats = by_symbol.get(symbol) or {}
 
         # --- Defensive daily status checks ---
         daily_status = self._daily_defensive_status()
@@ -195,15 +198,25 @@ class RiskManager:
         if self._stats_should_pause(strategy_stats, min_trades=5):
             reasons.append(f"expectancy-watch: strategy weak but not hard-paused ({strategy_name})")
 
-        if self._stats_should_pause(symbol_stats, min_trades=3):
-            reasons.append(f"kill-switch: symbol paused by expectancy ({symbol})")
+        # Directional, live-sourced symbol expectancy. The record is always
+        # reported for provenance; only a fresh, sufficiently-sampled negative
+        # verdict (or a malformed source) blocks.
+        symbol_record = symbol_expectancy.record_for(symbol, candidate.direction)
+        reasons.append(symbol_expectancy.observability_note(symbol_record))
+        symbol_blocked, symbol_block_reason = symbol_expectancy.evaluate(symbol_record)
+        if symbol_blocked and symbol_block_reason:
+            reasons.append(symbol_block_reason)
 
-        if self._too_many_failed_tp1(symbol_stats):
-            reasons.append(f"kill-switch: symbol failed TP1 too often ({symbol})")
-
+        # Soft, non-blocking prefixes. Anything else in `reasons` is a hard gate.
+        # symbol expectancy provenance is always emitted and must never block on
+        # its own — only the explicit kill-switch line it may be paired with does.
+        SOFT_PREFIXES = (
+            "expectancy-watch: strategy weak but not hard-paused",
+            "symbol expectancy source=",
+        )
         hard_reasons = [
             reason for reason in reasons
-            if not str(reason).startswith("expectancy-watch: strategy weak but not hard-paused")
+            if not str(reason).startswith(SOFT_PREFIXES)
         ]
         return not hard_reasons, reasons
 

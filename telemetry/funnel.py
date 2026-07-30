@@ -46,6 +46,7 @@ REASON_CODES = frozenset({
     "HTF_OPPOSITION", "SCORE_THRESHOLD", "ORDERBOOK_RISK",
     "EXECUTION_COST", "NET_EDGE", "RR_GEOMETRY", "MIN_NOTIONAL",
     "SHORTS_DISABLED", "MOMENTUM_QUALITY", "SAFE_MODE_STRATEGY",
+    "SYMBOL_EXPECTANCY_SOURCE_MALFORMED",
 })
 REQUIRED_FIELDS = (
     "schema_version", "event_id", "lifecycle_key", "scan_id", "candidate_id", "event_type",
@@ -149,6 +150,7 @@ HARD_REASON_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("WEEKLY_FREEZE", ("kill-switch: weekly freeze",)),
     ("DAILY_DEFENSIVE", ("kill-switch: daily defensive",)),
     ("CONSECUTIVE_LOSS_LIMIT", ("kill-switch: consecutive loss",)),
+    ("SYMBOL_EXPECTANCY_SOURCE_MALFORMED", ("kill-switch: symbol expectancy source malformed",)),
     ("SYMBOL_EXPECTANCY_PAUSE", (
         "kill-switch: symbol paused by expectancy",
         "kill-switch: symbol failed tp1",

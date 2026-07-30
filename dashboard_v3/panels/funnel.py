@@ -32,6 +32,7 @@ STAGES = [
 REASON_LABELS = {
     "NO_DETECTION": "No setup detected",
     "SYMBOL_EXPECTANCY_PAUSE": "Symbol paused by expectancy kill-switch",
+    "SYMBOL_EXPECTANCY_SOURCE_MALFORMED": "Symbol expectancy source malformed (failed closed)",
     "EXPECTANCY_BLOCK": "Strategy hard-paused by expectancy",
     "HTF_OPPOSITION": "Alignment / higher-timeframe rejection",
     "MOMENTUM_QUALITY": "Momentum quality too weak",

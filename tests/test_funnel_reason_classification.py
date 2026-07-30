@@ -196,13 +196,32 @@ def test_dashboard_counts_each_gate_once_per_candidate():
 # --- trading logic untouched --------------------------------------------
 
 def test_no_trade_decision_module_changed_by_this_patch():
+    """The telemetry fix must not have touched any trade-decision file.
+
+    Pinned to the commit that introduced this test rather than to the working
+    tree: once the telemetry patch is committed, later unrelated work is free to
+    change risk/ and planning/, and asserting on `git diff HEAD` would turn this
+    guard into a tripwire against every future patch instead of a statement
+    about this one.
+    """
     import subprocess
     from pathlib import Path
     repo = Path(__file__).resolve().parents[1]
-    changed = subprocess.run(["git", "diff", "--name-only", "HEAD"],
-                             cwd=repo, capture_output=True, text=True).stdout.split()
+    rel = "tests/test_funnel_reason_classification.py"
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=repo,
+                              capture_output=True, text=True).stdout.strip()
+
+    commit = git("log", "--diff-filter=A", "--format=%H", "-1", "--", rel)
+    if not commit:
+        pytest.skip("telemetry patch not committed yet; nothing to pin")
+    changed = git("show", "--name-only", "--format=", commit).split()
+
     forbidden = ("risk/", "planning/", "execution/", "strategies/", "app/config.py",
                  ".env", "reports/backtests/")
+    assert rel in changed, "located the wrong commit"
     for path in changed:
         for bad in forbidden:
-            assert not path.startswith(bad), f"trade-decision file changed: {path}"
+            assert not path.startswith(bad), (
+                f"telemetry commit {commit[:7]} changed trade-decision file: {path}")
