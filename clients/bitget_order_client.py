@@ -274,14 +274,26 @@ class BitgetOrderClientMixin:
         if direction_upper not in {"LONG", "SHORT"}:
             raise ValueError(f"Unsupported futures direction: {direction}")
 
+        # Refuse before touching the network at all when the runtime is pinned to
+        # forward paper. Contract metadata is a *public* endpoint, so validating
+        # size first would issue an HTTP request on a path that can never place
+        # an order, and would surface a size error instead of the real reason.
+        self._assert_order_transport_allowed()
+
         side = "buy" if direction_upper == "LONG" else "sell"
         hold_side = "long" if direction_upper == "LONG" else "short"
-        formatted_size = self._format_size(symbol, float(size))
 
-        if formatted_size < self._min_size(symbol):
+        # Exchange-derived validation, quantized DOWN. A market order carries no
+        # price, so the min-notional floor cannot be evaluated here; the exchange
+        # enforces its own minTradeUSDT, so a miss surfaces as a rejection rather
+        # than as an unnoticed risk breach.
+        normalized, reason = self.validate_entry_size(symbol, float(size))
+        if reason is not None:
             raise ValueError(
-                f"Order size below minimum for {symbol}: size={formatted_size} min={self._min_size(symbol)}"
+                f"Order size rejected for {symbol}: reason={reason} "
+                f"requested={size} normalized={normalized}"
             )
+        formatted_size = float(normalized)
 
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
@@ -342,17 +354,28 @@ class BitgetOrderClientMixin:
         if direction_upper not in {"LONG", "SHORT"}:
             raise ValueError(f"Unsupported futures direction: {direction}")
 
+        # Refuse before touching the network at all when the runtime is pinned to
+        # forward paper. Contract metadata is a *public* endpoint, so validating
+        # size first would issue an HTTP request on a path that can never place
+        # an order, and would surface a size error instead of the real reason.
+        self._assert_order_transport_allowed()
+
         side = "buy" if direction_upper == "LONG" else "sell"
         hold_side = "long" if direction_upper == "LONG" else "short"
-        formatted_size = self._format_size(symbol, float(size))
         formatted_price = self._format_trigger_price(symbol, float(price))
 
-        if formatted_size < self._min_size(symbol):
-            raise ValueError(
-                f"Order size below minimum for {symbol}: size={formatted_size} min={self._min_size(symbol)}"
-            )
         if formatted_price <= 0:
             raise ValueError(f"Invalid limit price for {symbol}: {formatted_price}")
+
+        # A limit order has a price, so the min-notional floor is checked too.
+        normalized, reason = self.validate_entry_size(
+            symbol, float(size), reference_price=formatted_price)
+        if reason is not None:
+            raise ValueError(
+                f"Order size rejected for {symbol}: reason={reason} "
+                f"requested={size} normalized={normalized} price={formatted_price}"
+            )
+        formatted_size = float(normalized)
 
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
