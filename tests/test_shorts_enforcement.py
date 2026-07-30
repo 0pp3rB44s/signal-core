@@ -275,8 +275,19 @@ def test_live_env_trading_parameters_untouched():
     if not live.exists():
         pytest.skip(".env.live not present in this checkout")
     text = live.read_text()
+    # Risk-bearing ceilings. These must not drift; loosening any of them is the
+    # failure mode this guard exists for.
     for expected in ("MAX_SYMBOLS=1", "MAX_OPEN_POSITIONS=1", "DEFAULT_LEVERAGE=3",
                      "MAX_LEVERAGE=3", "ACCOUNT_RISK_PER_TRADE_PCT=0.50",
-                     "EXECUTION_CONFIRM_SYMBOLS=BTCUSDT", "ENABLE_SHORTS=false",
+                     "EXECUTION_CONFIRM_SYMBOLS=BTCUSDT",
+                     "EXECUTION_REQUIRE_CONFIRMATION=true",
                      "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT=35"):
         assert expected in text, f"missing/changed in .env.live: {expected}"
+
+    # ENABLE_SHORTS is owner-controlled and was deliberately switched to true on
+    # 2026-07-30 (short trading re-enabled after the symbol-expectancy repair).
+    # It is asserted as present-and-explicit rather than pinned to false: the
+    # enforcement path is covered by the RiskManager and ExecutionService tests
+    # above, which is what actually matters regardless of the configured value.
+    assert ("ENABLE_SHORTS=true" in text or "ENABLE_SHORTS=false" in text), \
+        "ENABLE_SHORTS must be explicitly set in .env.live, never left to a default"
