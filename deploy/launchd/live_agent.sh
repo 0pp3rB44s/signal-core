@@ -44,6 +44,22 @@ if [ ! -f state/live_runtime.state ]; then
   exit 0
 fi
 
+# Restore the commit the operator authorised, not whatever HEAD has become.
+# The checkout IS the deployment here, so without this check an automatic
+# restart silently promotes any commit made since the last launch. That is not
+# hypothetical: on 2026-07-30 a restart picked up two commits at once because
+# HEAD had moved between the operator being given the command and running it.
+# Refuse rather than check out: running unreviewed code on a live account is
+# worse than being down, and being down is visible.
+AUTHORISED_COMMIT="$(awk -F= '$1=="commit"{print $2}' state/live_runtime.state 2>/dev/null | tr -d '[:space:]')"
+CURRENT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ -n "$AUTHORISED_COMMIT" ] && [ "$AUTHORISED_COMMIT" != "$CURRENT_COMMIT" ]; then
+  log "REFUSING: checkout is $CURRENT_COMMIT but the authorised session is $AUTHORISED_COMMIT."
+  log "          an automatic restart must not deploy a commit nobody approved."
+  log "          owner fix: git checkout $AUTHORISED_COMMIT   (or relaunch via scripts/launch_live.sh)"
+  exit 0
+fi
+
 if [ ! -f .env.live ]; then
   log "REFUSING: .env.live missing"
   exit 0
