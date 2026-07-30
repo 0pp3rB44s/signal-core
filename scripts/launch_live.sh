@@ -50,6 +50,17 @@ read -r TYPED
 echo "layer 4: operator confirmation accepted"
 
 mkdir -p logs state data_store reports
+
+# A deliberate start cancels a deliberate stop. stop_all.sh writes
+# state/live.stop so a stop survives a reboot; nothing used to remove it, so
+# after the first stop/start cycle the supervisor refused to restore the engine
+# for ever — crash and boot recovery were silently dead while everything else
+# looked healthy. Clear it before bootstrapping, or the agent declines.
+if [ -f state/live.stop ]; then
+  rm -f state/live.stop
+  echo "cleared state/live.stop (deliberate start supersedes deliberate stop)"
+fi
+
 BOT_PID="$(.venv/bin/python scripts/launch_detached.py --stdout logs/live.out -- .venv/bin/python -u -m app.main)"
 echo "$BOT_PID" > state/bot.pid
 { echo "mode=LIVE"; echo "pid=$BOT_PID"; echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)";
@@ -57,5 +68,19 @@ echo "$BOT_PID" > state/bot.pid
 sleep 2
 ps -p "$BOT_PID" >/dev/null 2>&1 || guard_die "engine failed to start; see logs/live.out"
 hold_power_assertion "$BOT_PID" "live"
+
+# (Re)establish unattended recovery. stop_all.sh boots the agent out, so without
+# this a manual stop/start cycle leaves the engine running with no supervisor —
+# exactly the state the watchdog reports as SUPERVISOR_MISSING. Bootstrapping
+# here is also the only moment it is safe: the operator has just confirmed this
+# specific commit, so a later automatic restart restores what was authorised.
+if bash deploy/launchd/install_live_agent.sh >/tmp/cgc_live_agent_install.$$ 2>&1; then
+  echo "supervisor: com.cgc.live bootstrapped"
+else
+  echo "WARNING: supervisor bootstrap FAILED — no crash/boot recovery" >&2
+  sed 's/^/  /' /tmp/cgc_live_agent_install.$$ >&2
+fi
+rm -f /tmp/cgc_live_agent_install.$$
+
 guard_log_start "LIVE" ".env.live"
 echo "LIVE started (PID $BOT_PID)"

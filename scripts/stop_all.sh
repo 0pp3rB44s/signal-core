@@ -45,6 +45,13 @@ touch state/live.stop
 # down" notification 5 minutes later.
 launchctl bootout "gui/$(id -u)/com.cgc.tradingbot" >/dev/null 2>&1 || true
 
+# The live supervisor DOES restart the engine, so it must go too. The stop flag
+# above already makes the agent decline, but booting it out means a deliberate
+# stop does not hang on that one file being present and readable.
+# launch_live.sh clears the flag and re-bootstraps the agent, so the pair stays
+# symmetric across a stop/start cycle.
+launchctl bootout "gui/$(id -u)/com.cgc.live" >/dev/null 2>&1 || true
+
 stop_pid_file "bot" "state/bot.pid"
 stop_pid_file "dashboard" "state/dashboard.pid"
 

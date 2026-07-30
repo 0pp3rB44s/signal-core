@@ -173,6 +173,63 @@ else
   report WARN "heartbeat schema v${HB_SCHEMA:-1} — scan-failure telemetry unavailable"
 fi
 
+# 8b. runtime incidents visible only in the engine log.
+# The heartbeat reports whether the *last* cycle failed; it says nothing about
+# authentication, reconciliation, order rejections, exceptions or a resolver
+# outage. Those were undetectable until now: the 3h23m DNS episode on
+# 2026-07-30 produced 3714 failures and 181 dead scan cycles without raising a
+# single alert. Bounded tail so this stays cheap at a 60s interval.
+LIVE_LOG="logs/live.out"
+if [ -r "$LIVE_LOG" ]; then
+  WINDOW="$(tail -n 3000 "$LIVE_LOG" 2>/dev/null)"
+  count_in_window() { printf '%s\n' "$WINDOW" | grep -cE "$1" 2>/dev/null || true; }
+
+  DNS_FAILS="$(count_in_window 'BITGET_DNS_RESOLUTION_FAILURE')"
+  if [ "${DNS_FAILS:-0}" -ge 20 ]; then
+    report FAIL "DNS resolution failing ($DNS_FAILS in last 3000 log lines)"
+    raise DNS_INSTABILITY HIGH "resolver failing: $DNS_FAILS DNS errors in the recent log window"
+  else
+    report OK "DNS healthy ($DNS_FAILS recent resolution errors)"
+  fi
+
+  AUTH_FAILS="$(count_in_window 'status=401|status=403|invalid signature|code=40037|code=40009')"
+  if [ "${AUTH_FAILS:-0}" -ge 1 ]; then
+    report FAIL "authentication errors ($AUTH_FAILS)"
+    raise AUTH_FAILURE CRITICAL "Bitget authentication failing: $AUTH_FAILS recent errors"
+  else
+    report OK "authentication clean"
+  fi
+
+  RECON_FAILS="$(count_in_window 'RECONCIL[A-Z_]*(FAIL|MISMATCH|ERROR)|ORPHAN_POSITION')"
+  if [ "${RECON_FAILS:-0}" -ge 1 ]; then
+    report FAIL "reconciliation problems ($RECON_FAILS)"
+    raise RECONCILIATION_FAILURE CRITICAL "position reconciliation failing: $RECON_FAILS recent events"
+  else
+    report OK "reconciliation clean"
+  fi
+
+  # Only genuine exchange rejections. NOT_SENT_PRE_TRANSPORT is a local refusal
+  # that never reached the venue, and AMBIGUOUS has its own handling, so neither
+  # belongs here.
+  ORDER_REJECTS="$(count_in_window 'classification=REJECTED|BitgetOrderRejected')"
+  if [ "${ORDER_REJECTS:-0}" -ge 1 ]; then
+    report FAIL "exchange rejected orders ($ORDER_REJECTS)"
+    raise ORDER_REJECTED HIGH "exchange rejected $ORDER_REJECTS order(s) — check size/notional/margin"
+  else
+    report OK "no exchange order rejections"
+  fi
+
+  TRACEBACKS="$(count_in_window '^Traceback \(most recent call last\)')"
+  if [ "${TRACEBACKS:-0}" -ge 1 ]; then
+    report FAIL "unhandled exceptions ($TRACEBACKS tracebacks)"
+    raise UNEXPECTED_EXCEPTION HIGH "$TRACEBACKS traceback(s) in the recent engine log"
+  else
+    report OK "no unhandled exceptions"
+  fi
+else
+  report WARN "engine log $LIVE_LOG unreadable — runtime incidents undetectable"
+fi
+
 # 9. supervisor, selected by mode
 case "$MODE" in
   LIVE)
