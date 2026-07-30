@@ -159,10 +159,56 @@ def test_above_min_trade_usdt_passes():
 
 
 def test_min_notional_skipped_without_reference_price():
-    """A market order has no price; the exchange still enforces its own floor."""
+    """No price offered at all: the floor cannot be evaluated and the exchange
+    remains the enforcer. Callers on the live path now always supply one."""
     c = FakeClient()
     _, reason = c.validate_entry_size("BTCUSDT", 0.0002, reference_price=None)
     assert reason is None
+
+
+@pytest.mark.parametrize("bad_price", [0, 0.0, -1, -64000.0, float("nan"), float("inf")])
+def test_unusable_reference_price_fails_closed(bad_price):
+    """A price was offered but is unusable. Validating against zero would reject
+    everything; skipping the floor would hide a malformed plan."""
+    c = FakeClient()
+    _, reason = c.validate_entry_size("BTCUSDT", 0.0004, reference_price=bad_price)
+    assert reason == bp.REASON_INVALID_REFERENCE_PRICE
+
+
+def test_market_entry_validates_min_notional_with_planned_entry():
+    """The Phase-3 gap: a market order carries no price of its own, so the
+    planned entry is passed in and minTradeUSDT is enforced pre-transport."""
+    c = FakeOrderClient()
+    with pytest.raises(ValueError) as exc:
+        c.place_futures_market_order("BTCUSDT", direction="LONG", size=0.0001,
+                                     client_oid="t-8", reference_price=40000.0)
+    assert bp.REASON_BELOW_MIN_NOTIONAL in str(exc.value)
+    assert c.requests == [], "an under-notional order reached transport"
+
+
+def test_market_entry_passes_when_planned_entry_clears_min_notional():
+    c = FakeOrderClient()
+    c.place_futures_market_order("BTCUSDT", direction="SHORT", size=0.0004,
+                                 client_oid="t-9", reference_price=BTC_PRICE)
+    assert len(c.requests) == 1
+
+
+def test_execution_service_supplies_the_planned_entry():
+    """Guards the wiring: the market leg must not silently regress to no price."""
+    import inspect
+    from execution import execution_service
+    src = inspect.getsource(execution_service)
+    block = src.split("def _place_market_entry")[1].split("submission =")[0]
+    assert "reference_price=" in block, "market leg no longer passes a price"
+    assert "_ref=avg_entry" in src.split("def _place_market_entry")[1][:400], \
+        "planned entry is no longer the validation price"
+
+
+@pytest.mark.parametrize("direction", ["LONG", "SHORT"])
+def test_min_notional_rule_is_direction_independent(direction):
+    c = FakeClient()
+    _, reason = c.validate_entry_size("BTCUSDT", 0.0001, reference_price=40000.0)
+    assert reason == bp.REASON_BELOW_MIN_NOTIONAL
 
 
 # --- 7-8. never inflate past a ceiling ----------------------------------

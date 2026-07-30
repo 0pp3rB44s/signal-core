@@ -616,7 +616,8 @@ class ExecutionService:
                             entry_via = "maker_then_market_fallback"
 
                     if live_order_id is None:
-                        def _place_market_entry(client_oid: str, _plan=plan, _size=order_size, _side=side):
+                        def _place_market_entry(client_oid: str, _plan=plan, _size=order_size,
+                                                _side=side, _ref=avg_entry):
                             return self.client.place_futures_market_order(
                                 symbol=_plan.symbol,
                                 size=_size,
@@ -624,6 +625,10 @@ class ExecutionService:
                                 trade_side=trade_side,
                                 margin_mode="isolated",
                                 client_oid=client_oid,
+                                # Planned entry, so the exchange minimum notional
+                                # is validated before transport on the market leg
+                                # too — a market order has no price of its own.
+                                reference_price=_ref,
                             )
 
                         submission = self.entry_submitter.submit_entry(

@@ -258,9 +258,15 @@ class BitgetOrderClientMixin:
         margin_coin: str = "USDT",
         client_oid: str | None = None,
         side: str | None = None,
+        reference_price: float | None = None,
         **_: Any,
     ) -> dict[str, Any]:
-        """Place a Bitget futures market entry order."""
+        """Place a Bitget futures market entry order.
+
+        ``reference_price`` is the planned entry used to validate the exchange
+        minimum notional. A market order carries no price of its own, so without
+        it the minTradeUSDT floor cannot be checked locally.
+        """
         if direction is None and side is not None:
             side_lower = side.lower()
             if side_lower in {"buy", "long"}:
@@ -287,11 +293,13 @@ class BitgetOrderClientMixin:
         # price, so the min-notional floor cannot be evaluated here; the exchange
         # enforces its own minTradeUSDT, so a miss surfaces as a rejection rather
         # than as an unnoticed risk breach.
-        normalized, reason = self.validate_entry_size(symbol, float(size))
+        normalized, reason = self.validate_entry_size(
+            symbol, float(size), reference_price=reference_price)
         if reason is not None:
             raise ValueError(
                 f"Order size rejected for {symbol}: reason={reason} "
-                f"requested={size} normalized={normalized}"
+                f"requested={size} normalized={normalized} "
+                f"reference_price={reference_price}"
             )
         formatted_size = float(normalized)
 

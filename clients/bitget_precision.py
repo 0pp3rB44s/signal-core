@@ -41,6 +41,7 @@ SPEC_TTL_SECONDS = 900.0
 REASON_BELOW_EXCHANGE_MIN = "EXCHANGE_MINIMUM_INCOMPATIBLE_WITH_RISK_LIMITS"
 REASON_BELOW_MIN_NOTIONAL = "EXCHANGE_MIN_NOTIONAL_INCOMPATIBLE_WITH_RISK_LIMITS"
 REASON_METADATA_UNAVAILABLE = "CONTRACT_METADATA_UNAVAILABLE"
+REASON_INVALID_REFERENCE_PRICE = "INVALID_VALIDATION_PRICE"
 REASON_PRODUCT_TYPE_MISMATCH = "CONTRACT_PRODUCT_TYPE_MISMATCH"
 
 #: Decimal precision fallback used ONLY for formatting, never for minimum-size
@@ -339,9 +340,14 @@ class BitgetPrecisionMixin:
         if normalized <= 0 or normalized < spec.min_trade_num:
             return normalized, REASON_BELOW_EXCHANGE_MIN
 
-        if spec.min_trade_usdt is not None and reference_price is not None:
+        if reference_price is not None:
             price = _dec(reference_price)
-            if price is not None and price > 0:
+            if price is None or price <= 0:
+                # A price was offered but is unusable. Validating against zero
+                # would reject everything and validating against nothing would
+                # skip the floor silently, so treat it as a malformed plan.
+                return normalized, REASON_INVALID_REFERENCE_PRICE
+            if spec.min_trade_usdt is not None:
                 if (normalized * price) < spec.min_trade_usdt:
                     return normalized, REASON_BELOW_MIN_NOTIONAL
 
@@ -372,6 +378,7 @@ class BitgetPrecisionMixin:
 
 __all__ = [
     "REASON_BELOW_EXCHANGE_MIN", "REASON_BELOW_MIN_NOTIONAL",
+    "REASON_INVALID_REFERENCE_PRICE",
     "REASON_METADATA_UNAVAILABLE", "REASON_PRODUCT_TYPE_MISMATCH",
     "SPEC_TTL_SECONDS", "BitgetPrecisionMixin", "ContractSpec", "reset_spec_cache",
 ]
