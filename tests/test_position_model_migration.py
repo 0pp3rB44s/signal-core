@@ -41,6 +41,7 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "position_model_forensic_rep
 
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
+        break_even_open_fee_fallback_rate=0.0006,
         break_even_expected_close_fee_rate=0.0006,
         break_even_spread_buffer_pct=0.02,
         break_even_slippage_buffer_pct=0.03,
