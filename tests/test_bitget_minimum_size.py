@@ -200,7 +200,7 @@ def test_execution_service_supplies_the_planned_entry():
     src = inspect.getsource(execution_service)
     block = src.split("def _place_market_entry")[1].split("submission =")[0]
     assert "reference_price=" in block, "market leg no longer passes a price"
-    assert "_ref=avg_entry" in src.split("def _place_market_entry")[1][:400], \
+    assert "_ref=planned_avg_entry" in src.split("def _place_market_entry")[1][:400], \
         "planned entry is no longer the validation price"
 
 
