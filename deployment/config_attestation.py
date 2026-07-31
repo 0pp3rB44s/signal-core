@@ -9,10 +9,11 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from app.symbol_allowlist import parse_symbol_allowlist
+from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol_allowlist
 
 
 SAFE_KEYS = frozenset({
@@ -181,6 +182,88 @@ def _actual_release_sha() -> str:
     return completed.stdout.strip()
 
 
+def _break_even_examples(
+    *,
+    open_rate: float | None,
+    close_rate: float | None,
+    spread_pct: float | None,
+    slippage_pct: float | None,
+    extra_pct: float | None,
+    legacy_pct: float | None,
+) -> dict[str, Any]:
+    try:
+        from execution.position_model import (
+            CONFIGURED_FALLBACK,
+            LEGACY_FALLBACK,
+            OpeningFeeSelection,
+            calculate_break_even_plus_fees,
+        )
+
+        supplied = (open_rate, close_rate, spread_pct, slippage_pct, extra_pct, legacy_pct)
+        if any(value is None for value in supplied):
+            raise ValueError("BE config incomplete")
+        entry = Decimal("100")
+        quantity = Decimal("1")
+        tick = Decimal("0.01")
+        opening_rate = Decimal(str(open_rate))
+        opening_fee = OpeningFeeSelection(
+            entry * quantity * opening_rate,
+            CONFIGURED_FALLBACK,
+            opening_rate,
+        )
+
+        def calculate(direction: str, opening: OpeningFeeSelection):
+            return calculate_break_even_plus_fees(
+                direction=direction,
+                exchange_entry=entry,
+                remaining_quantity=quantity,
+                tick_size=tick,
+                opening_fee=opening,
+                expected_close_fee_rate=Decimal(str(close_rate)),
+                spread_buffer_pct=Decimal(str(spread_pct)),
+                slippage_buffer_pct=Decimal(str(slippage_pct)),
+                extra_buffer_pct=Decimal(str(extra_pct)),
+                legacy_fee_buffer_pct=Decimal(str(legacy_pct)),
+            )
+
+        legacy_opening = OpeningFeeSelection(Decimal("0"), LEGACY_FALLBACK, Decimal("0"))
+        legacy_long = calculate("LONG", legacy_opening)
+        legacy_short = calculate("SHORT", legacy_opening)
+        itemised_long = calculate("LONG", opening_fee)
+        itemised_short = calculate("SHORT", opening_fee)
+        return {
+            "status": "AVAILABLE",
+            "semantic": "BE_PLUS_FEES",
+            "entry": 100.0,
+            "quantity": 1.0,
+            "tick_size": 0.01,
+            "before_legacy": {
+                "long_target": float(legacy_long.target),
+                "short_target": float(legacy_short.target),
+            },
+            "after_itemised": {
+                "long_target": float(itemised_long.target),
+                "long_expected_net_usdt": float(itemised_long.expected_net_usdt),
+                "short_target": float(itemised_short.target),
+                "short_expected_net_usdt": float(itemised_short.expected_net_usdt),
+                "opening_fee_usdt": float(itemised_long.opening_fee_usdt),
+                "components": [
+                    "opening_fee",
+                    "expected_closing_fee",
+                    "spread_allowance",
+                    "slippage_allowance",
+                    "extra_safety_allowance",
+                ],
+            },
+            "cost_covering": bool(
+                itemised_long.expected_net_usdt >= 0
+                and itemised_short.expected_net_usdt >= 0
+            ),
+        }
+    except Exception:
+        return {"status": "UNAVAILABLE", "semantic": "BE_PLUS_FEES", "cost_covering": False}
+
+
 def attest_config_file(
     path: str | Path,
     expected: ConfigExpectations,
@@ -222,6 +305,34 @@ def attest_config_file(
         errors.append("invalid:PRODUCTION_SYMBOL_ALLOWLIST")
 
     schema_valid = _schema_valid(values)
+    be_examples = _break_even_examples(
+        open_rate=be_open_rate,
+        close_rate=be_close_rate,
+        spread_pct=be_spread_pct,
+        slippage_pct=be_slippage_pct,
+        extra_pct=be_extra_pct,
+        legacy_pct=be_legacy_pct,
+    )
+    be_rates_valid = bool(
+        be_open_rate is not None
+        and be_open_rate > 0
+        and be_close_rate is not None
+        and be_close_rate > 0
+        and be_spread_pct is not None
+        and be_spread_pct >= 0
+        and be_slippage_pct is not None
+        and be_slippage_pct >= 0
+        and be_extra_pct is not None
+        and be_extra_pct >= 0
+        and be_legacy_pct is not None
+        and be_legacy_pct > 0
+        and be_safety_ticks is not None
+        and be_safety_ticks >= 0
+        and (
+            be_close_rate
+            + (be_spread_pct + be_slippage_pct + be_extra_pct) / 100.0
+        ) < 1.0
+    )
     comparisons = {
         "release_sha_valid": bool(SHA_PATTERN.fullmatch(release_sha)),
         "release_sha": hmac.compare_digest(release_sha, expected_sha),
@@ -248,6 +359,7 @@ def attest_config_file(
             execution_max == int(expected.execution_max_per_cycle) == 1
         ),
         "symbols": tuple(symbols) == tuple(expected.symbols),
+        "owner_approved_symbols": tuple(symbols) == OWNER_APPROVED_PRODUCTION_SYMBOLS,
         "symbol_count": len(symbols) == len(expected.symbols),
         "max_symbols": max_symbols == len(symbols),
         "canonical_allowlist_runtime_authoritative": bool(symbols),
@@ -275,6 +387,8 @@ def attest_config_file(
         "break_even_mark_safety_ticks": (
             be_safety_ticks == int(expected.break_even_mark_safety_ticks)
         ),
+        "break_even_rates_valid": be_rates_valid,
+        "break_even_examples_cost_covering": be_examples["cost_covering"] is True,
     }
     for key, matches in comparisons.items():
         if not matches:
@@ -312,6 +426,7 @@ def attest_config_file(
             "extra_buffer_pct": be_extra_pct,
             "legacy_buffer_pct": be_legacy_pct,
             "mark_safety_ticks": be_safety_ticks,
+            "semantic_example": be_examples,
         },
         "comparisons": comparisons,
         "errors": sorted(set(errors)),

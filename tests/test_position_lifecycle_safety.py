@@ -33,6 +33,7 @@ def _settings() -> MagicMock:
     settings.move_stop_to_be_after_tp1 = True
     settings.tp3_close_all_remainder = True
     settings.break_even_fee_buffer_pct = BE_FEE_BUFFER_PCT
+    settings.break_even_open_fee_fallback_rate = 0.0006
     settings.break_even_expected_close_fee_rate = 0.0006
     settings.break_even_spread_buffer_pct = 0.02
     settings.break_even_slippage_buffer_pct = 0.03

@@ -18,6 +18,7 @@ from execution.position_model import (
     BE_PLUS_FEES_CONFIRMED,
     CONFIGURED_FALLBACK,
     EXCHANGE_ACTUAL,
+    EXCHANGE_RATE,
     LEGACY_FALLBACK,
     PROTECTION_UPDATE_FAILED,
     AuthoritativeEntryUnavailable,
@@ -367,6 +368,79 @@ def test_18_short_rounding_remains_cost_covering():
     assert result.expected_net_usdt >= 0
 
 
+def test_owner_approved_be_plus_fees_semantic_at_entry_100():
+    long_result = _itemised_be(direction="LONG", entry="100", size="1", opening_fee="0.06")
+    short_result = _itemised_be(direction="SHORT", entry="100", size="1", opening_fee="0.06")
+
+    assert long_result.target == D("100.19")
+    assert long_result.opening_fee_usdt == D("0.06")
+    assert long_result.expected_closing_fee_usdt == D("0.060114")
+    assert long_result.spread_allowance_usdt == D("0.020038")
+    assert long_result.slippage_allowance_usdt == D("0.030057")
+    assert long_result.extra_safety_allowance_usdt == D("0.010019")
+    assert long_result.expected_net_usdt == D("0.009772")
+
+    assert short_result.target == D("99.82")
+    assert short_result.opening_fee_usdt == D("0.06")
+    assert short_result.expected_closing_fee_usdt == D("0.059892")
+    assert short_result.spread_allowance_usdt == D("0.019964")
+    assert short_result.slippage_allowance_usdt == D("0.029946")
+    assert short_result.extra_safety_allowance_usdt == D("0.009982")
+    assert short_result.expected_net_usdt == D("0.000216")
+    assert long_result.expected_net_usdt >= 0
+    assert short_result.expected_net_usdt >= 0
+
+
+def test_opening_fee_precedence_is_actual_persisted_rate_then_configured_fallback():
+    base = _position()
+    fallback = select_opening_fee(
+        base,
+        exchange_entry=D("100"),
+        remaining_quantity=D("2"),
+        configured_fallback_rate=D("0.0006"),
+    )
+    assert fallback.source == CONFIGURED_FALLBACK
+    assert fallback.amount_usdt == D("0.12")
+
+    by_rate = dict(base, exchange_open_fee_rate=0.0005)
+    selected_rate = select_opening_fee(
+        by_rate,
+        exchange_entry=D("100"),
+        remaining_quantity=D("2"),
+        configured_fallback_rate=D("0.0006"),
+    )
+    assert selected_rate.source == EXCHANGE_RATE
+    assert selected_rate.amount_usdt == D("0.10000")
+
+    persisted = dict(
+        by_rate,
+        confirmed_opening_fee_usdt=0.09,
+        confirmed_opening_fee_source="PERSISTED_CONFIRMED_EXECUTION_FEE",
+    )
+    selected_persisted = select_opening_fee(
+        persisted,
+        exchange_entry=D("100"),
+        remaining_quantity=D("2"),
+        configured_fallback_rate=D("0.0006"),
+    )
+    assert selected_persisted.source == EXCHANGE_ACTUAL
+    assert selected_persisted.amount_usdt == D("0.09")
+
+    actual = dict(
+        persisted,
+        exchange_opening_fee_usdt=-0.08,
+        exchange_opening_fee_source=EXCHANGE_ACTUAL,
+    )
+    selected_actual = select_opening_fee(
+        actual,
+        exchange_entry=D("100"),
+        remaining_quantity=D("2"),
+        configured_fallback_rate=D("0.0006"),
+    )
+    assert selected_actual.source == EXCHANGE_ACTUAL
+    assert selected_actual.amount_usdt == D("0.08")
+
+
 def test_19_illegal_be_target_is_not_submitted():
     manager = _manager()
     position = _position()
@@ -624,7 +698,10 @@ def test_31_dashboard_uses_exchange_entry(monkeypatch):
     monkeypatch.setattr(
         data_provider,
         "get_settings",
-        lambda: SimpleNamespace(break_even_expected_close_fee_rate=0.0006),
+        lambda: SimpleNamespace(
+            break_even_open_fee_fallback_rate=0.0006,
+            break_even_expected_close_fee_rate=0.0006,
+        ),
     )
     rows = data_provider._normalize_positions(
         [
@@ -643,6 +720,8 @@ def test_31_dashboard_uses_exchange_entry(monkeypatch):
     assert rows[0]["planned_avg_entry"] == 80
     assert rows[0]["exchange_avg_entry"] == 100
     assert rows[0]["price_return_pct"] == 10
+    assert rows[0]["estimated_opening_fee"] == 0.12
+    assert rows[0]["opening_fee_source"] == "CONFIGURED_FALLBACK"
 
 
 def _replay_result(trade: dict):

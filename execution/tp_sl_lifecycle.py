@@ -394,9 +394,7 @@ class TpSlLifecycleMixin:
             target=decimal_value(stop_loss),
             current_mark=context["mark"],
             tick_size=context["tick_size"],
-            safety_ticks=int(
-                getattr(self.settings, "break_even_mark_safety_ticks", 2) or 0
-            ),
+            safety_ticks=int(self.settings.break_even_mark_safety_ticks),
         ):
             self.log.error(
                 "PROTECTION_REPAIR_STOP_NOT_LEGAL | %s | direction=%s | stop=%s | mark=%s | "
@@ -622,10 +620,10 @@ class TpSlLifecycleMixin:
             critical=True,
         ).quantity
         configured_close_rate = decimal_value(
-            getattr(self.settings, "break_even_expected_close_fee_rate", 0.0006)
+            self.settings.break_even_expected_close_fee_rate
         )
         configured_open_rate = decimal_value(
-            getattr(self.settings, "break_even_open_fee_fallback_rate", 0.0006)
+            self.settings.break_even_open_fee_fallback_rate
         )
         opening_fee = select_opening_fee(
             position,
@@ -641,16 +639,16 @@ class TpSlLifecycleMixin:
             opening_fee=opening_fee,
             expected_close_fee_rate=configured_close_rate,
             spread_buffer_pct=decimal_value(
-                getattr(self.settings, "break_even_spread_buffer_pct", 0.02)
+                self.settings.break_even_spread_buffer_pct
             ),
             slippage_buffer_pct=decimal_value(
-                getattr(self.settings, "break_even_slippage_buffer_pct", 0.03)
+                self.settings.break_even_slippage_buffer_pct
             ),
             extra_buffer_pct=decimal_value(
-                getattr(self.settings, "break_even_extra_buffer_pct", 0.01)
+                self.settings.break_even_extra_buffer_pct
             ),
             legacy_fee_buffer_pct=decimal_value(
-                getattr(self.settings, "break_even_fee_buffer_pct", 0.12)
+                self.settings.break_even_fee_buffer_pct
             ),
         )
         position["calculated_be_plus_fees"] = decimal_float(result.target)
@@ -926,9 +924,7 @@ class TpSlLifecycleMixin:
                     target=target,
                     current_mark=context["mark"],
                     tick_size=context["tick_size"],
-                    safety_ticks=int(
-                        getattr(self.settings, "break_even_mark_safety_ticks", 2) or 0
-                    ),
+                    safety_ticks=int(self.settings.break_even_mark_safety_ticks),
                 ):
                     status = (
                         "BE_WINDOW_MISSED"
@@ -1173,7 +1169,7 @@ class TpSlLifecycleMixin:
 
     def _fee_adjusted_break_even(self, direction: str, entry: float) -> float:
         """Legacy non-critical fallback retained for old telemetry/tests only."""
-        buffer_pct = float(getattr(self.settings, "break_even_fee_buffer_pct", 0.10) or 0.10)
+        buffer_pct = float(self.settings.break_even_fee_buffer_pct)
         buffer = buffer_pct / 100.0
         if direction.upper() == "LONG":
             return entry * (1.0 + buffer)

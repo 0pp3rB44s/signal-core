@@ -843,10 +843,7 @@ class ExecutionService:
                         target=decimal_value(protect_stop_loss),
                         current_mark=decimal_value(live_mark_price),
                         tick_size=decimal_value(exchange_tick_size),
-                        safety_ticks=int(
-                            getattr(self.settings, "break_even_mark_safety_ticks", 2)
-                            or 0
-                        ),
+                        safety_ticks=int(self.settings.break_even_mark_safety_ticks),
                     ):
                         raise RuntimeError(
                             f"INITIAL_STOP_NOT_LEGAL | {plan.symbol} | mark={live_mark_price} "

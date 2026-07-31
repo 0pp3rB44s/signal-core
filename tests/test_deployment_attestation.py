@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 from clients.bitget_account_client import BitgetAccountClientMixin
@@ -15,8 +16,14 @@ from deployment.exchange_attestation import (
 )
 
 
+OWNER_SYMBOLS = (
+    "BTCUSDT", "SOLUSDT", "SUIUSDT", "XLMUSDT", "AVAXUSDT",
+    "DOGEUSDT", "WIFUSDT", "SEIUSDT", "TRXUSDT",
+)
+
+
 class _ExchangeAdapter:
-    def __init__(self, symbols=("BTCUSDT", "SOLUSDT")):
+    def __init__(self, symbols=OWNER_SYMBOLS):
         self.positions = []
         self.pending = []
         self.protections = []
@@ -86,7 +93,7 @@ class _ExchangeAdapter:
 
 def test_flat_exchange_with_complete_metadata_passes_read_only_attestation():
     result = attest_exchange(
-        _ExchangeAdapter(), symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        _ExchangeAdapter(), symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     assert result["deployment_gate"] == "PASS"
@@ -120,7 +127,7 @@ def test_positions_pending_entries_and_orphan_protection_block_attestation():
     ]
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     assert result["deployment_gate"] == "FAIL"
@@ -156,7 +163,7 @@ def test_flat_account_rejects_orphan_sl_tp_and_reduce_only_open_order():
     ]
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     assert result["deployment_gate"] == "FAIL"
@@ -172,7 +179,7 @@ def test_unverified_isolated_support_or_insufficient_leverage_blocks():
     adapter.contracts["SOLUSDT"]["maxLever"] = "2"
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     assert result["deployment_gate"] == "FAIL"
@@ -186,7 +193,7 @@ def test_both_isolated_long_and_short_leverage_must_match():
     adapter.accounts["BTCUSDT"]["isolatedShortLever"] = "5"
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
@@ -201,7 +208,7 @@ def test_inactive_symbol_is_blocked_even_when_all_metadata_is_complete():
     adapter.contracts["BTCUSDT"]["symbolStatus"] = "off"
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
@@ -227,7 +234,7 @@ def test_missing_mark_orderbook_or_plan_read_capability_blocks_symbol():
             adapter.fail_plan_symbols.add("BTCUSDT")
 
         result = attest_exchange(
-            adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+            adapter, symbols=OWNER_SYMBOLS, required_leverage=3
         )
 
         btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
@@ -241,7 +248,7 @@ def test_each_required_contract_minimum_field_fails_closed():
         adapter.contracts["BTCUSDT"].pop(field)
 
         result = attest_exchange(
-            adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+            adapter, symbols=OWNER_SYMBOLS, required_leverage=3
         )
 
         btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
@@ -254,7 +261,7 @@ def test_wide_spread_is_conditional_and_cannot_pass_deployment():
     adapter.books["SOLUSDT"]["spread_bps"] = 7.5
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     sol = {row["symbol"]: row for row in result["contracts"]}["SOLUSDT"]
@@ -269,7 +276,7 @@ def test_unresolved_intent_or_quarantine_artifact_blocks_flat_account():
     adapter.quarantine_count = 1
 
     result = attest_exchange(
-        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        adapter, symbols=OWNER_SYMBOLS, required_leverage=3
     )
 
     assert result["deployment_gate"] == "FAIL"
@@ -293,6 +300,17 @@ def test_all_nine_owner_allowlist_symbols_must_be_individually_approved():
     assert result["allowlist_count"] == 9
     assert [row["symbol"] for row in result["contracts"]] == list(symbols)
     assert {row["classification"] for row in result["contracts"]} == {"APPROVED"}
+
+
+def test_exchange_gate_rejects_any_non_owner_allowlist_even_if_symbols_are_healthy():
+    symbols = ("BTCUSDT", "SOLUSDT")
+    result = attest_exchange(
+        _ExchangeAdapter(symbols), symbols=symbols, required_leverage=3
+    )
+
+    assert result["deployment_gate"] == "FAIL"
+    assert result["owner_allowlist_match"] is False
+    assert result["all_symbols_approved"] is False
 
 
 def test_exchange_adapter_has_only_get_capabilities():
@@ -353,8 +371,8 @@ def _config_text() -> str:
         "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT=35",
         "MAX_OPEN_POSITIONS=1",
         "EXECUTION_MAX_PER_CYCLE=1",
-        "PRODUCTION_SYMBOL_ALLOWLIST=BTCUSDT,SOLUSDT",
-        "MAX_SYMBOLS=2",
+        f"PRODUCTION_SYMBOL_ALLOWLIST={','.join(OWNER_SYMBOLS)}",
+        "MAX_SYMBOLS=9",
         "ALLOW_AUTO_WATCHLIST_REFRESH=false",
         "EXECUTION_REQUIRE_CONFIRMATION=true",
         "BREAK_EVEN_OPEN_FEE_FALLBACK_RATE=0.0006",
@@ -382,7 +400,7 @@ def test_config_attestation_validates_safe_values_and_never_returns_secrets(tmp_
         max_leverage=3,
         risk_per_trade_pct=0.75,
         notional_cap_usdt=35,
-        symbols=("BTCUSDT", "SOLUSDT"),
+        symbols=OWNER_SYMBOLS,
         break_even_open_fee_fallback_rate=0.0006,
         break_even_expected_close_fee_rate=0.0006,
         break_even_spread_buffer_pct=0.02,
@@ -398,11 +416,20 @@ def test_config_attestation_validates_safe_values_and_never_returns_secrets(tmp_
     assert result["deployment_gate"] == "PASS"
     assert result["checksum_sha256"] == checksum
     assert result["portfolio"]["max_open_positions"] == 1
-    assert result["allowlist"] == ["BTCUSDT", "SOLUSDT"]
-    assert result["allowlist_count"] == 2
+    assert result["allowlist"] == list(OWNER_SYMBOLS)
+    assert result["allowlist_count"] == 9
     assert result["secrets_redacted"] is True
     assert result["redacted_key_count"] == 2
     assert result["comparisons"]["full_settings_schema"] is True
+    example = result["break_even"]["semantic_example"]
+    assert example["semantic"] == "BE_PLUS_FEES"
+    assert example["before_legacy"] == {
+        "long_target": 100.12,
+        "short_target": 99.88,
+    }
+    assert example["after_itemised"]["long_target"] == 100.19
+    assert example["after_itemised"]["short_target"] == 99.82
+    assert example["cost_covering"] is True
     assert "fake-never-print-this-value" not in rendered
     assert "fake-dashboard-value" not in rendered
 
@@ -443,7 +470,7 @@ def _expected_config(content: str) -> ConfigExpectations:
         max_leverage=3,
         risk_per_trade_pct=0.75,
         notional_cap_usdt=35,
-        symbols=("BTCUSDT", "SOLUSDT"),
+        symbols=OWNER_SYMBOLS,
         break_even_open_fee_fallback_rate=0.0006,
         break_even_expected_close_fee_rate=0.0006,
         break_even_spread_buffer_pct=0.02,
@@ -524,6 +551,8 @@ def test_each_required_live_and_break_even_field_fails_closed_when_missing(tmp_p
         )
 
         assert result["deployment_gate"] == "FAIL", key
+        if key.startswith("BREAK_EVEN_") or key == "EXECUTION_MARGIN_MODE":
+            assert result["comparisons"]["full_settings_schema"] is False, key
 
 
 def test_invalid_value_fails_full_schema_without_serializing_input(tmp_path):
@@ -541,3 +570,24 @@ def test_invalid_value_fails_full_schema_without_serializing_input(tmp_path):
     assert result["deployment_gate"] == "FAIL"
     assert result["comparisons"]["full_settings_schema"] is False
     assert "private-invalid" not in rendered
+
+
+def test_invalid_break_even_rates_cannot_be_approved_as_expected_values(tmp_path):
+    content = _config_text().replace(
+        "BREAK_EVEN_SPREAD_BUFFER_PCT=0.02",
+        "BREAK_EVEN_SPREAD_BUFFER_PCT=-0.02",
+    )
+    path = tmp_path / "deployment-config-fixture"
+    path.write_text(content, encoding="utf-8")
+    expected = _expected_config(content)
+    expected = replace(expected, break_even_spread_buffer_pct=-0.02)
+
+    result = attest_config_file(
+        path,
+        expected,
+        actual_release_sha="b" * 40,
+    )
+
+    assert result["deployment_gate"] == "FAIL"
+    assert result["comparisons"]["break_even_spread_buffer_pct"] is True
+    assert result["comparisons"]["break_even_rates_valid"] is False

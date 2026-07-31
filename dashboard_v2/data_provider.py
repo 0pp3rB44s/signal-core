@@ -185,6 +185,7 @@ def _normalize_tpsl_orders(raw_tpsl: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    settings = get_settings()
     state_positions = _read_json(STATE_PATH / "executed_trades.json") or []
     state_by_symbol = {
         str(p.get("symbol") or ""): p for p in state_positions if isinstance(p, dict)
@@ -218,16 +219,31 @@ def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) 
             0.0,
         )
         price_return_pct_value = _price_return_pct(direction, exchange_entry, price)
-        opening_fee = abs(
-            _safe_float(
-                state.get("exchange_opening_fee_usdt")
-                or state.get("confirmed_opening_fee_usdt")
+        exchange_opening_fee = abs(_safe_float(state.get("exchange_opening_fee_usdt")))
+        confirmed_opening_fee = abs(_safe_float(state.get("confirmed_opening_fee_usdt")))
+        exchange_fee_source = str(state.get("exchange_opening_fee_source") or "")
+        confirmed_fee_source = str(state.get("confirmed_opening_fee_source") or "")
+        exchange_open_rate = _safe_float(state.get("exchange_open_fee_rate"))
+        if exchange_opening_fee > 0 and exchange_fee_source == "EXCHANGE_ACTUAL":
+            opening_fee = exchange_opening_fee
+            opening_fee_source = "EXCHANGE_ACTUAL"
+        elif confirmed_opening_fee > 0 and confirmed_fee_source in {
+            "EXCHANGE_ACTUAL",
+            "PERSISTED_CONFIRMED_EXECUTION_FEE",
+        }:
+            opening_fee = confirmed_opening_fee
+            opening_fee_source = "PERSISTED_CONFIRMED"
+        elif exchange_open_rate > 0:
+            opening_fee = exchange_entry * size * exchange_open_rate
+            opening_fee_source = "EXCHANGE_RATE"
+        else:
+            opening_fee = (
+                exchange_entry
+                * size
+                * float(settings.break_even_open_fee_fallback_rate)
             )
-        )
-        close_fee_rate = float(
-            getattr(get_settings(), "break_even_expected_close_fee_rate", 0.0006)
-            or 0.0
-        )
+            opening_fee_source = "CONFIGURED_FALLBACK"
+        close_fee_rate = float(settings.break_even_expected_close_fee_rate)
         estimated_closing_fee = abs(notional * close_fee_rate)
         estimated_fees = opening_fee + estimated_closing_fee
         estimated_net_unrealized_pnl = gross_unrealized_pnl - estimated_fees
@@ -273,6 +289,9 @@ def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) 
             ),
             "current_mark": round(price, 8),
             "gross_unrealized_pnl": round(gross_unrealized_pnl, 4),
+            "estimated_opening_fee": round(opening_fee, 4),
+            "opening_fee_source": opening_fee_source,
+            "estimated_closing_fee": round(estimated_closing_fee, 4),
             "estimated_fees": round(estimated_fees, 4),
             "estimated_net_unrealized_pnl": round(
                 estimated_net_unrealized_pnl,
@@ -317,6 +336,9 @@ def _fallback_positions() -> list[dict[str, Any]]:
             "exchange_avg_entry_source": "UNAVAILABLE",
             "current_mark": p.get("price"),
             "gross_unrealized_pnl": None,
+            "estimated_opening_fee": None,
+            "opening_fee_source": "UNAVAILABLE",
+            "estimated_closing_fee": None,
             "estimated_fees": None,
             "estimated_net_unrealized_pnl": None,
             "price_return_pct": None,
