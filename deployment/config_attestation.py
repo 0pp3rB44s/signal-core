@@ -352,8 +352,15 @@ def attest_config_file(
         ),
         "default_leverage": default_leverage == float(expected.default_leverage),
         "max_leverage": max_leverage == float(expected.max_leverage),
+        "leverage_values_valid": bool(
+            default_leverage is not None
+            and max_leverage is not None
+            and 0 < default_leverage <= max_leverage
+        ),
         "risk_per_trade_pct": risk_pct == float(expected.risk_per_trade_pct),
+        "risk_per_trade_valid": bool(risk_pct is not None and 0 < risk_pct <= 100),
         "notional_cap_usdt": notional_cap == float(expected.notional_cap_usdt),
+        "notional_cap_valid": bool(notional_cap is not None and notional_cap > 0),
         "max_open_positions": max_open == int(expected.max_open_positions) == 1,
         "execution_max_per_cycle": (
             execution_max == int(expected.execution_max_per_cycle) == 1

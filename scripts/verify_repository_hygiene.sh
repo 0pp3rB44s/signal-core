@@ -55,9 +55,9 @@ elif [[ "$mode" == "release" ]]; then
     [[ -z "$path" ]] || paths+=("$path")
   done < <(
     {
-      git diff --name-only --diff-filter=ACMRT "${base_ref}...HEAD"
-      git diff --cached --name-only --diff-filter=ACMRT
-      git diff --name-only --diff-filter=ACMRT
+      git diff --name-only --diff-filter=ACDMRT "${base_ref}...HEAD"
+      git diff --cached --name-only --diff-filter=ACDMRT
+      git diff --name-only --diff-filter=ACDMRT
       git ls-files --others --exclude-standard
     } | LC_ALL=C sort -u
   )
@@ -88,9 +88,14 @@ fi
 secret_pattern='(AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9_]{30,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9-]{10,})'
 secret_matches=()
 large_files=()
+symlink_paths=()
 for path in "${paths[@]}"; do
+  if [[ -L "$path" ]]; then
+    symlink_paths+=("$path")
+    continue
+  fi
   [[ -f "$path" ]] || continue
-  if LC_ALL=C grep -Iq . "$path" && LC_ALL=C grep -Eq "$secret_pattern" "$path"; then
+  if LC_ALL=C grep -Iq -- . "$path" && LC_ALL=C grep -Eq -- "$secret_pattern" "$path"; then
     secret_matches+=("$path")
   fi
   size="$(wc -c < "$path")"
@@ -99,6 +104,11 @@ for path in "${paths[@]}"; do
   fi
 done
 
+if (( ${#symlink_paths[@]} > 0 )); then
+  echo "ERROR: symbolic links are not permitted in the release patch" >&2
+  printf '%s\n' "${symlink_paths[@]}" >&2
+  exit 1
+fi
 if (( ${#secret_matches[@]} > 0 )); then
   echo "ERROR: source matches a high-confidence secret pattern" >&2
   printf '%s\n' "${secret_matches[@]}" >&2

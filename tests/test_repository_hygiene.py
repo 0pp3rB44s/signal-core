@@ -123,6 +123,42 @@ def test_release_mode_checks_commit_staged_worktree_and_untracked_diffs(tmp_path
         assert relative in result.stderr
 
 
+def test_release_mode_rejects_forbidden_deleted_path(tmp_path):
+    repo = _repo(tmp_path)
+    path = repo / "logs" / "historical.log"
+    path.parent.mkdir()
+    path.write_text("synthetic test data\n", encoding="utf-8")
+    _git(repo, "add", "logs/historical.log")
+    _git(repo, "commit", "-qm", "historical forbidden path")
+    baseline = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    path.unlink()
+    _git(repo, "add", "logs/historical.log")
+
+    result = _run("--base", baseline, cwd=repo)
+
+    assert result.returncode == 1
+    assert "logs/historical.log" in result.stderr
+
+
+def test_release_mode_rejects_symlink_without_following_it(tmp_path):
+    repo = _repo(tmp_path)
+    target = tmp_path / "outside.txt"
+    target.write_text("synthetic external content\n", encoding="utf-8")
+    link = repo / "linked.txt"
+    link.symlink_to(target)
+
+    result = _run("--base", "HEAD", cwd=repo)
+
+    assert result.returncode == 1
+    assert "symbolic links" in result.stderr
+
+
 def test_real_release_patch_is_hygienic_relative_to_approved_live_baseline():
     result = _run("--base", LIVE_BASELINE)
     assert result.returncode == 0, result.stderr

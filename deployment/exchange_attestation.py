@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -28,6 +29,7 @@ class ExchangeReadAdapter(Protocol):
     def open_positions(self) -> dict[str, Any]: ...
     def pending_orders(self) -> dict[str, Any]: ...
     def protection_orders(self, symbol: str | None = None) -> dict[str, Any]: ...
+    def trigger_orders(self, plan_type: str) -> dict[str, Any]: ...
     def contract_metadata(self, symbol: str) -> dict[str, Any]: ...
     def symbol_account(self, symbol: str) -> dict[str, Any]: ...
     def symbol_price(self, symbol: str) -> dict[str, Any]: ...
@@ -67,6 +69,14 @@ class BitgetReadOnlyAttestationAdapter:
             symbol=symbol,
         )
 
+    def trigger_orders(self, plan_type: str) -> dict[str, Any]:
+        if plan_type not in {"normal_plan", "track_plan"}:
+            raise ValueError("unsupported trigger plan type")
+        return self.client.get_tpsl_orders(
+            product_type=self.product_type,
+            plan_type=plan_type,
+        )
+
     def contract_metadata(self, symbol: str) -> dict[str, Any]:
         return self.client.get_contracts(self.product_type, symbol=symbol.upper())
 
@@ -96,7 +106,14 @@ class BitgetReadOnlyAttestationAdapter:
         with self.intent_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if isinstance(payload, dict) and "_state_metadata" in payload:
+            metadata = payload.get("_state_metadata") or {}
+            expected_checksum = str(metadata.get("checksum") or "")
             payload = payload.get("data")
+            calculated_checksum = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            if not expected_checksum or expected_checksum != calculated_checksum:
+                raise ValueError("order intent state checksum mismatch")
         if not isinstance(payload, list):
             raise ValueError("order intent state must be a list")
         return [row for row in payload if isinstance(row, dict)]
@@ -282,6 +299,18 @@ def attest_exchange(
         else:
             ambiguous_open_orders.append(_sanitized_order(row))
 
+    pending_trigger_orders: list[dict[str, str]] = []
+    for plan_type in ("normal_plan", "track_plan"):
+        try:
+            trigger_rows = _rows(adapter.trigger_orders(plan_type))
+        except Exception as exc:
+            trigger_rows = []
+            errors.append(f"trigger_orders:{plan_type}:{type(exc).__name__}")
+        pending_trigger_orders.extend(
+            {**_sanitized_order(row), "plan_type": plan_type}
+            for row in trigger_rows
+        )
+
     try:
         protection_rows = _rows(adapter.protection_orders())
     except Exception as exc:
@@ -437,7 +466,8 @@ def attest_exchange(
     account_checks = {
         "flat": not positions,
         "no_pending_entries": not pending_entries,
-        "no_open_orders": not open_orders,
+        "no_pending_trigger_orders": not pending_trigger_orders,
+        "no_open_orders": not open_orders and not pending_trigger_orders,
         "no_ambiguous_open_orders": not ambiguous_open_orders,
         "no_orphan_stop_loss": not orphan_stop,
         "no_orphan_take_profit": not orphan_take_profit,
@@ -465,6 +495,7 @@ def attest_exchange(
         "open_positions": positions,
         "open_orders": open_orders,
         "pending_entries": pending_entries,
+        "pending_trigger_orders": pending_trigger_orders,
         "ambiguous_open_orders": ambiguous_open_orders,
         "active_stop_orders": [row for row in protections if row["kind"] == "STOP_LOSS"],
         "active_take_profit_orders": [row for row in protections if row["kind"] == "TAKE_PROFIT"],
