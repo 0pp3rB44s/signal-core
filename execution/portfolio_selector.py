@@ -16,6 +16,17 @@ from clients.schemas import TradePlan
 
 
 _FLOAT = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
+_DIRECTIONAL_EXPECTANCY_REASON = re.compile(
+    r"^\s*symbol expectancy source=[^(]+\(\s*"
+    r"(?P<symbol>[A-Z0-9]+)\s+"
+    r"(?P<direction>LONG|SHORT)\s*,"
+    r"(?P<body>[^)]*)\)\s*$",
+    flags=re.IGNORECASE,
+)
+_EXPECTANCY_TOKEN = re.compile(
+    r"(?:^|,)\s*exp\s*=\s*(?P<value>[^,\s)]*)",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +91,37 @@ def _metric(plan: TradePlan, marker: str, default: float) -> float:
 
 
 def _expectancy(plan: TradePlan) -> float:
-    # Directional LIVE provenance is already appended by RiskManager. Missing
-    # evidence is neutral, never a reason to prefer a symbol.
-    return _metric(plan, "exp=", 0.0)
+    """Return only the plan's directional symbol expectancy.
+
+    Strategy-level reasons can also contain ``exp=``.  They must never become
+    the portfolio symbol tiebreaker when the directional value is unavailable.
+    Missing, malformed, non-finite, or ambiguous directional evidence is
+    therefore neutral and fails closed to ``0.0``.
+    """
+    scoped: list[str] = []
+    for value in [
+        *(getattr(plan, "notes", None) or []),
+        *(getattr(plan, "reasons", None) or []),
+    ]:
+        match = _DIRECTIONAL_EXPECTANCY_REASON.fullmatch(str(value))
+        if not match:
+            continue
+        if match.group("symbol").upper() != str(plan.symbol or "").upper():
+            continue
+        if match.group("direction").upper() != str(plan.direction or "").upper():
+            continue
+        scoped.append(match.group("body"))
+
+    if len(scoped) != 1:
+        return 0.0
+    tokens = list(_EXPECTANCY_TOKEN.finditer(scoped[0]))
+    if len(tokens) != 1:
+        return 0.0
+    try:
+        value = float(tokens[0].group("value"))
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 def _setup_quality(plan: TradePlan) -> float:

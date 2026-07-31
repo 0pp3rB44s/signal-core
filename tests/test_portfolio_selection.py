@@ -6,16 +6,22 @@ from execution.portfolio_selector import select_execution_winner
 from tests.test_entry_path_audit import _service
 
 
-def _plan(symbol: str, score: float = 80.0, *, candle_ms: int = 1_700_000_000_000) -> TradePlan:
+def _plan(
+    symbol: str,
+    score: float = 80.0,
+    *,
+    candle_ms: int = 1_700_000_000_000,
+    direction: str = "LONG",
+) -> TradePlan:
     strategy = "low_vol_reclaim"
-    candidate_id = deterministic_candidate_id(strategy, symbol, "LONG", candle_ms)
+    candidate_id = deterministic_candidate_id(strategy, symbol, direction, candle_ms)
     return TradePlan(
         candidate_id=candidate_id,
         candidate_candle_open_timestamp_ms=candle_ms,
         plan_id=deterministic_plan_id(candidate_id),
         symbol=symbol,
         strategy=strategy,
-        direction="LONG",
+        direction=direction,
         verdict="EXECUTABLE",
         score=score,
         entry_prices=[100.0],
@@ -65,6 +71,63 @@ def test_directional_expectancy_then_setup_quality_then_spread_break_ties():
     btc.notes = ["planner_entry_quality=85", "spread_bps_for_edge=3"]
     sol.notes = ["planner_entry_quality=85", "spread_bps_for_edge=8"]
     assert select_execution_winner([sol, btc]).winner is btc
+
+
+def test_directional_expectancy_does_not_fall_through_to_strategy_expectancy():
+    btc, sol = _plan("BTCUSDT"), _plan("SOLUSDT")
+    btc.reasons = [
+        "symbol expectancy source=live (BTCUSDT LONG, n=8, exp=n/a)",
+        "strategy weighting source=clean_strategy_expectancy (low_vol_reclaim, trades=20, exp=-0.90)",
+    ]
+    sol.reasons = [
+        "symbol expectancy source=live (SOLUSDT LONG, n=8, exp=n/a)",
+        "strategy weighting source=clean_strategy_expectancy (low_vol_reclaim, trades=20, exp=0.90)",
+    ]
+
+    selection = select_execution_winner([sol, btc])
+
+    assert selection.winner is btc
+    assert [row.expectancy for row in selection.ranked] == [0.0, 0.0]
+
+
+def test_directional_expectancy_is_scoped_to_symbol_and_long_short_direction():
+    long_plan = _plan("SOLUSDT", direction="LONG")
+    short_plan = _plan("BTCUSDT", direction="SHORT")
+    long_plan.reasons = [
+        "symbol expectancy source=live (SOLUSDT SHORT, n=8, exp=9.0)",
+        "symbol expectancy source=live (SOLUSDT LONG, n=8, exp=0.20)",
+    ]
+    short_plan.reasons = [
+        "symbol expectancy source=live (BTCUSDT LONG, n=8, exp=9.0)",
+        "symbol expectancy source=live (BTCUSDT SHORT, n=8, exp=0.10)",
+    ]
+
+    selection = select_execution_winner([short_plan, long_plan])
+
+    assert selection.winner is long_plan
+    assert [row.expectancy for row in selection.ranked] == [0.2, 0.1]
+
+
+def test_missing_malformed_and_multiple_directional_tokens_are_neutral():
+    cases = [
+        [],
+        ["symbol expectancy source=live (BTCUSDT LONG, n=8, exp=malformed)"],
+        ["symbol expectancy source=live (BTCUSDT LONG, n=8, exp=nan)"],
+        ["symbol expectancy source=live (BTCUSDT LONG, n=8, exp=0.5, exp=0.9)"],
+        [
+            "symbol expectancy source=live (BTCUSDT LONG, n=8, exp=0.5)",
+            "symbol expectancy source=live (BTCUSDT LONG, n=9, exp=0.6)",
+        ],
+    ]
+    for reasons in cases:
+        btc, sol = _plan("BTCUSDT"), _plan("SOLUSDT")
+        btc.reasons = reasons
+        sol.reasons = ["strategy weighting (exp=0.99)"]
+
+        selection = select_execution_winner([sol, btc])
+
+        assert selection.winner is btc
+        assert [row.expectancy for row in selection.ranked] == [0.0, 0.0]
 
 
 def test_invalid_high_score_is_filtered_before_selection():
