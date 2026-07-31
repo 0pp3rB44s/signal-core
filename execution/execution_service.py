@@ -405,7 +405,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message="blocked: shorts disabled by configuration (ENABLE_SHORTS=false)",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=min(plan.position_notional_usdt, hard_cap_notional),
                             leverage=plan.leverage,
                         )
@@ -628,7 +628,7 @@ class ExecutionService:
 
                     if live_order_id is None:
                         def _place_market_entry(client_oid: str, _plan=plan, _size=order_size,
-                                                _side=side, _ref=avg_entry):
+                                                _side=side, _ref=planned_avg_entry):
                             return self.client.place_futures_market_order(
                                 symbol=_plan.symbol,
                                 size=_size,
