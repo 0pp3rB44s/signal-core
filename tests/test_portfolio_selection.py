@@ -136,4 +136,3 @@ def test_open_exchange_position_blocks_winner_without_falling_through(monkeypatc
     assert "max open positions" in reports[0].message
     service.client.place_futures_market_order.assert_not_called()
     assert service.intent_store.all() == []
-
