@@ -6,6 +6,8 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from clients.bitget_account_client import BitgetAccountClientMixin
 from clients.bitget_market_client import BitgetMarketClientMixin
 from deployment.config_attestation import ConfigExpectations, attest_config_file
@@ -27,6 +29,7 @@ class _ExchangeAdapter:
         self.positions = []
         self.pending = []
         self.protections = []
+        self.triggers = {"normal_plan": [], "track_plan": []}
         self.intents = []
         self.quarantine_count = 0
         self.fail_plan_symbols = set()
@@ -71,6 +74,9 @@ class _ExchangeAdapter:
         if symbol in self.fail_plan_symbols:
             raise RuntimeError("plan read unavailable")
         return {"data": self.protections}
+
+    def trigger_orders(self, plan_type):
+        return {"data": {"entrustedList": self.triggers[plan_type]}}
 
     def contract_metadata(self, symbol):
         return {"data": [self.contracts[symbol]]}
@@ -171,6 +177,25 @@ def test_flat_account_rejects_orphan_sl_tp_and_reduce_only_open_order():
     assert result["account_checks"]["no_pending_entries"] is True
     assert [row["order_id"] for row in result["orphan_stop_orders"]] == ["orphan-sl"]
     assert [row["order_id"] for row in result["orphan_take_profit_orders"]] == ["orphan-tp"]
+
+
+def test_pending_normal_or_trailing_trigger_order_blocks_deployment():
+    for plan_type in ("normal_plan", "track_plan"):
+        adapter = _ExchangeAdapter()
+        adapter.triggers[plan_type] = [{
+            "symbol": "BTCUSDT",
+            "orderId": f"pending-{plan_type}",
+            "tradeSide": "open",
+        }]
+
+        result = attest_exchange(
+            adapter, symbols=OWNER_SYMBOLS, required_leverage=3
+        )
+
+        assert result["deployment_gate"] == "FAIL", plan_type
+        assert result["account_checks"]["no_pending_trigger_orders"] is False
+        assert result["account_checks"]["no_open_orders"] is False
+        assert result["pending_trigger_orders"][0]["plan_type"] == plan_type
 
 
 def test_unverified_isolated_support_or_insufficient_leverage_blocks():
@@ -321,6 +346,32 @@ def test_exchange_adapter_has_only_get_capabilities():
         "place_", "cancel_", "close_", "set_futures_leverage", "emergency_flatten"
     ):
         assert forbidden not in source
+
+
+def test_local_intent_reader_verifies_wrapped_state_checksum(tmp_path):
+    path = tmp_path / "order-intents-fixture"
+    rows = [{"symbol": "BTCUSDT", "state": "PROTECTED"}]
+    checksum = hashlib.sha256(
+        json.dumps(rows, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    path.write_text(
+        json.dumps({"_state_metadata": {"checksum": checksum}, "data": rows}),
+        encoding="utf-8",
+    )
+    adapter = BitgetReadOnlyAttestationAdapter(
+        SimpleNamespace(),
+        product_type="USDT-FUTURES",
+        intent_path=path,
+    )
+
+    assert adapter.local_order_intents() == rows
+
+    path.write_text(
+        json.dumps({"_state_metadata": {"checksum": "bad"}, "data": rows}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        adapter.local_order_intents()
 
 
 def test_symbol_account_endpoint_is_get_only():
