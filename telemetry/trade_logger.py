@@ -783,8 +783,19 @@ class TradeDatasetV2Logger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._seen_close_keys: set[tuple] | None = None
 
-    def _close_key(self, symbol: str, direction: str, closed_at: str, pnl) -> tuple:
+    def _close_key(
+        self,
+        symbol: str,
+        direction: str,
+        closed_at: str,
+        pnl,
+        position_lifecycle_id: str = "",
+    ) -> tuple:
+        lifecycle_id = str(position_lifecycle_id or "").strip()
+        if lifecycle_id:
+            return ("LIFECYCLE", lifecycle_id)
         return (
+            "LEGACY",
             str(symbol or "").upper(),
             str(direction or "").upper(),
             str(closed_at or "")[:19],
@@ -808,6 +819,7 @@ class TradeDatasetV2Logger:
                             self._seen_close_keys.add(self._close_key(
                                 row.get("symbol"), row.get("direction"),
                                 row.get("closed_at") or row.get("timestamp"), row.get("pnl"),
+                                row.get("position_lifecycle_id"),
                             ))
                 except Exception:
                     pass
@@ -832,6 +844,11 @@ class TradeDatasetV2Logger:
             "planned_avg_entry",
             "exchange_avg_entry",
             "exchange_avg_entry_source",
+            "position_lifecycle_id",
+            "exchange_entry_order_id",
+            "exchange_entry_client_oid",
+            "confirmed_position_size",
+            "confirmed_opening_fee_usdt",
             "expected_entry",
             "actual_entry",
             "exit",
@@ -843,6 +860,8 @@ class TradeDatasetV2Logger:
             "slippage_pct",
             "pnl",
             "net_pnl",
+            "price_return_pct",
+            "margin_roi_pct",
             "exchange_order_id",
             "tp1_hit",
             "tp2_hit",
@@ -851,6 +870,8 @@ class TradeDatasetV2Logger:
             "tp1_locked_stop_active",
             "old_stop_loss_removed",
             "last_sl_move_reason",
+            "protection_state",
+            "confirmed_stop",
             "candles_held",
             "rr_to_tp1",
             "max_drawdown_pct",
@@ -907,6 +928,11 @@ class TradeDatasetV2Logger:
             "planned_avg_entry": _report_planned_entry(report),
             "exchange_avg_entry": _report_exchange_entry(report),
             "exchange_avg_entry_source": getattr(report, "exchange_avg_entry_source", ""),
+            "position_lifecycle_id": getattr(report, "position_lifecycle_id", ""),
+            "exchange_entry_order_id": getattr(report, "exchange_entry_order_id", ""),
+            "exchange_entry_client_oid": getattr(report, "exchange_entry_client_oid", ""),
+            "confirmed_position_size": getattr(report, "confirmed_position_size", ""),
+            "confirmed_opening_fee_usdt": getattr(report, "confirmed_opening_fee_usdt", ""),
             "expected_entry": getattr(report, "expected_entry", _report_planned_entry(report)),
             "actual_entry": getattr(report, "actual_entry", _report_planned_entry(report)),
             "exit": "",
@@ -918,6 +944,8 @@ class TradeDatasetV2Logger:
             "slippage_pct": getattr(report, "slippage_pct", 0.0),
             "pnl": "",
             "net_pnl": "",
+            "price_return_pct": "",
+            "margin_roi_pct": "",
             "exchange_order_id": getattr(report, "exchange_order_id", ""),
             "tp1_hit": "",
             "tp2_hit": "",
@@ -926,6 +954,8 @@ class TradeDatasetV2Logger:
             "tp1_locked_stop_active": "",
             "old_stop_loss_removed": "",
             "last_sl_move_reason": "",
+            "protection_state": getattr(report, "protection_state", ""),
+            "confirmed_stop": getattr(report, "confirmed_stop", ""),
             "candles_held": "",
             "rr_to_tp1": "",
             "max_drawdown_pct": "",
@@ -981,7 +1011,13 @@ class TradeDatasetV2Logger:
 
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
         closed_at = trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        close_key = self._close_key(trade.get("symbol"), trade.get("direction"), closed_at, pnl)
+        close_key = self._close_key(
+            trade.get("symbol"),
+            trade.get("direction"),
+            closed_at,
+            pnl,
+            trade.get("position_lifecycle_id"),
+        )
         if self._is_duplicate_close(close_key):
             return
         self._append_row({
@@ -998,6 +1034,17 @@ class TradeDatasetV2Logger:
             "planned_avg_entry": trade.get("planned_avg_entry", ""),
             "exchange_avg_entry": trade.get("exchange_avg_entry", ""),
             "exchange_avg_entry_source": trade.get("exchange_avg_entry_source", ""),
+            "position_lifecycle_id": trade.get("position_lifecycle_id", ""),
+            "exchange_entry_order_id": trade.get("exchange_entry_order_id", ""),
+            "exchange_entry_client_oid": trade.get("exchange_entry_client_oid", ""),
+            "confirmed_position_size": trade.get(
+                "confirmed_position_size",
+                trade.get("exchange_truth_size", trade.get("position_size", "")),
+            ),
+            "confirmed_opening_fee_usdt": trade.get(
+                "confirmed_opening_fee_usdt",
+                trade.get("exchange_opening_fee_usdt", ""),
+            ),
             "expected_entry": trade.get("expected_entry", ""),
             "actual_entry": trade.get("actual_entry", ""),
             "exit": trade.get("exit", ""),
@@ -1009,6 +1056,11 @@ class TradeDatasetV2Logger:
             "slippage_pct": trade.get("slippage_pct", ""),
             "pnl": pnl,
             "net_pnl": round(net_pnl, 8),
+            "price_return_pct": trade.get("price_return_pct", ""),
+            "margin_roi_pct": trade.get(
+                "margin_roi_pct",
+                trade.get("realized_margin_roi_pct", ""),
+            ),
             "exchange_order_id": trade.get("exchange_order_id", ""),
             "tp1_hit": trade.get("tp1_hit", ""),
             "tp2_hit": trade.get("tp2_hit", ""),
@@ -1017,6 +1069,8 @@ class TradeDatasetV2Logger:
             "tp1_locked_stop_active": trade.get("tp1_locked_stop_active", ""),
             "old_stop_loss_removed": trade.get("old_stop_loss_removed", ""),
             "last_sl_move_reason": trade.get("last_sl_move_reason", ""),
+            "protection_state": trade.get("protection_state", ""),
+            "confirmed_stop": trade.get("confirmed_stop", ""),
             "candles_held": quality.get("candles_held", trade.get("candles_held", "")),
             "rr_to_tp1": quality.get("rr_to_tp1", ""),
             "max_drawdown_pct": quality.get("max_drawdown_pct", ""),
@@ -1485,6 +1539,10 @@ def append_closed_trade_row(
         trade_payload.update(extra)
     if kwargs:
         trade_payload.update(kwargs)
+    if margin_roi_pct not in (None, ""):
+        trade_payload["margin_roi_pct"] = margin_roi_pct
+    if pnl_pct not in (None, ""):
+        trade_payload["price_return_pct"] = pnl_pct
 
     resolved_reason = (
         result
@@ -1495,26 +1553,25 @@ def append_closed_trade_row(
         or "closed"
     )
 
-    resolved_pnl = (
-        pnl
-        if pnl is not None
-        else margin_roi_pct
-        if margin_roi_pct is not None
-        else pnl_pct
-    )
-    if resolved_pnl in (None, ""):
-        resolved_pnl = (
-            trade_payload.get("realized_pnl_pct")
-            or trade_payload.get("pnl_pct")
-            or trade_payload.get("realized_pnl")
-            or trade_payload.get("pnl")
-            or 0.0
+    exchange_truth_pnl = trade_payload.get("exchange_truth_pnl")
+    if exchange_truth_pnl not in ("", None):
+        resolved_pnl = exchange_truth_pnl
+    elif pnl not in ("", None):
+        resolved_pnl = pnl
+    elif trade_payload.get("realized_pnl") not in ("", None):
+        resolved_pnl = trade_payload.get("realized_pnl")
+    elif trade_payload.get("pnl") not in ("", None):
+        resolved_pnl = trade_payload.get("pnl")
+    else:
+        raise ValueError(
+            "monetary PnL is required; margin ROI and price-return percentages "
+            "must never be written as USDT"
         )
 
     try:
         resolved_pnl_float = float(resolved_pnl)
-    except (TypeError, ValueError):
-        resolved_pnl_float = 0.0
+    except (TypeError, ValueError) as exc:
+        raise ValueError("monetary PnL must be numeric") from exc
 
     if exit_price not in (None, ""):
         trade_payload["exit"] = exit_price
@@ -1537,7 +1594,6 @@ def append_closed_trade_row(
     trade_payload["closed_reason"] = resolved_reason
     trade_payload["close_reason"] = resolved_reason
 
-    exchange_truth_pnl = trade_payload.get("exchange_truth_pnl")
     exchange_truth_fee = trade_payload.get("exchange_truth_fee")
     if exchange_truth_pnl not in ("", None):
         resolved_pnl_float = _safe_float(exchange_truth_pnl)

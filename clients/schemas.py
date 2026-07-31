@@ -180,6 +180,8 @@ class ExecutionReport:
     exchange_avg_entry: float = 0.0
     exchange_avg_entry_source: str = ""
     position_lifecycle_id: str = ""
+    exchange_entry_order_id: str = ""
+    exchange_entry_client_oid: str = ""
     confirmed_position_size: float = 0.0
     confirmed_opening_fee_usdt: float = 0.0
     expected_entry: float = 0.0

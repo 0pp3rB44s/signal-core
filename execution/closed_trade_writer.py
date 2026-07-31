@@ -88,7 +88,11 @@ class ClosedTradeWriterMixin:
         if not symbol or not closed_at:
             return
 
-        if self._closed_trade_dataset_row_exists(symbol=symbol, closed_at=closed_at):
+        if self._closed_trade_dataset_row_exists(
+            symbol=symbol,
+            closed_at=closed_at,
+            position_lifecycle_id=str(position.get("position_lifecycle_id") or ""),
+        ):
             return
 
         data_confidence = str(position.get("data_confidence") or "").upper()
@@ -312,7 +316,12 @@ class ClosedTradeWriterMixin:
             closed_at,
         )
 
-    def _closed_trade_dataset_row_exists(self, symbol: str, closed_at: str) -> bool:
+    def _closed_trade_dataset_row_exists(
+        self,
+        symbol: str,
+        closed_at: str,
+        position_lifecycle_id: str = "",
+    ) -> bool:
         path = Path("logs/trade_dataset_v2.csv")
         if not path.exists():
             return False
@@ -320,23 +329,29 @@ class ClosedTradeWriterMixin:
         target_symbol = str(symbol or "").upper()
         target_closed_at = str(closed_at or "")
         target_prefix = target_closed_at[:19]
+        target_lifecycle = str(position_lifecycle_id or "").strip()
 
         if not target_symbol or not target_closed_at:
             return False
 
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line or line.startswith("event_type,"):
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    event_type = str(row.get("event_type") or "").upper()
+                    status = str(row.get("status") or "").upper()
+                    if event_type not in {"CLOSE", "POSITION_CLOSED"} and not status.startswith("CLOSED"):
                         continue
-                    if "POSITION_CLOSED" not in line and "CLOSE" not in line and "CLOSED" not in line:
+                    if str(row.get("symbol") or "").upper() != target_symbol:
                         continue
-                    if target_symbol not in line:
+                    row_lifecycle = str(row.get("position_lifecycle_id") or "").strip()
+                    if target_lifecycle and row_lifecycle:
+                        if row_lifecycle == target_lifecycle:
+                            return True
                         continue
-                    if target_closed_at in line:
+                    row_closed_at = str(row.get("closed_at") or row.get("timestamp") or "")
+                    if row_closed_at == target_closed_at:
                         return True
-                    if target_prefix and target_prefix in line:
+                    if target_prefix and row_closed_at[:19] == target_prefix:
                         return True
         except Exception as exc:
             self.log.warning(
@@ -539,6 +554,16 @@ class ClosedTradeWriterMixin:
             "exchange_truth_size": position.get("exchange_truth_size", ""),
             "exchange_truth_pnl": position.get("exchange_truth_pnl", ""),
             "exchange_truth_fee": position.get("exchange_truth_fee", ""),
+            "position_lifecycle_id": position.get("position_lifecycle_id", ""),
+            "exchange_entry_order_id": position.get("exchange_entry_order_id", ""),
+            "exchange_entry_client_oid": position.get("exchange_entry_client_oid", ""),
+            "confirmed_position_size": size,
+            "confirmed_opening_fee_usdt": position.get(
+                "confirmed_opening_fee_usdt",
+                position.get("exchange_opening_fee_usdt", ""),
+            ),
+            "protection_state": position.get("protection_state", ""),
+            "confirmed_stop": position.get("confirmed_stop", ""),
         }
 
         if position.get("exchange_truth_pnl") not in (None, ""):
