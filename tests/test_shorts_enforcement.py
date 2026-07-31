@@ -31,7 +31,12 @@ def _settings(**over) -> Settings:
     base = {
         "EXECUTION_ENABLED": True,
         "EXECUTION_MODE": "LIVE",
-        "EXECUTION_REQUIRE_CONFIRMATION": False,
+        "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT",
+        "MAX_SYMBOLS": 1,
+        "MAX_OPEN_POSITIONS": 1,
+        "EXECUTION_MAX_PER_CYCLE": 1,
+        "ALLOW_AUTO_WATCHLIST_REFRESH": False,
+        "EXECUTION_REQUIRE_CONFIRMATION": True,
         "MAKER_ENTRY_ENABLED": False,
         "SYMBOL_COOLDOWN_MINUTES": 0,
     }

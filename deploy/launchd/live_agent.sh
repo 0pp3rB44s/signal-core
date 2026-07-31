@@ -19,6 +19,7 @@ set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$PROJECT_DIR"
 mkdir -p logs state
+. scripts/lib/env_guard.sh
 # stdout only: launchd already captures it to logs/launchd_live.out via
 # StandardOutPath. Tee-ing to that same file duplicated every line.
 log() { printf '%s | LIVE_AGENT | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
@@ -89,7 +90,10 @@ fi
 
 # --- start the engine ---
 log "restoring authorised live session"
-set -a; . ./.env.live; set +a
+guard_load_env ".env.live"
+guard_apply_canonical_symbol_allowlist
+guard_assert_live_mode
+guard_assert_pilot_limits
 
 BOT_PID="$(.venv/bin/python scripts/launch_detached.py --stdout logs/live.out -- .venv/bin/python -u -m app.main)"
 echo "$BOT_PID" > state/bot.pid
