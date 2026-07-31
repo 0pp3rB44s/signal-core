@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify_repository_hygiene.sh"
-LIVE_BASELINE = "cd8671c09df56b238e2c52727f6f54731ab5fac1"
+LIVE_BASELINE = "f0742de19d309a26e9b6a821fa3860c6bbbd3289"
 
 
 def _run(*args: str, cwd: Path = ROOT, stdin: str = "") -> subprocess.CompletedProcess[str]:

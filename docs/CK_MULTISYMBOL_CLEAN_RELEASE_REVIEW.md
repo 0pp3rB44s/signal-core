@@ -2,15 +2,15 @@
 
 Status: **CODE BLOCKERS FIXED — DEPLOYMENT NOT APPROVED**
 
-This release is based directly on the authorised LIVE/rollback baseline
-`cd8671c09df56b238e2c52727f6f54731ab5fac1`. It contains the 14 intended C–K
-commits plus small, reviewable remediation commits. It contains no stale `main`
-history. The rejected tip `8d538670ffb93b8fd6a6af506580f57b71bf5bdb` is not a
-deployment target.
+This release is based directly on the owner-reviewed, cleaned production
+baseline `f0742de19d309a26e9b6a821fa3860c6bbbd3289` from cleanup PR #18. It
+contains the 14 intended C–K commits plus small, reviewable remediation commits.
+It contains no stale `main` history. The rejected tip
+`8d538670ffb93b8fd6a6af506580f57b71bf5bdb` is not a deployment target.
 
 No LIVE stop, restart, checkout, supervisor-pin change, configuration mutation,
-exchange order action, merge, or deployment was performed while preparing this
-release.
+exchange order action, release merge, or deployment was performed while
+preparing this release.
 
 ## Owner-approved production scope
 
@@ -69,18 +69,10 @@ Required before review handoff:
 - release hygiene relative to the exact LIVE baseline;
 - clean worktree and exact ancestry check.
 
-## Known inherited baseline blocker
+## Baseline hygiene gate
 
-The release-delta hygiene gate is `PASS`, but the scanner's explicit full-tree
-`--tracked` mode is `FAIL` on paths inherited unchanged from the authorised
-LIVE baseline. The failing path names and contents are intentionally not copied
-into this report. This release does not modify those forbidden files: doing so
-would both expand this PR beyond its approved scope and violate the repository's
-credential/config handling rules.
-
-This is an operational deployment blocker, not a hidden exception. A separate,
-owner-reviewed baseline-hygiene change must make the full tracked-tree check
-`PASS` before production deployment can be approved.
+Cleanup PR #18 removed the inherited tracked-tree blocker before this release
+was rebuilt. Both full tracked-tree and release-delta hygiene must remain `PASS`.
 
 Required later, in an explicitly authorised deployment window:
 
@@ -91,5 +83,5 @@ Required later, in an explicitly authorised deployment window:
 - full tracked-tree repository hygiene `PASS`;
 - explicit human approval to merge and deploy.
 
-Until those later gates pass, the correct operational action is no merge, no
-deployment, no supervisor change, and no LIVE restart.
+Until those later gates pass, the correct operational action is no release
+merge, no deployment, no supervisor change, and no LIVE restart.
