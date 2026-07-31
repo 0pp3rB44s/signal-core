@@ -256,7 +256,7 @@ def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
 
 
 def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypatch):
-    service = _service(monkeypatch, EXECUTION_MAX_PER_CYCLE=2)
+    service = _service(monkeypatch)
     first, second = _plan("BTCUSDT"), _plan("ETHUSDT")
 
     service.client.place_futures_market_order.side_effect = BitgetOrderSubmissionAmbiguous(
@@ -269,8 +269,10 @@ def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypa
     reports = service.execute([first, second])
 
     assert service.client.place_futures_market_order.call_count == 1
-    assert [report.status for report in reports] == ["SKIPPED", "SKIPPED"]
-    assert "blocked" in reports[1].message
+    assert [report.status for report in reports] == ["SKIPPED"]
+    assert reports[0].symbol == "BTCUSDT"
+    assert "could not be established" in reports[0].message.lower()
+    assert service.intent_store.blocking()[0]["state"] == "UNKNOWN"
 
 
 def test_next_cycle_stays_blocked_until_the_intent_is_reconciled(monkeypatch):
