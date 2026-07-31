@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import Settings
 from app.equity import resolve_account_equity
+from clients.bitget_order_client import BitgetOrderClientMixin
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, TradePlan
 from execution.entry_submitter import (
@@ -1394,7 +1395,45 @@ class ExecutionService:
             )
             return f"unreconciled order intent(s) in UNKNOWN state: {details}"
 
-        return ""
+        return self._exchange_pending_entry_guard_reason()
+
+    def _exchange_pending_entry_guard_reason(self) -> str:
+        """Block while any non-reduce-only exchange entry is still pending."""
+        try:
+            payload = self.client.get_pending_orders(
+                product_type=self.settings.bitget_product_type,
+            )
+            rows = BitgetOrderClientMixin._order_rows(payload)
+        except Exception as exc:
+            self.log.critical(
+                "LIVE_ENTRY_BLOCKED_PENDING_ORDER_SYNC_FAILED | error=%s",
+                exc,
+            )
+            return f"exchange pending-entry check failed: {exc}"
+
+        pending_entries = []
+        for row in rows:
+            reduce_only = str(row.get("reduceOnly") or "").strip().lower()
+            trade_side = str(row.get("tradeSide") or "").strip().lower()
+            if reduce_only in {"yes", "true", "1"} or trade_side == "close":
+                continue
+            pending_entries.append(
+                {
+                    "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+                    "order_id": str(row.get("orderId") or row.get("id") or "UNKNOWN"),
+                }
+            )
+
+        if not pending_entries:
+            return ""
+        details = ", ".join(
+            f"{row['symbol']}:{row['order_id']}" for row in pending_entries
+        )
+        self.log.critical(
+            "LIVE_ENTRY_BLOCKED_PENDING_EXCHANGE_ENTRY | pending=%s",
+            details,
+        )
+        return f"pending exchange entry order(s): {details}"
 
     def _format_order_size_for_exchange(self, symbol: str, raw_size: float) -> float:
         try:

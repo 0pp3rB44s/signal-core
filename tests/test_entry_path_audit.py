@@ -154,6 +154,7 @@ def _service(monkeypatch, **setting_overrides) -> ExecutionService:
     service = ExecutionService(settings=_live_settings(**setting_overrides))
     client = MagicMock()
     client.get_all_positions.return_value = {"data": []}
+    client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
     client._format_size.return_value = 0.5
     client._contract_price_scale.return_value = 2
     client.extract_order_id.side_effect = lambda payload: str(
@@ -292,6 +293,55 @@ def test_next_cycle_stays_blocked_until_the_intent_is_reconciled(monkeypatch):
     assert service.client.place_futures_market_order.call_count == 0
     assert reports[0].status == "SKIPPED"
     assert "UNKNOWN" in reports[0].message
+
+
+def test_pending_exchange_entry_blocks_every_new_symbol(monkeypatch):
+    service = _service(monkeypatch)
+    service.client.get_pending_orders.return_value = {
+        "data": {
+            "entrustedList": [{
+                "symbol": "BTCUSDT",
+                "orderId": "pending-entry-1",
+                "tradeSide": "open",
+                "reduceOnly": "NO",
+            }]
+        }
+    }
+
+    reports = service.execute([_plan("SOLUSDT")])
+
+    assert reports[0].status == "SKIPPED"
+    assert "pending exchange entry order" in reports[0].message
+    service.client.place_futures_market_order.assert_not_called()
+    assert service.intent_store.all() == []
+
+
+def test_pending_reduce_only_close_does_not_look_like_a_new_entry(monkeypatch):
+    service = _service(monkeypatch)
+    service.client.get_pending_orders.return_value = {
+        "data": {
+            "entrustedList": [{
+                "symbol": "BTCUSDT",
+                "orderId": "pending-close-1",
+                "tradeSide": "close",
+                "reduceOnly": "YES",
+            }]
+        }
+    }
+    plan = _plan("SOLUSDT")
+    service.client.get_all_positions.side_effect = [
+        {"data": []},
+        {"data": []},
+        {"data": [{
+            "symbol": "SOLUSDT", "holdSide": "long", "total": "0.5",
+            "openPriceAvg": "100", "markPrice": "100",
+        }]},
+    ]
+
+    reports = service.execute([plan])
+
+    assert reports[0].status == "EXECUTED"
+    assert service.client.place_futures_market_order.call_count == 1
 
 
 def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monkeypatch):
