@@ -150,6 +150,7 @@ def _service(monkeypatch, **setting_overrides) -> ExecutionService:
     client = MagicMock()
     client.get_all_positions.return_value = {"data": []}
     client._format_size.return_value = 0.5
+    client._contract_price_scale.return_value = 2
     client.extract_order_id.side_effect = lambda payload: str(
         ((payload or {}).get("data") or {}).get("orderId") or ""
     )
@@ -184,7 +185,17 @@ def test_live_entry_passes_a_deterministic_client_oid(monkeypatch, direction, ex
     service.client.get_all_positions.side_effect = [
         {"data": []},  # pre-flight open-symbol sync
         {"data": []},  # per-plan exchange-truth max-positions check
-        {"data": [{"symbol": plan.symbol, "total": "0.5", "openPriceAvg": "100.0"}]},
+        {
+            "data": [
+                {
+                    "symbol": plan.symbol,
+                    "holdSide": "long" if direction == "LONG" else "short",
+                    "total": "0.5",
+                    "openPriceAvg": "100.0",
+                    "markPrice": "100.0",
+                }
+            ]
+        },
     ]
 
     reports = service.execute([plan])
@@ -218,7 +229,17 @@ def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
     service.client.get_all_positions.side_effect = [
         {"data": []},
         {"data": []},
-        {"data": [{"symbol": plan.symbol, "total": "0.5", "openPriceAvg": "100.4"}]},
+        {
+            "data": [
+                {
+                    "symbol": plan.symbol,
+                    "holdSide": "long",
+                    "total": "0.5",
+                    "openPriceAvg": "100.4",
+                    "markPrice": "100.4",
+                }
+            ]
+        },
     ]
 
     reports = service.execute([plan])

@@ -11,9 +11,9 @@
       <strong>{{ p.symbol }}</strong>
       <span class="direction-pill {{ 'short' if (p.direction or '')|lower == 'short' else 'long' }}">{{ p.direction }}</span>
     </div>
-    <div class="position-pnl {{ 'good' if p.pnl >= 0 else 'danger' }}">
-      <strong>{{ p.pnl }} USDT</strong>
-      <span>{{ p.pnl_pct }}%</span>
+    <div class="position-pnl {{ 'good' if (p.estimated_net_unrealized_pnl or 0) >= 0 else 'danger' }}">
+      <strong>{{ p.estimated_net_unrealized_pnl }} USDT net est.</strong>
+      <span>{{ p.price_return_pct }}% price return</span>
     </div>
   </header>
 
@@ -25,12 +25,20 @@
   </div>
 
   <div class="position-grid">
-    <div><span>Entry</span><strong>{{ p.entry }}</strong></div>
-    <div><span>Live Price</span><strong>{{ p.price }}</strong></div>
+    <div><span>Planned Avg Entry</span><strong>{{ p.planned_avg_entry }}</strong></div>
+    <div><span>Exchange Avg Entry</span><strong>{{ p.exchange_avg_entry }}</strong></div>
+    <div><span>Entry Delta</span><strong>{{ p.entry_delta }}</strong></div>
+    <div><span>Entry Provenance</span><strong>{{ p.exchange_avg_entry_source }}</strong></div>
+    <div><span>Current Mark</span><strong>{{ p.current_mark }}</strong></div>
+    <div><span>Gross Unrealized PnL</span><strong>{{ p.gross_unrealized_pnl }} USDT</strong></div>
+    <div><span>Estimated Fees</span><strong>{{ p.estimated_fees }} USDT</strong></div>
+    <div><span>Estimated Net UPL</span><strong>{{ p.estimated_net_unrealized_pnl }} USDT</strong></div>
+    <div><span>Margin ROI</span><strong>{{ p.margin_roi_pct }}%</strong></div>
     <div><span>Size</span><strong>{{ p.size }}</strong></div>
-    <div><span>Stop Loss</span><strong class="{{ 'danger' if p.sl == 'MISSING' else '' }}">{{ p.sl }}</strong></div>
+    <div><span>Confirmed Stop</span><strong class="{{ 'danger' if p.confirmed_stop == 'MISSING' else '' }}">{{ p.confirmed_stop }}</strong></div>
+    <div><span>BE + Fees Level</span><strong>{{ p.calculated_be_plus_fees }}</strong></div>
     <div><span>Take Profit</span><strong class="{{ 'danger' if p.tp == 'MISSING' else '' }}">{{ p.tp }}</strong></div>
-    <div><span>Protection</span><strong class="{{ protection.level if protection else 'warning' }}">{{ protection.status if protection else 'UNKNOWN' }}</strong></div>
+    <div><span>Protection State</span><strong class="{{ protection.level if protection else 'warning' }}">{{ p.protection_state }}</strong></div>
     <div><span>Live RR</span><strong>{{ p.live_rr }}</strong></div>
     <div><span>Distance to SL</span><strong>{{ p.distance_to_sl_pct }}%</strong></div>
     <div><span>Notional</span><strong>{{ p.notional }}</strong></div>
