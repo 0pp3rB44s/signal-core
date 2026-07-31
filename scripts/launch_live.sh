@@ -32,6 +32,7 @@ guard_assert_venv
 guard_assert_no_duplicate
 guard_assert_disk
 guard_load_env ".env.live"
+guard_apply_canonical_symbol_allowlist
 guard_assert_live_mode
 guard_assert_pilot_limits
 # R2 is enforced against the host's actual pmset state, not against the register.

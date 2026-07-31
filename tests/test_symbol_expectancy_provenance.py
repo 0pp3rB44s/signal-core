@@ -397,7 +397,10 @@ def test_real_dataset_gives_btcusdt_no_pause_in_either_direction():
 
 def _settings(**over) -> Settings:
     base = {"EXECUTION_ENABLED": True, "EXECUTION_MODE": "LIVE",
-            "EXECUTION_REQUIRE_CONFIRMATION": False, "MAKER_ENTRY_ENABLED": False,
+            "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT", "MAX_SYMBOLS": 1,
+            "MAX_OPEN_POSITIONS": 1, "EXECUTION_MAX_PER_CYCLE": 1,
+            "ALLOW_AUTO_WATCHLIST_REFRESH": False,
+            "EXECUTION_REQUIRE_CONFIRMATION": True, "MAKER_ENTRY_ENABLED": False,
             "SYMBOL_COOLDOWN_MINUTES": 0}
     base.update(over)
     return Settings(_env_file=None, **base)

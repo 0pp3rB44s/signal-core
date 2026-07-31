@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.symbol_allowlist import parse_symbol_allowlist
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -38,6 +40,12 @@ class Settings(BaseSettings):
             "AAVEUSDT,XLMUSDT,TRXUSDT,FILUSDT"
         ),
         alias="WATCHLIST",
+    )
+    # Empty by default on purpose.  A LIVE process must receive an explicit,
+    # owner-confirmed value; the broad development watchlist is never promoted.
+    production_symbol_allowlist: str = Field(
+        default="",
+        alias="PRODUCTION_SYMBOL_ALLOWLIST",
     )
     allow_auto_watchlist_refresh: bool = Field(default=True, alias="ALLOW_AUTO_WATCHLIST_REFRESH")
     min_usdt_volume_24h: float = Field(default=10_000_000, alias="MIN_USDT_VOLUME_24H")
@@ -236,6 +244,24 @@ class Settings(BaseSettings):
             and not self.execution_enabled
         ):
             self.forward_paper_smoke_strategy_enabled = False
+
+        if self.is_live_execution:
+            symbols = parse_symbol_allowlist(
+                self.production_symbol_allowlist,
+                required=True,
+            )
+            if self.max_open_positions != 1:
+                raise ValueError("LIVE requires MAX_OPEN_POSITIONS=1")
+            if self.execution_max_per_cycle != 1:
+                raise ValueError("LIVE requires EXECUTION_MAX_PER_CYCLE=1")
+            if self.max_symbols != len(symbols):
+                raise ValueError(
+                    "LIVE MAX_SYMBOLS must equal the canonical production allowlist size"
+                )
+            if self.allow_auto_watchlist_refresh:
+                raise ValueError("LIVE requires ALLOW_AUTO_WATCHLIST_REFRESH=false")
+            if not self.execution_require_confirmation:
+                raise ValueError("LIVE requires EXECUTION_REQUIRE_CONFIRMATION=true")
         return self
 
     @property
@@ -255,7 +281,20 @@ class Settings(BaseSettings):
 
     @property
     def watchlist_symbols(self) -> list[str]:
+        if self.is_live_execution:
+            return list(self.production_symbols)
         return [s.strip().upper() for s in self.watchlist.split(",") if s.strip()]
+
+    @property
+    def production_symbols(self) -> tuple[str, ...]:
+        return parse_symbol_allowlist(
+            self.production_symbol_allowlist,
+            required=self.is_live_execution,
+        )
+
+    @property
+    def production_symbol_set(self) -> frozenset[str]:
+        return frozenset(self.production_symbols)
 
     @property
     def strategy_debug_symbol_set(self) -> set[str]:
@@ -272,6 +311,8 @@ class Settings(BaseSettings):
 
     @property
     def execution_confirm_symbol_set(self) -> set[str]:
+        if self.is_live_execution:
+            return set(self.production_symbols)
         return {s.strip().upper() for s in self.execution_confirm_symbols.split(",") if s.strip()}
 
 

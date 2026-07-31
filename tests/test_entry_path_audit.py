@@ -107,10 +107,15 @@ def _live_settings(**overrides) -> Settings:
     values = {
         "EXECUTION_ENABLED": True,
         "EXECUTION_MODE": "LIVE",
+        "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT,ETHUSDT,SOLUSDT",
+        "MAX_SYMBOLS": 3,
+        "MAX_OPEN_POSITIONS": 1,
+        "EXECUTION_MAX_PER_CYCLE": 1,
+        "ALLOW_AUTO_WATCHLIST_REFRESH": False,
         "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT": 50.0,
         "MAKER_ENTRY_ENABLED": False,
         "SYMBOL_COOLDOWN_MINUTES": 0,
-        "EXECUTION_REQUIRE_CONFIRMATION": False,
+        "EXECUTION_REQUIRE_CONFIRMATION": True,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
