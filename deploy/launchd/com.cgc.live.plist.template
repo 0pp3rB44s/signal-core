@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Boot- and crash-persistent supervision for the LIVE engine (closes risk R1).
+
+  Before this agent, the only live launchd job (com.cgc.tradingbot) was
+  notify-only: pgrep + osascript, no KeepAlive, starting nothing. A reboot or an
+  engine crash left the bot offline until a human noticed a desktop notification.
+
+  KeepAlive/SuccessfulExit=false is deliberate:
+    exit 0  = the agent deliberately declined to start (no owner authorisation,
+              stop flag set, host will sleep) -> launchd must NOT respawn it.
+    exit !0 = the engine died -> launchd restarts it after ThrottleInterval.
+
+  Install:   bash deploy/launchd/install_live_agent.sh
+  Uninstall: bash deploy/launchd/uninstall_live_agent.sh
+
+  __PROJECT_DIR__ is substituted by the installer.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>              <string>com.cgc.live</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__PROJECT_DIR__/deploy/launchd/live_agent.sh</string>
+  </array>
+  <key>WorkingDirectory</key>   <string>__PROJECT_DIR__</string>
+
+  <!-- start at load, and therefore at every boot/login -->
+  <key>RunAtLoad</key>          <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>   <false/>
+  </dict>
+  <key>ThrottleInterval</key>   <integer>60</integer>
+
+  <key>StandardOutPath</key>    <string>__PROJECT_DIR__/logs/launchd_live.out</string>
+  <key>StandardErrorPath</key>  <string>__PROJECT_DIR__/logs/launchd_live.err</string>
+
+  <key>ProcessType</key>        <string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>             <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>PYTHONUNBUFFERED</key> <string>1</string>
+  </dict>
+</dict>
+</plist>

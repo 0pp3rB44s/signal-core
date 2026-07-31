@@ -14,6 +14,7 @@ real JsonStateStore/loggers writing into the per-test tmp cwd (see conftest).
 from unittest.mock import MagicMock
 
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 
 from execution.position_manager import PositionManager
@@ -32,6 +33,14 @@ def _settings() -> MagicMock:
     settings.move_stop_to_be_after_tp1 = True
     settings.tp3_close_all_remainder = True
     settings.break_even_fee_buffer_pct = BE_FEE_BUFFER_PCT
+    settings.break_even_expected_close_fee_rate = 0.0006
+    settings.break_even_spread_buffer_pct = 0.02
+    settings.break_even_slippage_buffer_pct = 0.03
+    settings.break_even_extra_buffer_pct = 0.01
+    settings.break_even_mark_safety_ticks = 2
+    settings.position_model_dev_assertions = False
+    settings.execution_mode = "PAPER"
+    settings.app_env = "test"
     settings.symbol_cooldown_minutes = 30
     settings.account_equity_usdt = 100.0
     settings.profit_lock_tp1_fraction = 0.60
@@ -50,6 +59,11 @@ def _client(open_positions: list[dict] | None = None) -> MagicMock:
     client.close_futures_position_full.return_value = {"status": "CLOSED"}
     client.move_futures_stop_loss.return_value = {"data": {"orderId": "sl-1"}}
     client.verify_active_stop_loss.return_value = {"verified": True}
+    client._contract_price_scale.return_value = 2
+    client.get_active_protection_snapshot.return_value = {
+        "stop_orders": [],
+        "take_profit_orders": [],
+    }
     client.extract_fill_metrics.return_value = {}
     return client
 
@@ -73,14 +87,29 @@ def _position(
         "symbol": symbol,
         "direction": direction,
         "status": "OPEN",
+        "planned_avg_entry": entry,
         "avg_entry": entry,
+        "actual_entry": entry,
+        "exchange_avg_entry": entry,
+        "exchange_avg_entry_source": "BITGET_OPEN_POSITION_TEST_FIXTURE",
+        "exchange_avg_entry_confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "exchange_entry_order_id": "entry-order-1",
+        "exchange_entry_client_oid": "entry-client-1",
+        "position_lifecycle_id": f"fixture-{symbol}-{direction}",
         "stop_loss": stop,
+        "confirmed_stop": stop,
+        "exchange_stop_loss": stop,
+        "exchange_tick_size": 0.01,
         "take_profits": list(tps),
         "size": size,
         "order_size": size,
+        "confirmed_position_size": size,
+        "confirmed_fill_quantity": size,
+        "confirmed_remaining_size": size,
+        "confirmed_size_source": "BITGET_FILL_TEST_FIXTURE",
         "remaining_size_pct": 100.0,
         "strategy": "trend_continuation",
-        "opened_at": "2026-07-06T08:00:00+00:00",
+        "opened_at": datetime.now(timezone.utc).isoformat(),
         # Real executions carry a protection payload from entry; without it the
         # (correct) unprotected-position emergency close kicks in and masks the
         # lifecycle behavior under test.
@@ -94,13 +123,19 @@ def _position(
     return position
 
 
-def _live_payload(symbol: str = "BTCUSDT", size: float = 1.0, hold_side: str = "long", with_tpsl: bool = False) -> dict:
+def _live_payload(
+    symbol: str = "BTCUSDT",
+    size: float = 1.0,
+    hold_side: str = "long",
+    with_tpsl: bool = False,
+    mark_price: float = 100.0,
+) -> dict:
     payload = {
         "symbol": symbol,
         "total": size,
         "holdSide": hold_side,
         "averageOpenPrice": 100.0,
-        "markPrice": 100.0,
+        "markPrice": mark_price,
     }
     if with_tpsl:
         payload["takeProfit"] = "101"
@@ -132,14 +167,14 @@ def _v2_close_rows() -> list[dict]:
 # --- 1. TP1 hit -> SL exact naar fee-adjusted break-even ---
 
 def test_tp1_hit_moves_sl_to_exact_fee_adjusted_break_even():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=101.2)])
     manager.store.save([_position()])
 
     manager.sync([_snapshot(price=101.2, high=101.2, low=100.5)])
 
     saved = manager.store.load(default=[])[0]
     assert saved["tp1_hit"] is True
-    expected_be = 100.0 * (1.0 + BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 100.19
     assert saved["stop_loss"] == expected_be
     assert saved["break_even_active"] is True
     assert saved["remaining_size_pct"] == 100.0 - TP1_CLOSE_PCT
@@ -154,7 +189,7 @@ def test_tp1_hit_moves_sl_to_exact_fee_adjusted_break_even():
 # --- 2. TP2 hit -> remaining size correct + SL naar TP1-lock ---
 
 def test_tp2_hit_reduces_remaining_and_locks_tp1():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=102.1)])
     manager.store.save([_position(tp1_hit=True, remaining_size_pct=60.0)])
 
     manager.sync([_snapshot(price=102.1, high=102.1, low=101.0)])
@@ -169,7 +204,7 @@ def test_tp2_hit_reduces_remaining_and_locks_tp1():
 # --- 3. TP3 hit -> close-all + local state CLOSED ---
 
 def test_tp3_hit_closes_all_and_marks_closed():
-    manager = _manager([_live_payload(size=0.3)])
+    manager = _manager([_live_payload(size=0.3, mark_price=103.5)])
     manager.store.save([
         _position(tp1_hit=True, tp2_hit=True, remaining_size_pct=30.0, break_even_active=True)
     ])
@@ -227,7 +262,7 @@ def test_exchange_open_local_missing_recovers_and_never_leaves_unprotected_open(
 # --- 7. Dubbele monitor-cycle: geen dubbele close/order/dataset-row ---
 
 def test_double_cycle_is_idempotent_for_tp3_close():
-    manager = _manager([_live_payload(size=0.3)])
+    manager = _manager([_live_payload(size=0.3, mark_price=103.5)])
     manager.store.save([
         _position(tp1_hit=True, tp2_hit=True, remaining_size_pct=30.0, break_even_active=True)
     ])
@@ -272,7 +307,7 @@ def test_no_tpsl_cleanup_when_exchange_sync_failed():
 # --- 9. Short en long symmetrisch ---
 
 def test_short_tp1_hit_moves_sl_to_fee_adjusted_break_even_below_entry():
-    manager = _manager([_live_payload(size=1.0, hold_side="short")])
+    manager = _manager([_live_payload(size=1.0, hold_side="short", mark_price=98.8)])
     manager.store.save([
         _position(direction="SHORT", entry=100.0, stop=101.0, tps=(99.0, 98.0, 97.0))
     ])
@@ -281,7 +316,7 @@ def test_short_tp1_hit_moves_sl_to_fee_adjusted_break_even_below_entry():
 
     saved = manager.store.load(default=[])[0]
     assert saved["tp1_hit"] is True
-    expected_be = 100.0 * (1.0 - BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 99.82
     assert saved["stop_loss"] == expected_be
 
 
@@ -297,7 +332,7 @@ def test_stop_predicates_are_symmetric():
 # --- 10. Lokale stop touch terwijl exchange nog open is -> GEEN autoclose ---
 
 def test_local_stop_touch_with_exchange_still_open_does_not_close():
-    manager = _manager([_live_payload(size=1.0, with_tpsl=True)])
+    manager = _manager([_live_payload(size=1.0, with_tpsl=True, mark_price=98.5)])
     manager.store.save([_position()])
 
     manager.sync([_snapshot(price=98.5, high=99.5, low=98.5)])  # low onder stop 99
@@ -311,7 +346,7 @@ def test_local_stop_touch_with_exchange_still_open_does_not_close():
 # --- 11. Profit-lock (P1.1A): 60% van TP1 bereikt -> SL naar fee-adjusted BE ---
 
 def test_profit_lock_arms_at_60pct_of_tp1_long():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=100.65)])
     manager.store.save([_position()])  # entry 100, tp1 101 -> 60% = 100.60
 
     manager.sync([_snapshot(price=100.65, high=100.65, low=100.2)])
@@ -319,13 +354,13 @@ def test_profit_lock_arms_at_60pct_of_tp1_long():
     saved = manager.store.load(default=[])[0]
     assert saved["profit_lock_active"] is True
     assert not saved.get("tp1_hit")  # TP1 zelf niet geraakt
-    expected_be = 100.0 * (1.0 + BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 100.19
     assert saved["stop_loss"] == expected_be
     assert saved["break_even_active"] is True
 
 
 def test_profit_lock_arms_symmetrically_for_short():
-    manager = _manager([_live_payload(size=1.0, hold_side="short")])
+    manager = _manager([_live_payload(size=1.0, hold_side="short", mark_price=99.35)])
     manager.store.save([
         _position(direction="SHORT", entry=100.0, stop=101.0, tps=(99.0, 98.0, 97.0))
     ])  # tp1-afstand 1.0 -> 60% = 99.40
@@ -334,12 +369,12 @@ def test_profit_lock_arms_symmetrically_for_short():
 
     saved = manager.store.load(default=[])[0]
     assert saved["profit_lock_active"] is True
-    expected_be = 100.0 * (1.0 - BE_FEE_BUFFER_PCT / 100.0)
+    expected_be = 99.82
     assert saved["stop_loss"] == expected_be
 
 
 def test_profit_lock_does_not_arm_below_threshold():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=100.40)])
     manager.store.save([_position()])
 
     manager.sync([_snapshot(price=100.40, high=100.45, low=100.1)])  # 40-45% van TP1
@@ -350,7 +385,7 @@ def test_profit_lock_does_not_arm_below_threshold():
 
 
 def test_profit_lock_never_loosens_a_tighter_stop():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=100.65)])
     # stop staat al strakker dan BE (bv. door failed-continuation tighten)
     manager.store.save([_position(stop=100.5, break_even_active=False)])
 
@@ -362,7 +397,7 @@ def test_profit_lock_never_loosens_a_tighter_stop():
 
 
 def test_profit_lock_arms_only_once():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=100.70)])
     manager.store.save([_position()])
 
     manager.sync([_snapshot(price=100.65, high=100.65, low=100.2)])
@@ -393,7 +428,7 @@ def test_monitor_cycle_uses_fresh_exchange_mark_and_remains_idempotent():
 # --- 10b. SL-verplaatsing faalt -> lokale SL blijft op oude waarde (fail closed) ---
 
 def test_failed_sl_move_keeps_previous_stop():
-    manager = _manager([_live_payload(size=1.0)])
+    manager = _manager([_live_payload(size=1.0, mark_price=101.2)])
     manager.client.move_futures_stop_loss.side_effect = RuntimeError("Bitget 400")
     manager.store.save([_position()])
 
@@ -413,7 +448,7 @@ def test_failed_tighten_sets_pending_and_retries_next_cycle_without_detection():
     minuten omdat de detectie-condities (pressure/near-TP) moesten her-alignen.
     De pending-vlag maakt de retry-intentie persistent: cyclus 2 moet de stop
     verplaatsen ZONDER dat de detectie opnieuw vuurt."""
-    live = _live_payload(size=1.0)
+    live = _live_payload(size=1.0, mark_price=100.6)
     manager = _manager([live])
 
     position = _position(
@@ -436,7 +471,7 @@ def test_failed_tighten_sets_pending_and_retries_next_cycle_without_detection():
 
 
 def test_pending_retry_never_loosens_stop():
-    live = _live_payload(size=1.0)
+    live = _live_payload(size=1.0, mark_price=100.2)
     manager = _manager([live])
 
     # Stop staat al strak boven de retry-target: pending mag NIET verruimen.
@@ -463,7 +498,7 @@ def _iso_minutes_ago(minutes: float) -> str:
 
 
 def test_dead_flat_reclaim_trade_closes_after_timeout():
-    live = _live_payload(size=1.0)
+    live = _live_payload(size=1.0, mark_price=100.05)
     manager = _manager([live])
     position = _position(
         strategy="low_vol_reclaim",
@@ -481,7 +516,7 @@ def test_dead_flat_reclaim_trade_closes_after_timeout():
 
 
 def test_young_flat_trade_is_left_alone():
-    live = _live_payload(size=1.0)
+    live = _live_payload(size=1.0, mark_price=100.05)
     manager = _manager([live])
     position = _position(strategy="low_vol_reclaim", opened_at=_iso_minutes_ago(30))
     manager.store.save([position])
@@ -493,7 +528,7 @@ def test_young_flat_trade_is_left_alone():
 
 
 def test_old_trade_in_profit_is_not_dead():
-    live = _live_payload(size=1.0)
+    live = _live_payload(size=1.0, mark_price=100.5)
     manager = _manager([live])
     position = _position(strategy="low_vol_reclaim", opened_at=_iso_minutes_ago(120))
     manager.store.save([position])

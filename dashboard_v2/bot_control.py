@@ -1,6 +1,20 @@
-"""Real bot process control: status check + start/stop, backed by the same
-scripts already used manually (scripts/start_bot.sh, scripts/stop_all.sh) and
-the same process-check logic as scripts/healthcheck.sh."""
+"""RETIRED CONTROL SURFACE — observation only.
+
+dashboard_v2 is retained solely as a rollback target for dashboard_v3. Its
+process-control capability has been removed, deliberately and permanently.
+
+Why: start_bot() shelled out to scripts/start_bot.sh, which bypasses all four
+authorisation layers in scripts/launch_live.sh (open critical risks, the
+owner-signed LIVE_PILOT_AUTHORISATION token, the .env.live invariants, and the
+typed confirmation). One HTTP POST could therefore begin real-money trading, and
+stop_bot() could kill an engine holding an open position.
+
+Starting and stopping the engine is an operator action performed from a terminal
+through the launcher that enforces those layers. It is not a web endpoint.
+is_bot_running() is kept because it only observes.
+"""
+
+from __future__ import annotations
 
 import os
 import subprocess
@@ -9,6 +23,19 @@ from typing import Any
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 BOT_PID_PATH = BASE_PATH / "state" / "bot.pid"
+
+#: Returned by the retired entry points so any surviving caller fails loudly and
+#: safely rather than silently appearing to succeed.
+_RETIRED: dict[str, Any] = {
+    "ok": False,
+    "running": None,
+    "pid": None,
+    "message": (
+        "Process control has been removed from the dashboard. Start the engine "
+        "with scripts/launch_live.sh (four authorisation layers) and stop it "
+        "with scripts/stop_all.sh, from a terminal."
+    ),
+}
 
 
 def _pid_alive(pid: int) -> bool:
@@ -20,8 +47,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def is_bot_running() -> tuple[bool, int | None]:
-    """Mirrors scripts/healthcheck.sh: state/bot.pid + liveness check, falling
-    back to pgrep -f app.main (covers manual foreground runs with no pid file)."""
+    """Observation only: state/bot.pid liveness, falling back to pgrep."""
     if BOT_PID_PATH.exists():
         try:
             pid = int(BOT_PID_PATH.read_text().strip())
@@ -29,64 +55,25 @@ def is_bot_running() -> tuple[bool, int | None]:
             pid = None
         if pid and _pid_alive(pid):
             return True, pid
-
     try:
         result = subprocess.run(
-            ["pgrep", "-f", "app.main"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            ["pgrep", "-f", "app.main"], capture_output=True, text=True, timeout=5,
         )
     except Exception:
         return False, None
-
     if result.returncode == 0 and result.stdout.strip():
         try:
-            pid = int(result.stdout.strip().splitlines()[0])
-            return True, pid
+            return True, int(result.stdout.strip().splitlines()[0])
         except ValueError:
             return True, None
-
     return False, None
 
 
-def start_bot(reason: str = "dashboard_start") -> dict[str, Any]:
-    running, pid = is_bot_running()
-    if running:
-        return {"ok": True, "message": f"Bot already running (pid {pid}).", "running": True, "pid": pid}
-
-    try:
-        result = subprocess.run(
-            ["scripts/start_bot.sh", reason],
-            cwd=str(BASE_PATH),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception as exc:
-        return {"ok": False, "message": f"Failed to start bot: {exc}", "running": False, "pid": None}
-
-    running, pid = is_bot_running()
-    message = (result.stdout or result.stderr or "").strip()[-500:]
-    return {"ok": result.returncode == 0 and running, "message": message or "Start command completed.", "running": running, "pid": pid}
+def start_bot(reason: str = "") -> dict[str, Any]:
+    """RETIRED. Never starts a process."""
+    return dict(_RETIRED)
 
 
-def stop_bot(reason: str = "dashboard_stop") -> dict[str, Any]:
-    running, _pid = is_bot_running()
-    if not running:
-        return {"ok": True, "message": "Bot already stopped.", "running": False, "pid": None}
-
-    try:
-        result = subprocess.run(
-            ["scripts/stop_all.sh", reason],
-            cwd=str(BASE_PATH),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception as exc:
-        return {"ok": False, "message": f"Failed to stop bot: {exc}", "running": True, "pid": _pid}
-
-    running, pid = is_bot_running()
-    message = (result.stdout or result.stderr or "").strip()[-500:]
-    return {"ok": result.returncode == 0 and not running, "message": message or "Stop command completed.", "running": running, "pid": pid}
+def stop_bot(reason: str = "") -> dict[str, Any]:
+    """RETIRED. Never stops a process."""
+    return dict(_RETIRED)

@@ -42,36 +42,68 @@ def _fill_state(metrics: dict[str, Any]) -> tuple[float, str]:
     return qty, str(metrics.get("state") or "").lower()
 
 
-def attempt_maker_entry(client, settings, symbol, direction, size, anchor_price, hold_side, log) -> dict[str, Any]:
+def attempt_maker_entry(
+    client, settings, symbol, direction, size, anchor_price, hold_side, log, submit=None
+) -> dict[str, Any]:
     """Plaats een post-only limit en wacht kort op fill.
 
-    Returns dict: {status, filled_qty, fill_entry, order_id, payload}.
-    status in {'FILLED','UNFILLED_CANCELLED','ERROR'}.
+    Returns dict: {status, filled_qty, fill_entry, order_id, payload, client_oid}.
+    status in {'FILLED','UNFILLED_CANCELLED','ERROR','BLOCKED_UNKNOWN'}.
+
+    ``submit`` is de idempotente inzendlaag (EntryOrderSubmitter.submit_entry):
+    hij krijgt de plaatsingsfunctie, voorziet die van een deterministische
+    clientOid en verzoent na een dubbelzinnig antwoord met de exchange in plaats
+    van blind opnieuw in te zenden. Zonder ``submit`` valt deze functie terug op
+    een rechtstreekse plaatsing (alleen gebruikt in geïsoleerde tests).
     """
     offset_bps = float(getattr(settings, "maker_entry_offset_bps", 1.0))
     wait_s = float(getattr(settings, "maker_entry_wait_seconds", 4.0))
     poll_s = max(0.25, float(getattr(settings, "maker_entry_poll_seconds", 1.0)))
     limit_price = compute_limit_price(direction, anchor_price, offset_bps)
 
-    result = {"status": "ERROR", "filled_qty": 0.0, "fill_entry": 0.0, "order_id": "", "payload": None}
+    result = {
+        "status": "ERROR", "filled_qty": 0.0, "fill_entry": 0.0,
+        "order_id": "", "payload": None, "client_oid": "", "message": "",
+    }
     if limit_price <= 0:
         return result
 
-    try:
-        payload = client.place_futures_limit_order(
+    def _place(client_oid: str | None = None):
+        return client.place_futures_limit_order(
             symbol=symbol, direction=direction, size=size, price=limit_price,
-            margin_mode="isolated", post_only=True,
+            margin_mode="isolated", post_only=True, client_oid=client_oid,
         )
-        order_id = client.extract_order_id(payload)
-        result["order_id"] = order_id or ""
-        result["payload"] = payload
-        if not order_id:
-            log.warning("MAKER_ENTRY_NO_ORDER_ID | %s | payload=%s", symbol, payload)
+
+    if submit is not None:
+        submission = submit(_place)
+        result["client_oid"] = submission.client_oid
+        result["payload"] = submission.payload
+        result["order_id"] = submission.order_id or ""
+        result["message"] = submission.message
+        if submission.blocks_new_entries:
+            result["status"] = "BLOCKED_UNKNOWN"
+            return result
+        if not submission.has_live_order:
+            log.warning(
+                "MAKER_ENTRY_NOT_CREATED | %s | status=%s | classification=%s | client_oid=%s",
+                symbol, submission.status, submission.classification, submission.client_oid,
+            )
             result["status"] = "ERROR"
             return result
-    except Exception as exc:
-        log.warning("MAKER_ENTRY_PLACE_FAILED | %s | error=%s", symbol, exc)
-        return result
+        order_id = submission.order_id
+    else:
+        try:
+            payload = _place()
+            order_id = client.extract_order_id(payload)
+            result["order_id"] = order_id or ""
+            result["payload"] = payload
+            if not order_id:
+                log.warning("MAKER_ENTRY_NO_ORDER_ID | %s | payload=%s", symbol, payload)
+                result["status"] = "ERROR"
+                return result
+        except Exception as exc:
+            log.warning("MAKER_ENTRY_PLACE_FAILED | %s | error=%s", symbol, exc)
+            return result
 
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:

@@ -4,6 +4,18 @@ import time
 from typing import Any
 
 
+#: Bitget business codes / messages that definitively mean "no such order".
+#: Anything outside this set leaves the exchange state UNKNOWN, which must never
+#: be treated as "safe to submit again".
+_ORDER_ABSENT_CODES = frozenset({"22001", "43001", "40109", "40768"})
+_ORDER_ABSENT_MARKERS = (
+    "does not exist",
+    "not exist",
+    "no order",
+    "order not found",
+)
+
+
 class BitgetOrderClientMixin:
     """Market order, order detail/history, fill metrics, leverage, and close logic only."""
 
@@ -33,6 +45,148 @@ class BitgetOrderClientMixin:
             "orderId": str(order_id),
         }
         return self._request("GET", "/api/v2/mix/order/detail", params=params, private=True)
+
+    def get_order_detail_by_client_oid(
+        self,
+        symbol: str,
+        client_oid: str,
+        product_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Look up one order by the clientOid we chose before submitting it."""
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "clientOid": str(client_oid),
+        }
+        return self._request("GET", "/api/v2/mix/order/detail", params=params, private=True)
+
+    def get_pending_orders(
+        self,
+        symbol: str | None = None,
+        product_type: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "limit": str(limit),
+        }
+        if symbol:
+            params["symbol"] = symbol.upper()
+        return self._request(
+            "GET", "/api/v2/mix/order/orders-pending", params=params, private=True
+        )
+
+    @staticmethod
+    def _order_rows(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+        data = (payload or {}).get("data")
+        if isinstance(data, dict):
+            # Bitget returns a list-envelope ({"entrustedList": null, "endId": null})
+            # when there are no orders. Treating that envelope as an order row
+            # invents a phantom order in every readout, so detect the envelope by
+            # its keys rather than by whether the list happens to be populated.
+            for key in ("entrustedList", "orderList", "list"):
+                if key in data:
+                    entrust = data.get(key)
+                    return [row for row in entrust if isinstance(row, dict)] if isinstance(entrust, list) else []
+            return [data]
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        return []
+
+    @classmethod
+    def _is_definitive_absent_error(cls, exc: Exception) -> bool:
+        """True only when the exchange explicitly said the order does not exist."""
+        text = str(exc).lower()
+        if any(marker in text for marker in _ORDER_ABSENT_MARKERS):
+            return True
+        return any(f"code={code}" in text for code in _ORDER_ABSENT_CODES)
+
+    def find_order_by_client_oid(
+        self,
+        symbol: str,
+        client_oid: str,
+        product_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve what the exchange knows about ``client_oid``.
+
+        Returns ``{"status": FOUND|ABSENT|UNKNOWN, "order": dict|None,
+        "source": str, "errors": list[str]}``.
+
+        ABSENT is only returned when every lookup route explicitly reported "no
+        such order". Any inconclusive route yields UNKNOWN, because guessing
+        "there is no order" is exactly how a duplicate position gets created.
+        """
+        symbol_upper = symbol.upper()
+        client_oid = str(client_oid)
+        errors: list[str] = []
+        absent_votes = 0
+        routes = 0
+
+        lookups = (
+            ("order_detail", lambda: self.get_order_detail_by_client_oid(
+                symbol=symbol_upper, client_oid=client_oid, product_type=product_type)),
+            ("orders_pending", lambda: self.get_pending_orders(
+                symbol=symbol_upper, product_type=product_type)),
+            ("orders_history", lambda: self.get_order_history(
+                symbol=symbol_upper, product_type=product_type, limit=100)),
+        )
+
+        for source, lookup in lookups:
+            routes += 1
+            try:
+                payload = lookup()
+            except Exception as exc:
+                if self._is_definitive_absent_error(exc):
+                    absent_votes += 1
+                    continue
+                errors.append(f"{source}={exc}")
+                self.log.warning(
+                    "ORDER_LOOKUP_INCONCLUSIVE | %s | source=%s | client_oid=%s | error=%s",
+                    symbol_upper,
+                    source,
+                    client_oid,
+                    exc,
+                )
+                continue
+
+            for row in self._order_rows(payload):
+                row_oid = str(row.get("clientOid") or row.get("client_oid") or "")
+                if row_oid and row_oid == client_oid:
+                    self.log.critical(
+                        "ORDER_LOOKUP_FOUND | %s | source=%s | client_oid=%s | order_id=%s | state=%s",
+                        symbol_upper,
+                        source,
+                        client_oid,
+                        row.get("orderId") or row.get("order_id") or "",
+                        row.get("state") or row.get("status") or "",
+                    )
+                    return {
+                        "status": "FOUND",
+                        "order": row,
+                        "source": source,
+                        "errors": errors,
+                    }
+
+            absent_votes += 1
+
+        if absent_votes == routes and not errors:
+            self.log.critical(
+                "ORDER_LOOKUP_ABSENT | %s | client_oid=%s | routes=%s",
+                symbol_upper,
+                client_oid,
+                routes,
+            )
+            return {"status": "ABSENT", "order": None, "source": "all_routes", "errors": []}
+
+        self.log.critical(
+            "ORDER_LOOKUP_UNKNOWN | %s | client_oid=%s | absent_votes=%s/%s | errors=%s",
+            symbol_upper,
+            client_oid,
+            absent_votes,
+            routes,
+            " | ".join(errors) or "-",
+        )
+        return {"status": "UNKNOWN", "order": None, "source": "inconclusive", "errors": errors}
 
     def extract_fill_metrics(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = payload.get("data") or {}
@@ -104,9 +258,15 @@ class BitgetOrderClientMixin:
         margin_coin: str = "USDT",
         client_oid: str | None = None,
         side: str | None = None,
+        reference_price: float | None = None,
         **_: Any,
     ) -> dict[str, Any]:
-        """Place a Bitget futures market entry order."""
+        """Place a Bitget futures market entry order.
+
+        ``reference_price`` is the planned entry used to validate the exchange
+        minimum notional. A market order carries no price of its own, so without
+        it the minTradeUSDT floor cannot be checked locally.
+        """
         if direction is None and side is not None:
             side_lower = side.lower()
             if side_lower in {"buy", "long"}:
@@ -120,14 +280,28 @@ class BitgetOrderClientMixin:
         if direction_upper not in {"LONG", "SHORT"}:
             raise ValueError(f"Unsupported futures direction: {direction}")
 
+        # Refuse before touching the network at all when the runtime is pinned to
+        # forward paper. Contract metadata is a *public* endpoint, so validating
+        # size first would issue an HTTP request on a path that can never place
+        # an order, and would surface a size error instead of the real reason.
+        self._assert_order_transport_allowed()
+
         side = "buy" if direction_upper == "LONG" else "sell"
         hold_side = "long" if direction_upper == "LONG" else "short"
-        formatted_size = self._format_size(symbol, float(size))
 
-        if formatted_size < self._min_size(symbol):
+        # Exchange-derived validation, quantized DOWN. A market order carries no
+        # price, so the min-notional floor cannot be evaluated here; the exchange
+        # enforces its own minTradeUSDT, so a miss surfaces as a rejection rather
+        # than as an unnoticed risk breach.
+        normalized, reason = self.validate_entry_size(
+            symbol, float(size), reference_price=reference_price)
+        if reason is not None:
             raise ValueError(
-                f"Order size below minimum for {symbol}: size={formatted_size} min={self._min_size(symbol)}"
+                f"Order size rejected for {symbol}: reason={reason} "
+                f"requested={size} normalized={normalized} "
+                f"reference_price={reference_price}"
             )
+        formatted_size = float(normalized)
 
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
@@ -147,20 +321,25 @@ class BitgetOrderClientMixin:
         self._validate_futures_order_flags(body)
 
         self.log.warning(
-            "BITGET_PLACE_MARKET_ORDER | %s | direction=%s | side=%s | hold_side=%s | size=%s | margin_mode=%s",
+            "BITGET_PLACE_MARKET_ORDER | %s | direction=%s | side=%s | hold_side=%s | size=%s | margin_mode=%s | client_oid=%s",
             symbol.upper(),
             direction_upper,
             side,
             hold_side,
             formatted_size,
             margin_mode,
+            client_oid or "-",
         )
 
+        # Entry creation is not idempotent at the transport layer: never retry
+        # blindly. Failures are classified for clientOid reconciliation instead.
         return self._request(
             method="POST",
             path="/api/v2/mix/order/place-order",
             body=body,
             private=True,
+            allow_blind_retry=False,
+            client_oid=client_oid or "",
         )
 
     def place_futures_limit_order(
@@ -183,17 +362,28 @@ class BitgetOrderClientMixin:
         if direction_upper not in {"LONG", "SHORT"}:
             raise ValueError(f"Unsupported futures direction: {direction}")
 
+        # Refuse before touching the network at all when the runtime is pinned to
+        # forward paper. Contract metadata is a *public* endpoint, so validating
+        # size first would issue an HTTP request on a path that can never place
+        # an order, and would surface a size error instead of the real reason.
+        self._assert_order_transport_allowed()
+
         side = "buy" if direction_upper == "LONG" else "sell"
         hold_side = "long" if direction_upper == "LONG" else "short"
-        formatted_size = self._format_size(symbol, float(size))
         formatted_price = self._format_trigger_price(symbol, float(price))
 
-        if formatted_size < self._min_size(symbol):
-            raise ValueError(
-                f"Order size below minimum for {symbol}: size={formatted_size} min={self._min_size(symbol)}"
-            )
         if formatted_price <= 0:
             raise ValueError(f"Invalid limit price for {symbol}: {formatted_price}")
+
+        # A limit order has a price, so the min-notional floor is checked too.
+        normalized, reason = self.validate_entry_size(
+            symbol, float(size), reference_price=formatted_price)
+        if reason is not None:
+            raise ValueError(
+                f"Order size rejected for {symbol}: reason={reason} "
+                f"requested={size} normalized={normalized} price={formatted_price}"
+            )
+        formatted_size = float(normalized)
 
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
@@ -213,14 +403,18 @@ class BitgetOrderClientMixin:
 
         self._validate_futures_order_flags(body)
         self.log.warning(
-            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s",
+            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s | client_oid=%s",
             symbol.upper(), direction_upper, side, formatted_size, formatted_price, post_only,
+            client_oid or "-",
         )
+        # Same rule as the market entry: one attempt, classified outcome.
         return self._request(
             method="POST",
             path="/api/v2/mix/order/place-order",
             body=body,
             private=True,
+            allow_blind_retry=False,
+            client_oid=client_oid or "",
         )
 
     def cancel_futures_order(

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from app.config import Settings
 from app.runner import StartupRunner
+from risk import risk_manager
 from candidate_lifecycle.reconstruct import reconstruct_candidate_lifecycles
 from clients.schemas import Candle, ContractSpec, MarketSnapshot, TimeframeSnapshot
 from forward_paper.service import ForwardPaperService
@@ -64,6 +65,16 @@ def _detector_fixture() -> MarketSnapshot:
 
 def _runner(tmp_path, monkeypatch) -> StartupRunner:
     monkeypatch.chdir(tmp_path)
+    # RiskManager resolves its report paths from module-level absolute constants,
+    # so chdir alone leaves it reading the live repo's expectancy and coach files.
+    # Without this the risk gate blocks on whatever the real bot last recorded and
+    # the pipeline assertions become dependent on mutable production state.
+    monkeypatch.setattr(risk_manager, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(risk_manager, "REPORTS_PATH", tmp_path / "reports" / "backtests")
+    monkeypatch.setattr(
+        risk_manager, "AGENT_DECISIONS_PATH",
+        tmp_path / "agents_v2" / "reports" / "coach_decisions.json",
+    )
     learning_report = Path("reports/backtests/strategy_expectancy.json")
     learning_report.parent.mkdir(parents=True, exist_ok=True)
     learning_report.write_text(json.dumps({"strategies": {}}), encoding="utf-8")

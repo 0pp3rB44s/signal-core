@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Funnel{% endblock %}
+{% block heading %}Beslissings-funnel{% endblock %}
+
+{% set fn = d.panels.funnel %}
+{% set sc = d.panels.scores %}
+{% set top = fn.rows|map(attribute='total')|max if fn.rows else 1 %}
+
+{% block content %}
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Events', fn.event_count, 'in venster') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Venster', (num(fn.window_hours,2) ~ ' u') if fn.window_hours else 'UNKNOWN', 'sinds sessiestart') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Beslissende poort', fn.decisive.label if fn.decisive else 'geen', '0 doorgelaten' if fn.decisive else 'pijplijn open', 'neg' if fn.decisive else 'pos') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Orders', fn.rows|selectattr('key','equalto','ORDER_SUBMIT')|map(attribute='total')|first or 0, 'ingediend in venster') }}</div></div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <header><h3>Pijplijn</h3><span class="spacer"></span>{{ ui.badge(fn.status) }}</header>
+  <div class="funnel">
+    {% for r in fn.rows %}
+    <div class="fstage {{ 'dead' if fn.decisive and r.key == fn.decisive.key else '' }}">
+      <div class="fl">{{ r.label }}
+        <small>{{ r.key }}{% if not r.observed %} · niet waargenomen{% endif %}</small>
+      </div>
+      <div class="fbar">
+        <i style="width: {{ ((r.total / top * 100) if top else 0)|round(1) }}%"></i>
+      </div>
+      <div class="fnum">
+        <b>{{ r.passed }}</b> / {{ r.total }}
+        {% if r.conversion_pct is not none %}<br>{{ pct_raw(r.conversion_pct) }} conversie{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {{ ui.provenance(fn.provenance) }}
+</div>
+
+<div class="grid g2">
+  <div class="card">
+    <header><h3>Afwijzingsredenen (risk)</h3></header>
+    <div class="body flush">
+      {% if fn.blockers %}
+      <table>
+        <thead><tr><th>Reden</th><th class="n">Aantal</th><th class="n">Aandeel</th></tr></thead>
+        <tbody>
+        {% for b in fn.blockers %}
+          <tr><td>{{ b.label }}<br><span class="tag">{{ b.code }}</span></td>
+              <td class="n">{{ b.count }}</td><td class="n">{{ pct_raw(b.share_pct) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}{{ ui.empty('Geen afwijzingen') }}{% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <header><h3>Blokkade-combinaties</h3></header>
+    <div class="body flush">
+      {% if fn.combos %}
+      <table>
+        <thead><tr><th>Gelijktijdige blokkades</th><th class="n">Aantal</th></tr></thead>
+        <tbody>
+        {% for c in fn.combos %}
+          <tr><td>{% for code in c.codes %}<span class="tag">{{ code }}</span> {% endfor %}</td>
+              <td class="n">{{ c.count }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}{{ ui.empty('Geen combinaties') }}{% endif %}
+      <div class="body" style="border-top:1px solid var(--line-soft)">
+        <p style="margin:0;color:var(--ink-dim);font-size:12px">
+          Meerdere codes op één regel betekent dat de kandidaat door méér dan één
+          onafhankelijke poort werd geweigerd. Eén poort openen laat die trade dus niet door.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <header><h3>Score-verdeling</h3><span class="spacer"></span>
+      <span class="tag">n={{ sc.count }}</span></header>
+    <div class="body">
+      {% if sc.count %}
+        <div class="grid g3" style="margin-bottom:12px">
+          {{ ui.metric('Min', num(sc.min,0)) }}
+          {{ ui.metric('Mediaan', num(sc.median,0)) }}
+          {{ ui.metric('Max', num(sc.max,0)) }}
+        </div>
+        {% set mx = sc.buckets|map(attribute=1)|max %}
+        {% for bucket, count in sc.buckets %}
+        <div style="display:grid;grid-template-columns:52px 1fr 46px;gap:9px;align-items:center;margin-bottom:4px">
+          <span class="tag">{{ bucket }}+</span>
+          <div class="bar-mini"><i style="width:{{ (count / mx * 100)|round(1) }}%"></i></div>
+          <span style="font-family:var(--mono);font-size:11px;text-align:right">{{ count }}</span>
+        </div>
+        {% endfor %}
+      {% else %}{{ ui.empty('Geen plannen', 'logs/trade_plans.csv leverde geen scores.') }}{% endif %}
+    </div>
+    {{ ui.provenance(sc.provenance) }}
+  </div>
+
+  <div class="card">
+    <header><h3>Geblokkeerde hoge scores</h3><span class="spacer"></span>
+      {{ ui.badge(Status.BLOCKED if sc.blocked_high_count else Status.HEALTHY, sc.blocked_high_count ~ ' ≥90') }}</header>
+    <div class="body flush">
+      {% if sc.blocked_high %}
+      <div class="scroll"><table>
+        <thead><tr><th>Symbool</th><th>Strategie</th><th>Richting</th><th class="n">Score</th><th>Verdict</th></tr></thead>
+        <tbody>
+        {% for r in sc.blocked_high|reverse %}
+          <tr><td>{{ r.symbol }}</td><td>{{ r.strategy }}</td><td>{{ r.direction }}</td>
+              <td class="n">{{ num(r.score,0) }}</td><td><span class="badge t-block">{{ r.verdict }}</span></td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}{{ ui.empty('Geen geblokkeerde hoge scores') }}{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

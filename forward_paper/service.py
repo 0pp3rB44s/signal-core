@@ -13,6 +13,7 @@ from forward_paper.store import (
     ForwardPaperEventStore,
     ForwardPaperReconstructor,
     content_hash,
+    jsonable,
     semantic_transition_key,
 )
 from telemetry.funnel import FunnelTelemetry, stable_scan_id
@@ -161,7 +162,7 @@ class ForwardPaperService:
                 "score_hint": snapshot.score_hint,
                 "notes": list(plan.notes),
                 "reasons": list(plan.reasons),
-                "market_context": dict(getattr(snapshot, "context", {}) or {}),
+                "market_context": self._market_context(snapshot),
             },
         }
         return trade_id if self._append(
@@ -278,10 +279,11 @@ class ForwardPaperService:
             self._partial(trade_id, state, timestamp, target, close_size, f"TP{index + 1}", target_index=index + 1)
             state["remaining_size"] -= close_size
             if index == 0 and state["remaining_size"] > 0:
-                be_stop = self._fee_break_even(fill, direction)
-                self._append(trade_id, state["plan_id"], "BREAK_EVEN_ACTIVATED", timestamp, {"stop": be_stop, "mark_price": mark}, candidate_id=state["candidate_id"])
-                self._append(trade_id, state["plan_id"], "STOP_UPDATED", timestamp, {"old_stop": state["stop"], "new_stop": be_stop, "reason": "TP1_FEE_BE"}, candidate_id=state["candidate_id"])
-                state["stop"] = be_stop
+                be_stop = self._protective_stop(fill, direction, mark)
+                if be_stop is not None:
+                    self._append(trade_id, state["plan_id"], "BREAK_EVEN_ACTIVATED", timestamp, {"stop": be_stop, "mark_price": mark}, candidate_id=state["candidate_id"])
+                    self._append(trade_id, state["plan_id"], "STOP_UPDATED", timestamp, {"old_stop": state["stop"], "new_stop": be_stop, "reason": "TP1_FEE_BE"}, candidate_id=state["candidate_id"])
+                    state["stop"] = be_stop
             if state["remaining_size"] <= 1e-12:
                 self._close(trade_id, state, timestamp, target, f"TP{index + 1}", remaining_size=0.0)
                 return
@@ -289,9 +291,10 @@ class ForwardPaperService:
         if not state["touched_targets"] and not state["profit_lock"] and targets:
             tp1_distance = abs(targets[0] - fill)
             if tp1_distance > 0 and state["mfe_pct"] >= float(self.settings.profit_lock_tp1_fraction) * (tp1_distance / fill * 100):
-                be_stop = self._fee_break_even(fill, direction)
-                self._append(trade_id, state["plan_id"], "PROFIT_LOCK_ACTIVATED", timestamp, {"stop": be_stop, "mark_price": mark}, candidate_id=state["candidate_id"])
-                self._append(trade_id, state["plan_id"], "STOP_UPDATED", timestamp, {"old_stop": state["stop"], "new_stop": be_stop, "reason": "PROFIT_LOCK_FEE_BE"}, candidate_id=state["candidate_id"])
+                be_stop = self._protective_stop(fill, direction, mark)
+                if be_stop is not None:
+                    self._append(trade_id, state["plan_id"], "PROFIT_LOCK_ACTIVATED", timestamp, {"stop": be_stop, "mark_price": mark}, candidate_id=state["candidate_id"])
+                    self._append(trade_id, state["plan_id"], "STOP_UPDATED", timestamp, {"old_stop": state["stop"], "new_stop": be_stop, "reason": "PROFIT_LOCK_FEE_BE"}, candidate_id=state["candidate_id"])
 
     def _partial(
         self, trade_id: str, state: dict[str, Any], timestamp: str, price: float,
@@ -381,6 +384,9 @@ class ForwardPaperService:
         return states
 
     def _append(self, trade_id: str, plan_id: str, event_type: str, timestamp: str, payload: dict[str, Any], *, candidate_id: str) -> bool:
+        # Sanitize before deriving identity so event_id, semantic_key and the
+        # persisted payload are all computed from the exact same JSON form.
+        payload = jsonable(payload)
         event_id = f"evt_{content_hash({'trade': trade_id, 'type': event_type, 'timestamp': timestamp, 'payload': payload})[:24]}"
         return self.store.append({
             "event_id": event_id,
@@ -395,9 +401,37 @@ class ForwardPaperService:
         trade_id = f"rejected_trade_{content_hash({'plan': plan_id})[:16]}"
         self._append(trade_id, plan_id, "PAPER_REJECTED", timestamp, {"reason": reason, "symbol": plan.symbol, "strategy": plan.strategy}, candidate_id=plan.candidate_id)
 
+    @staticmethod
+    def _market_context(snapshot: MarketSnapshot) -> dict[str, Any]:
+        """Project snapshot context into the analytics payload.
+
+        Drops the ``live`` LiveMarketContext: every one of its fields is already
+        present as a sibling key, and it nests the full raw orderbook ladder,
+        which would bloat each opened-trade event with hundreds of price levels.
+        """
+        context = dict(getattr(snapshot, "context", {}) or {})
+        context.pop("live", None)
+        return jsonable(context)
+
     def _fee_break_even(self, fill: float, direction: str) -> float:
         buffer_pct = float(self.settings.break_even_fee_buffer_pct) / 100
         return fill * (1 + buffer_pct) if direction == "LONG" else fill * (1 - buffer_pct)
+
+    def _protective_stop(self, fill: float, direction: str, mark: float) -> float | None:
+        """Return the fee break-even stop, or None if it is already through the mark.
+
+        A stop is only protective while the market has not yet passed it. When the
+        break-even buffer is wider than the move achieved so far, the computed stop
+        sits beyond the current price; applying it would fire SL_TOUCH on the same
+        candle and book an exit at a price the market never traded, fabricating PnL.
+        In that case the existing stop is left alone.
+        """
+        be_stop = self._fee_break_even(fill, direction)
+        if mark <= 0:
+            return None
+        if direction == "LONG":
+            return be_stop if be_stop < mark else None
+        return be_stop if be_stop > mark else None
 
     @staticmethod
     def _regime(snapshot: MarketSnapshot) -> str:

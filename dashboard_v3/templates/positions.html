@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Posities{% endblock %}
+{% block heading %}Open posities{% endblock %}
+{% set ex = d.panels.exchange %}
+{% block content %}
+{% if not ex.reachable %}
+  <div class="card"><div class="body">
+    <div class="notice t-unknown"><span class="nt">? EXCHANGE ONBEREIKBAAR</span>
+      <p>Posities kunnen niet geverifieerd worden. Er wordt géén lokale momentopname
+         getoond alsof die live is.</p>
+      {% for e in ex.errors %}<p><code>{{ e }}</code></p>{% endfor %}
+    </div>
+  </div></div>
+{% else %}
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Posities', ex.position_count) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Onbeschermd', ex.unprotected_count, 'zonder SL+TP', 'neg' if ex.unprotected_count else 'pos') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Open orders', ex.open_orders|length) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Ongerealiseerd', money(ex.account.unrealised, ex.account.margin_coin), '', 'neg' if (ex.account.unrealised or 0) < 0 else 'pos') }}</div></div>
+</div>
+<div class="card">
+  <header><h3>Posities</h3><span class="spacer"></span>{{ ui.badge(ex.status) }}</header>
+  <div class="body flush">
+  {% if ex.positions %}
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>Actief symbool</th><th>Zijde</th><th class="n">Omvang</th>
+        <th class="n">Gepland</th><th class="n">Exchange-entry</th><th>Entrybron</th>
+        <th>Lifecycle</th><th class="n">Mark</th><th class="n">Hefboom</th>
+        <th class="n">PnL USDT</th><th class="n">Prijsretour</th><th class="n">Margin ROI</th>
+        <th class="n">Liquidatie</th><th>Actieve stop</th><th>Take-profit</th>
+        <th>Bescherming</th><th>Lifecycle-state</th>
+      </tr></thead>
+      <tbody>
+      {% for p in ex.positions %}
+        <tr>
+          <td><b>{{ p.symbol }}</b> <span class="badge t-ok">ACTIEF</span></td>
+          <td>{{ p.side }}</td>
+          <td class="n">{{ num(p.size, 4) }}</td>
+          <td class="n">{{ num(p.planned_entry, 4) if p.planned_entry is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ num(p.exchange_entry, 4) if p.exchange_entry is not none else 'UNKNOWN' }}</td>
+          <td><span class="tag">{{ p.entry_provenance }}</span><br><small>{{ p.position_entry_provenance }}</small></td>
+          <td><code>{{ p.lifecycle_id or 'UNMATCHED' }}</code></td>
+          <td class="n">{{ num(p.mark, 4) if p.mark is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ p.leverage or 'UNKNOWN' }}x</td>
+          <td class="n {{ 'neg' if (p.monetary_pnl or 0) < 0 else 'pos' }}">{{ num(p.monetary_pnl, 4) }}</td>
+          <td class="n {{ 'neg' if (p.price_return_pct or 0) < 0 else 'pos' }}">{{ pct_raw(p.price_return_pct, 3) }}</td>
+          <td class="n {{ 'neg' if (p.margin_roi_pct or 0) < 0 else 'pos' }}">{{ pct_raw(p.margin_roi_pct, 3) }}</td>
+          <td class="n">{{ num(p.liquidation, 4) if p.liquidation else 'UNKNOWN' }}</td>
+          <td>{{ num(p.active_stop, 4) if p.active_stop is not none else 'GEEN' }}</td>
+          <td>{{ p.take_profit|join(', ') if p.take_profit else 'GEEN' }}</td>
+          <td>{{ ui.badge(p.protection_status, p.protection) }}</td>
+          <td><span class="tag">{{ p.protection_state }}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <div class="body" style="border-top:1px solid var(--line-soft)">
+      <p style="margin:0;color:var(--ink-faint);font-size:11.5px">
+        Exchange-entry, mark, omvang, PnL en actieve bescherming komen rechtstreeks
+        van read-only exchange-requests. Planning en lifecycle worden alleen getoond
+        wanneer lokale state ondubbelzinnig matcht op symbool, zijde én exchange-entry.
+      </p>
+    </div>
+  {% else %}
+    {{ ui.empty('Vlak', 'Geen open posities op de exchange.') }}
+  {% endif %}
+  </div>
+</div>
+{% if ex.open_orders %}
+<div class="card" style="margin-top:14px">
+  <header><h3>Openstaande orders</h3></header>
+  <div class="body flush"><div class="scroll"><table>
+    <thead><tr><th>Symbool</th><th>Zijde</th><th>Type</th><th class="n">Omvang</th><th class="n">Prijs</th><th>Reduce-only</th></tr></thead>
+    <tbody>
+    {% for o in ex.open_orders %}
+      <tr><td>{{ o.get('symbol') }}</td><td>{{ o.get('side') }}</td>
+          <td>{{ o.get('orderType') }} / {{ o.get('tradeSide') }}</td>
+          <td class="n">{{ o.get('size') }}</td><td class="n">{{ o.get('price') }}</td>
+          <td>{{ o.get('reduceOnly') or 'NO' }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div></div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -12,7 +12,7 @@ from collections import Counter
 
 from app.config import Settings
 from app.equity import write_equity_snapshot
-from app.runtime_diagnostics import runtime_heartbeat
+from app.runtime_diagnostics import runtime_heartbeat, set_runtime_mode
 from clients.bitget_rest import BitgetRestClient
 from clients.bitget_public_client import BitgetPublicClient
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
@@ -24,6 +24,7 @@ from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
+from execution.portfolio_selector import select_execution_winner
 from execution.runtime_lock import trading_state_lock
 from forward_paper.service import ForwardPaperService
 from execution.state_store import JsonStateStore
@@ -31,6 +32,7 @@ from planning.trade_planner import TradePlanner
 from risk.risk_manager import RiskManager
 from risk.cooldown_manager import SymbolCooldownManager
 from agents_v2.learning.coach_rules import run as run_coach_rules
+from strategies.forward_paper_smoke import smoke_plan
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
 from strategies.strategies.continuation import detect_continuation
@@ -53,6 +55,15 @@ from telemetry.funnel import (
     snapshot_context,
     stable_scan_id,
 )
+
+
+class ScanCycleProducedNoMarketData(RuntimeError):
+    """A scan cycle requested symbols but could not build a single snapshot.
+
+    Raised so a total market-data failure is counted as a failed cycle instead of
+    being reported as a successful one. Per-symbol errors are swallowed by design,
+    so without this a fault hitting every symbol looks like a healthy empty scan.
+    """
 
 
 # --- Execution-Aware Scoring Helpers ---
@@ -303,7 +314,13 @@ class StartupRunner:
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
         self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
-        self.forward_paper = ForwardPaperService(settings=settings, funnel_telemetry=self.funnel_telemetry)
+        self.forward_paper = ForwardPaperService(
+            settings=settings,
+            events_path=settings.forward_paper_events_path,
+            outcomes_path=settings.forward_paper_outcomes_path,
+            quality_path=settings.forward_paper_quality_path,
+            funnel_telemetry=self.funnel_telemetry,
+        )
         self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
         self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
@@ -321,6 +338,7 @@ class StartupRunner:
         self._last_continuation_reject_log = {}
         self._scan_in_progress = False
         self._scan_lock_path = "state/scan_cycle.lock"
+        self._consecutive_scan_failures = 0
         self._learning_refresh_proc: subprocess.Popen | None = None
         self._position_snapshots: list[MarketSnapshot] = []
         self._position_snapshots_lock = threading.Lock()
@@ -386,7 +404,12 @@ class StartupRunner:
         if self.settings.forward_paper_only:
             self.log.warning("FORWARD_PAPER_ONLY ACTIVE")
             self.log.warning("PRIVATE EXCHANGE CALLS DISABLED")
-            runtime_heartbeat("startup_checks")
+        # Record the runtime mode once so every later heartbeat is attributable,
+        # then beat immediately: startup is a lifecycle stage in every mode.
+        set_runtime_mode(
+            "FORWARD_PAPER" if self.settings.forward_paper_only else str(self.settings.execution_mode)
+        )
+        runtime_heartbeat("startup_checks")
         self._startup_checks()
 
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
@@ -402,13 +425,49 @@ class StartupRunner:
             )
 
         if self.settings.scan_on_start:
-            self._scan_cycle()
+            self._scan_cycle_iteration()
 
         if self.settings.scan_loop_enabled:
             self.log.info("Scan loop enabled | interval=%ss", self.settings.scan_interval_sec)
             while True:
                 time.sleep(self.settings.scan_interval_sec)
-                self._scan_cycle()
+                self._scan_cycle_iteration()
+
+    def _scan_cycle_iteration(self) -> bool:
+        """Run one scan cycle without allowing a transient failure to kill the loop.
+
+        Mirrors _position_monitor_iteration. Before this existed, any exception
+        escaping _scan_cycle terminated the process: on 2026-07-24 a DNS blip
+        raised BitgetRetryableError out of fetch_contracts and the bot stayed
+        down for 20 hours. A long-running collector must outlive the network.
+
+        Failures are never silent: each one is logged with a distinct marker and
+        the consecutive-failure count is published to the runtime heartbeat so
+        health checks can fail on a wedged loop.
+        """
+        try:
+            self._scan_cycle()
+        except Exception as exc:
+            self._consecutive_scan_failures += 1
+            self.log.exception(
+                "SCAN_CYCLE_FAILED | consecutive=%s | network=%s | error=%s",
+                self._consecutive_scan_failures,
+                self._is_network_resolution_error(exc),
+                exc,
+            )
+            runtime_heartbeat(
+                "scan_cycle_failed",
+                consecutive_scan_failures=self._consecutive_scan_failures,
+                error_type=type(exc).__name__,
+            )
+            return False
+
+        if self._consecutive_scan_failures:
+            self.log.info(
+                "SCAN_CYCLE_RECOVERED | after_failures=%s", self._consecutive_scan_failures
+            )
+            self._consecutive_scan_failures = 0
+        return True
 
     def scan_once(self) -> None:
         """Run one complete public detector-to-paper scan cycle."""
@@ -559,8 +618,10 @@ class StartupRunner:
                 self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
                 return
 
-            if self.settings.forward_paper_only:
-                runtime_heartbeat("scan_cycle_start", scan_started=True)
+            # Liveness telemetry is mode-independent. It used to be emitted only
+            # in forward-paper mode, which left LIVE with no heartbeat at all --
+            # a 3 h host suspension on 2026-07-29 went undetected as a result.
+            runtime_heartbeat("scan_cycle_start", scan_started=True)
 
             try:
                 agent_report = run_coach_rules()
@@ -607,7 +668,24 @@ class StartupRunner:
             except Exception as exc:
                 self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
 
-            contracts = self.fetcher.fetch_contracts(force_refresh=False)
+            try:
+                contracts = self.fetcher.fetch_contracts(force_refresh=False)
+            except Exception as exc:
+                # Sat directly above the guarded refresh_many block and was the
+                # only unprotected network call in the cycle; a DNS failure here
+                # killed the process on 2026-07-24.
+                if self._is_network_resolution_error(exc):
+                    error_signature = ("fetch_contracts", str(exc)[:180])
+                    if self._last_network_error_log != error_signature:
+                        self.log.error(
+                            "API_NETWORK_UNAVAILABLE | stage=fetch_contracts | action=skip_scan_cycle_preserve_local_state | error=%s",
+                            exc,
+                        )
+                        self._last_network_error_log = error_signature
+                else:
+                    self.log.warning("FETCH_CONTRACTS_FAILED | error=%s", exc)
+                return
+
             symbols = get_watchlist(self.settings, contracts=contracts)
             if self.settings.forward_paper_only:
                 runtime_heartbeat("market_refresh_start", symbol_count=len(symbols))
@@ -1219,6 +1297,21 @@ class StartupRunner:
                         break
                     self.log.exception("Scan failed for %s: %s", symbol, exc)
 
+            # A cycle that requested symbols but built no snapshot did not succeed,
+            # however far it got. The per-symbol handler above deliberately swallows
+            # failures so one bad symbol cannot stop the others, which means a fault
+            # affecting EVERY symbol would otherwise reach the end of the cycle and
+            # publish scan_cycle_complete with snapshot_count=0. That is exactly what
+            # happened on 2026-07-25: an invalid confirmation granularity returned
+            # HTTP 400 for all 106 cycles while the heartbeat reported success and the
+            # health check reported HEALTHY. Fail loudly so _scan_cycle_iteration
+            # counts it and the health check can see a wedged loop.
+            if symbols and not snapshots:
+                raise ScanCycleProducedNoMarketData(
+                    f"no market snapshot could be built for any of {len(symbols)} "
+                    f"requested symbol(s): {', '.join(map(str, symbols[:5]))}"
+                )
+
             if snapshots:
                 self._emit_summary(snapshots)
                 self.scan_logger.append_rows(snapshots)
@@ -1377,6 +1470,14 @@ class StartupRunner:
                 except Exception as lane_exc:
                     self.log.warning("FAST_LANE_FAILED | error=%s", lane_exc)
 
+            # NON-PRODUCTION lifecycle validation. Config forces this off unless the
+            # runtime is strict forward-paper-only, so it can never reach execution.
+            if self.settings.forward_paper_smoke_strategy_enabled:
+                for snapshot in snapshots:
+                    smoke = smoke_plan(self.settings, snapshot)
+                    if smoke is not None:
+                        plans.append(smoke)
+
             if candidates:
                 self._emit_candidate_summary(candidates)
                 self.candidate_logger.append_rows(candidates)
@@ -1391,9 +1492,38 @@ class StartupRunner:
                 # execution safety. Corruption fails the paper writer closed.
                 self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
 
+            execution_scores = {
+                snapshot.symbol.upper(): _execution_aware_score(snapshot)
+                for snapshot in snapshots
+            }
+            selection = select_execution_winner(
+                plans,
+                allowed_symbols=(
+                    self.settings.production_symbol_set
+                    if self.settings.is_live_execution
+                    else None
+                ),
+                execution_scores=execution_scores,
+            )
+            selected_plans = [selection.winner] if selection.winner is not None else []
+            if selection.winner_metrics is not None:
+                metrics = selection.winner_metrics
+                self.log.info(
+                    "PORTFOLIO_WINNER | symbol=%s | plan_id=%s | execution_score=%.8f | "
+                    "expectancy=%.8f | setup_quality=%.8f | liquidity_spread_quality=%.8f | "
+                    "valid_candidates=%s | rejected_candidates=%s",
+                    metrics.plan.symbol,
+                    metrics.plan.plan_id,
+                    metrics.execution_score,
+                    metrics.expectancy,
+                    metrics.setup_quality,
+                    metrics.liquidity_spread_quality,
+                    len(selection.ranked),
+                    len(selection.rejected),
+                )
             with trading_state_lock():
                 exec_reports = (
-                    self.execution_service.execute(plans)
+                    self.execution_service.execute(selected_plans)
                     if self.execution_service is not None
                     else []
                 )
@@ -1407,21 +1537,20 @@ class StartupRunner:
                 self._sync_positions(snapshots, use_snapshot_context=True)
 
             scan_completed = True
-            if self.settings.forward_paper_only:
-                executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
-                runtime_heartbeat(
-                    "scan_cycle_complete",
-                    scan_completed=True,
-                    snapshot_count=len(snapshots),
-                    plan_count=len(plans),
-                    executable_plan_count=executable_count,
-                )
-                self.log.info(
-                    "SCAN_CYCLE_COMPLETED | snapshots=%s | plans=%s | executable=%s",
-                    len(snapshots),
-                    len(plans),
-                    executable_count,
-                )
+            executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
+            runtime_heartbeat(
+                "scan_cycle_complete",
+                scan_completed=True,
+                snapshot_count=len(snapshots),
+                plan_count=len(plans),
+                executable_plan_count=executable_count,
+            )
+            self.log.info(
+                "SCAN_CYCLE_COMPLETED | snapshots=%s | plans=%s | executable=%s",
+                len(snapshots),
+                len(plans),
+                executable_count,
+            )
 
 
         finally:
@@ -1432,7 +1561,9 @@ class StartupRunner:
                 except Exception:
                     pass
             self._scan_in_progress = False
-            if self.settings.forward_paper_only and not scan_completed:
+            # Mode-independent: a started-but-unfinished cycle must be visible,
+            # and must never advance scan_cycles_completed.
+            if not scan_completed:
                 runtime_heartbeat("scan_cycle_incomplete")
 
     def _active_symbol_cooldown(self, symbol: str) -> dict | None:
@@ -1449,10 +1580,10 @@ class StartupRunner:
             return None
 
         reason = str(payload.get("reason") or "")
-        pnl_pct = float(payload.get("pnl_pct") or 0.0)
+        price_return_pct_value = float(payload.get("price_return_pct") or 0.0)
         cooldown_minutes = int(payload.get("cooldown_minutes") or 0)
 
-        explosive_move = pnl_pct >= 0.5
+        explosive_move = price_return_pct_value >= 0.5
         recent_close = cooldown_minutes > 0
 
         if explosive_move and recent_close:
@@ -1550,13 +1681,16 @@ class StartupRunner:
         )
         for idx, report in enumerate(reports[: self.settings.execution_plan_limit], start=1):
             self.log.info(
-                "EXECUTION%d | %s | %s | mode=%s | status=%s | avg_entry=%.6f | sl=%.6f | tp1=%.6f | msg=%s",
+                "EXECUTION%d | %s | %s | mode=%s | status=%s | planned_avg_entry=%.6f | "
+                "exchange_avg_entry=%.6f | entry_source=%s | sl=%.6f | tp1=%.6f | msg=%s",
                 idx,
                 report.symbol,
                 report.direction,
                 report.mode,
                 report.status,
-                report.avg_entry,
+                report.planned_avg_entry,
+                report.exchange_avg_entry,
+                report.exchange_avg_entry_source or "UNCONFIRMED",
                 report.stop_loss,
                 report.take_profits[0] if report.take_profits else 0.0,
                 report.message,
@@ -1574,7 +1708,7 @@ class StartupRunner:
             position_signature = (
                 update.status,
                 round(update.current_price, 4),
-                round(update.unrealized_pnl_pct, 2),
+                round(update.price_return_pct, 2),
                 round(update.stop_loss, 6),
                 update.break_even_active,
                 update.tp1_hit,
@@ -1586,13 +1720,18 @@ class StartupRunner:
 
             if previous_signature != position_signature:
                 self.log.info(
-                    "POSITION%d | %s | status=%s | px=%.6f | upnl=%.3f%% | sl=%.6f | be=%s | tp1=%s | tp2=%s | tp3=%s | note=%s",
+                    "POSITION%d | %s | status=%s | mark=%.6f | price_return_pct=%.3f%% | "
+                    "margin_roi_pct=%.3f%% | net_return_pct=%.3f%% | sl=%.6f | "
+                    "protection_state=%s | be=%s | tp1=%s | tp2=%s | tp3=%s | note=%s",
                     idx,
                     update.symbol,
                     update.status,
                     update.current_price,
-                    update.unrealized_pnl_pct,
+                    update.price_return_pct,
+                    update.margin_roi_pct,
+                    update.estimated_net_return_pct,
                     update.stop_loss,
+                    update.protection_state,
                     update.break_even_active,
                     update.tp1_hit,
                     update.tp2_hit,

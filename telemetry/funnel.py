@@ -45,6 +45,8 @@ REASON_CODES = frozenset({
     "CONSECUTIVE_LOSS_LIMIT", "EXPECTANCY_BLOCK", "SYMBOL_EXPECTANCY_PAUSE",
     "HTF_OPPOSITION", "SCORE_THRESHOLD", "ORDERBOOK_RISK",
     "EXECUTION_COST", "NET_EDGE", "RR_GEOMETRY", "MIN_NOTIONAL",
+    "SHORTS_DISABLED", "MOMENTUM_QUALITY", "SAFE_MODE_STRATEGY",
+    "SYMBOL_EXPECTANCY_SOURCE_MALFORMED",
 })
 REQUIRED_FIELDS = (
     "schema_version", "event_id", "lifecycle_key", "scan_id", "candidate_id", "event_type",
@@ -129,24 +131,79 @@ def _validate_event(event: dict[str, Any]) -> None:
         raise ValueError("unknown secondary_reason_codes")
 
 
+#: Reasons that genuinely set allowed=False in RiskManager, keyed by the exact
+#: prefix each gate emits. Telemetry-only: this table changes no decision.
+#:
+#: The previous implementation joined every reason into one blob and matched
+#: loose tokens against it, which produced three classes of error:
+#:   * soft text classified as a hard block - the bare token "expectancy"
+#:     matched "expectancy-watch: ... not hard-paused" and every PROBE line;
+#:   * one blocking reason emitting two codes - a symbol kill-switch produced
+#:     SYMBOL_EXPECTANCY_PAUSE *and* EXPECTANCY_BLOCK, double-counting it;
+#:   * accidental collisions - "rr" matched inside "MTF ove(rr)ide", tagging a
+#:     non-blocking watch note as RR_GEOMETRY.
+#: Matching is therefore per reason, on anchored prefixes, and a reason that
+#: matches nothing yields no code at all.
+HARD_REASON_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("SHORTS_DISABLED", ("blocked: shorts disabled by configuration",)),
+    ("ORDERBOOK_RISK", ("blocked: orderbook risk-off",)),
+    ("WEEKLY_FREEZE", ("kill-switch: weekly freeze",)),
+    ("DAILY_DEFENSIVE", ("kill-switch: daily defensive",)),
+    ("CONSECUTIVE_LOSS_LIMIT", ("kill-switch: consecutive loss",)),
+    ("SYMBOL_EXPECTANCY_SOURCE_MALFORMED", ("kill-switch: symbol expectancy source malformed",)),
+    ("SYMBOL_EXPECTANCY_PAUSE", (
+        "kill-switch: symbol paused by expectancy",
+        "kill-switch: symbol failed tp1",
+    )),
+    # Reserved for a strategy-level expectancy gate that actually returns
+    # False. _strategy_weighting_gate currently never does - it returns PROBE
+    # and keeps trading at reduced size - so this legitimately never fires
+    # today. It is NOT emitted alongside SYMBOL_EXPECTANCY_PAUSE.
+    ("EXPECTANCY_BLOCK", ("blocked: strategy hard-paused by expectancy",)),
+    ("HTF_OPPOSITION", (
+        "blocked: market alignment",
+        "blocked: long without",
+        "blocked: short without",
+        "blocked: sweep requires",
+    )),
+    ("MOMENTUM_QUALITY", ("momentum-quality blocked",)),
+    ("EXECUTION_COST", ("execution-cost blocked",)),
+    ("SCORE_THRESHOLD", ("score below safe mode minimum", "score verdict")),
+    ("NET_EDGE", ("blocked: net edge", "blocked: fees buffer")),
+    ("RR_GEOMETRY", ("blocked: rr", "blocked: risk_reward")),
+    ("MIN_NOTIONAL", ("blocked: notional", "notional below")),
+    ("SAFE_MODE_STRATEGY", (
+        "safe mode blocks unsupported strategy",
+        "strategy not in enabled_strategies",
+    )),
+)
+
+
+def classify_reason_code(value: Any) -> str | None:
+    """Classify ONE reason. Returns a hard-gate code, or None when the reason
+    is soft/informational (PROBE, WATCH, source annotations, ai-agent notes)."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip().lower()
+    for code, prefixes in HARD_REASON_RULES:
+        if any(prefix in text for prefix in prefixes):
+            return code
+    return None
+
+
 def classify_reason_codes(values: Iterable[Any]) -> list[str]:
-    """Map existing human-readable reasons to stable telemetry-only codes."""
-    text = " | ".join(str(value).lower() for value in values if value not in (None, ""))
-    rules = (
-        ("WEEKLY_FREEZE", ("weekly freeze",)),
-        ("DAILY_DEFENSIVE", ("daily defensive", "day_defensive")),
-        ("CONSECUTIVE_LOSS_LIMIT", ("consecutive loss",)),
-        ("SYMBOL_EXPECTANCY_PAUSE", ("symbol paused by expectancy",)),
-        ("EXPECTANCY_BLOCK", ("expectancy", "hard-pause", "hard pause")),
-        ("HTF_OPPOSITION", ("htf", "primary trend", "alignment")),
-        ("SCORE_THRESHOLD", ("score below", "score verdict", "minimum score")),
-        ("ORDERBOOK_RISK", ("orderbook",)),
-        ("EXECUTION_COST", ("spread", "execution-cost", "execution cost")),
-        ("NET_EDGE", ("net_edge", "net edge", "fees buffer")),
-        ("RR_GEOMETRY", ("risk_reward", "risk reward", "rr", "geometry")),
-        ("MIN_NOTIONAL", ("notional",)),
-    )
-    return [code for code, needles in rules if any(needle in text for needle in needles)]
+    """Map human-readable reasons to stable telemetry-only codes.
+
+    One candidate counts at most once per hard gate: duplicates are collapsed
+    while first-seen order is preserved. Soft reasons contribute nothing.
+    Raw reason text is untouched and remains available in logs/live.out.
+    """
+    seen: list[str] = []
+    for value in values or ():
+        code = classify_reason_code(value)
+        if code and code not in seen:
+            seen.append(code)
+    return seen
 
 
 def _validate_stored_event(

@@ -7,8 +7,23 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import Settings
 from app.equity import resolve_account_equity
+from clients.bitget_order_client import BitgetOrderClientMixin
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, TradePlan
+from execution.entry_submitter import (
+    EntryOrderSubmitter,
+    RESULT_ADOPTED,
+    RESULT_BLOCKED_UNKNOWN,
+)
+from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
+from execution.order_intent_store import OrderIntentStore, new_session_id
+from execution.position_model import (
+    EXCHANGE_ACTUAL,
+    decimal_value,
+    position_lifecycle_id,
+    stop_is_legal,
+)
+from execution.portfolio_selector import select_execution_winner
 from execution.state_store import JsonStateStore
 from risk.cooldown_manager import SymbolCooldownManager
 from telemetry.trade_logger import LiveTradeJournalLogger, TradeDecisionSnapshotLogger
@@ -51,10 +66,41 @@ class ExecutionService:
         self.journal = LiveTradeJournalLogger()
         self.decision_snapshot_logger = TradeDecisionSnapshotLogger()
         self.symbol_cooldown_minutes = int(getattr(settings, "symbol_cooldown_minutes", 30))
+        # Idempotent live-entry path: one deterministic clientOid per logical
+        # entry, persisted before submit and reconciled after any ambiguity.
+        self.session_id = new_session_id()
+        self.intent_store = OrderIntentStore()
+        self.entry_submitter = EntryOrderSubmitter(
+            client=self.client,
+            intent_store=self.intent_store,
+            session_id=self.session_id,
+            execution_mode=str(settings.execution_mode),
+            log=self.log,
+        )
+        self._entry_recovery_done = False
 
     def execute(self, plans: list[TradePlan]) -> list[ExecutionReport]:
         if not self.settings.execution_enabled:
             return []
+
+        selection = select_execution_winner(
+            plans,
+            allowed_symbols=(
+                self.settings.production_symbol_set
+                if self.settings.is_live_execution
+                else None
+            ),
+        )
+        winner = selection.winner
+        if winner is None:
+            if plans:
+                self.log.warning(
+                    "PORTFOLIO_SELECTION_EMPTY | plans=%s | rejected=%s",
+                    len(plans),
+                    len(selection.rejected),
+                )
+            return []
+        plans = [winner]
 
         reports: list[ExecutionReport] = []
         existing = self.store.load(default=[])
@@ -104,21 +150,31 @@ class ExecutionService:
         max_open_positions = int(self.settings.max_open_positions)
         hard_cap_notional = resolve_account_equity(self.settings)[0] * float(self.settings.max_leverage)
 
-        executable: list[TradePlan] = []
-        seen_symbols: set[str] = set()
-        for plan in plans:
-            if plan.verdict != "EXECUTABLE":
-                continue
-            if plan.symbol in seen_symbols:
-                continue
-            seen_symbols.add(plan.symbol)
-            executable.append(plan)
-            if len(executable) >= self.settings.execution_max_per_cycle:
-                break
+        # Unfinished order intents are reconciled against Bitget before any new
+        # entry may be created, and an unresolvable one blocks entries entirely.
+        entry_block_reason = self._entry_guard_reason()
 
-        for plan in executable:
+        for plan in plans:
             # --- Telemetry: log trade decision snapshot before execution logic ---
             decision_snapshot_opened_at = self.decision_snapshot_logger.append_plan(plan)
+            if entry_block_reason:
+                self.log.critical(
+                    "NEW_ENTRIES_BLOCKED | symbol=%s | plan_id=%s | reason=%s",
+                    plan.symbol,
+                    plan.plan_id,
+                    entry_block_reason,
+                )
+                reports.append(
+                    self._report(
+                        plan=plan,
+                        status="SKIPPED",
+                        message=f"new entries blocked: {entry_block_reason}",
+                        planned_avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                        notional=min(plan.position_notional_usdt, hard_cap_notional),
+                        leverage=plan.leverage,
+                    )
+                )
+                continue
             if self.settings.execution_mode.upper() == "LIVE":
                 try:
                     live_positions_payload = self.client.get_all_positions()
@@ -142,7 +198,7 @@ class ExecutionService:
                                 plan=plan,
                                 status="SKIPPED",
                                 message=f"exchange max open positions reached: {len(open_symbols)}/{self.settings.max_open_positions}",
-                                avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                                planned_avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
                                 notional=min(plan.position_notional_usdt, hard_cap_notional),
                                 leverage=plan.leverage,
                             )
@@ -159,15 +215,20 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message=f"live order blocked: exchange position sync failed: {exc}",
-                            avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                            planned_avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
                             notional=min(plan.position_notional_usdt, hard_cap_notional),
                             leverage=plan.leverage,
                         )
                     )
                     continue
-            avg_entry = round(sum(plan.entry_prices) / len(plan.entry_prices), 8)
-            expected_entry = avg_entry
-            actual_entry = avg_entry
+            planned_avg_entry = round(sum(plan.entry_prices) / len(plan.entry_prices), 8)
+            expected_entry = planned_avg_entry
+            actual_entry = planned_avg_entry
+            exchange_avg_entry = 0.0
+            exchange_avg_entry_source = ""
+            exchange_avg_entry_confirmed_at = ""
+            confirmed_fill_quantity = 0.0
+            exchange_tick_size = 0.0
             # Standaard = plan-niveaus; de live-tak herankert deze op de echte
             # fill (bug 2026-07-08) en overschrijft ze vóór opslag.
             protect_stop_loss = plan.stop_loss
@@ -204,7 +265,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"hybrid gate blocked unsupported strategy: {plan.strategy}",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -217,7 +278,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message="position already open for symbol",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -240,7 +301,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"max open positions for strategy reached: {open_for_strategy}/{self.MAX_OPEN_POSITIONS_PER_STRATEGY} ({plan.strategy})",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -267,7 +328,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=cooldown_message,
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -280,7 +341,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"max open positions reached: {len(open_symbols)}/{max_open_positions}",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -293,7 +354,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"hard cap exceeded: notional {plan.position_notional_usdt:.2f} > cap {hard_cap_notional:.2f}",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=plan.position_notional_usdt,
                         leverage=plan.leverage,
                     )
@@ -306,7 +367,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message="confirmation missing for symbol",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=plan.position_notional_usdt,
                         leverage=plan.leverage,
                     )
@@ -323,6 +384,7 @@ class ExecutionService:
             )
             live_order_payload = None
             live_order_id = None
+            entry_client_oid = ""
             leverage_payload = None
             protection_payload = None
             execution_status = "SIMULATED"
@@ -334,6 +396,31 @@ class ExecutionService:
             effective_leverage = plan.leverage
 
             if self.settings.execution_mode.upper() == "LIVE":
+                # --- defence in depth: short-side invariant ---------------
+                # RiskManager rejects SHORT candidates before the planner runs,
+                # so this must be unreachable in normal operation. It exists so
+                # that no future change to the risk layer, and no directly
+                # injected plan, can put a forbidden SHORT on the exchange.
+                # Reached before any client call: zero exchange mutation.
+                if plan.direction.upper() == "SHORT" and not self._shorts_permitted():
+                    self.log.critical(
+                        "SHORTS_DISABLED_EXECUTION_INVARIANT | %s | strategy=%s | side=SHORT | "
+                        "stage=execution_service | mode=LIVE | submission_refused=True",
+                        plan.symbol,
+                        plan.strategy,
+                    )
+                    reports.append(
+                        self._report(
+                            plan=plan,
+                            status="SKIPPED",
+                            message="blocked: shorts disabled by configuration (ENABLE_SHORTS=false)",
+                            planned_avg_entry=planned_avg_entry,
+                            notional=min(plan.position_notional_usdt, hard_cap_notional),
+                            leverage=plan.leverage,
+                        )
+                    )
+                    continue
+
                 side = "buy" if plan.direction.upper() == "LONG" else "sell"
                 close_side = "sell" if plan.direction.upper() == "LONG" else "buy"
                 trade_side = "open"
@@ -374,7 +461,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message=f"balance precheck blocked: capped notional {live_notional:.2f} below min {min_live_notional_usdt:.2f}",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -391,7 +478,7 @@ class ExecutionService:
                         effective_leverage,
                     )
 
-                raw_order_size = live_notional / avg_entry
+                raw_order_size = live_notional / planned_avg_entry
                 order_size = self._format_order_size_for_exchange(plan.symbol, raw_order_size)
                 if float(plan.leverage) != effective_leverage:
                     self.log.warning(
@@ -425,7 +512,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message="live order blocked: invalid or missing SL/TP",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -434,19 +521,19 @@ class ExecutionService:
 
                 if order_size <= 0:
                     self.log.error(
-                        "ORDER_SIZE_INVALID | %s | raw_size=%s | formatted_size=%s | notional=%s | avg_entry=%s",
+                        "ORDER_SIZE_INVALID | %s | raw_size=%s | formatted_size=%s | notional=%s | planned_avg_entry=%s",
                         plan.symbol,
                         raw_order_size,
                         order_size,
                         plan.position_notional_usdt,
-                        avg_entry,
+                        planned_avg_entry,
                     )
                     reports.append(
                         self._report(
                             plan=plan,
                             status="SKIPPED",
                             message="live order blocked: invalid order size",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -459,7 +546,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message="live order blocked: exchange SL/TP protection is not implemented yet",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -496,15 +583,41 @@ class ExecutionService:
                     entry_via = "market"
                     if bool(getattr(self.settings, "maker_entry_enabled", False)):
                         from execution.maker_entry import attempt_maker_entry
-                        maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or avg_entry
+                        maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_avg_entry
                         maker_result = attempt_maker_entry(
                             client=self.client, settings=self.settings, symbol=plan.symbol,
                             direction=plan.direction, size=order_size, anchor_price=maker_anchor,
                             hold_side=hold_side, log=self.log,
+                            submit=lambda place, _plan=plan, _size=order_size, _side=side: (
+                                self.entry_submitter.submit_entry(
+                                    plan=_plan, size=_size, side=_side, order_type="limit",
+                                    leg=ENTRY_LEG_MAKER, place=place, notional_usdt=live_notional,
+                                )
+                            ),
                         )
+                        if maker_result["status"] == "BLOCKED_UNKNOWN":
+                            # Maker leg left the exchange state unknown: entering
+                            # again (market fallback) could duplicate the position.
+                            entry_block_reason = maker_result.get("message") or "maker entry state unknown"
+                            self.log.critical(
+                                "LIVE_ENTRY_BLOCKED_MAKER_STATE_UNKNOWN | %s | plan_id=%s | reason=%s",
+                                plan.symbol, plan.plan_id, entry_block_reason,
+                            )
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"new entries blocked: {entry_block_reason}",
+                                    planned_avg_entry=planned_avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
                         if maker_result["status"] == "FILLED":
                             live_order_payload = maker_result["payload"]
                             live_order_id = maker_result["order_id"]
+                            entry_client_oid = maker_result.get("client_oid") or ""
                             entry_via = "maker"
                         elif not bool(getattr(self.settings, "maker_entry_fallback_market", True)):
                             # Pure maker-modus: niet gevuld -> skippen, geen taker.
@@ -513,7 +626,7 @@ class ExecutionService:
                                     plan=plan,
                                     status="SKIPPED",
                                     message=f"maker entry {maker_result['status'].lower()} (geen taker-fallback)",
-                                    avg_entry=avg_entry,
+                                    planned_avg_entry=planned_avg_entry,
                                     notional=live_notional,
                                     leverage=effective_leverage,
                                 )
@@ -523,14 +636,68 @@ class ExecutionService:
                             entry_via = "maker_then_market_fallback"
 
                     if live_order_id is None:
-                        live_order_payload = self.client.place_futures_market_order(
-                            symbol=plan.symbol,
+                        def _place_market_entry(client_oid: str, _plan=plan, _size=order_size,
+                                                _side=side, _ref=planned_avg_entry):
+                            return self.client.place_futures_market_order(
+                                symbol=_plan.symbol,
+                                size=_size,
+                                side=_side,
+                                trade_side=trade_side,
+                                margin_mode="isolated",
+                                client_oid=client_oid,
+                                # Planned entry, so the exchange minimum notional
+                                # is validated before transport on the market leg
+                                # too — a market order has no price of its own.
+                                reference_price=_ref,
+                            )
+
+                        submission = self.entry_submitter.submit_entry(
+                            plan=plan,
                             size=order_size,
                             side=side,
-                            trade_side=trade_side,
-                            margin_mode="isolated",
+                            order_type="market",
+                            leg=ENTRY_LEG_MARKET,
+                            place=_place_market_entry,
+                            notional_usdt=live_notional,
                         )
-                        live_order_id = self.client.extract_order_id(live_order_payload)
+                        entry_client_oid = submission.client_oid
+
+                        if submission.status == RESULT_BLOCKED_UNKNOWN:
+                            entry_block_reason = submission.message
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"new entries blocked: {submission.message}",
+                                    planned_avg_entry=planned_avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
+
+                        if not submission.has_live_order:
+                            self.log.warning(
+                                "LIVE_ENTRY_NOT_CREATED | %s | plan_id=%s | client_oid=%s | status=%s | classification=%s | submissions=%s",
+                                plan.symbol, plan.plan_id, submission.client_oid,
+                                submission.status, submission.classification, submission.submissions,
+                            )
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"live entry not created ({submission.status}): {submission.message}",
+                                    planned_avg_entry=planned_avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
+
+                        live_order_payload = submission.payload
+                        live_order_id = submission.order_id
+                        if submission.status == RESULT_ADOPTED:
+                            entry_via = f"{entry_via}_adopted_after_reconciliation"
 
                     self.log.warning("ENTRY_VIA | %s | %s", plan.symbol, entry_via)
 
@@ -553,9 +720,26 @@ class ExecutionService:
 
                     exchange_position_found = False
                     live_fill_entry = 0.0
+                    live_mark_price = 0.0
 
                     for position in verification_positions:
                         if str(position.get("symbol") or "") != plan.symbol:
+                            continue
+
+                        live_hold_side = str(
+                            position.get("holdSide")
+                            or position.get("posSide")
+                            or ""
+                        ).lower()
+                        if live_hold_side and live_hold_side != hold_side:
+                            self.log.critical(
+                                "ENTRY_POSITION_SIDE_MISMATCH | %s | expected=%s | live=%s | "
+                                "order_id=%s",
+                                plan.symbol,
+                                hold_side,
+                                live_hold_side,
+                                live_order_id,
+                            )
                             continue
 
                         try:
@@ -581,6 +765,13 @@ class ExecutionService:
                                 or 0.0,
                                 0.0,
                             )
+                            live_mark_price = _safe_float(
+                                position.get("markPrice")
+                                or position.get("lastPrice")
+                                or position.get("marketPrice")
+                                or 0.0,
+                                0.0,
+                            )
                             break
 
                     if not exchange_position_found:
@@ -594,10 +785,23 @@ class ExecutionService:
                         )
 
                     self.log.warning(
-                        "EXCHANGE_POSITION_CONFIRMED | %s | order_id=%s",
+                        "EXCHANGE_POSITION_CONFIRMED | %s | order_id=%s | client_oid=%s",
                         plan.symbol,
                         live_order_id,
+                        entry_client_oid or "-",
                     )
+
+                    if entry_client_oid:
+                        self.entry_submitter.mark_filled(
+                            entry_client_oid,
+                            filled_qty=_safe_float(live_size, 0.0),
+                            avg_price=live_fill_entry,
+                        )
+                    confirmed_fill_quantity = _safe_float(live_size, 0.0)
+                    if live_fill_entry > 0:
+                        exchange_avg_entry = round(live_fill_entry, 8)
+                        exchange_avg_entry_source = "BITGET_OPEN_POSITION"
+                        exchange_avg_entry_confirmed_at = datetime.now(timezone.utc).isoformat()
 
 
                     # --- SL/TP herankeren op de ECHTE fill (bug 2026-07-08) ---
@@ -628,19 +832,70 @@ class ExecutionService:
                         protect_stop_loss = reanchored_stop
                         protect_take_profits = reanchored_tps
 
+                    price_scale = self.client._contract_price_scale(plan.symbol)
+                    if not isinstance(price_scale, int) or price_scale < 0:
+                        raise RuntimeError(
+                            f"EXCHANGE_TICK_SIZE_UNAVAILABLE | {plan.symbol}"
+                        )
+                    exchange_tick_size = float(10 ** (-price_scale))
+                    if not stop_is_legal(
+                        direction=plan.direction,
+                        target=decimal_value(protect_stop_loss),
+                        current_mark=decimal_value(live_mark_price),
+                        tick_size=decimal_value(exchange_tick_size),
+                        safety_ticks=int(
+                            getattr(self.settings, "break_even_mark_safety_ticks", 2)
+                            or 0
+                        ),
+                    ):
+                        raise RuntimeError(
+                            f"INITIAL_STOP_NOT_LEGAL | {plan.symbol} | mark={live_mark_price} "
+                            f"| stop={protect_stop_loss} | tick={exchange_tick_size}"
+                        )
+
                     # Place protection with stronger validation and retry.
                     protection_payload = None
                     has_sl = False
                     has_tp = False
                     entry_protection_verified = False
+                    actual_tp_count = 0
+                    expected_tp_count = len(valid_take_profits)
 
-                    for protection_attempt in range(1, 4):
+                    # Protection uses Bitget's position-level TP/SL endpoint, which
+                    # SETS the position's protection rather than stacking orders, so
+                    # a re-attempt reconciles instead of duplicating. Placement is
+                    # skipped entirely when this intent is already PROTECTED.
+                    intent_record = (
+                        self.intent_store.get(entry_client_oid) if entry_client_oid else None
+                    )
+                    if intent_record and intent_record.get("protection_state") == "CONFIRMED":
+                        self.log.critical(
+                            "ENTRY_PROTECTION_ALREADY_CONFIRMED | %s | client_oid=%s | placement_skipped=True",
+                            plan.symbol,
+                            entry_client_oid,
+                        )
+                        has_sl = True
+                        has_tp = True
+                        entry_protection_verified = True
+                        protection_payload = {
+                            "protection_verified": True,
+                            "protection_integrity": "RECONCILED_ALREADY_PROTECTED",
+                            "stop_loss_verified": True,
+                            "take_profit_count": expected_tp_count,
+                            "expected_take_profit_count": expected_tp_count,
+                        }
+                        protection_integrity = "RECONCILED_ALREADY_PROTECTED"
+                        actual_tp_count = expected_tp_count
+
+                    protection_attempts_allowed = 0 if entry_protection_verified else 3
+
+                    for protection_attempt in range(1, protection_attempts_allowed + 1):
                         try:
                             protection_payload = self.client.place_futures_protection_orders(
                                 symbol=plan.symbol,
                                 direction=plan.direction,
                                 hold_side=hold_side,
-                                size=order_size,
+                                size=live_size,
                                 stop_loss=protect_stop_loss,
                                 take_profits=protect_take_profits,
                                 margin_mode="isolated",
@@ -708,7 +963,7 @@ class ExecutionService:
 
                         self._fail_safe_close(
                             symbol=plan.symbol,
-                            size=order_size,
+                            size=live_size,
                             close_side=close_side,
                             direction=plan.direction,
                             reason="entry_protection_failed",
@@ -720,12 +975,17 @@ class ExecutionService:
                             reason="entry_protection_failed",
                         )
 
+                        if entry_client_oid:
+                            self.entry_submitter.mark_closed_out(
+                                entry_client_oid, reason="entry_protection_failed"
+                            )
+
                         reports.append(
                             self._report(
                                 plan=plan,
                                 status="ERROR",
                                 message="FAIL-SAFE TRIGGERED: SL/TP NOT VERIFIED -> emergency close invoked",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
@@ -743,6 +1003,19 @@ class ExecutionService:
 
                     protection_verified = bool(protection_payload.get("protection_verified")) if protection_payload else False
                     protection_integrity = str(protection_payload.get("protection_integrity") or "UNKNOWN") if protection_payload else "MISSING_PAYLOAD"
+
+                    if entry_client_oid and protection_verified:
+                        self.entry_submitter.mark_protected(
+                            entry_client_oid, integrity=protection_integrity
+                        )
+                        self.log.critical(
+                            "ENTRY_PROTECTION_RECONCILED | %s | plan_id=%s | client_oid=%s | order_id=%s | integrity=%s",
+                            plan.symbol,
+                            plan.plan_id,
+                            entry_client_oid,
+                            live_order_id,
+                            protection_integrity,
+                        )
                     exchange_stop_loss = protection_payload.get("stop_loss") if protection_payload else None
                     exchange_take_profit_count = int(protection_payload.get("take_profit_count") or len(protection_payload.get("take_profits") or [])) if protection_payload else 0
                     self.log.warning(
@@ -751,7 +1024,7 @@ class ExecutionService:
                         plan.direction,
                         exchange_stop_loss,
                         exchange_take_profit_count,
-                        order_size,
+                        live_size,
                     )
 
                     exchange_order_id = str(live_order_id or "")
@@ -769,7 +1042,7 @@ class ExecutionService:
                     if extracted_actual_entry > 0:
                         actual_entry = round(extracted_actual_entry, 8)
                     else:
-                        actual_entry = avg_entry
+                        actual_entry = planned_avg_entry
 
                     fees_paid = abs(_safe_float(fill_metrics.get("fee"), 0.0))
                     realized_pnl = _safe_float(fill_metrics.get("pnl"), 0.0)
@@ -797,6 +1070,13 @@ class ExecutionService:
                             if detailed_actual_entry > 0:
                                 actual_entry = round(detailed_actual_entry, 8)
                                 extracted_actual_entry = detailed_actual_entry
+                                if exchange_avg_entry <= 0:
+                                    exchange_avg_entry = round(
+                                        detailed_actual_entry,
+                                        8,
+                                    )
+                                    exchange_avg_entry_source = "BITGET_ORDER_DETAIL"
+                                    exchange_avg_entry_confirmed_at = datetime.now(timezone.utc).isoformat()
 
                             detailed_fees = abs(_safe_float(detailed_fill_metrics.get("fee"), 0.0))
                             if detailed_fees > 0:
@@ -871,7 +1151,7 @@ class ExecutionService:
                                 plan=plan,
                                 status="SKIPPED",
                                 message=f"balance guard blocked order: {exc}",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
@@ -896,12 +1176,16 @@ class ExecutionService:
                             direction=plan.direction,
                             reason="entry_protection_failed_exception",
                         )
+                        if entry_client_oid:
+                            self.entry_submitter.mark_closed_out(
+                                entry_client_oid, reason="entry_protection_failed_exception"
+                            )
                         reports.append(
                             self._report(
                                 plan=plan,
                                 status="ERROR",
                                 message=f"FAIL-SAFE TRIGGERED: protection/order flow failed after entry -> position closed | error={exc}",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
@@ -912,12 +1196,32 @@ class ExecutionService:
                                 plan=plan,
                                 status="SKIPPED",
                                 message=f"live order failed before entry: {exc}",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
                         )
                     continue
+
+            lifecycle_id = position_lifecycle_id(
+                plan_id=plan.plan_id,
+                symbol=plan.symbol,
+                direction=plan.direction,
+                client_oid=entry_client_oid,
+                order_id=str(live_order_id or ""),
+            )
+            if self.settings.execution_mode.upper() == "LIVE" and exchange_tick_size <= 0:
+                try:
+                    price_scale = self.client._contract_price_scale(plan.symbol)
+                    if isinstance(price_scale, int) and price_scale >= 0:
+                        exchange_tick_size = float(10 ** (-price_scale))
+                except Exception as tick_exc:
+                    self.log.warning(
+                        "EXCHANGE_TICK_SIZE_UNAVAILABLE | %s | lifecycle_id=%s | error=%s",
+                        plan.symbol,
+                        lifecycle_id,
+                        tick_exc,
+                    )
 
             position = {
                 "symbol": plan.symbol,
@@ -925,9 +1229,32 @@ class ExecutionService:
                 "direction": plan.direction,
                 "mode": self.settings.execution_mode,
                 "status": "OPEN",
-                "avg_entry": avg_entry,
+                # Migration contract: avg_entry remains a planning alias only.
+                "avg_entry": planned_avg_entry,
+                "planned_avg_entry": planned_avg_entry,
                 "expected_entry": expected_entry,
                 "actual_entry": actual_entry,
+                "exchange_avg_entry": exchange_avg_entry or None,
+                "exchange_avg_entry_source": exchange_avg_entry_source,
+                "exchange_avg_entry_confirmed_at": exchange_avg_entry_confirmed_at,
+                "exchange_entry_order_id": str(live_order_id or ""),
+                "exchange_entry_client_oid": entry_client_oid,
+                "position_lifecycle_id": lifecycle_id,
+                "confirmed_fill_quantity": confirmed_fill_quantity or None,
+                "confirmed_position_size": confirmed_fill_quantity or None,
+                "confirmed_remaining_size": confirmed_fill_quantity or None,
+                "confirmed_remaining_size_source": (
+                    "BITGET_OPEN_POSITION" if confirmed_fill_quantity > 0 else ""
+                ),
+                "confirmed_opening_fee_usdt": fees_paid if fees_paid > 0 else None,
+                "confirmed_opening_fee_source": (
+                    EXCHANGE_ACTUAL if fees_paid > 0 else ""
+                ),
+                "exchange_opening_fee_usdt": fees_paid if fees_paid > 0 else None,
+                "exchange_opening_fee_source": EXCHANGE_ACTUAL if fees_paid > 0 else "",
+                "exchange_tick_size": exchange_tick_size or None,
+                "plan_id": plan.plan_id,
+                "candidate_id": plan.candidate_id,
                 "slippage_pct": slippage_pct,
                 "fees_paid": fees_paid,
                 "entry_prices": plan.entry_prices,
@@ -956,9 +1283,15 @@ class ExecutionService:
                 "exchange_take_profit_count": exchange_take_profit_count,
                 "entry_protection_verified": protection_verified,
                 "entry_protection_integrity": protection_integrity,
+                "protection_state": (
+                    "INITIAL_PROTECTION_CONFIRMED"
+                    if protection_verified
+                    else "PROTECTION_UPDATE_FAILED"
+                ),
+                "confirmed_stop": protect_stop_loss if protection_verified else None,
                 "entry_stop_loss_verified": bool(protection_payload.get("stop_loss_verified")) if protection_payload else False,
                 "entry_expected_take_profit_count": int(protection_payload.get("expected_take_profit_count") or 0) if protection_payload else 0,
-                "last_price": avg_entry,
+                "last_price": exchange_avg_entry or planned_avg_entry,
                 "notes": plan.notes,
                 "reasons": plan.reasons,
             }
@@ -969,9 +1302,16 @@ class ExecutionService:
                 plan=plan,
                 status=execution_status,
                 message=execution_message,
-                avg_entry=actual_entry or avg_entry,
+                planned_avg_entry=planned_avg_entry,
                 notional=live_notional,
                 leverage=effective_leverage,
+                exchange_avg_entry=exchange_avg_entry,
+                exchange_avg_entry_source=exchange_avg_entry_source,
+                position_lifecycle_id=lifecycle_id,
+                exchange_entry_order_id=str(live_order_id or ""),
+                exchange_entry_client_oid=entry_client_oid,
+                confirmed_position_size=confirmed_fill_quantity,
+                confirmed_opening_fee_usdt=fees_paid,
                 expected_entry=expected_entry,
                 actual_entry=actual_entry,
                 slippage_pct=slippage_pct,
@@ -1012,6 +1352,88 @@ class ExecutionService:
         self.store.save(existing)
         self.event_store.save(execution_events)
         return reports
+
+    def _shorts_permitted(self) -> bool:
+        """Mirror of RiskManager.shorts_permitted for the execution invariant.
+
+        Deliberately duplicated rather than imported: this is a defence-in-depth
+        check, and it must not stop working because the risk layer was changed,
+        refactored or bypassed.
+        """
+        value = getattr(self.settings, "enable_shorts", None)
+        if isinstance(value, bool):
+            return value
+        live = str(getattr(self.settings, "execution_mode", "")).strip().upper() == "LIVE"
+        return not live
+
+    def _entry_guard_reason(self) -> str:
+        """Return a non-empty reason when no new live entry may be created.
+
+        On the first LIVE cycle of a process this reconciles every persisted
+        order intent against Bitget, so a bot that died mid-submission adopts
+        the order it may have created instead of placing a second one.
+        """
+        if self.settings.execution_mode.upper() != "LIVE":
+            return ""
+
+        if not self._entry_recovery_done:
+            try:
+                recovery = self.entry_submitter.recover_pending_intents()
+            except Exception as exc:
+                self.log.critical(
+                    "STARTUP_RECOVERY_FAILED | new_entries_blocked=True | error=%s", exc
+                )
+                return f"order-intent recovery failed: {exc}"
+            self._entry_recovery_done = True
+            if recovery.get("blocked"):
+                return "; ".join(recovery.get("reasons") or ["unreconciled order intent"])
+
+        blocking = self.intent_store.blocking()
+        if blocking:
+            details = ", ".join(
+                f"{row.get('symbol')}:{row.get('client_oid')}" for row in blocking
+            )
+            return f"unreconciled order intent(s) in UNKNOWN state: {details}"
+
+        return self._exchange_pending_entry_guard_reason()
+
+    def _exchange_pending_entry_guard_reason(self) -> str:
+        """Block while any non-reduce-only exchange entry is still pending."""
+        try:
+            payload = self.client.get_pending_orders(
+                product_type=self.settings.bitget_product_type,
+            )
+            rows = BitgetOrderClientMixin._order_rows(payload)
+        except Exception as exc:
+            self.log.critical(
+                "LIVE_ENTRY_BLOCKED_PENDING_ORDER_SYNC_FAILED | error=%s",
+                exc,
+            )
+            return f"exchange pending-entry check failed: {exc}"
+
+        pending_entries = []
+        for row in rows:
+            reduce_only = str(row.get("reduceOnly") or "").strip().lower()
+            trade_side = str(row.get("tradeSide") or "").strip().lower()
+            if reduce_only in {"yes", "true", "1"} or trade_side == "close":
+                continue
+            pending_entries.append(
+                {
+                    "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+                    "order_id": str(row.get("orderId") or row.get("id") or "UNKNOWN"),
+                }
+            )
+
+        if not pending_entries:
+            return ""
+        details = ", ".join(
+            f"{row['symbol']}:{row['order_id']}" for row in pending_entries
+        )
+        self.log.critical(
+            "LIVE_ENTRY_BLOCKED_PENDING_EXCHANGE_ENTRY | pending=%s",
+            details,
+        )
+        return f"pending exchange entry order(s): {details}"
 
     def _format_order_size_for_exchange(self, symbol: str, raw_size: float) -> float:
         try:
@@ -1077,13 +1499,17 @@ class ExecutionService:
         reason: str = "fail_safe_close",
     ) -> None:
         close_errors: list[str] = []
+        hold_side = "long" if str(direction).upper() == "LONG" else "short"
 
         try:
-            response = self.client.place_futures_market_order(
+            # Must be the reduce-only close path. place_futures_market_order()
+            # hardcodes tradeSide=open and drops trade_side, so routing the
+            # fail-safe through it opened an opposite position instead of
+            # closing the unprotected one.
+            response = self.client.close_futures_position(
                 symbol=symbol,
+                hold_side=hold_side,
                 size=size,
-                side=close_side,
-                trade_side="close",
                 margin_mode="isolated",
             )
             self.log.critical(
@@ -1201,9 +1627,16 @@ class ExecutionService:
         plan: TradePlan,
         status: str,
         message: str,
-        avg_entry: float,
+        planned_avg_entry: float,
         notional: float,
         leverage: float,
+        exchange_avg_entry: float = 0.0,
+        exchange_avg_entry_source: str = "",
+        position_lifecycle_id: str = "",
+        exchange_entry_order_id: str = "",
+        exchange_entry_client_oid: str = "",
+        confirmed_position_size: float = 0.0,
+        confirmed_opening_fee_usdt: float = 0.0,
         expected_entry: float = 0.0,
         actual_entry: float = 0.0,
         slippage_pct: float = 0.0,
@@ -1222,13 +1655,21 @@ class ExecutionService:
             mode=self.settings.execution_mode,
             status=status,
             message=message,
-            avg_entry=avg_entry,
+            avg_entry=planned_avg_entry,
+            planned_avg_entry=planned_avg_entry,
+            exchange_avg_entry=exchange_avg_entry,
+            exchange_avg_entry_source=exchange_avg_entry_source,
+            position_lifecycle_id=position_lifecycle_id,
+            exchange_entry_order_id=exchange_entry_order_id,
+            exchange_entry_client_oid=exchange_entry_client_oid,
+            confirmed_position_size=confirmed_position_size,
+            confirmed_opening_fee_usdt=confirmed_opening_fee_usdt,
             stop_loss=plan.stop_loss if stop_loss is None else stop_loss,
             take_profits=plan.take_profits if take_profits is None else take_profits,
             position_notional_usdt=notional,
             leverage=leverage,
-            expected_entry=expected_entry or avg_entry,
-            actual_entry=actual_entry or avg_entry,
+            expected_entry=expected_entry or planned_avg_entry,
+            actual_entry=actual_entry or planned_avg_entry,
             slippage_pct=slippage_pct,
             fees_paid=fees_paid,
             realized_pnl=realized_pnl,

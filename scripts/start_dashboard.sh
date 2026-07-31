@@ -26,11 +26,12 @@ fi
 pkill -f "python3 -m dashboard_v2.app" >/dev/null 2>&1 || true
 pkill -f "dashboard_v2.app" >/dev/null 2>&1 || true
 pkill -f "dashboard_v2/app.py" >/dev/null 2>&1 || true
+pkill -f "dashboard_v3.app" >/dev/null 2>&1 || true
 pkill -f "app.dashboard" >/dev/null 2>&1 || true
 
 sleep 1
 
-nohup python3 -u -m dashboard_v2.app > logs/dashboard.out 2>&1 &
+nohup python3 -u -m dashboard_v3.app > logs/dashboard.out 2>&1 &
 
 DASH_START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "$DASH_START_TS | DASHBOARD_START" >> logs/runtime.log

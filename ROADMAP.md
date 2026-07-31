@@ -139,3 +139,37 @@ GEPARKEERD TOT LIVE-GATE (niet vergeten, nu niet doen)
 - heartbeat/memory/cpu/disk-monitor uitbreiden.
 - Fee-drag-heranalyse bij elke kandidaat-strategie (historisch: kosten >
   edge; 24,5% WR churn was de doodsoorzaak van fase 2-3).
+
+═══════════════════════════════════
+AANVULLING 2026-07-27 — RC1-uitkomst (vervangt niets hierboven)
+═══════════════════════════════════
+
+De forward-paper-validatie is uitgevoerd en geauditeerd. Uitkomst: 72-uurscriterium
+NIET gehaald (20,56 u effectief van 72). Auditoordeel: NOT READY FOR NEXT PHASE.
+
+AFGEROND
+- Forward-paper-levenscyclus end-to-end aantoonbaar, inclusief herstartherstel.
+- Vijf blokkerende defecten opgelost, elk met regressietest (suite 339 passed, 2×).
+- Veiligheidsmodel geverifieerd: 16/16 configuratiecombinaties, 0 schendingen;
+  0 private endpoints en 0 orderaanroepen over de hele campagne.
+- Bewijsarchief vastgelegd en gechecksummed (912 KB, 63 bestanden, 63/63 OK).
+
+BLOKKEREND VOOR EEN VOLGENDE VALIDATIERONDE (geen codewijziging in RC1)
+- R1 Geen herstel na host-reboot: supervisor overleeft geen herstart (CRITICAL).
+- R2 Host-sleep schortte het proces 22,19 u op ondanks power-assertion (CRITICAL).
+- R3 Niets bewaakt de monitor; die stopte stil en niemand merkte het (HIGH).
+- R4 Heartbeat-versheid wordt door geen enkele levende consument beoordeeld (HIGH).
+
+NIET AANGETOOND
+- Live orderpad: nooit uitgevoerd (0 private calls, by design).
+- TP- en partial-exit-paden: in de run nooit bereikt.
+- Risk-gate-blokkade: 0 rejects in het venster.
+
+VOLGENDE VALIDATIERONDE VEREIST (voorwaarden, geen implementatie in RC1)
+- Boot-persistente supervisie, geverifieerd met een echte reboot.
+- Sleep-preventie met onafhankelijke controle dat de assertion nog leeft.
+- Bewaking van de bewaker plus een off-host alerteringspad.
+- Schone werkboom als harde precondititie: de strict launcher weigert te starten op
+  een vuile boom, wat elke automatische herstart stil breekt.
+
+Volledige risicolijst: docs/RISK_REGISTER.md · Beperkingen: docs/KNOWN_LIMITATIONS.md

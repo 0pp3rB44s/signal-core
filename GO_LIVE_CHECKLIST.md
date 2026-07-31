@@ -60,3 +60,42 @@ alle poorten bovendien expliciete, afzonderlijke eigenaar-autorisatie.
 | E3 | Autorisatie is per modus en per schaalstap — nooit overdraagbaar | GO_LIVE_RUNBOOK |
 
 **Stand 2026-07-18: A 0/9 · B 0/5 · C 1/7 (C7) · D 0/5 · E 0/3 → NIET LIVE.**
+
+---
+
+## AANVULLING 2026-07-27 — status na forward-paper-validatie RC1
+
+Deze aanvulling registreert welke poorten door de validatiecampagne feitelijk zijn
+geraakt. Zij vervangt geen enkel criterium hierboven; ontbrekend bewijs wordt expliciet
+als ontbrekend benoemd.
+
+### Aantoonbaar behaald
+
+| Poort | Bewijs |
+|---|---|
+| Geen live-executie mogelijk in forward paper | 0 private endpoints, 0 orderaanroepen over 9 892 requests |
+| Credentials afgeschermd | strict launcher blankt `BITGET_API_KEY/SECRET/PASSPHRASE`; geen secret in logs |
+| Verplichte stop per trade | 3/3 trades met niet-nul `initial_stop` |
+| Max. 1 positie | 3 trades strikt sequentieel, nooit >1 gelijktijdig |
+| Event-integriteit | hashketen VALID over 49 events ná 22 u suspensie én SIGTERM |
+| Boekhouding klopt | beide gesloten trades reconciliëren onafhankelijk tot < 1e-6 |
+| Transient netwerkherstel | echte DNS-storing opgevangen door retrylaag; cyclus voltooid |
+| Schone shutdown | `RUNTIME_SIGNAL_RECEIVED signal=SIGTERM exit_code=143` + shutdown-record |
+
+### Niet behaald — blokkerend
+
+| Poort | Bewijs |
+|---|---|
+| 72 uur onbewaakt draaien | 20,56 u effectief (28,5 %); run geëindigd door reboot op T+42,75 u |
+| Herstel na host-herstart | 7,82 u dood; supervisor overleeft geen reboot |
+| Sleep-preventie | 22,19 u opgeschort ondanks actieve power-assertion |
+| Monitoringcontinuïteit | monitor stopte stil op 2026-07-26T12:09:03Z |
+
+### Nooit getoetst
+
+- Live orderplaatsing, rejects, partial fills, echte slippage, exchange-foutcodes.
+- TP- en partial-exit-paden onder live condities.
+- Risk-gate-blokkade (0 rejects in het venster).
+
+**Conclusie:** de veiligheids- en integriteitspoorten staan; de betrouwbaarheids- en
+executiepoorten niet. Zie docs/RISK_REGISTER.md.

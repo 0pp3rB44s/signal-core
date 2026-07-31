@@ -9,7 +9,10 @@ def test_removed_event_logger_has_no_runtime_reference():
 
     references: list[str] = []
     for source in root.rglob("*.py"):
-        if any(part in {".venv", ".git", "__pycache__"} for part in source.parts):
+        # Dot-directories hold virtualenvs and detached git worktrees, neither of
+        # which is runtime code; a stale worktree checkout of an old branch would
+        # otherwise fail this test for a reference that no longer ships.
+        if any(part.startswith(".") or part == "__pycache__" for part in source.parts):
             continue
         if source == Path(__file__):
             continue

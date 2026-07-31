@@ -67,18 +67,12 @@ def api_data():
     return jsonify(get_dashboard_data())
 
 
-@app.route("/api/bot/start", methods=["POST"])
-@login_required
-def api_bot_start():
-    result = bot_control.start_bot(reason="dashboard_start")
-    return jsonify(result)
-
-
-@app.route("/api/bot/stop", methods=["POST"])
-@login_required
-def api_bot_stop():
-    result = bot_control.stop_bot(reason="dashboard_stop")
-    return jsonify(result)
+# RETIRED 2026-07-29 on promotion of dashboard_v3: /api/bot/start and
+# /api/bot/stop shelled out to scripts/start_bot.sh and scripts/stop_all.sh,
+# bypassing all four authorisation layers in scripts/launch_live.sh. One POST
+# could start real-money trading or kill an engine holding a position.
+# dashboard_v2 is kept only as a rollback target and is now read-only.
+# Engine lifecycle is a terminal operation, not an HTTP endpoint.
 
 
 if __name__ == "__main__":

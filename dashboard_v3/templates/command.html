@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Command{% endblock %}
+{% block heading %}Command Centre{% endblock %}
+
+{% set rt = d.panels.runtime %}
+{% set ex = d.panels.exchange %}
+{% set fn = d.panels.funnel %}
+{% set inc = d.panels.incidents %}
+{% set perm = d.permission %}
+
+{% block verdict %}
+<div class="verdict t-{{ tone(perm.status) }}">
+  <h2>{{ glyph(perm.status) }}
+    {% if perm.status == Status.HEALTHY %}Handel toegestaan — geen blokkade gedetecteerd
+    {% elif perm.status == Status.BLOCKED %}Handel geblokkeerd
+    {% elif perm.status == Status.OFFLINE %}Engine offline
+    {% else %}Status onzeker — niet als gezond behandelen{% endif %}
+  </h2>
+  <ul>{% for r in perm.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">
+    {{ ui.metric('Engine',
+        'ACTIEF' if rt.engine.alive else ('OFFLINE' if rt.engine.pid else 'UNKNOWN'),
+        'PID ' ~ (rt.engine.pid or '—') ~ ' · ' ~ rt.engine.uptime_label,
+        'pos' if rt.engine.alive else 'neg') }}
+  </div></div>
+  <div class="card"><div class="body">
+    {% set hb = rt.heartbeat_prov %}
+    {{ ui.metric('Heartbeat', hb.age_label if hb.exists else 'UNKNOWN',
+        'stage ' ~ (rt.heartbeat.get('stage') or 'UNKNOWN'),
+        'pos' if hb.status == Status.HEALTHY else 'neg') }}
+  </div></div>
+  <div class="card"><div class="body">
+    {{ ui.metric('Posities',
+        (ex.position_count if ex.reachable else 'UNKNOWN'),
+        (ex.unprotected_count ~ ' onbeschermd') if ex.reachable else 'exchange onbereikbaar',
+        'neg' if ex.unprotected_count else '') }}
+  </div></div>
+  <div class="card"><div class="body">
+    {{ ui.metric('Equity',
+        money(ex.account.equity, ex.account.margin_coin) if ex.reachable else 'UNKNOWN',
+        ('beschikbaar ' ~ money(ex.account.available, ex.account.margin_coin)) if ex.reachable else '') }}
+  </div></div>
+</div>
+
+<div class="grid g2">
+
+  <div class="card">
+    <header><h3>Runtime-signalen</h3><span class="spacer"></span>{{ ui.badge(rt.status) }}</header>
+    {{ ui.signals(rt.signals) }}
+    {{ ui.explain('Runtime-details', [
+      ('Modus', rt.runtime.get('mode', 'UNKNOWN')),
+      ('Env-bestand', rt.runtime.get('env_file', 'UNKNOWN')),
+      ('Sessiestart', rt.runtime.get('started_at', 'UNKNOWN')),
+      ('Draaiende commit', (rt.running_commit or 'UNKNOWN')[:12]),
+      ('Repository HEAD', (rt.repo_head or 'UNKNOWN')[:12]),
+      ('Host wakker sinds', rt.host_uptime_label),
+      ('Geheugen', (rt.engine.rss_mb ~ ' MB') if rt.engine.rss_mb else 'UNKNOWN'),
+      ('CPU', (rt.engine.cpu_pct ~ '%') if rt.engine.cpu_pct is not none else 'UNKNOWN'),
+    ]) }}
+  </div>
+
+  <div class="card">
+    <header><h3>Waarom er niet gehandeld wordt</h3><span class="spacer"></span>{{ ui.badge(fn.status) }}</header>
+    <div class="body">
+      {% if fn.decisive %}
+        <div class="notice t-block">
+          <span class="nt">BESLISSENDE POORT · {{ fn.decisive.label|upper }}</span>
+          <p>{{ fn.decisive.total }} kandidaten bereikten deze poort, {{ fn.decisive.passed }} kwamen erdoor.</p>
+        </div>
+        <table>
+          <thead><tr><th>Blokkade</th><th class="n">Aantal</th><th class="n">Aandeel</th></tr></thead>
+          <tbody>
+          {% for b in fn.blockers %}
+            <tr>
+              <td>{{ b.label }}<br><span class="tag">{{ b.code }}</span></td>
+              <td class="n">{{ b.count }}</td>
+              <td class="n">{{ pct_raw(b.share_pct) }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if fn.sole_blocker_releases is not none and fn.top_blocker %}
+        <p style="margin:12px 0 0;color:var(--ink-dim);font-size:12px">
+          Zou <b>{{ fn.top_blocker }}</b> als enige wegvallen, dan kwamen
+          <b>{{ fn.sole_blocker_releases }}</b> van {{ fn.rows|selectattr('key','equalto','RISK_DECISION')|map(attribute='total')|first or 0 }}
+          beslissingen alsnog door — de rest heeft een tweede, onafhankelijke blokkade.
+        </p>
+        {% endif %}
+      {% elif fn.event_count %}
+        {{ ui.empty('Geen blokkade', 'De pijplijn laat kandidaten door.') }}
+      {% else %}
+        {{ ui.empty('Geen funnel-data', 'Er zijn geen beslissingen in dit venster vastgelegd.') }}
+      {% endif %}
+    </div>
+    {{ ui.provenance(fn.provenance, 'venster ' ~ (num(fn.window_hours,1) if fn.window_hours else '?') ~ ' u') }}
+  </div>
+
+  <div class="card">
+    <header><h3>Exchange</h3><span class="spacer"></span>{{ ui.badge(ex.status) }}</header>
+    {{ ui.signals(ex.signals) }}
+    {% if not ex.reachable %}
+      <div class="body">
+        <div class="notice t-unknown">
+          <span class="nt">? EXCHANGE-STATUS ONBEKEND</span>
+          <p>Posities en saldo kunnen niet worden geverifieerd. Deze waarden worden
+             als UNKNOWN getoond en niet vervangen door een lokale momentopname.</p>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <header><h3>Incidenten &amp; melding</h3><span class="spacer"></span>{{ ui.badge(inc.status) }}</header>
+    {{ ui.signals(inc.signals) }}
+    <div class="body">
+      <div class="notice t-warn">
+        <span class="nt">▲ BLINDE VLEK</span>
+        <p>{{ inc.blind_spot }}</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

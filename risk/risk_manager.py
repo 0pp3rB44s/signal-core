@@ -10,6 +10,7 @@ from pathlib import Path
 from app.config import Settings
 from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
+from risk import symbol_expectancy
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
@@ -138,7 +139,10 @@ class RiskManager:
         symbol = (candidate.symbol or "").upper()
 
         by_strategy = summary.get("by_strategy") or {}
-        by_symbol = summary.get("by_symbol") or {}
+        # by_symbol is deliberately NOT read. Symbol gating moved to
+        # risk.symbol_expectancy, which is keyed by (symbol, direction) and
+        # sourced from exchange-confirmed live closes. latest_summary.json is
+        # offline backtest output and must never gate live money again.
 
         clean_expectancy = self._latest_strategy_expectancy()
         clean_by_strategy = clean_expectancy.get("strategies") or {}
@@ -146,7 +150,6 @@ class RiskManager:
             by_strategy = clean_by_strategy
 
         strategy_stats = by_strategy.get(strategy_name) or {}
-        symbol_stats = by_symbol.get(symbol) or {}
 
         # --- Defensive daily status checks ---
         daily_status = self._daily_defensive_status()
@@ -195,15 +198,25 @@ class RiskManager:
         if self._stats_should_pause(strategy_stats, min_trades=5):
             reasons.append(f"expectancy-watch: strategy weak but not hard-paused ({strategy_name})")
 
-        if self._stats_should_pause(symbol_stats, min_trades=3):
-            reasons.append(f"kill-switch: symbol paused by expectancy ({symbol})")
+        # Directional, live-sourced symbol expectancy. The record is always
+        # reported for provenance; only a fresh, sufficiently-sampled negative
+        # verdict (or a malformed source) blocks.
+        symbol_record = symbol_expectancy.record_for(symbol, candidate.direction)
+        reasons.append(symbol_expectancy.observability_note(symbol_record))
+        symbol_blocked, symbol_block_reason = symbol_expectancy.evaluate(symbol_record)
+        if symbol_blocked and symbol_block_reason:
+            reasons.append(symbol_block_reason)
 
-        if self._too_many_failed_tp1(symbol_stats):
-            reasons.append(f"kill-switch: symbol failed TP1 too often ({symbol})")
-
+        # Soft, non-blocking prefixes. Anything else in `reasons` is a hard gate.
+        # symbol expectancy provenance is always emitted and must never block on
+        # its own — only the explicit kill-switch line it may be paired with does.
+        SOFT_PREFIXES = (
+            "expectancy-watch: strategy weak but not hard-paused",
+            "symbol expectancy source=",
+        )
         hard_reasons = [
             reason for reason in reasons
-            if not str(reason).startswith("expectancy-watch: strategy weak but not hard-paused")
+            if not str(reason).startswith(SOFT_PREFIXES)
         ]
         return not hard_reasons, reasons
 
@@ -1024,12 +1037,50 @@ class RiskManager:
         hard_blocks = [r for r in reasons if "momentum-quality blocked" in r]
         return not hard_blocks, reasons, momentum_probe and not hard_blocks
 
+    def shorts_permitted(self) -> bool:
+        """Authoritative answer to "may this deployment open SHORT positions?".
+
+        Reads the parsed Settings value, never an env string or note substring.
+        Anything that is not an explicit boolean True is treated as "no" while
+        EXECUTION_MODE is LIVE, so a missing or corrupted value fails closed with
+        real money rather than silently permitting the opposite side.
+        """
+        value = getattr(self.settings, "enable_shorts", None)
+        if isinstance(value, bool):
+            return value
+        # Unresolvable value: fail closed in LIVE, keep prior behaviour elsewhere.
+        live = str(getattr(self.settings, "execution_mode", "")).strip().upper() == "LIVE"
+        return not live
+
     def evaluate(self, candidate: StrategyCandidate, score: StrategyScore) -> RiskVerdict:
         reasons: list[str] = []
 
         note_text = self._note_text(candidate)
         leverage = min(self.settings.default_leverage, self.settings.max_leverage, self.SAFE_ALPHA_MAX_LEVERAGE)
         account_risk_pct = min(self.settings.account_risk_per_trade_pct, self.SAFE_ALPHA_MAX_RISK_PCT)
+
+        # --- short-side enforcement -------------------------------------
+        # ENABLE_SHORTS existed in config but was never wired into any decision
+        # path, so a deployment with ENABLE_SHORTS=false still produced, scored
+        # and risk-evaluated SHORT candidates (39/39 in the 2026-07-29 pilot).
+        # They were only stopped by an unrelated expectancy pause. This gate is
+        # evaluated before anything else and before the planner is ever called.
+        if str(candidate.direction or "").strip().upper() == "SHORT" and not self.shorts_permitted():
+            logger.warning(
+                "SHORTS_DISABLED | %s | strategy=%s | side=SHORT | stage=risk_gate | mode=%s",
+                candidate.symbol,
+                candidate.strategy,
+                str(getattr(self.settings, "execution_mode", "UNKNOWN")),
+            )
+            reasons.append("blocked: shorts disabled by configuration (ENABLE_SHORTS=false)")
+            return RiskVerdict(
+                allowed=False,
+                status="BLOCKED",
+                reasons=reasons,
+                account_risk_pct=account_risk_pct,
+                leverage=leverage,
+                max_open_positions=self.settings.max_open_positions,
+            )
 
         if "orderbook_risk_off=true" in note_text or "orderbook_available=false" in note_text:
             reasons.append("blocked: orderbook risk-off")

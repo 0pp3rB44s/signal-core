@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Risk{% endblock %}
+{% block heading %}Expectancy &amp; risicopoorten{% endblock %}
+{% set xp = d.panels.expectancy %}
+{% block content %}
+
+{% if xp.symbol_source_status == 'SOURCE_MALFORMED' %}
+<div class="card" style="margin-bottom:14px">
+  <div class="body">
+    <div class="notice t-block">
+      <span class="nt">■ SYMBOOL-EXPECTANCY BRON ONLEESBAAR — FAILING CLOSED</span>
+      <p><code>{{ xp.symbol_source }}</code> bestaat maar kan niet worden geparseerd.
+         Elk symbool wordt geblokkeerd tot de bron weer leesbaar is. Corruptie mag de
+         symboolbescherming niet stil uitschakelen.</p>
+    </div>
+  </div>
+</div>
+{% elif xp.symbol_source_status == 'SOURCE_ABSENT' %}
+<div class="card" style="margin-bottom:14px">
+  <div class="body">
+    <div class="notice t-warn">
+      <span class="nt">▲ GEEN LIVE GESLOTEN TRADES</span>
+      <p><code>{{ xp.symbol_source }}</code> ontbreekt. Elk symbool krijgt
+         <code>INSUFFICIENT_LIVE_DATA</code> met <code>confidence=LOW</code>. Dat is
+         <b>geen</b> bewijs van positieve edge — de poorten per setup blijven de filter.</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if xp.retired_symbols %}
+<div class="card" style="margin-bottom:14px">
+  <div class="body">
+    <div class="notice t-ok">
+      <span class="nt">✓ MIGRATIE ACTIEF</span>
+      <p><code>latest_summary.json:by_symbol</code> ({{ num(xp.symbol_age_days,1) }} dagen oud,
+         offline backtest) is uit elk live beslispad verwijderd. Symboolpoorten lezen nu
+         <code>{{ xp.symbol_source }}</code>, per <code>(symbool, richting)</code>,
+         {{ xp.symbol_window_days }}d rollend venster, minimum sample {{ xp.symbol_min_sample }}.</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid g2">
+  <div class="card">
+    <header><h3>Strategie-expectancy</h3><span class="spacer"></span>
+      <span class="tag">{{ xp.window_days or '?' }}d venster · live</span></header>
+    <div class="body flush">
+      {% if xp.strategies %}
+      <div class="scroll"><table>
+        <thead><tr><th>Strategie</th><th class="n">Trades</th><th class="n">Winrate</th>
+          <th class="n">Expectancy</th><th class="n">PF</th><th class="n">TP1</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for s in xp.strategies %}
+          <tr>
+            <td>{{ s.name }}</td>
+            <td class="n">{{ s.trades }}</td>
+            <td class="n">{{ pct(s.winrate) }}</td>
+            <td class="n {{ 'neg' if s.expectancy < 0 else 'pos' }}">{{ num(s.expectancy, 4) }}</td>
+            <td class="n">{{ num(s.profit_factor, 3) }}</td>
+            <td class="n">{{ pct(s.tp1_hit_rate) }}</td>
+            <td>{{ ui.badge(s.gate_status, s.status) }}{% if s.probe %} <span class="tag">PROBE</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}{{ ui.empty('Geen strategie-data') }}{% endif %}
+    </div>
+    {{ ui.provenance(xp.strategy_provenance) }}
+  </div>
+
+  <div class="card">
+    <header><h3>Symbool-expectancy per richting</h3><span class="spacer"></span>
+      <span class="tag">{{ xp.symbol_window_days }}d rollend · live closes · min {{ xp.symbol_min_sample }}</span></header>
+    <div class="body flush">
+      {% if xp.symbols %}
+      <div class="scroll"><table>
+        <thead><tr><th>Symbool</th><th>Richting</th><th class="n">n</th><th class="n">Expectancy</th>
+          <th class="n">Winrate</th><th class="n">TP1</th><th>Freshness</th><th>Conf.</th>
+          <th>Status</th><th>Poort</th></tr></thead>
+        <tbody>
+        {% for s in xp.symbols %}
+          <tr>
+            <td>{{ s.symbol }}</td>
+            <td>{{ s.direction }}</td>
+            <td class="n">{{ s.sample_size }}</td>
+            <td class="n {{ 'neg' if (s.expectancy or 0) < 0 else 'pos' }}">{{ num(s.expectancy, 4) }}</td>
+            <td class="n">{{ pct(s.winrate) }}</td>
+            <td class="n">{{ pct(s.tp1_hit_rate) }}</td>
+            <td>{{ ui.badge(s.freshness_status, s.freshness_state) }}</td>
+            <td><span class="tag">{{ s.confidence }}</span></td>
+            <td style="font-size:11.5px">{{ s.status }}</td>
+            <td>{{ ui.badge(s.gate_status, 'BLOCK' if s.blocked else 'PASS') }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      <div class="body" style="color:var(--ink-dim);font-size:11.5px">
+        Freshness: FRESH &le;{{ xp.freshness_thresholds.FRESH }}d ·
+        AGING &le;{{ xp.freshness_thresholds.AGING }}d ·
+        STALE &le;{{ xp.freshness_thresholds.STALE }}d · daarboven EXPIRED.
+        Alleen FRESH en AGING mogen blokkeren; ouder bewijs wordt gerapporteerd maar
+        niet afgedwongen, zodat een pauze altijd terug te verdienen is.
+      </div>
+      {% else %}{{ ui.empty('Geen live gesloten trades in het venster — alle symbolen INSUFFICIENT_LIVE_DATA') }}{% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <header><h3>Cohorten</h3></header>
+    <div class="body">
+      <div class="notice t-warn"><span class="nt">▲ NIET SAMENVOEGEN</span>
+        <p>Strategie-, recovery- en gesloten-totaal cohorten meten verschillende dingen.
+           Ze worden hier apart getoond en nooit opgeteld.</p></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Cohort</th><th class="n">Trades</th><th class="n">Expectancy</th>
+          <th class="n">PF</th><th class="n">Winrate</th><th class="n">TP1</th></tr></thead>
+        <tbody>
+        {% for key, c in xp.cohorts.items() %}
+          {% if c %}
+          <tr><td>{{ key }}</td><td class="n">{{ c.get('trades','UNKNOWN') }}</td>
+            <td class="n {{ 'neg' if (c.get('expectancy') or 0) < 0 else 'pos' }}">{{ num(c.get('expectancy'),4) }}</td>
+            <td class="n">{{ num(c.get('profit_factor'),3) }}</td>
+            <td class="n">{{ pct(c.get('winrate')) }}</td>
+            <td class="n">{{ pct(c.get('tp1_hit_rate')) }}</td></tr>
+          {% endif %}
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <header><h3>Recovery-events</h3><span class="spacer"></span><span class="tag">uitgesloten van poorten</span></header>
+    <div class="body flush">
+      {% if xp.recovery_events %}
+      <table>
+        <thead><tr><th>Bron</th><th class="n">Trades</th><th class="n">Winrate</th><th class="n">Expectancy</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in xp.recovery_events %}
+          <tr><td>{{ r.name }}</td><td class="n">{{ r.trades }}</td>
+              <td class="n">{{ pct(r.winrate) }}</td>
+              <td class="n {{ 'pos' if (r.expectancy or 0) > 0 else 'neg' }}">{{ num(r.expectancy,4) }}</td>
+              <td><span class="tag">{{ r.status }}</span></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="body" style="border-top:1px solid var(--line-soft)">
+        <p style="margin:0;color:var(--ink-faint);font-size:11.5px">
+          Dit zijn overgenomen exchange-posities en trades met lage data-confidence.
+          Hun winst is niet toe te schrijven aan de strategie-engine; meetellen zou
+          datalekkage zijn. Steekproeven zijn bovendien te klein voor conclusies.
+        </p>
+      </div>
+      {% else %}{{ ui.empty('Geen recovery-events') }}{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

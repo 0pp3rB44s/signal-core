@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>{% block title %}Terminal{% endblock %} · CGC</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}">
+</head>
+<body>
+
+{% macro badge(status, text=None) -%}
+<span class="badge t-{{ tone(status) }}">{{ glyph(status) }} {{ text or status_label(status) }}</span>
+{%- endmacro %}
+
+{% macro metric(key, value, sub=None, cls='') -%}
+<div class="metric">
+  <span class="k">{{ key }}</span>
+  <span class="v {{ cls }}{% if value == 'UNKNOWN' %} unknown{% endif %}">{{ value }}</span>
+  {% if sub %}<span class="s">{{ sub }}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro signals(sset) -%}
+<div class="signals">
+  {% for s in sset.signals %}
+  <div class="signal">
+    <span class="g t-{{ tone(s.status) }}">{{ glyph(s.status) }}</span>
+    <span class="l">{{ s.label }}
+      {% if s.hint %}<span class="hint">{{ s.hint }}</span>{% endif %}
+    </span>
+    <span class="d t-{{ tone(s.status) }}">{{ s.detail or status_label(s.status) }}</span>
+  </div>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro provenance(p, extra=None) -%}
+{% if p %}
+<div class="prov">
+  <span>bron <code>{{ p.source }}</code></span>
+  <span>·</span>
+  <span>{{ p.age_label }} oud</span>
+  <span>·</span>
+  {{ badge(p.status) }}
+  {% if p.rows is not none %}<span>· {{ p.rows }} regels</span>{% endif %}
+  {% if p.error %}<span class="t-warn">· {{ p.error }}</span>{% endif %}
+  {% if p.note %}<span class="t-warn">· {{ p.note }}</span>{% endif %}
+  {% if extra %}<span>· {{ extra }}</span>{% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro explain(title, rows) -%}
+<details class="explain">
+  <summary>{{ title }}</summary>
+  <div class="inner"><dl>
+    {% for k, v in rows %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}
+  </dl></div>
+</details>
+{%- endmacro %}
+
+{% macro empty(title, detail='') -%}
+<div class="empty"><b>{{ title }}</b>{{ detail }}</div>
+{%- endmacro %}
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <b>TERMINAL</b>
+      <small>bitget ops</small>
+    </div>
+    <nav>
+      {% for key, label, href in NAV %}
+      <a href="{{ href }}" class="{{ 'on' if active == key else '' }}"><span class="dot"></span>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <footer>
+      read-only console<br>
+      geen order- of procesbesturing
+    </footer>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <h1>{% block heading %}{% endblock %}</h1>
+      {% if d %}{{ badge(d.overall, 'SYSTEEM ' ~ status_label(d.overall)) }}{% endif %}
+      <span class="spacer"></span>
+      <div class="clock">
+        <b id="clk-utc">—</b>
+        <span id="clk-local">—</span>
+      </div>
+      <a href="/logout" class="tag">uitloggen</a>
+    </div>
+
+    {% block verdict %}{% endblock %}
+    <div class="wrap">{% block content %}{% endblock %}</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var pad = function (n) { return String(n).padStart(2, '0'); };
+  function tick() {
+    var now = new Date();
+    var u = document.getElementById('clk-utc');
+    var l = document.getElementById('clk-local');
+    if (u) u.textContent = pad(now.getUTCDate()) + '-' + pad(now.getUTCMonth() + 1) + ' '
+      + pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds()) + ' UTC';
+    if (l) l.textContent = 'lokaal ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
+  }
+  tick(); setInterval(tick, 1000);
+
+  // Soft refresh: reload only when the tab is visible, to avoid pointless
+  // exchange reads while the window is in the background.
+  var PERIOD = 30000;
+  setInterval(function () {
+    if (document.visibilityState === 'visible') { location.reload(); }
+  }, PERIOD);
+})();
+</script>
+</body>
+</html>
