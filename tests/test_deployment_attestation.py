@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 from clients.bitget_account_client import BitgetAccountClientMixin
+from clients.bitget_market_client import BitgetMarketClientMixin
 from deployment.config_attestation import ConfigExpectations, attest_config_file
 from deployment.exchange_attestation import (
     BitgetReadOnlyAttestationAdapter,
@@ -15,10 +16,13 @@ from deployment.exchange_attestation import (
 
 
 class _ExchangeAdapter:
-    def __init__(self):
+    def __init__(self, symbols=("BTCUSDT", "SOLUSDT")):
         self.positions = []
         self.pending = []
         self.protections = []
+        self.intents = []
+        self.quarantine_count = 0
+        self.fail_plan_symbols = set()
         self.contracts = {
             symbol: {
                 "symbol": symbol,
@@ -30,10 +34,23 @@ class _ExchangeAdapter:
                 "pricePlace": "2",
                 "maxLever": "20",
             }
-            for symbol in ("BTCUSDT", "SOLUSDT")
+            for symbol in symbols
         }
         self.accounts = {
-            symbol: {"symbol": symbol, "marginMode": "isolated", "leverage": "3"}
+            symbol: {
+                "symbol": symbol,
+                "marginMode": "isolated",
+                "isolatedLongLever": "3",
+                "isolatedShortLever": "3",
+            }
+            for symbol in self.contracts
+        }
+        self.prices = {
+            symbol: {"symbol": symbol, "markPrice": "100"}
+            for symbol in self.contracts
+        }
+        self.books = {
+            symbol: {"best_bid": 99.99, "best_ask": 100.01, "spread_bps": 2.0}
             for symbol in self.contracts
         }
 
@@ -43,7 +60,9 @@ class _ExchangeAdapter:
     def pending_orders(self):
         return {"data": {"entrustedList": self.pending}}
 
-    def protection_orders(self):
+    def protection_orders(self, symbol=None):
+        if symbol in self.fail_plan_symbols:
+            raise RuntimeError("plan read unavailable")
         return {"data": self.protections}
 
     def contract_metadata(self, symbol):
@@ -51,6 +70,18 @@ class _ExchangeAdapter:
 
     def symbol_account(self, symbol):
         return {"data": self.accounts[symbol]}
+
+    def symbol_price(self, symbol):
+        return {"data": [self.prices[symbol]]}
+
+    def orderbook(self, symbol):
+        return self.books[symbol]
+
+    def local_order_intents(self):
+        return self.intents
+
+    def state_quarantine_count(self):
+        return self.quarantine_count
 
 
 def test_flat_exchange_with_complete_metadata_passes_read_only_attestation():
@@ -62,7 +93,10 @@ def test_flat_exchange_with_complete_metadata_passes_read_only_attestation():
     assert result["read_only"] is True
     assert result["open_positions"] == []
     assert result["pending_entries"] == []
-    assert result["orphan_protection_orders"] == []
+    assert result["orphan_stop_orders"] == []
+    assert result["orphan_take_profit_orders"] == []
+    assert result["account_checks"]["flat"] is True
+    assert result["all_symbols_approved"] is True
     assert all(row["attested"] for row in result["contracts"])
     assert result["contracts"][0]["minimum_notional"] == 5.0
     assert result["contracts"][0]["tick_size"] == 0.01
@@ -89,11 +123,47 @@ def test_positions_pending_entries_and_orphan_protection_block_attestation():
         adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
     )
 
-    assert result["deployment_gate"] == "BLOCKED"
+    assert result["deployment_gate"] == "FAIL"
     assert result["open_positions"][0]["symbol"] == "BTCUSDT"
     assert result["pending_entries"][0]["order_id"] == "entry-1"
     assert result["active_stop_orders"][0]["order_id"] == "btc-sl"
-    assert result["orphan_protection_orders"][0]["order_id"] == "orphan-tp"
+    assert result["orphan_take_profit_orders"][0]["order_id"] == "orphan-tp"
+
+
+def test_flat_account_rejects_orphan_sl_tp_and_reduce_only_open_order():
+    adapter = _ExchangeAdapter()
+    adapter.pending = [{
+        "symbol": "BTCUSDT",
+        "orderId": "stale-close",
+        "tradeSide": "close",
+        "reduceOnly": "YES",
+    }]
+    adapter.protections = [
+        {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "planType": "loss_plan",
+            "planOrderId": "orphan-sl",
+            "triggerPrice": "90",
+        },
+        {
+            "symbol": "SOLUSDT",
+            "holdSide": "short",
+            "planType": "profit_plan",
+            "planOrderId": "orphan-tp",
+            "triggerPrice": "90",
+        },
+    ]
+
+    result = attest_exchange(
+        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+    )
+
+    assert result["deployment_gate"] == "FAIL"
+    assert result["account_checks"]["no_open_orders"] is False
+    assert result["account_checks"]["no_pending_entries"] is True
+    assert [row["order_id"] for row in result["orphan_stop_orders"]] == ["orphan-sl"]
+    assert [row["order_id"] for row in result["orphan_take_profit_orders"]] == ["orphan-tp"]
 
 
 def test_unverified_isolated_support_or_insufficient_leverage_blocks():
@@ -105,10 +175,124 @@ def test_unverified_isolated_support_or_insufficient_leverage_blocks():
         adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
     )
 
-    assert result["deployment_gate"] == "BLOCKED"
+    assert result["deployment_gate"] == "FAIL"
     by_symbol = {row["symbol"]: row for row in result["contracts"]}
     assert by_symbol["BTCUSDT"]["isolated_support"] is None
     assert by_symbol["SOLUSDT"]["required_leverage_supported"] is False
+
+
+def test_both_isolated_long_and_short_leverage_must_match():
+    adapter = _ExchangeAdapter()
+    adapter.accounts["BTCUSDT"]["isolatedShortLever"] = "5"
+
+    result = attest_exchange(
+        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+    )
+
+    btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
+    assert result["deployment_gate"] == "FAIL"
+    assert btc["current_long_leverage"] == 3.0
+    assert btc["current_short_leverage"] == 5.0
+    assert btc["required_leverage_configured"] is False
+
+
+def test_inactive_symbol_is_blocked_even_when_all_metadata_is_complete():
+    adapter = _ExchangeAdapter()
+    adapter.contracts["BTCUSDT"]["symbolStatus"] = "off"
+
+    result = attest_exchange(
+        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+    )
+
+    btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
+    assert result["deployment_gate"] == "FAIL"
+    assert btc["symbol_active"] is False
+    assert btc["classification"] == "BLOCKED"
+    assert "symbol_inactive" in btc["reasons"]
+
+
+def test_missing_mark_orderbook_or_plan_read_capability_blocks_symbol():
+    scenarios = ("mark", "orderbook", "plan")
+    for scenario in scenarios:
+        adapter = _ExchangeAdapter()
+        if scenario == "mark":
+            adapter.prices["BTCUSDT"]["markPrice"] = ""
+        elif scenario == "orderbook":
+            adapter.books["BTCUSDT"] = {
+                "best_bid": 0,
+                "best_ask": 0,
+                "spread_bps": 0,
+            }
+        else:
+            adapter.fail_plan_symbols.add("BTCUSDT")
+
+        result = attest_exchange(
+            adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        )
+
+        btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
+        assert result["deployment_gate"] == "FAIL", scenario
+        assert btc["classification"] == "BLOCKED", scenario
+
+
+def test_each_required_contract_minimum_field_fails_closed():
+    for field in ("minTradeNum", "minTradeUSDT", "sizeMultiplier", "pricePlace", "volumePlace", "maxLever"):
+        adapter = _ExchangeAdapter()
+        adapter.contracts["BTCUSDT"].pop(field)
+
+        result = attest_exchange(
+            adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+        )
+
+        btc = {row["symbol"]: row for row in result["contracts"]}["BTCUSDT"]
+        assert result["deployment_gate"] == "FAIL", field
+        assert btc["classification"] == "BLOCKED", field
+
+
+def test_wide_spread_is_conditional_and_cannot_pass_deployment():
+    adapter = _ExchangeAdapter()
+    adapter.books["SOLUSDT"]["spread_bps"] = 7.5
+
+    result = attest_exchange(
+        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+    )
+
+    sol = {row["symbol"]: row for row in result["contracts"]}["SOLUSDT"]
+    assert result["deployment_gate"] == "FAIL"
+    assert sol["classification"] == "CONDITIONAL"
+    assert sol["quarantined"] is False
+
+
+def test_unresolved_intent_or_quarantine_artifact_blocks_flat_account():
+    adapter = _ExchangeAdapter()
+    adapter.intents = [{"symbol": "BTCUSDT", "state": "AMBIGUOUS"}]
+    adapter.quarantine_count = 1
+
+    result = attest_exchange(
+        adapter, symbols=("BTCUSDT", "SOLUSDT"), required_leverage=3
+    )
+
+    assert result["deployment_gate"] == "FAIL"
+    assert result["account_checks"]["no_unresolved_local_order_intents"] is False
+    assert result["account_checks"]["no_state_quarantine_artifacts"] is False
+    assert result["unresolved_local_order_intents"] == [
+        {"symbol": "BTCUSDT", "state": "AMBIGUOUS"}
+    ]
+
+
+def test_all_nine_owner_allowlist_symbols_must_be_individually_approved():
+    symbols = (
+        "BTCUSDT", "SOLUSDT", "SUIUSDT", "XLMUSDT", "AVAXUSDT",
+        "DOGEUSDT", "WIFUSDT", "SEIUSDT", "TRXUSDT",
+    )
+    result = attest_exchange(
+        _ExchangeAdapter(symbols), symbols=symbols, required_leverage=3
+    )
+
+    assert result["deployment_gate"] == "PASS"
+    assert result["allowlist_count"] == 9
+    assert [row["symbol"] for row in result["contracts"]] == list(symbols)
+    assert {row["classification"] for row in result["contracts"]} == {"APPROVED"}
 
 
 def test_exchange_adapter_has_only_get_capabilities():
@@ -137,6 +321,24 @@ def test_symbol_account_endpoint_is_get_only():
     assert method == "GET"
     assert path == "/api/v2/mix/account/account"
     assert kwargs["private"] is True
+
+
+def test_symbol_price_endpoint_is_public_get_only():
+    class Client(BitgetMarketClientMixin):
+        def __init__(self):
+            self.settings = SimpleNamespace(bitget_product_type="USDT-FUTURES")
+            self.calls = []
+
+        def _request(self, method, path, **kwargs):
+            self.calls.append((method, path, kwargs))
+            return {"data": []}
+
+    client = Client()
+    client.get_symbol_price("BTCUSDT")
+    method, path, kwargs = client.calls[0]
+    assert method == "GET"
+    assert path == "/api/v2/mix/market/symbol-price"
+    assert kwargs["private"] is False
 
 
 def _config_text() -> str:
