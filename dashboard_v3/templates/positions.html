@@ -25,35 +25,42 @@
   {% if ex.positions %}
     <div class="scroll"><table>
       <thead><tr>
-        <th>Symbool</th><th>Zijde</th><th class="n">Omvang</th><th class="n">Entry</th>
-        <th class="n">Mark</th><th class="n">Hefboom</th><th class="n">Ongereal.</th>
-        <th class="n">Liquidatie</th><th>Stop-loss</th><th>Take-profit</th>
-        <th>Bescherming</th><th>Strategie</th><th class="n">Score</th>
+        <th>Actief symbool</th><th>Zijde</th><th class="n">Omvang</th>
+        <th class="n">Gepland</th><th class="n">Exchange-entry</th><th>Entrybron</th>
+        <th>Lifecycle</th><th class="n">Mark</th><th class="n">Hefboom</th>
+        <th class="n">PnL USDT</th><th class="n">Prijsretour</th><th class="n">Margin ROI</th>
+        <th class="n">Liquidatie</th><th>Actieve stop</th><th>Take-profit</th>
+        <th>Bescherming</th><th>Lifecycle-state</th>
       </tr></thead>
       <tbody>
       {% for p in ex.positions %}
         <tr>
-          <td><b>{{ p.symbol }}</b></td>
+          <td><b>{{ p.symbol }}</b> <span class="badge t-ok">ACTIEF</span></td>
           <td>{{ p.side }}</td>
           <td class="n">{{ num(p.size, 4) }}</td>
-          <td class="n">{{ num(p.entry, 4) if p.entry is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ num(p.planned_entry, 4) if p.planned_entry is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ num(p.exchange_entry, 4) if p.exchange_entry is not none else 'UNKNOWN' }}</td>
+          <td><span class="tag">{{ p.entry_provenance }}</span><br><small>{{ p.position_entry_provenance }}</small></td>
+          <td><code>{{ p.lifecycle_id or 'UNMATCHED' }}</code></td>
           <td class="n">{{ num(p.mark, 4) if p.mark is not none else 'UNKNOWN' }}</td>
           <td class="n">{{ p.leverage or 'UNKNOWN' }}x</td>
-          <td class="n {{ 'neg' if (p.unrealised_pnl or 0) < 0 else 'pos' }}">{{ num(p.unrealised_pnl, 2) }}</td>
+          <td class="n {{ 'neg' if (p.monetary_pnl or 0) < 0 else 'pos' }}">{{ num(p.monetary_pnl, 4) }}</td>
+          <td class="n {{ 'neg' if (p.price_return_pct or 0) < 0 else 'pos' }}">{{ pct_raw(p.price_return_pct, 3) }}</td>
+          <td class="n {{ 'neg' if (p.margin_roi_pct or 0) < 0 else 'pos' }}">{{ pct_raw(p.margin_roi_pct, 3) }}</td>
           <td class="n">{{ num(p.liquidation, 4) if p.liquidation else 'UNKNOWN' }}</td>
-          <td>{{ p.stop_loss or 'GEEN' }}</td>
-          <td>{{ p.take_profit or 'GEEN' }}</td>
+          <td>{{ num(p.active_stop, 4) if p.active_stop is not none else 'GEEN' }}</td>
+          <td>{{ p.take_profit|join(', ') if p.take_profit else 'GEEN' }}</td>
           <td>{{ ui.badge(p.protection_status, p.protection) }}</td>
-          <td><span class="tag">{{ p.strategy }}</span></td>
-          <td class="n"><span class="tag">{{ p.score }}</span></td>
+          <td><span class="tag">{{ p.protection_state }}</span></td>
         </tr>
       {% endfor %}
       </tbody>
     </table></div>
     <div class="body" style="border-top:1px solid var(--line-soft)">
       <p style="margin:0;color:var(--ink-faint);font-size:11.5px">
-        Strategie en score staan niet op de exchange-payload. Ze worden als
-        UNKNOWN getoond in plaats van geraden of uit lokale bestanden gegokt.
+        Exchange-entry, mark, omvang, PnL en actieve bescherming komen rechtstreeks
+        van read-only exchange-requests. Planning en lifecycle worden alleen getoond
+        wanneer lokale state ondubbelzinnig matcht op symbool, zijde én exchange-entry.
       </p>
     </div>
   {% else %}
