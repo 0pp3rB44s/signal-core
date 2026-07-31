@@ -11,6 +11,12 @@ import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
+from execution.position_model import (
+    INITIAL_PROTECTION_CONFIRMED,
+    PROTECTION_UPDATE_FAILED,
+    position_lifecycle_id,
+)
+
 
 class PositionReconcilerMixin:
     def _recover_missing_local_positions(
@@ -59,31 +65,44 @@ class PositionReconcilerMixin:
             take_profits = [float(x) for x in protection.get("take_profits", []) if float(x) > 0]
 
             if stop_loss <= 0 or not take_profits:
-                fallback_protection = self._fallback_protection_from_execution_log(symbol)
-                fallback_stop = float(fallback_protection.get("stop_loss") or 0.0)
-                fallback_tps = [float(x) for x in fallback_protection.get("take_profits", []) if float(x) > 0]
-                if fallback_stop > 0 and fallback_tps:
-                    stop_loss = fallback_stop
-                    take_profits = fallback_tps
-                    protection = fallback_protection
-                    self.log.warning(
-                        "STATE_RECOVERY_PROTECTION_FALLBACK | %s | stop=%s tps=%s source=%s",
-                        symbol,
-                        stop_loss,
-                        take_profits,
-                        fallback_protection.get("source"),
-                    )
+                # A symbol-only execution-log lookup can belong to a previous
+                # lifecycle. Recovered positions therefore use exchange
+                # protection only; missing protection proceeds to the normal
+                # fail-closed repair/close path.
+                self.log.critical(
+                    "STATE_RECOVERY_PROTECTION_UNAVAILABLE | %s | "
+                    "symbol_only_fallback_forbidden=True",
+                    symbol,
+                )
 
             recovered_position = {
                 "symbol": symbol,
                 "direction": direction,
                 "strategy": "recovered_exchange_position",
                 "status": "OPEN",
-                "avg_entry": entry,
+                "avg_entry": None,
+                "planned_avg_entry": None,
+                "exchange_avg_entry": entry,
+                "exchange_avg_entry_source": "BITGET_OPEN_POSITION_RECOVERY",
+                "exchange_avg_entry_confirmed_at": now,
+                "exchange_entry_order_id": str(
+                    live_position.get("entryOrderId")
+                    or live_position.get("orderId")
+                    or ""
+                ),
+                "exchange_entry_client_oid": str(
+                    live_position.get("entryClientOid")
+                    or live_position.get("clientOid")
+                    or ""
+                ),
                 "last_price": current_price,
                 "size": size,
                 "order_size": size,
                 "position_size": size,
+                "confirmed_fill_quantity": size,
+                "confirmed_position_size": size,
+                "confirmed_remaining_size": size,
+                "confirmed_remaining_size_source": "BITGET_OPEN_POSITION",
                 "position_notional_usdt": round(size * current_price, 6),
                 "leverage": float(live_position.get("leverage") or getattr(self.settings, "default_leverage", 1.0) or 1.0),
                 "stop_loss": stop_loss,
@@ -97,6 +116,12 @@ class PositionReconcilerMixin:
                 "tp2_hit": False,
                 "tp3_hit": False,
                 "protection_verified": bool(stop_loss > 0 and take_profits),
+                "protection_state": (
+                    INITIAL_PROTECTION_CONFIRMED
+                    if stop_loss > 0 and take_profits
+                    else PROTECTION_UPDATE_FAILED
+                ),
+                "confirmed_stop": stop_loss if stop_loss > 0 else None,
                 "protection_payload": protection if stop_loss > 0 and take_profits else {},
                 "recovered_from_exchange": True,
                 "exchange_position_still_open_after_local_stop": False,
@@ -105,6 +130,13 @@ class PositionReconcilerMixin:
                 "recovered_at": now,
                 "notes": ["STATE_RECOVERED_FROM_BITGET", "exchange was source of truth"],
             }
+            recovered_position["position_lifecycle_id"] = position_lifecycle_id(
+                plan_id=f"recovered:{now}:{entry}:{size}",
+                symbol=symbol,
+                direction=direction,
+                client_oid=recovered_position["exchange_entry_client_oid"],
+                order_id=recovered_position["exchange_entry_order_id"],
+            )
 
             self.log.warning(
                 "STATE_RECOVERED | %s | direction=%s size=%s entry=%s stop=%s tps=%s protection_verified=%s",
@@ -162,7 +194,9 @@ class PositionReconcilerMixin:
                     except (TypeError, ValueError):
                         return 0.0
 
-                entry = row_float("entry") or row_float("actual_entry") or row_float("expected_entry")
+                # Dataset hydration is planning/telemetry only. It must never
+                # manufacture exchange_avg_entry from entry/actual_entry.
+                planned_entry = row_float("expected_entry") or row_float("entry")
                 notional = row_float("notional")
                 leverage = row_float("leverage")
                 fees = row_float("fees")
@@ -176,10 +210,12 @@ class PositionReconcilerMixin:
                     if parsed_tp > 0:
                         take_profits.append(parsed_tp)
 
-                if not position.get("avg_entry") and entry > 0:
-                    position["avg_entry"] = entry
-                if not position.get("entry_price") and entry > 0:
-                    position["entry_price"] = entry
+                if not position.get("planned_avg_entry") and planned_entry > 0:
+                    position["planned_avg_entry"] = planned_entry
+                if not position.get("avg_entry") and planned_entry > 0:
+                    position["avg_entry"] = planned_entry
+                if not position.get("entry_price") and planned_entry > 0:
+                    position["entry_price"] = planned_entry
                 if not position.get("notional") and notional > 0:
                     position["notional"] = notional
                 if not position.get("position_notional_usdt") and notional > 0:
@@ -213,12 +249,13 @@ class PositionReconcilerMixin:
                     )
 
                 current_size = self._position_size(position)
-                if current_size <= 0 and notional > 0 and entry > 0:
-                    inferred_size = round(notional / entry, 8)
+                if current_size <= 0 and notional > 0 and planned_entry > 0:
+                    inferred_size = round(notional / planned_entry, 8)
                     position["size"] = inferred_size
                     position["order_size"] = inferred_size
                     position["position_size"] = inferred_size
                     position["inferred_size_from_open_dataset"] = True
+                    position["size_source"] = "ESTIMATED_TELEMETRY_ONLY"
 
         except Exception as exc:
             self.log.warning(
