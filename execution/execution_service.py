@@ -16,6 +16,12 @@ from execution.entry_submitter import (
 )
 from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
 from execution.order_intent_store import OrderIntentStore, new_session_id
+from execution.position_model import (
+    EXCHANGE_ACTUAL,
+    decimal_value,
+    position_lifecycle_id,
+    stop_is_legal,
+)
 from execution.state_store import JsonStateStore
 from risk.cooldown_manager import SymbolCooldownManager
 from telemetry.trade_logger import LiveTradeJournalLogger, TradeDecisionSnapshotLogger
@@ -154,7 +160,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"new entries blocked: {entry_block_reason}",
-                        avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                        planned_avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -183,7 +189,7 @@ class ExecutionService:
                                 plan=plan,
                                 status="SKIPPED",
                                 message=f"exchange max open positions reached: {len(open_symbols)}/{self.settings.max_open_positions}",
-                                avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                                planned_avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
                                 notional=min(plan.position_notional_usdt, hard_cap_notional),
                                 leverage=plan.leverage,
                             )
@@ -200,15 +206,20 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message=f"live order blocked: exchange position sync failed: {exc}",
-                            avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                            planned_avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
                             notional=min(plan.position_notional_usdt, hard_cap_notional),
                             leverage=plan.leverage,
                         )
                     )
                     continue
-            avg_entry = round(sum(plan.entry_prices) / len(plan.entry_prices), 8)
-            expected_entry = avg_entry
-            actual_entry = avg_entry
+            planned_avg_entry = round(sum(plan.entry_prices) / len(plan.entry_prices), 8)
+            expected_entry = planned_avg_entry
+            actual_entry = planned_avg_entry
+            exchange_avg_entry = 0.0
+            exchange_avg_entry_source = ""
+            exchange_avg_entry_confirmed_at = ""
+            confirmed_fill_quantity = 0.0
+            exchange_tick_size = 0.0
             # Standaard = plan-niveaus; de live-tak herankert deze op de echte
             # fill (bug 2026-07-08) en overschrijft ze vóór opslag.
             protect_stop_loss = plan.stop_loss
@@ -245,7 +256,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"hybrid gate blocked unsupported strategy: {plan.strategy}",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -258,7 +269,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message="position already open for symbol",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -281,7 +292,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"max open positions for strategy reached: {open_for_strategy}/{self.MAX_OPEN_POSITIONS_PER_STRATEGY} ({plan.strategy})",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -308,7 +319,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=cooldown_message,
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -321,7 +332,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"max open positions reached: {len(open_symbols)}/{max_open_positions}",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
                     )
@@ -334,7 +345,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message=f"hard cap exceeded: notional {plan.position_notional_usdt:.2f} > cap {hard_cap_notional:.2f}",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=plan.position_notional_usdt,
                         leverage=plan.leverage,
                     )
@@ -347,7 +358,7 @@ class ExecutionService:
                         plan=plan,
                         status="SKIPPED",
                         message="confirmation missing for symbol",
-                        avg_entry=avg_entry,
+                        planned_avg_entry=planned_avg_entry,
                         notional=plan.position_notional_usdt,
                         leverage=plan.leverage,
                     )
@@ -441,7 +452,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message=f"balance precheck blocked: capped notional {live_notional:.2f} below min {min_live_notional_usdt:.2f}",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -458,7 +469,7 @@ class ExecutionService:
                         effective_leverage,
                     )
 
-                raw_order_size = live_notional / avg_entry
+                raw_order_size = live_notional / planned_avg_entry
                 order_size = self._format_order_size_for_exchange(plan.symbol, raw_order_size)
                 if float(plan.leverage) != effective_leverage:
                     self.log.warning(
@@ -492,7 +503,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message="live order blocked: invalid or missing SL/TP",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -501,19 +512,19 @@ class ExecutionService:
 
                 if order_size <= 0:
                     self.log.error(
-                        "ORDER_SIZE_INVALID | %s | raw_size=%s | formatted_size=%s | notional=%s | avg_entry=%s",
+                        "ORDER_SIZE_INVALID | %s | raw_size=%s | formatted_size=%s | notional=%s | planned_avg_entry=%s",
                         plan.symbol,
                         raw_order_size,
                         order_size,
                         plan.position_notional_usdt,
-                        avg_entry,
+                        planned_avg_entry,
                     )
                     reports.append(
                         self._report(
                             plan=plan,
                             status="SKIPPED",
                             message="live order blocked: invalid order size",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -526,7 +537,7 @@ class ExecutionService:
                             plan=plan,
                             status="SKIPPED",
                             message="live order blocked: exchange SL/TP protection is not implemented yet",
-                            avg_entry=avg_entry,
+                            planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
                         )
@@ -563,7 +574,7 @@ class ExecutionService:
                     entry_via = "market"
                     if bool(getattr(self.settings, "maker_entry_enabled", False)):
                         from execution.maker_entry import attempt_maker_entry
-                        maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or avg_entry
+                        maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_avg_entry
                         maker_result = attempt_maker_entry(
                             client=self.client, settings=self.settings, symbol=plan.symbol,
                             direction=plan.direction, size=order_size, anchor_price=maker_anchor,
@@ -588,7 +599,7 @@ class ExecutionService:
                                     plan=plan,
                                     status="SKIPPED",
                                     message=f"new entries blocked: {entry_block_reason}",
-                                    avg_entry=avg_entry,
+                                    planned_avg_entry=planned_avg_entry,
                                     notional=live_notional,
                                     leverage=effective_leverage,
                                 )
@@ -606,7 +617,7 @@ class ExecutionService:
                                     plan=plan,
                                     status="SKIPPED",
                                     message=f"maker entry {maker_result['status'].lower()} (geen taker-fallback)",
-                                    avg_entry=avg_entry,
+                                    planned_avg_entry=planned_avg_entry,
                                     notional=live_notional,
                                     leverage=effective_leverage,
                                 )
@@ -649,7 +660,7 @@ class ExecutionService:
                                     plan=plan,
                                     status="SKIPPED",
                                     message=f"new entries blocked: {submission.message}",
-                                    avg_entry=avg_entry,
+                                    planned_avg_entry=planned_avg_entry,
                                     notional=live_notional,
                                     leverage=effective_leverage,
                                 )
@@ -667,7 +678,7 @@ class ExecutionService:
                                     plan=plan,
                                     status="SKIPPED",
                                     message=f"live entry not created ({submission.status}): {submission.message}",
-                                    avg_entry=avg_entry,
+                                    planned_avg_entry=planned_avg_entry,
                                     notional=live_notional,
                                     leverage=effective_leverage,
                                 )
@@ -700,9 +711,26 @@ class ExecutionService:
 
                     exchange_position_found = False
                     live_fill_entry = 0.0
+                    live_mark_price = 0.0
 
                     for position in verification_positions:
                         if str(position.get("symbol") or "") != plan.symbol:
+                            continue
+
+                        live_hold_side = str(
+                            position.get("holdSide")
+                            or position.get("posSide")
+                            or ""
+                        ).lower()
+                        if live_hold_side and live_hold_side != hold_side:
+                            self.log.critical(
+                                "ENTRY_POSITION_SIDE_MISMATCH | %s | expected=%s | live=%s | "
+                                "order_id=%s",
+                                plan.symbol,
+                                hold_side,
+                                live_hold_side,
+                                live_order_id,
+                            )
                             continue
 
                         try:
@@ -725,6 +753,13 @@ class ExecutionService:
                                 or position.get("openAvgPrice")
                                 or position.get("avgOpenPrice")
                                 or position.get("openPrice")
+                                or 0.0,
+                                0.0,
+                            )
+                            live_mark_price = _safe_float(
+                                position.get("markPrice")
+                                or position.get("lastPrice")
+                                or position.get("marketPrice")
                                 or 0.0,
                                 0.0,
                             )
@@ -753,6 +788,11 @@ class ExecutionService:
                             filled_qty=_safe_float(live_size, 0.0),
                             avg_price=live_fill_entry,
                         )
+                    confirmed_fill_quantity = _safe_float(live_size, 0.0)
+                    if live_fill_entry > 0:
+                        exchange_avg_entry = round(live_fill_entry, 8)
+                        exchange_avg_entry_source = "BITGET_OPEN_POSITION"
+                        exchange_avg_entry_confirmed_at = datetime.now(timezone.utc).isoformat()
 
 
                     # --- SL/TP herankeren op de ECHTE fill (bug 2026-07-08) ---
@@ -782,6 +822,27 @@ class ExecutionService:
                         )
                         protect_stop_loss = reanchored_stop
                         protect_take_profits = reanchored_tps
+
+                    price_scale = self.client._contract_price_scale(plan.symbol)
+                    if not isinstance(price_scale, int) or price_scale < 0:
+                        raise RuntimeError(
+                            f"EXCHANGE_TICK_SIZE_UNAVAILABLE | {plan.symbol}"
+                        )
+                    exchange_tick_size = float(10 ** (-price_scale))
+                    if not stop_is_legal(
+                        direction=plan.direction,
+                        target=decimal_value(protect_stop_loss),
+                        current_mark=decimal_value(live_mark_price),
+                        tick_size=decimal_value(exchange_tick_size),
+                        safety_ticks=int(
+                            getattr(self.settings, "break_even_mark_safety_ticks", 2)
+                            or 0
+                        ),
+                    ):
+                        raise RuntimeError(
+                            f"INITIAL_STOP_NOT_LEGAL | {plan.symbol} | mark={live_mark_price} "
+                            f"| stop={protect_stop_loss} | tick={exchange_tick_size}"
+                        )
 
                     # Place protection with stronger validation and retry.
                     protection_payload = None
@@ -825,7 +886,7 @@ class ExecutionService:
                                 symbol=plan.symbol,
                                 direction=plan.direction,
                                 hold_side=hold_side,
-                                size=order_size,
+                                size=live_size,
                                 stop_loss=protect_stop_loss,
                                 take_profits=protect_take_profits,
                                 margin_mode="isolated",
@@ -893,7 +954,7 @@ class ExecutionService:
 
                         self._fail_safe_close(
                             symbol=plan.symbol,
-                            size=order_size,
+                            size=live_size,
                             close_side=close_side,
                             direction=plan.direction,
                             reason="entry_protection_failed",
@@ -915,7 +976,7 @@ class ExecutionService:
                                 plan=plan,
                                 status="ERROR",
                                 message="FAIL-SAFE TRIGGERED: SL/TP NOT VERIFIED -> emergency close invoked",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
@@ -954,7 +1015,7 @@ class ExecutionService:
                         plan.direction,
                         exchange_stop_loss,
                         exchange_take_profit_count,
-                        order_size,
+                        live_size,
                     )
 
                     exchange_order_id = str(live_order_id or "")
@@ -972,7 +1033,7 @@ class ExecutionService:
                     if extracted_actual_entry > 0:
                         actual_entry = round(extracted_actual_entry, 8)
                     else:
-                        actual_entry = avg_entry
+                        actual_entry = planned_avg_entry
 
                     fees_paid = abs(_safe_float(fill_metrics.get("fee"), 0.0))
                     realized_pnl = _safe_float(fill_metrics.get("pnl"), 0.0)
@@ -1000,6 +1061,13 @@ class ExecutionService:
                             if detailed_actual_entry > 0:
                                 actual_entry = round(detailed_actual_entry, 8)
                                 extracted_actual_entry = detailed_actual_entry
+                                if exchange_avg_entry <= 0:
+                                    exchange_avg_entry = round(
+                                        detailed_actual_entry,
+                                        8,
+                                    )
+                                    exchange_avg_entry_source = "BITGET_ORDER_DETAIL"
+                                    exchange_avg_entry_confirmed_at = datetime.now(timezone.utc).isoformat()
 
                             detailed_fees = abs(_safe_float(detailed_fill_metrics.get("fee"), 0.0))
                             if detailed_fees > 0:
@@ -1074,7 +1142,7 @@ class ExecutionService:
                                 plan=plan,
                                 status="SKIPPED",
                                 message=f"balance guard blocked order: {exc}",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
@@ -1108,7 +1176,7 @@ class ExecutionService:
                                 plan=plan,
                                 status="ERROR",
                                 message=f"FAIL-SAFE TRIGGERED: protection/order flow failed after entry -> position closed | error={exc}",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
@@ -1119,12 +1187,32 @@ class ExecutionService:
                                 plan=plan,
                                 status="SKIPPED",
                                 message=f"live order failed before entry: {exc}",
-                                avg_entry=avg_entry,
+                                planned_avg_entry=planned_avg_entry,
                                 notional=live_notional,
                                 leverage=effective_leverage,
                             )
                         )
                     continue
+
+            lifecycle_id = position_lifecycle_id(
+                plan_id=plan.plan_id,
+                symbol=plan.symbol,
+                direction=plan.direction,
+                client_oid=entry_client_oid,
+                order_id=str(live_order_id or ""),
+            )
+            if self.settings.execution_mode.upper() == "LIVE" and exchange_tick_size <= 0:
+                try:
+                    price_scale = self.client._contract_price_scale(plan.symbol)
+                    if isinstance(price_scale, int) and price_scale >= 0:
+                        exchange_tick_size = float(10 ** (-price_scale))
+                except Exception as tick_exc:
+                    self.log.warning(
+                        "EXCHANGE_TICK_SIZE_UNAVAILABLE | %s | lifecycle_id=%s | error=%s",
+                        plan.symbol,
+                        lifecycle_id,
+                        tick_exc,
+                    )
 
             position = {
                 "symbol": plan.symbol,
@@ -1132,9 +1220,32 @@ class ExecutionService:
                 "direction": plan.direction,
                 "mode": self.settings.execution_mode,
                 "status": "OPEN",
-                "avg_entry": avg_entry,
+                # Migration contract: avg_entry remains a planning alias only.
+                "avg_entry": planned_avg_entry,
+                "planned_avg_entry": planned_avg_entry,
                 "expected_entry": expected_entry,
                 "actual_entry": actual_entry,
+                "exchange_avg_entry": exchange_avg_entry or None,
+                "exchange_avg_entry_source": exchange_avg_entry_source,
+                "exchange_avg_entry_confirmed_at": exchange_avg_entry_confirmed_at,
+                "exchange_entry_order_id": str(live_order_id or ""),
+                "exchange_entry_client_oid": entry_client_oid,
+                "position_lifecycle_id": lifecycle_id,
+                "confirmed_fill_quantity": confirmed_fill_quantity or None,
+                "confirmed_position_size": confirmed_fill_quantity or None,
+                "confirmed_remaining_size": confirmed_fill_quantity or None,
+                "confirmed_remaining_size_source": (
+                    "BITGET_OPEN_POSITION" if confirmed_fill_quantity > 0 else ""
+                ),
+                "confirmed_opening_fee_usdt": fees_paid if fees_paid > 0 else None,
+                "confirmed_opening_fee_source": (
+                    EXCHANGE_ACTUAL if fees_paid > 0 else ""
+                ),
+                "exchange_opening_fee_usdt": fees_paid if fees_paid > 0 else None,
+                "exchange_opening_fee_source": EXCHANGE_ACTUAL if fees_paid > 0 else "",
+                "exchange_tick_size": exchange_tick_size or None,
+                "plan_id": plan.plan_id,
+                "candidate_id": plan.candidate_id,
                 "slippage_pct": slippage_pct,
                 "fees_paid": fees_paid,
                 "entry_prices": plan.entry_prices,
@@ -1163,9 +1274,15 @@ class ExecutionService:
                 "exchange_take_profit_count": exchange_take_profit_count,
                 "entry_protection_verified": protection_verified,
                 "entry_protection_integrity": protection_integrity,
+                "protection_state": (
+                    "INITIAL_PROTECTION_CONFIRMED"
+                    if protection_verified
+                    else "PROTECTION_UPDATE_FAILED"
+                ),
+                "confirmed_stop": protect_stop_loss if protection_verified else None,
                 "entry_stop_loss_verified": bool(protection_payload.get("stop_loss_verified")) if protection_payload else False,
                 "entry_expected_take_profit_count": int(protection_payload.get("expected_take_profit_count") or 0) if protection_payload else 0,
-                "last_price": avg_entry,
+                "last_price": exchange_avg_entry or planned_avg_entry,
                 "notes": plan.notes,
                 "reasons": plan.reasons,
             }
@@ -1176,9 +1293,14 @@ class ExecutionService:
                 plan=plan,
                 status=execution_status,
                 message=execution_message,
-                avg_entry=actual_entry or avg_entry,
+                planned_avg_entry=planned_avg_entry,
                 notional=live_notional,
                 leverage=effective_leverage,
+                exchange_avg_entry=exchange_avg_entry,
+                exchange_avg_entry_source=exchange_avg_entry_source,
+                position_lifecycle_id=lifecycle_id,
+                confirmed_position_size=confirmed_fill_quantity,
+                confirmed_opening_fee_usdt=fees_paid,
                 expected_entry=expected_entry,
                 actual_entry=actual_entry,
                 slippage_pct=slippage_pct,
@@ -1456,9 +1578,14 @@ class ExecutionService:
         plan: TradePlan,
         status: str,
         message: str,
-        avg_entry: float,
+        planned_avg_entry: float,
         notional: float,
         leverage: float,
+        exchange_avg_entry: float = 0.0,
+        exchange_avg_entry_source: str = "",
+        position_lifecycle_id: str = "",
+        confirmed_position_size: float = 0.0,
+        confirmed_opening_fee_usdt: float = 0.0,
         expected_entry: float = 0.0,
         actual_entry: float = 0.0,
         slippage_pct: float = 0.0,
@@ -1477,13 +1604,19 @@ class ExecutionService:
             mode=self.settings.execution_mode,
             status=status,
             message=message,
-            avg_entry=avg_entry,
+            avg_entry=planned_avg_entry,
+            planned_avg_entry=planned_avg_entry,
+            exchange_avg_entry=exchange_avg_entry,
+            exchange_avg_entry_source=exchange_avg_entry_source,
+            position_lifecycle_id=position_lifecycle_id,
+            confirmed_position_size=confirmed_position_size,
+            confirmed_opening_fee_usdt=confirmed_opening_fee_usdt,
             stop_loss=plan.stop_loss if stop_loss is None else stop_loss,
             take_profits=plan.take_profits if take_profits is None else take_profits,
             position_notional_usdt=notional,
             leverage=leverage,
-            expected_entry=expected_entry or avg_entry,
-            actual_entry=actual_entry or avg_entry,
+            expected_entry=expected_entry or planned_avg_entry,
+            actual_entry=actual_entry or planned_avg_entry,
             slippage_pct=slippage_pct,
             fees_paid=fees_paid,
             realized_pnl=realized_pnl,

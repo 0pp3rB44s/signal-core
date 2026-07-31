@@ -10,6 +10,15 @@ import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
+from execution.position_model import (
+    PositionModelError,
+    confirmed_position_size,
+    decimal_float,
+    decimal_value,
+    migrate_planned_entry,
+    position_prices,
+    price_return_pct,
+)
 from risk.cooldown_manager import SymbolCooldownManager
 from telemetry.trade_logger import append_closed_trade_row
 
@@ -20,16 +29,14 @@ class ClosedTradeWriterMixin:
         if not isinstance(position, dict):
             return
 
+        migrate_planned_entry(position)
         self._hydrate_position_from_open_dataset_row(position)
         self._hydrate_close_position_size(position)
 
-        avg_entry = self._safe_float(position.get("avg_entry"), 0.0)
+        planned_entry = self._safe_float(position.get("planned_avg_entry"), 0.0)
         entry_price = self._safe_float(position.get("entry_price"), 0.0)
-        if avg_entry <= 0 and entry_price > 0:
-            position["avg_entry"] = entry_price
-            avg_entry = entry_price
-        if entry_price <= 0 and avg_entry > 0:
-            position["entry_price"] = avg_entry
+        if entry_price <= 0 and planned_entry > 0:
+            position["entry_price"] = planned_entry
 
         raw_tps = position.get("take_profits") or []
         normalized_tps = []
@@ -96,7 +103,22 @@ class ClosedTradeWriterMixin:
         if not is_exchange_truth:
             close_reason_raw = str(position.get("closed_reason") or status.lower()).lower()
             direction = str(position.get("direction") or "").upper()
-            entry_price = float(position.get("avg_entry") or position.get("entry_price") or 0.0)
+            try:
+                entry_price = float(
+                    position_prices(
+                        position,
+                        require_executed=True,
+                    ).require_executed().price
+                )
+            except PositionModelError as exc:
+                self.log.critical(
+                    "CLOSE_REPORT_EXCHANGE_ENTRY_UNAVAILABLE | %s | lifecycle_id=%s | "
+                    "context=strategy_truth_gate | report_skipped=True | error=%s",
+                    symbol,
+                    position.get("position_lifecycle_id") or "UNKNOWN",
+                    exc,
+                )
+                return
             exit_price_for_gate = float(
                 position.get("exchange_truth_exit_price")
                 or position.get("last_price")
@@ -221,7 +243,22 @@ class ClosedTradeWriterMixin:
         self._ensure_close_dataset_context(position)
 
         direction = str(position.get("direction") or "").upper()
-        entry_price = float(position.get("avg_entry") or position.get("entry_price") or 0.0)
+        try:
+            entry_price = float(
+                position_prices(
+                    position,
+                    require_executed=True,
+                ).require_executed().price
+            )
+        except PositionModelError as exc:
+            self.log.critical(
+                "CLOSE_REPORT_EXCHANGE_ENTRY_UNAVAILABLE | %s | lifecycle_id=%s | "
+                "context=dataset_append | report_skipped=True | error=%s",
+                symbol,
+                position.get("position_lifecycle_id") or "UNKNOWN",
+                exc,
+            )
+            return
         exit_price = float(
             position.get("exchange_truth_exit_price")
             or position.get("last_price")
@@ -229,18 +266,32 @@ class ClosedTradeWriterMixin:
             or entry_price
             or 0.0
         )
-        pnl_pct = float(
-            position.get("realized_pnl_pct")
-            or position.get("pnl_pct")
-            or self._pnl_pct(direction, entry_price, exit_price)
+        margin_roi_pct = float(
+            position.get("realized_margin_roi_pct")
+            or position.get("realized_pnl_pct")
+            or position.get("margin_roi_pct")
+            or 0.0
         )
+        if not margin_roi_pct and entry_price > 0 and exit_price > 0:
+            leverage = decimal_value(
+                position.get("leverage")
+                or getattr(self.settings, "default_leverage", 1.0),
+            )
+            margin_roi_pct = decimal_float(
+                price_return_pct(
+                    direction,
+                    decimal_value(entry_price),
+                    decimal_value(exit_price),
+                )
+                * max(leverage, decimal_value(1)),
+            )
         close_reason = str(position.get("closed_reason") or status.lower())
 
         self._append_closed_trade_dataset_row(
             position=position,
             close_reason=close_reason,
             exit_price=exit_price,
-            pnl_pct=pnl_pct,
+            margin_roi_pct=margin_roi_pct,
             extra={
                 "close_source": position.get("close_source") or position.get("sync_source") or "bitget_order_history",
                 "data_confidence": "EXCHANGE_TRUTH",
@@ -254,10 +305,10 @@ class ClosedTradeWriterMixin:
         )
 
         self.log.warning(
-            "EXCHANGE_TRUTH_BACKFILL_APPENDED_MAIN_DATASET | %s | exit=%s | pnl_pct=%.4f | closed_at=%s",
+            "EXCHANGE_TRUTH_BACKFILL_APPENDED_MAIN_DATASET | %s | exit=%s | margin_roi_pct=%.4f | closed_at=%s",
             symbol,
             exit_price,
-            pnl_pct,
+            margin_roi_pct,
             closed_at,
         )
 
@@ -299,6 +350,18 @@ class ClosedTradeWriterMixin:
         return False
 
     def _hydrate_close_position_size(self, position: dict) -> None:
+        try:
+            exchange_truth_size = float(position.get("exchange_truth_size") or 0.0)
+        except (TypeError, ValueError):
+            exchange_truth_size = 0.0
+        if exchange_truth_size > 0:
+            position["confirmed_position_size"] = exchange_truth_size
+            position["confirmed_fill_quantity"] = exchange_truth_size
+            position["confirmed_size_source"] = str(
+                position.get("close_source")
+                or "BITGET_CLOSED_POSITION_HISTORY"
+            ).upper()
+
         size = self._position_size(position)
         if size > 0:
             position["size"] = size
@@ -328,17 +391,13 @@ class ClosedTradeWriterMixin:
                 return
 
         notional = float(position.get("position_notional_usdt") or position.get("notional") or 0.0)
-        entry = float(position.get("avg_entry") or position.get("entry_price") or position.get("last_price") or 0.0)
-        if notional > 0 and entry > 0:
-            value = round(notional / entry, 8)
-            position["size"] = value
-            position["order_size"] = value
-            position["position_size"] = value
+        # No critical close/protection quantity may be manufactured from
+        # notional/planned entry. Missing exchange quantity stays unavailable.
 
-    def _register_symbol_cooldown(self, symbol: str, reason: str, pnl_pct: float) -> None:
+    def _register_symbol_cooldown(self, symbol: str, reason: str, margin_roi_pct: float) -> None:
         minutes = int(getattr(self.settings, "symbol_cooldown_minutes", 30) or 30)
         normalized_reason = SymbolCooldownManager.normalize_reason(reason)
-        if pnl_pct < 0:
+        if margin_roi_pct < 0:
             minutes = max(minutes, int(minutes * 1.5))
             normalized_reason = f"loss_{normalized_reason}"
 
@@ -348,12 +407,12 @@ class ClosedTradeWriterMixin:
             reason=normalized_reason,
         )
         self.log.warning(
-            "SYMBOL_COOLDOWN_SET | %s | reason=%s | minutes=%s | until=%s | pnl_pct=%.4f",
+            "SYMBOL_COOLDOWN_SET | %s | reason=%s | minutes=%s | until=%s | margin_roi_pct=%.4f",
             status.symbol,
             status.reason,
             minutes,
             status.until,
-            pnl_pct,
+            margin_roi_pct,
         )
 
         try:
@@ -375,9 +434,9 @@ class ClosedTradeWriterMixin:
                 exc,
             )
 
-    def _sync_journal_close(self, symbol: str, reason: str, pnl_pct: float) -> None:
+    def _sync_journal_close(self, symbol: str, reason: str, margin_roi_pct: float) -> None:
         try:
-            self.journal.log_close(symbol=symbol, result=reason, pnl=round(pnl_pct, 4))
+            self.journal.log_close(symbol=symbol, result=reason, pnl=round(margin_roi_pct, 4))
         except Exception as exc:
             self.log.warning("Live journal log_close failed for %s: %s", symbol, exc)
 
@@ -417,13 +476,29 @@ class ClosedTradeWriterMixin:
         position: dict,
         close_reason: str,
         exit_price: float,
-        pnl_pct: float,
+        margin_roi_pct: float,
         extra: dict | None = None,
     ) -> None:
         symbol = str(position.get("symbol") or "").upper()
         direction = str(position.get("direction") or "").upper()
-        entry_price = float(position.get("avg_entry") or 0.0)
-        size = self._position_size(position)
+        try:
+            entry_price = float(
+                position_prices(position, require_executed=True).require_executed().price
+            )
+            size = decimal_float(
+                confirmed_position_size(position, critical=True).quantity,
+                places=8,
+            )
+        except PositionModelError as exc:
+            self.log.critical(
+                "CLOSE_REPORT_EXCHANGE_TRUTH_UNAVAILABLE | %s | lifecycle_id=%s | "
+                "close_reason=%s | report_skipped=True | error=%s",
+                symbol,
+                position.get("position_lifecycle_id") or "UNKNOWN",
+                close_reason,
+                exc,
+            )
+            return
         pnl = 0.0
 
         if entry_price > 0 and exit_price > 0 and size > 0:
@@ -454,8 +529,8 @@ class ClosedTradeWriterMixin:
             "near_tp_latest_price": position.get("near_tp_latest_price", ""),
             "near_tp_latest_target": position.get("near_tp_latest_target", ""),
             "mfe_at_near_tp_seen_pct": position.get("mfe_at_near_tp_seen_pct", ""),
-            "profit_giveback_pct": round(max(0.0, float(position.get("max_favorable_excursion_pct") or 0.0) - float(pnl_pct or 0.0)), 4),
-            "reversed_after_near_tp": bool(position.get("near_tp_seen", False)) and float(pnl_pct or 0.0) < float(position.get("max_favorable_excursion_pct") or 0.0),
+            "profit_giveback_pct": round(max(0.0, float(position.get("max_favorable_excursion_pct") or 0.0) - float(margin_roi_pct or 0.0)), 4),
+            "reversed_after_near_tp": bool(position.get("near_tp_seen", False)) and float(margin_roi_pct or 0.0) < float(position.get("max_favorable_excursion_pct") or 0.0),
             "close_source": position.get("close_source", ""),
             "data_confidence": position.get("data_confidence", ""),
             "process_verdict": position.get("process_verdict", ""),
@@ -513,18 +588,18 @@ class ClosedTradeWriterMixin:
                 exit_price=float(exit_price or 0.0),
                 size=size,
                 pnl=round(pnl, 8),
-                pnl_pct=round(float(pnl_pct or 0.0), 6),
+                margin_roi_pct=round(float(margin_roi_pct or 0.0), 6),
                 close_reason=close_reason,
                 opened_at=str(position.get("opened_at") or ""),
                 closed_at=str(position.get("closed_at") or datetime.now(timezone.utc).isoformat()),
                 extra=payload_extra,
             )
             self.log.warning(
-                "TRADE_DATASET_CLOSED_ROW_APPENDED | %s | reason=%s | exit=%s | pnl_pct=%.4f | size=%s",
+                "TRADE_DATASET_CLOSED_ROW_APPENDED | %s | reason=%s | exit=%s | margin_roi_pct=%.4f | size=%s",
                 symbol,
                 close_reason,
                 exit_price,
-                pnl_pct,
+                margin_roi_pct,
                 size,
             )
         except Exception as exc:
@@ -557,4 +632,13 @@ class ClosedTradeWriterMixin:
         if margin > 0 and realized_pnl not in (None, ""):
             return round((realized_pnl_float / margin) * 100.0, 6)
 
-        return self._pnl_pct(direction, entry_price, exit_price)
+        if entry_price <= 0 or exit_price <= 0:
+            return 0.0
+        return decimal_float(
+            price_return_pct(
+                direction,
+                decimal_value(entry_price),
+                decimal_value(exit_price),
+            )
+            * decimal_value(leverage, decimal_value(1)),
+        )
