@@ -266,7 +266,9 @@ def test_expectancy_data_file_is_not_written_by_this_patch():
 def test_sizing_leverage_and_symbols_unchanged():
     """Guards the code defaults. The live values come from .env.live, which this
     patch does not touch - asserted separately below."""
-    s = _settings()
+    # Inspect code defaults outside LIVE validation; _settings() intentionally
+    # supplies the hard LIVE portfolio cap of one.
+    s = Settings(_env_file=None)
     assert s.max_leverage == 5.0
     assert s.default_leverage == 5.0
     assert s.account_risk_per_trade_pct == 0.75

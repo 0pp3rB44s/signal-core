@@ -62,7 +62,13 @@ class PortfolioSelection:
 
 
 def _metric(plan: TradePlan, marker: str, default: float) -> float:
-    text = " | ".join(str(value) for value in [*(plan.notes or []), *(plan.reasons or [])])
+    text = " | ".join(
+        str(value)
+        for value in [
+            *(getattr(plan, "notes", None) or []),
+            *(getattr(plan, "reasons", None) or []),
+        ]
+    )
     match = re.search(re.escape(marker) + _FLOAT, text, flags=re.IGNORECASE)
     if not match:
         return default
