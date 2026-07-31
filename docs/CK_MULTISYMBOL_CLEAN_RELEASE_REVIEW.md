@@ -69,12 +69,26 @@ Required before review handoff:
 - release hygiene relative to the exact LIVE baseline;
 - clean worktree and exact ancestry check.
 
+## Known inherited baseline blocker
+
+The release-delta hygiene gate is `PASS`, but the scanner's explicit full-tree
+`--tracked` mode is `FAIL` on paths inherited unchanged from the authorised
+LIVE baseline. The failing path names and contents are intentionally not copied
+into this report. This release does not modify those forbidden files: doing so
+would both expand this PR beyond its approved scope and violate the repository's
+credential/config handling rules.
+
+This is an operational deployment blocker, not a hidden exception. A separate,
+owner-reviewed baseline-hygiene change must make the full tracked-tree check
+`PASS` before production deployment can be approved.
+
 Required later, in an explicitly authorised deployment window:
 
 - real secret-safe config attestation against the exact reviewed release SHA
   and owner-approved checksum;
 - real credentialed read-only exchange attestation;
 - all account checks true and all nine symbol classifications `APPROVED`;
+- full tracked-tree repository hygiene `PASS`;
 - explicit human approval to merge and deploy.
 
 Until those later gates pass, the correct operational action is no merge, no
