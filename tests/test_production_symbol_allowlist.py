@@ -106,4 +106,3 @@ def test_shell_guard_has_no_btc_only_or_dynamic_expansion_path():
     assert "MAX_SYMBOLS must be <=1" not in source
     assert "PRODUCTION_SYMBOL_ALLOWLIST" in source
     assert "ALLOW_AUTO_WATCHLIST_REFRESH=false" in source
-
