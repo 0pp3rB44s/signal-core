@@ -624,11 +624,14 @@ class TpSlLifecycleMixin:
         configured_close_rate = decimal_value(
             getattr(self.settings, "break_even_expected_close_fee_rate", 0.0006)
         )
+        configured_open_rate = decimal_value(
+            getattr(self.settings, "break_even_open_fee_fallback_rate", 0.0006)
+        )
         opening_fee = select_opening_fee(
             position,
             exchange_entry=entry,
             remaining_quantity=size,
-            configured_fallback_rate=configured_close_rate,
+            configured_fallback_rate=configured_open_rate,
         )
         result = calculate_break_even_plus_fees(
             direction=str(position.get("direction") or ""),

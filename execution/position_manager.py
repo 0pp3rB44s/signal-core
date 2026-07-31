@@ -1535,11 +1535,14 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         close_rate = decimal_value(
             getattr(self.settings, "break_even_expected_close_fee_rate", 0.0006)
         )
+        open_fallback_rate = decimal_value(
+            getattr(self.settings, "break_even_open_fee_fallback_rate", 0.0006)
+        )
         opening_fee = select_opening_fee(
             position,
             exchange_entry=entry,
             remaining_quantity=size,
-            configured_fallback_rate=close_rate,
+            configured_fallback_rate=open_fallback_rate,
         )
         expected_close_fee = mark * size * close_rate
         return position_economics(

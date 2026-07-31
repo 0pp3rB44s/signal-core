@@ -141,6 +141,10 @@ def test_symbol_account_endpoint_is_get_only():
 
 def _config_text() -> str:
     return "\n".join([
+        "APP_ENV=production",
+        "EXECUTION_ENABLED=true",
+        "EXECUTION_MODE=LIVE",
+        "EXECUTION_MARGIN_MODE=isolated",
         "DEFAULT_LEVERAGE=3",
         "MAX_LEVERAGE=3",
         "ACCOUNT_RISK_PER_TRADE_PCT=0.75",
@@ -151,6 +155,13 @@ def _config_text() -> str:
         "MAX_SYMBOLS=2",
         "ALLOW_AUTO_WATCHLIST_REFRESH=false",
         "EXECUTION_REQUIRE_CONFIRMATION=true",
+        "BREAK_EVEN_OPEN_FEE_FALLBACK_RATE=0.0006",
+        "BREAK_EVEN_EXPECTED_CLOSE_FEE_RATE=0.0006",
+        "BREAK_EVEN_SPREAD_BUFFER_PCT=0.02",
+        "BREAK_EVEN_SLIPPAGE_BUFFER_PCT=0.03",
+        "BREAK_EVEN_EXTRA_BUFFER_PCT=0.01",
+        "BREAK_EVEN_FEE_BUFFER_PCT=0.12",
+        "BREAK_EVEN_MARK_SAFETY_TICKS=2",
         "BITGET_API_SECRET=fake-never-print-this-value",
         "DASHBOARD_PASSWORD=fake-dashboard-value",
         "",
@@ -164,23 +175,32 @@ def test_config_attestation_validates_safe_values_and_never_returns_secrets(tmp_
     checksum = hashlib.sha256(content.encode()).hexdigest()
     expected = ConfigExpectations(
         checksum_sha256=checksum,
+        release_sha="a" * 40,
         default_leverage=3,
         max_leverage=3,
         risk_per_trade_pct=0.75,
         notional_cap_usdt=35,
         symbols=("BTCUSDT", "SOLUSDT"),
+        break_even_open_fee_fallback_rate=0.0006,
+        break_even_expected_close_fee_rate=0.0006,
+        break_even_spread_buffer_pct=0.02,
+        break_even_slippage_buffer_pct=0.03,
+        break_even_extra_buffer_pct=0.01,
+        break_even_fee_buffer_pct=0.12,
+        break_even_mark_safety_ticks=2,
     )
 
-    result = attest_config_file(path, expected)
+    result = attest_config_file(path, expected, actual_release_sha="a" * 40)
     rendered = json.dumps(result)
 
     assert result["deployment_gate"] == "PASS"
     assert result["checksum_sha256"] == checksum
-    assert result["safe_values"]["MAX_OPEN_POSITIONS"] == 1
-    assert result["safe_values"]["PRODUCTION_SYMBOL_ALLOWLIST"] == [
-        "BTCUSDT", "SOLUSDT"
-    ]
-    assert result["redacted"]["BITGET_API_SECRET"] == "REDACTED_PRESENT"
+    assert result["portfolio"]["max_open_positions"] == 1
+    assert result["allowlist"] == ["BTCUSDT", "SOLUSDT"]
+    assert result["allowlist_count"] == 2
+    assert result["secrets_redacted"] is True
+    assert result["redacted_key_count"] == 2
+    assert result["comparisons"]["full_settings_schema"] is True
     assert "fake-never-print-this-value" not in rendered
     assert "fake-dashboard-value" not in rendered
 
@@ -190,16 +210,132 @@ def test_config_attestation_blocks_checksum_allowlist_and_risk_drift(tmp_path):
     path.write_text(_config_text(), encoding="utf-8")
     expected = ConfigExpectations(
         checksum_sha256="0" * 64,
+        release_sha="a" * 40,
         default_leverage=3,
         max_leverage=3,
         risk_per_trade_pct=0.5,
         notional_cap_usdt=35,
         symbols=("BTCUSDT",),
+        break_even_open_fee_fallback_rate=0.0006,
+        break_even_expected_close_fee_rate=0.0006,
+        break_even_spread_buffer_pct=0.02,
+        break_even_slippage_buffer_pct=0.03,
+        break_even_extra_buffer_pct=0.01,
+        break_even_fee_buffer_pct=0.12,
+        break_even_mark_safety_ticks=2,
     )
 
-    result = attest_config_file(path, expected)
+    result = attest_config_file(path, expected, actual_release_sha="a" * 40)
 
-    assert result["deployment_gate"] == "BLOCKED"
+    assert result["deployment_gate"] == "FAIL"
     assert "expectation_mismatch:checksum_sha256" in result["errors"]
     assert "expectation_mismatch:risk_per_trade_pct" in result["errors"]
     assert "expectation_mismatch:symbols" in result["errors"]
+
+
+def _expected_config(content: str) -> ConfigExpectations:
+    return ConfigExpectations(
+        checksum_sha256=hashlib.sha256(content.encode()).hexdigest(),
+        release_sha="b" * 40,
+        default_leverage=3,
+        max_leverage=3,
+        risk_per_trade_pct=0.75,
+        notional_cap_usdt=35,
+        symbols=("BTCUSDT", "SOLUSDT"),
+        break_even_open_fee_fallback_rate=0.0006,
+        break_even_expected_close_fee_rate=0.0006,
+        break_even_spread_buffer_pct=0.02,
+        break_even_slippage_buffer_pct=0.03,
+        break_even_extra_buffer_pct=0.01,
+        break_even_fee_buffer_pct=0.12,
+        break_even_mark_safety_ticks=2,
+    )
+
+
+def test_config_attestation_binds_to_exact_release_sha(tmp_path):
+    content = _config_text()
+    path = tmp_path / "deployment-config-fixture"
+    path.write_text(content, encoding="utf-8")
+
+    result = attest_config_file(
+        path,
+        _expected_config(content),
+        actual_release_sha="c" * 40,
+    )
+
+    assert result["deployment_gate"] == "FAIL"
+    assert result["release_sha"] == "c" * 40
+    assert "expectation_mismatch:release_sha" in result["errors"]
+
+
+def test_config_attestation_blocks_btc_only_legacy_override(tmp_path):
+    content = _config_text() + "WATCHLIST=BTCUSDT\n"
+    path = tmp_path / "deployment-config-fixture"
+    path.write_text(content, encoding="utf-8")
+
+    result = attest_config_file(
+        path,
+        _expected_config(content),
+        actual_release_sha="b" * 40,
+    )
+
+    assert result["deployment_gate"] == "FAIL"
+    assert result["comparisons"]["btc_only_override_absent"] is False
+
+
+def test_each_required_live_and_break_even_field_fails_closed_when_missing(tmp_path):
+    required = (
+        "APP_ENV",
+        "EXECUTION_ENABLED",
+        "EXECUTION_MODE",
+        "EXECUTION_MARGIN_MODE",
+        "DEFAULT_LEVERAGE",
+        "MAX_LEVERAGE",
+        "ACCOUNT_RISK_PER_TRADE_PCT",
+        "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT",
+        "MAX_OPEN_POSITIONS",
+        "EXECUTION_MAX_PER_CYCLE",
+        "PRODUCTION_SYMBOL_ALLOWLIST",
+        "MAX_SYMBOLS",
+        "ALLOW_AUTO_WATCHLIST_REFRESH",
+        "EXECUTION_REQUIRE_CONFIRMATION",
+        "BREAK_EVEN_OPEN_FEE_FALLBACK_RATE",
+        "BREAK_EVEN_EXPECTED_CLOSE_FEE_RATE",
+        "BREAK_EVEN_SPREAD_BUFFER_PCT",
+        "BREAK_EVEN_SLIPPAGE_BUFFER_PCT",
+        "BREAK_EVEN_EXTRA_BUFFER_PCT",
+        "BREAK_EVEN_FEE_BUFFER_PCT",
+        "BREAK_EVEN_MARK_SAFETY_TICKS",
+    )
+    lines = _config_text().splitlines()
+    for key in required:
+        content = "\n".join(
+            line for line in lines if not line.startswith(f"{key}=")
+        ) + "\n"
+        path = tmp_path / f"fixture-{key.lower()}"
+        path.write_text(content, encoding="utf-8")
+
+        result = attest_config_file(
+            path,
+            _expected_config(content),
+            actual_release_sha="b" * 40,
+        )
+
+        assert result["deployment_gate"] == "FAIL", key
+
+
+def test_invalid_value_fails_full_schema_without_serializing_input(tmp_path):
+    content = _config_text().replace("DEFAULT_LEVERAGE=3", "DEFAULT_LEVERAGE=private-invalid")
+    path = tmp_path / "deployment-config-fixture"
+    path.write_text(content, encoding="utf-8")
+
+    result = attest_config_file(
+        path,
+        _expected_config(content),
+        actual_release_sha="b" * 40,
+    )
+
+    rendered = json.dumps(result)
+    assert result["deployment_gate"] == "FAIL"
+    assert result["comparisons"]["full_settings_schema"] is False
+    assert "private-invalid" not in rendered

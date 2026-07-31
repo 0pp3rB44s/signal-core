@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     # Legacy, mutually-exclusive fallback only. Critical BE calculations use
     # the itemised Decimal model below whenever confirmed entry/size exist.
     break_even_fee_buffer_pct: float = Field(default=0.12, alias="BREAK_EVEN_FEE_BUFFER_PCT")
+    # Decimal rate, not percent. Used only when no exchange-confirmed opening
+    # fee amount or exchange opening fee rate is available.
+    break_even_open_fee_fallback_rate: float = Field(
+        default=0.0006,
+        alias="BREAK_EVEN_OPEN_FEE_FALLBACK_RATE",
+    )
     # Decimal rate, not percent: 0.0006 = 6 bps. Stops are market-triggered, so
     # the conservative taker rate is assumed for the expected closing fill.
     break_even_expected_close_fee_rate: float = Field(
@@ -181,6 +187,7 @@ class Settings(BaseSettings):
     execution_mode: str = Field(default="DRY_RUN", alias="EXECUTION_MODE")
     execution_require_confirmation: bool = Field(default=True, alias="EXECUTION_REQUIRE_CONFIRMATION")
     execution_confirm_symbols: str = Field(default="", alias="EXECUTION_CONFIRM_SYMBOLS")
+    execution_margin_mode: str = Field(default="isolated", alias="EXECUTION_MARGIN_MODE")
     execution_max_per_cycle: int = Field(default=1, alias="EXECUTION_MAX_PER_CYCLE")
     execution_plan_limit: int = Field(default=2, alias="EXECUTION_PLAN_LIMIT")
     execution_max_live_notional_per_trade_usdt: float = Field(default=35.0, alias="EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT")
@@ -262,6 +269,8 @@ class Settings(BaseSettings):
                 raise ValueError("LIVE requires ALLOW_AUTO_WATCHLIST_REFRESH=false")
             if not self.execution_require_confirmation:
                 raise ValueError("LIVE requires EXECUTION_REQUIRE_CONFIRMATION=true")
+            if self.execution_margin_mode.strip().lower() != "isolated":
+                raise ValueError("LIVE requires EXECUTION_MARGIN_MODE=isolated")
         return self
 
     @property
