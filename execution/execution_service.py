@@ -22,6 +22,7 @@ from execution.position_model import (
     position_lifecycle_id,
     stop_is_legal,
 )
+from execution.portfolio_selector import select_execution_winner
 from execution.state_store import JsonStateStore
 from risk.cooldown_manager import SymbolCooldownManager
 from telemetry.trade_logger import LiveTradeJournalLogger, TradeDecisionSnapshotLogger
@@ -81,6 +82,25 @@ class ExecutionService:
         if not self.settings.execution_enabled:
             return []
 
+        selection = select_execution_winner(
+            plans,
+            allowed_symbols=(
+                self.settings.production_symbol_set
+                if self.settings.is_live_execution
+                else None
+            ),
+        )
+        winner = selection.winner
+        if winner is None:
+            if plans:
+                self.log.warning(
+                    "PORTFOLIO_SELECTION_EMPTY | plans=%s | rejected=%s",
+                    len(plans),
+                    len(selection.rejected),
+                )
+            return []
+        plans = [winner]
+
         reports: list[ExecutionReport] = []
         existing = self.store.load(default=[])
         execution_events = self.event_store.load(default=[])
@@ -133,19 +153,7 @@ class ExecutionService:
         # entry may be created, and an unresolvable one blocks entries entirely.
         entry_block_reason = self._entry_guard_reason()
 
-        executable: list[TradePlan] = []
-        seen_symbols: set[str] = set()
         for plan in plans:
-            if plan.verdict != "EXECUTABLE":
-                continue
-            if plan.symbol in seen_symbols:
-                continue
-            seen_symbols.add(plan.symbol)
-            executable.append(plan)
-            if len(executable) >= self.settings.execution_max_per_cycle:
-                break
-
-        for plan in executable:
             # --- Telemetry: log trade decision snapshot before execution logic ---
             decision_snapshot_opened_at = self.decision_snapshot_logger.append_plan(plan)
             if entry_block_reason:

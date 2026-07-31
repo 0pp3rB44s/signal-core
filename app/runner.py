@@ -24,6 +24,7 @@ from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
+from execution.portfolio_selector import select_execution_winner
 from execution.runtime_lock import trading_state_lock
 from forward_paper.service import ForwardPaperService
 from execution.state_store import JsonStateStore
@@ -1491,9 +1492,38 @@ class StartupRunner:
                 # execution safety. Corruption fails the paper writer closed.
                 self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
 
+            execution_scores = {
+                snapshot.symbol.upper(): _execution_aware_score(snapshot)
+                for snapshot in snapshots
+            }
+            selection = select_execution_winner(
+                plans,
+                allowed_symbols=(
+                    self.settings.production_symbol_set
+                    if self.settings.is_live_execution
+                    else None
+                ),
+                execution_scores=execution_scores,
+            )
+            selected_plans = [selection.winner] if selection.winner is not None else []
+            if selection.winner_metrics is not None:
+                metrics = selection.winner_metrics
+                self.log.info(
+                    "PORTFOLIO_WINNER | symbol=%s | plan_id=%s | execution_score=%.8f | "
+                    "expectancy=%.8f | setup_quality=%.8f | liquidity_spread_quality=%.8f | "
+                    "valid_candidates=%s | rejected_candidates=%s",
+                    metrics.plan.symbol,
+                    metrics.plan.plan_id,
+                    metrics.execution_score,
+                    metrics.expectancy,
+                    metrics.setup_quality,
+                    metrics.liquidity_spread_quality,
+                    len(selection.ranked),
+                    len(selection.rejected),
+                )
             with trading_state_lock():
                 exec_reports = (
-                    self.execution_service.execute(plans)
+                    self.execution_service.execute(selected_plans)
                     if self.execution_service is not None
                     else []
                 )
