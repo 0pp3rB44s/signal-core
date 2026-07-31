@@ -28,11 +28,11 @@ pip install -r requirements.txt
 
 mkdir -p logs state reports/backtests
 
-if [ ! -f ".env" ]; then
-  cp .env.example .env
-  echo "created .env from .env.example"
-else
+if [ -f ".env" ]; then
   echo ".env already exists"
+else
+  echo ".env is machine-local and was not created"
+  echo "use config/runtime_keys.txt as the names-only configuration registry"
 fi
 
 chmod +x scripts/*.sh
@@ -41,6 +41,6 @@ echo ""
 echo "bootstrap completed"
 echo ""
 echo "next steps:"
-echo "1. edit .env with Bitget API credentials"
+echo "1. create .env locally and add required values using a secure method"
 echo "2. run: ./scripts/start_bot.sh"
 echo "3. run: ./scripts/start_dashboard.sh"

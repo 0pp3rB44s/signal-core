@@ -116,7 +116,10 @@ def test_12_state_and_reports_are_preserved():
 def test_13_environment_template_contains_no_secret_values(tmp_path: Path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "scripts").mkdir()
-    (tmp_path / ".env.example").write_text("# secret\nBITGET_API_KEY=example-value\nCGC_RUNTIME_MODE=production\nCGC_STATE_ROOT=elsewhere\n")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/runtime_keys.txt").write_text(
+        "BITGET_API_KEY\nCGC_RUNTIME_MODE\nCGC_STATE_ROOT\n"
+    )
     script = tmp_path / "scripts/create_runner_env_template.sh"
     script.write_text((ROOT / "scripts/create_runner_env_template.sh").read_text()); script.chmod(0o755)
     subprocess.run([str(script)], cwd=tmp_path, check=True, capture_output=True, text=True)

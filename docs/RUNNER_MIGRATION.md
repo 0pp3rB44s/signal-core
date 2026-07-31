@@ -119,8 +119,9 @@ scripts/deploy_runner.sh --rollback refs/runner-backups/<UTC timestamp>
 
 ## Configuration and local state
 
-Compare variable names/presence only, never values. `.env.example` is the safe
-schema; local `.env` stays ignored. Explicit operational roots are:
+Compare variable names/presence only, never values. `config/runtime_keys.txt`
+is the tracked names-only registry; local `.env*` files stay ignored. Explicit
+operational roots are:
 
 - `CGC_STATE_ROOT` — state, deployment marker and locks;
 - `CGC_REPORTS_ROOT` — local operational reports;
@@ -146,7 +147,7 @@ reports. No script extracts secrets from the Work Mac.
 After both local files exist, compare names/presence without values:
 
 ```bash
-scripts/compare_env_presence.sh .env.example /path/to/work/.env /path/to/runner/.env
+scripts/compare_env_presence.sh config/runtime_keys.txt /path/to/work/.env /path/to/runner/.env
 ```
 
 GitHub CLI is optional and is not used by Runner deployment. The Runner needs

@@ -11,7 +11,7 @@ if [ ! -d ".venv" ]; then
 fi
 
 if [ ! -f ".env" ]; then
-  echo "ERROR: .env not found. Copy .env.example to .env and fill in required values."
+  echo "ERROR: .env not found. Create it locally; required names are listed in config/runtime_keys.txt."
   exit 1
 fi
 

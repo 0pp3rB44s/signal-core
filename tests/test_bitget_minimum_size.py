@@ -521,9 +521,13 @@ def test_no_strategy_risk_or_planner_file_changed():
     import subprocess
     from pathlib import Path
     repo = Path(__file__).resolve().parents[1]
-    changed = subprocess.run(["git", "diff", "--name-only", "HEAD"], cwd=repo,
-                             capture_output=True, text=True).stdout.split()
-    forbidden = ("risk/", "planning/", "strategies/", "app/config.py", ".env")
-    for path in changed:
+    changed = subprocess.run(["git", "diff", "--name-status", "HEAD"], cwd=repo,
+                             capture_output=True, text=True).stdout.splitlines()
+    forbidden = ("risk/", "planning/", "strategies/", "app/config.py")
+    for entry in changed:
+        status, path = entry.split("\t", 1)
+        if path.startswith(".env"):
+            assert status == "D", f"environment config was not removal-only: {path}"
+            continue
         for bad in forbidden:
             assert not path.startswith(bad), f"out-of-scope file changed: {path}"

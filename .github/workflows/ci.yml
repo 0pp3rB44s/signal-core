@@ -28,7 +28,11 @@ jobs:
           CGC_UNAME_S=Darwin CGC_UNAME_M=x86_64 bash -c 'source scripts/lib/platform_preflight.sh; test "$(detect_architecture)" = x86_64; test "$(homebrew_prefix_for_architecture x86_64)" = /usr/local'
           echo "ci_host_architecture=$(uname -m)"
       - run: python -m pytest -q
-      - run: scripts/verify_repository_hygiene.sh
+      - name: Verify full tracked-tree hygiene
+        run: scripts/verify_repository_hygiene.sh --tracked
+      - name: Verify pull-request release-delta hygiene
+        if: github.event_name == 'pull_request'
+        run: scripts/verify_repository_hygiene.sh --base "origin/${GITHUB_BASE_REF}"
       - run: git diff --check
       - name: Verify research strategies are not production-registered
         run: |
