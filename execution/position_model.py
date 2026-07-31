@@ -483,14 +483,27 @@ def select_opening_fee(
     remaining_quantity: Decimal,
     configured_fallback_rate: Decimal,
 ) -> OpeningFeeSelection:
-    actual_fee = decimal_value(position.get("exchange_opening_fee_usdt"))
+    def confirmed_value_present(raw: Any) -> bool:
+        if raw in (None, ""):
+            return False
+        try:
+            return Decimal(str(raw)).is_finite()
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+
+    actual_fee_raw = position.get("exchange_opening_fee_usdt")
+    actual_fee = decimal_value(actual_fee_raw)
     actual_source = str(position.get("exchange_opening_fee_source") or "")
-    if actual_fee != ZERO and actual_source == EXCHANGE_ACTUAL:
+    if confirmed_value_present(actual_fee_raw) and actual_source == EXCHANGE_ACTUAL:
         return OpeningFeeSelection(abs(actual_fee), EXCHANGE_ACTUAL, ZERO)
 
-    persisted_fee = decimal_value(position.get("confirmed_opening_fee_usdt"))
+    persisted_fee_raw = position.get("confirmed_opening_fee_usdt")
+    persisted_fee = decimal_value(persisted_fee_raw)
     persisted_source = str(position.get("confirmed_opening_fee_source") or "")
-    if persisted_fee != ZERO and persisted_source in {EXCHANGE_ACTUAL, "PERSISTED_CONFIRMED_EXECUTION_FEE"}:
+    if confirmed_value_present(persisted_fee_raw) and persisted_source in {
+        EXCHANGE_ACTUAL,
+        "PERSISTED_CONFIRMED_EXECUTION_FEE",
+    }:
         return OpeningFeeSelection(abs(persisted_fee), EXCHANGE_ACTUAL, ZERO)
 
     exchange_rate = decimal_value(position.get("exchange_open_fee_rate"))

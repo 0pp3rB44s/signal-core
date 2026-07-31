@@ -1,5 +1,10 @@
 # C–K / LIVE multi-symbol integration review
 
+> **SUPERSEDED / REJECTED RELEASE:** this historical review belongs to the
+> rejected integration tip `8d538670ffb93b8fd6a6af506580f57b71bf5bdb` and is
+> not deployment approval. The clean replacement review is
+> `docs/CK_MULTISYMBOL_CLEAN_RELEASE_REVIEW.md`.
+
 Status: **IMPLEMENTATION READY FOR REVIEW**. This is a development-only handoff.
 No deployment, restart, order action, supervisor-pin update, LIVE-clone checkout, or
 configuration-file change was performed.
