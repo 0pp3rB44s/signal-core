@@ -594,15 +594,15 @@ class TpSlLifecycleMixin:
             return PROFIT_LOCK_CONFIRMED
         return BE_PLUS_FEES_CONFIRMED
 
-    def _exchange_tick_size(self, position: dict) -> Decimal:
+    def _exchange_tick_size(self, position: dict, *, force_refresh: bool = False) -> Decimal:
         persisted = decimal_value(position.get("exchange_tick_size"))
-        if persisted > 0:
+        if persisted > 0 and not force_refresh:
             return persisted
 
         symbol = str(position.get("symbol") or "")
         resolver = getattr(self.client, "_contract_price_scale", None)
         if callable(resolver):
-            scale = resolver(symbol)
+            scale = resolver(symbol, force_refresh=force_refresh)
             if isinstance(scale, int) and scale >= 0:
                 tick = Decimal("1").scaleb(-scale)
                 position["exchange_tick_size"] = decimal_float(tick)
@@ -726,8 +726,31 @@ class TpSlLifecycleMixin:
             critical=True,
         )
         direction = str(position.get("direction") or "").upper()
+        hold_side = "long" if direction == "LONG" else "short"
+        protection_reader = getattr(self.client, "get_active_protection_snapshot", None)
+        protection_snapshot = (
+            protection_reader(symbol=symbol, hold_side=hold_side)
+            if callable(protection_reader)
+            else {}
+        )
+        if not isinstance(protection_snapshot, dict):
+            protection_snapshot = {}
+        stop_orders = protection_snapshot.get("stop_orders") or []
+        stop_prices = [
+            decimal_value(order.get("trigger_price"))
+            for order in stop_orders
+            if isinstance(order, dict) and decimal_value(order.get("trigger_price")) > 0
+        ]
+        exchange_active_stop = (
+            max(stop_prices)
+            if direction == "LONG" and stop_prices
+            else min(stop_prices)
+            if direction == "SHORT" and stop_prices
+            else Decimal("0")
+        )
         active_stop = decimal_value(
-            live_position.get("stopLoss")
+            exchange_active_stop
+            or live_position.get("stopLoss")
             or live_position.get("stop_loss")
             or position.get("confirmed_stop")
             or position.get("stop_loss")
@@ -740,8 +763,9 @@ class TpSlLifecycleMixin:
             "size": size,
             "direction": direction,
             "active_stop": active_stop,
-            "tick_size": self._exchange_tick_size(position),
+            "tick_size": self._exchange_tick_size(position, force_refresh=True),
             "lifecycle_id": str(position.get("position_lifecycle_id") or ""),
+            "protection_snapshot": protection_snapshot,
         }
 
     def _retry_target(
@@ -854,6 +878,7 @@ class TpSlLifecycleMixin:
         )
         old_order_ids = self._extract_stop_loss_order_ids(position)
         position["protection_state"] = self._pending_protection_state(reason)
+        safest_confirmed = previous_confirmed
 
         for attempt in range(1, self.be_move_retries + 1):
             try:
@@ -868,9 +893,25 @@ class TpSlLifecycleMixin:
                 position["last_protection_retry_target"] = decimal_float(target)
                 position["last_protection_retry_attempt"] = attempt
 
+                refreshed_ids = [
+                    str(order.get("order_id") or "")
+                    for order in (context["protection_snapshot"].get("stop_orders") or [])
+                    if isinstance(order, dict) and order.get("order_id")
+                ]
+                old_order_ids = list(dict.fromkeys([*old_order_ids, *refreshed_ids]))
+                active_stop = decimal_value(context.get("active_stop"))
+                if active_stop > 0:
+                    safest_confirmed = (
+                        max(safest_confirmed, active_stop)
+                        if context["direction"] == "LONG"
+                        else min(safest_confirmed, active_stop)
+                        if safest_confirmed > 0
+                        else active_stop
+                    )
+
                 if not stop_is_monotonic(
                     direction=context["direction"],
-                    previous=previous_confirmed,
+                    previous=safest_confirmed,
                     proposed=target,
                 ):
                     raise PositionModelError(
@@ -914,7 +955,7 @@ class TpSlLifecycleMixin:
                         context["lifecycle_id"],
                         context["mark"],
                         target,
-                        previous_confirmed,
+                        safest_confirmed,
                         attempt,
                     )
                     return False
@@ -989,9 +1030,9 @@ class TpSlLifecycleMixin:
                 )
 
         position["protection_state"] = PROTECTION_UPDATE_FAILED
-        position["stop_loss"] = decimal_float(previous_confirmed)
-        position["exchange_stop_loss"] = decimal_float(previous_confirmed)
-        position["confirmed_stop"] = decimal_float(previous_confirmed)
+        position["stop_loss"] = decimal_float(safest_confirmed)
+        position["exchange_stop_loss"] = decimal_float(safest_confirmed)
+        position["confirmed_stop"] = decimal_float(safest_confirmed)
         self._record_pending_protection_update(
             position,
             requested_stop=new_stop,

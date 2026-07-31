@@ -135,6 +135,54 @@ class BitgetTPSLClientMixin:
 
         return all_plans, raw_payloads
 
+    def get_active_protection_snapshot(
+        self,
+        symbol: str,
+        hold_side: str,
+        product_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Read-only, sanitized active TP/SL summary for retry decisions."""
+        plans, _raw_payloads = self._fetch_tpsl_orders_broad(
+            symbol=symbol,
+            product_type=product_type,
+        )
+        wanted_side = str(hold_side or "").lower()
+        stops: list[dict[str, Any]] = []
+        take_profits: list[dict[str, Any]] = []
+        for plan in plans:
+            plan_side = str(plan.get("holdSide") or plan.get("posSide") or "").lower()
+            if wanted_side and plan_side and plan_side != wanted_side:
+                continue
+            plan_type = str(plan.get("planType") or plan.get("orderType") or "").lower()
+            trigger = (
+                plan.get("triggerPrice")
+                or plan.get("planTriggerPrice")
+                or plan.get("stopLossTriggerPrice")
+                or plan.get("stopSurplusTriggerPrice")
+            )
+            try:
+                trigger_value = float(trigger)
+            except (TypeError, ValueError):
+                continue
+            summary = {
+                "order_id": str(
+                    plan.get("planOrderId") or plan.get("orderId") or plan.get("id") or ""
+                ),
+                "trigger_price": trigger_value,
+                "hold_side": plan_side,
+                "plan_type": plan_type or "unknown",
+            }
+            if "loss" in plan_type:
+                stops.append(summary)
+            elif "profit" in plan_type:
+                take_profits.append(summary)
+        return {
+            "symbol": symbol.upper(),
+            "hold_side": wanted_side,
+            "stop_orders": stops,
+            "take_profit_orders": take_profits,
+        }
+
     def verify_active_stop_loss(
         self,
         symbol: str,

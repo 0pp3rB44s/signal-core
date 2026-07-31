@@ -200,14 +200,15 @@ class BitgetPrecisionMixin:
             retrieved_at=time.monotonic(), fallback_used=False,
         )
 
-    def _contract_spec(self, symbol: str) -> ContractSpec | None:
+    def _contract_spec(self, symbol: str, *, force_refresh: bool = False) -> ContractSpec | None:
         """Fresh spec, else the last validated one (flagged), else None."""
         product_type = str(self.settings.bitget_product_type).upper()
         key = self._spec_key(symbol)
 
-        cached = _CACHE.get_fresh(key)
-        if cached is not None:
-            return cached
+        if not force_refresh:
+            cached = _CACHE.get_fresh(key)
+            if cached is not None:
+                return cached
 
         try:
             payload = self.get_contracts(product_type, symbol=symbol.upper())
@@ -355,8 +356,8 @@ class BitgetPrecisionMixin:
 
     # --- price ------------------------------------------------------------
 
-    def _contract_price_scale(self, symbol: str) -> int | None:
-        spec = self._contract_spec(symbol)
+    def _contract_price_scale(self, symbol: str, *, force_refresh: bool = False) -> int | None:
+        spec = self._contract_spec(symbol, force_refresh=force_refresh)
         return None if spec is None else spec.price_place
 
     def _contract_volume_scale(self, symbol: str) -> int | None:
