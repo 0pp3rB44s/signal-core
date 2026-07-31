@@ -441,6 +441,25 @@ def test_opening_fee_precedence_is_actual_persisted_rate_then_configured_fallbac
     assert selected_actual.amount_usdt == D("0.08")
 
 
+def test_exchange_confirmed_zero_opening_fee_still_precedes_fallback():
+    position = dict(
+        _position(),
+        exchange_opening_fee_usdt=0,
+        exchange_opening_fee_source=EXCHANGE_ACTUAL,
+        exchange_open_fee_rate=0.01,
+    )
+
+    selected = select_opening_fee(
+        position,
+        exchange_entry=D("100"),
+        remaining_quantity=D("2"),
+        configured_fallback_rate=D("0.0006"),
+    )
+
+    assert selected.source == EXCHANGE_ACTUAL
+    assert selected.amount_usdt == D("0")
+
+
 def test_19_illegal_be_target_is_not_submitted():
     manager = _manager()
     position = _position()

@@ -8,6 +8,7 @@ own `generated_at` timestamp, so it's never confused with live state.
 
 import csv
 import json
+import math
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,18 +220,28 @@ def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) 
             0.0,
         )
         price_return_pct_value = _price_return_pct(direction, exchange_entry, price)
-        exchange_opening_fee = abs(_safe_float(state.get("exchange_opening_fee_usdt")))
-        confirmed_opening_fee = abs(_safe_float(state.get("confirmed_opening_fee_usdt")))
+        exchange_opening_fee_raw = state.get("exchange_opening_fee_usdt")
+        confirmed_opening_fee_raw = state.get("confirmed_opening_fee_usdt")
+        exchange_opening_fee = abs(_safe_float(exchange_opening_fee_raw))
+        confirmed_opening_fee = abs(_safe_float(confirmed_opening_fee_raw))
         exchange_fee_source = str(state.get("exchange_opening_fee_source") or "")
         confirmed_fee_source = str(state.get("confirmed_opening_fee_source") or "")
         exchange_open_rate = _safe_float(state.get("exchange_open_fee_rate"))
-        if exchange_opening_fee > 0 and exchange_fee_source == "EXCHANGE_ACTUAL":
+        if (
+            exchange_opening_fee_raw not in (None, "")
+            and math.isfinite(exchange_opening_fee)
+            and exchange_fee_source == "EXCHANGE_ACTUAL"
+        ):
             opening_fee = exchange_opening_fee
             opening_fee_source = "EXCHANGE_ACTUAL"
-        elif confirmed_opening_fee > 0 and confirmed_fee_source in {
+        elif (
+            confirmed_opening_fee_raw not in (None, "")
+            and math.isfinite(confirmed_opening_fee)
+            and confirmed_fee_source in {
             "EXCHANGE_ACTUAL",
             "PERSISTED_CONFIRMED_EXECUTION_FEE",
-        }:
+            }
+        ):
             opening_fee = confirmed_opening_fee
             opening_fee_source = "PERSISTED_CONFIRMED"
         elif exchange_open_rate > 0:
