@@ -3,7 +3,7 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.symbol_allowlist import parse_symbol_allowlist
+from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol_allowlist
 
 
 class Settings(BaseSettings):
@@ -271,6 +271,27 @@ class Settings(BaseSettings):
                 raise ValueError("LIVE requires EXECUTION_REQUIRE_CONFIRMATION=true")
             if self.execution_margin_mode.strip().lower() != "isolated":
                 raise ValueError("LIVE requires EXECUTION_MARGIN_MODE=isolated")
+            if self.is_production:
+                if tuple(symbols) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
+                    raise ValueError(
+                        "production LIVE requires the owner-approved nine-symbol allowlist"
+                    )
+                required_explicit = {
+                    "execution_margin_mode",
+                    "break_even_open_fee_fallback_rate",
+                    "break_even_expected_close_fee_rate",
+                    "break_even_spread_buffer_pct",
+                    "break_even_slippage_buffer_pct",
+                    "break_even_extra_buffer_pct",
+                    "break_even_fee_buffer_pct",
+                    "break_even_mark_safety_ticks",
+                }
+                missing = sorted(required_explicit - self.model_fields_set)
+                if missing:
+                    raise ValueError(
+                        "production LIVE requires explicit safety config: "
+                        + ",".join(missing)
+                    )
         return self
 
     @property

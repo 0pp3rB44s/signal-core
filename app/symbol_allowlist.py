@@ -11,6 +11,17 @@ import re
 
 
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,24}USDT$")
+OWNER_APPROVED_PRODUCTION_SYMBOLS = (
+    "BTCUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "XLMUSDT",
+    "AVAXUSDT",
+    "DOGEUSDT",
+    "WIFUSDT",
+    "SEIUSDT",
+    "TRXUSDT",
+)
 
 
 class SymbolAllowlistError(ValueError):
@@ -42,6 +53,7 @@ def canonical_symbol_csv(value: str, *, required: bool = False) -> str:
 
 
 __all__ = [
+    "OWNER_APPROVED_PRODUCTION_SYMBOLS",
     "SymbolAllowlistError",
     "canonical_symbol_csv",
     "parse_symbol_allowlist",

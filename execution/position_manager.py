@@ -1533,10 +1533,10 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         ).quantity
         mark = decimal_value(current_price)
         close_rate = decimal_value(
-            getattr(self.settings, "break_even_expected_close_fee_rate", 0.0006)
+            self.settings.break_even_expected_close_fee_rate
         )
         open_fallback_rate = decimal_value(
-            getattr(self.settings, "break_even_open_fee_fallback_rate", 0.0006)
+            self.settings.break_even_open_fee_fallback_rate
         )
         opening_fee = select_opening_fee(
             position,

@@ -78,6 +78,11 @@ def test_live_portfolio_and_scope_invariants_fail_closed(override, message):
         _live(**override)
 
 
+def test_production_live_requires_exact_owner_approved_nine_symbols():
+    with pytest.raises(ValidationError, match="owner-approved nine-symbol"):
+        _live(APP_ENV="production")
+
+
 def _run_guard(body: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "-c", f'. "{GUARD}"; {body}'],

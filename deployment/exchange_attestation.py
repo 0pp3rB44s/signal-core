@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
+
 
 READ_ONLY_CLIENT_METHODS = frozenset({
     "get_all_positions",
@@ -443,8 +445,9 @@ def attest_exchange(
         "no_unresolved_local_order_intents": not unresolved_intents,
         "no_state_quarantine_artifacts": quarantine_count == 0,
     }
+    owner_allowlist_match = allowlist == OWNER_APPROVED_PRODUCTION_SYMBOLS
     all_symbols_approved = bool(
-        allowlist
+        owner_allowlist_match
         and len(contracts) == len(allowlist)
         and all(row.get("classification") == "APPROVED" for row in contracts)
     )
@@ -456,6 +459,7 @@ def attest_exchange(
         "deployment_gate": "PASS" if ready else "FAIL",
         "allowlist": list(allowlist),
         "allowlist_count": len(allowlist),
+        "owner_allowlist_match": owner_allowlist_match,
         "required_leverage": float(required_leverage),
         "account_checks": account_checks,
         "open_positions": positions,
