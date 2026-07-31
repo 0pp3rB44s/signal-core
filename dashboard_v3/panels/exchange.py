@@ -41,6 +41,55 @@ def _first_f(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _direction(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"long", "buy"}:
+        return "LONG"
+    if text in {"short", "sell"}:
+        return "SHORT"
+    return "UNKNOWN"
+
+
+def _matching_local_state(
+    states: list[dict[str, Any]],
+    *,
+    symbol: str,
+    direction: str,
+    exchange_entry: float | None,
+) -> dict[str, Any] | None:
+    """Attach lifecycle metadata only after an unambiguous exchange-entry match."""
+    candidates = [
+        row
+        for row in states
+        if str(row.get("status") or "").upper() == "OPEN"
+        and str(row.get("symbol") or "").upper() == symbol
+        and _direction(row.get("direction")) == direction
+    ]
+    if len(candidates) != 1 or exchange_entry is None or exchange_entry <= 0:
+        return None
+    local_entry = _first_f(candidates[0], ("exchange_avg_entry",))
+    if local_entry is None or local_entry <= 0:
+        return None
+    tolerance = max(abs(exchange_entry) * 1e-8, 1e-8)
+    return candidates[0] if abs(local_entry - exchange_entry) <= tolerance else None
+
+
+def _plan_trigger(row: dict[str, Any]) -> float | None:
+    return _first_f(
+        row,
+        ("triggerPrice", "planTriggerPrice", "stopLossTriggerPrice", "stopSurplusTriggerPrice"),
+    )
+
+
+def _plan_kind(row: dict[str, Any]) -> str:
+    text = str(row.get("planType") or row.get("orderType") or "").lower()
+    if "loss" in text:
+        return "STOP_LOSS"
+    if "profit" in text:
+        return "TAKE_PROFIT"
+    return "UNKNOWN"
+
+
 def build(client_factory=None) -> dict[str, Any]:
     """Fetch account + positions. ``client_factory`` is injectable for tests."""
     signals = SignalSet()
@@ -49,6 +98,10 @@ def build(client_factory=None) -> dict[str, Any]:
     account: dict[str, Any] = {}
     positions: list[dict[str, Any]] = []
     open_orders: list[dict[str, Any]] = []
+    local_loaded = src.load_json("state/executed_trades.json", default=[])
+    local_states = [
+        row for row in (local_loaded.value or []) if isinstance(row, dict)
+    ] if isinstance(local_loaded.value, list) else []
 
     try:
         if client_factory is None:
@@ -94,12 +147,49 @@ def build(client_factory=None) -> dict[str, Any]:
             entry = _first_f(row, ("openPriceAvg", "averageOpenPrice", "avgOpenPrice", "openPrice"))
             mark = _first_f(row, ("markPrice", "marketPrice", "lastPrice"))
             hold = str(row.get("holdSide") or "").lower()
-            sl_value = str(row.get("stopLoss") or "")
+            direction = _direction(hold)
+            local_state = _matching_local_state(
+                local_states,
+                symbol=symbol,
+                direction=direction,
+                exchange_entry=entry,
+            )
+            symbol_plans = [
+                plan
+                for plan in tpsl_by_symbol.get(symbol, [])
+                if _direction(plan.get("holdSide") or plan.get("posSide")) in {direction, "UNKNOWN"}
+            ]
+            stop_triggers = [
+                trigger
+                for plan in symbol_plans
+                if _plan_kind(plan) == "STOP_LOSS"
+                for trigger in [_plan_trigger(plan)]
+                if trigger is not None and trigger > 0
+            ]
+            tp_triggers = [
+                trigger
+                for plan in symbol_plans
+                if _plan_kind(plan) == "TAKE_PROFIT"
+                for trigger in [_plan_trigger(plan)]
+                if trigger is not None and trigger > 0
+            ]
+            row_stop = _first_f(row, ("stopLoss",))
+            if row_stop is not None and row_stop > 0:
+                stop_triggers.append(row_stop)
+            row_tp = _first_f(row, ("takeProfit",))
+            if row_tp is not None and row_tp > 0:
+                tp_triggers.append(row_tp)
+            active_stop = (
+                max(stop_triggers)
+                if direction == "LONG" and stop_triggers
+                else min(stop_triggers)
+                if direction == "SHORT" and stop_triggers
+                else None
+            )
             sl_id = str(row.get("stopLossId") or "")
-            tp_value = str(row.get("takeProfit") or "")
             tp_id = str(row.get("takeProfitId") or "")
-            has_sl = bool(sl_value or sl_id)
-            has_tp = bool(tp_value or tp_id)
+            has_sl = bool(active_stop is not None or sl_id)
+            has_tp = bool(tp_triggers or tp_id)
 
             if has_sl and has_tp:
                 protection, prot_status = "PROTECTED", Status.HEALTHY
@@ -108,26 +198,60 @@ def build(client_factory=None) -> dict[str, Any]:
             else:
                 protection, prot_status = "UNPROTECTED", Status.BLOCKED
 
+            unrealised_pnl = _first_f(row, ("unrealizedPL", "unrealisedPnl"))
+            margin = _first_f(row, ("marginSize", "margin"))
+            price_return_pct = None
+            if entry is not None and entry > 0 and mark is not None and direction != "UNKNOWN":
+                move = mark - entry if direction == "LONG" else entry - mark
+                price_return_pct = move / entry * 100.0
+            margin_roi_pct = (
+                unrealised_pnl / margin * 100.0
+                if unrealised_pnl is not None and margin is not None and margin > 0
+                else None
+            )
+
             positions.append({
                 "symbol": symbol,
-                "side": "LONG" if hold == "long" else ("SHORT" if hold == "short" else "UNKNOWN"),
+                "active_symbol": True,
+                "side": direction,
                 "size": size,
+                # Exchange open-position data is the only displayed current fill.
                 "entry": entry,
+                "exchange_entry": entry,
+                "planned_entry": _first_f(local_state, ("planned_avg_entry",)) if local_state else None,
+                "entry_provenance": "BITGET_OPEN_POSITION_API",
+                "position_entry_provenance": (
+                    str(local_state.get("exchange_avg_entry_source") or "UNKNOWN")
+                    if local_state else "LOCAL_STATE_UNMATCHED"
+                ),
+                "lifecycle_id": (
+                    str(local_state.get("position_lifecycle_id") or "")
+                    if local_state else ""
+                ),
+                "local_state_match": bool(local_state),
                 "mark": mark,
                 "leverage": row.get("leverage"),
                 "margin_mode": row.get("marginMode"),
-                "margin": _first_f(row, ("marginSize", "margin")),
-                "unrealised_pnl": _first_f(row, ("unrealizedPL", "unrealisedPnl")),
+                "margin": margin,
+                "unrealised_pnl": unrealised_pnl,
+                "monetary_pnl": unrealised_pnl,
+                "price_return_pct": price_return_pct,
+                "margin_roi_pct": margin_roi_pct,
                 "liquidation": _first_f(row, ("liquidationPrice",)),
-                "stop_loss": sl_value or ("id:" + sl_id if sl_id else None),
-                "take_profit": tp_value or ("id:" + tp_id if tp_id else None),
+                "stop_loss": active_stop or ("id:" + sl_id if sl_id else None),
+                "active_stop": active_stop,
+                "take_profit": tp_triggers or (["id:" + tp_id] if tp_id else []),
                 "protection": protection,
                 "protection_status": prot_status,
+                "protection_state": (
+                    str(local_state.get("protection_state") or protection)
+                    if local_state else protection
+                ),
                 "opened_epoch": _f(row.get("cTime"), 0) / 1000.0 or None,
                 # These are not carried on the exchange payload. Never guessed.
                 "strategy": "UNKNOWN",
                 "score": "UNKNOWN",
-                "tpsl_orders": tpsl_by_symbol.get(symbol, []),
+                "tpsl_orders": symbol_plans,
             })
         reachable = True
     except Exception as exc:
@@ -167,6 +291,8 @@ def build(client_factory=None) -> dict[str, Any]:
             "margin_coin": account.get("marginCoin") or "USDT",
         },
         "positions": positions,
+        "active_symbols": [p["symbol"] for p in positions],
+        "local_state_provenance": local_loaded.provenance,
         "open_orders": open_orders,
         "position_count": len(positions),
         "unprotected_count": sum(1 for p in positions if p["protection"] != "PROTECTED"),

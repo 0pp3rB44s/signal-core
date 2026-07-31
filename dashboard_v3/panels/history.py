@@ -28,6 +28,15 @@ def _f(v: Any, d: float = 0.0) -> float:
         return d
 
 
+def _optional_f(v: Any) -> float | None:
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _ts(row: dict[str, Any]) -> datetime | None:
     for key in ("closed_at", "close_time", "exit_time", "timestamp", "opened_at"):
         raw = row.get(key)
@@ -42,7 +51,8 @@ def _ts(row: dict[str, Any]) -> datetime | None:
 
 
 def _pnl(row: dict[str, Any]) -> float | None:
-    for key in ("net_pnl", "pnl", "realized_pnl", "profit"):
+    # Both fields are monetary.  Percentage fields are intentionally excluded.
+    for key in ("exchange_truth_pnl", "net_pnl"):
         if row.get(key) not in (None, ""):
             try:
                 return float(row[key])
@@ -115,17 +125,39 @@ def build(window_days: int = 30) -> dict[str, Any]:
             "symbol": str(row.get("symbol") or "?").upper(),
             "strategy": strategy,
             "direction": str(row.get("direction") or "").upper(),
-            "entry": _f(row.get("actual_entry") or row.get("avg_entry") or row.get("entry")),
-            "exit": _f(row.get("exit_price") or row.get("close_price")),
+            # Never present planning or legacy telemetry as a current fill.
+            "entry": _optional_f(row.get("exchange_avg_entry")),
+            "exchange_entry": _optional_f(row.get("exchange_avg_entry")),
+            "planned_entry": _optional_f(row.get("planned_avg_entry")),
+            "entry_provenance": str(
+                row.get("exchange_avg_entry_source") or "UNAVAILABLE"
+            ),
+            "lifecycle_id": str(row.get("position_lifecycle_id") or ""),
+            "exit": _optional_f(
+                row.get("exchange_truth_exit_price") or row.get("exit")
+            ),
             "opened_at": row.get("opened_at"),
             "closed_at": when,
             "pnl": pnl,
+            "monetary_pnl": pnl,
+            "price_return_pct": _optional_f(row.get("price_return_pct")),
+            "margin_roi_pct": _optional_f(row.get("margin_roi_pct")),
+            "confirmed_size": _optional_f(
+                row.get("exchange_truth_size")
+                or row.get("confirmed_position_size")
+                or row.get("position_size")
+            ),
+            "economics_source": (
+                "BITGET_POSITION_HISTORY"
+                if row.get("exchange_truth_pnl") not in (None, "")
+                else "DATASET_NET_PNL"
+            ),
             "result": "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "FLAT"),
             "r_multiple": _f(row.get("r_multiple")) if row.get("r_multiple") else None,
             "exit_reason": row.get("exit_reason") or row.get("result") or "UNKNOWN",
             "tp1_hit": _truthy(row.get("tp1_hit")),
             "sl_hit": _truthy(row.get("sl_hit")) if "sl_hit" in row else None,
-            "fees": _f(row.get("fees_paid")),
+            "fees": _f(row.get("exchange_truth_fee") or row.get("fees")),
             "score": _f(row.get("score")) if row.get("score") else None,
             "cohort": "RECOVERY_ONLY" if recovery else "LIVE",
             "in_window": when >= cutoff,
@@ -146,9 +178,11 @@ def build(window_days: int = 30) -> dict[str, Any]:
     live_stats["tp1_missing"] = len(live) - len(tp1_tracked)
 
     by_symbol = collections.defaultdict(list)
+    by_symbol_direction = collections.defaultdict(list)
     by_strategy = collections.defaultdict(list)
     for t in live:
         by_symbol[t["symbol"]].append(t["pnl"])
+        by_symbol_direction[(t["symbol"], t["direction"])].append(t["pnl"])
         by_strategy[t["strategy"]].append(t["pnl"])
 
     equity_curve = []
@@ -189,6 +223,13 @@ def build(window_days: int = 30) -> dict[str, Any]:
         "by_symbol": sorted(
             ({"key": k, **_stats(v)} for k, v in by_symbol.items()),
             key=lambda r: r["total"], reverse=True),
+        "by_symbol_direction": sorted(
+            (
+                {"symbol": symbol, "direction": direction, **_stats(values)}
+                for (symbol, direction), values in by_symbol_direction.items()
+            ),
+            key=lambda r: (r["symbol"], r["direction"]),
+        ),
         "by_strategy": sorted(
             ({"key": k, **_stats(v)} for k, v in by_strategy.items()),
             key=lambda r: r["total"], reverse=True),

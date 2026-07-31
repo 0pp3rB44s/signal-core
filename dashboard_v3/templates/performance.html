@@ -80,7 +80,9 @@
     <div class="scroll tall"><table id="tt">
       <thead><tr>
         <th>Gesloten</th><th>Symbool</th><th>Strategie</th><th>Richting</th>
-        <th class="n">Entry</th><th class="n">Exit</th><th class="n">PnL</th>
+        <th class="n">Gepland</th><th class="n">Exchange-entry</th><th>Entrybron</th>
+        <th>Lifecycle</th><th class="n">Exchange-exit</th><th class="n">PnL USDT</th>
+        <th class="n">Prijsretour</th><th class="n">Margin ROI</th><th class="n">Omvang</th>
         <th class="n">R</th><th>Reden</th><th>TP1</th><th>Cohort</th>
       </tr></thead>
       <tbody>
@@ -90,9 +92,15 @@
           <td><b>{{ t.symbol }}</b></td>
           <td>{{ t.strategy }}</td>
           <td>{{ t.direction }}</td>
-          <td class="n">{{ num(t.entry,4) }}</td>
+          <td class="n">{{ num(t.planned_entry,4) if t.planned_entry is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ num(t.exchange_entry,4) if t.exchange_entry is not none else 'UNKNOWN' }}</td>
+          <td><span class="tag">{{ t.entry_provenance }}</span></td>
+          <td><code>{{ t.lifecycle_id or 'UNKNOWN' }}</code></td>
           <td class="n">{{ num(t.exit,4) if t.exit else 'UNKNOWN' }}</td>
           <td class="n {{ 'pos' if t.pnl > 0 else ('neg' if t.pnl < 0 else '') }}">{{ num(t.pnl,4) }}</td>
+          <td class="n">{{ pct_raw(t.price_return_pct,3) }}</td>
+          <td class="n">{{ pct_raw(t.margin_roi_pct,3) }}</td>
+          <td class="n">{{ num(t.confirmed_size,4) if t.confirmed_size is not none else 'UNKNOWN' }}</td>
           <td class="n">{{ num(t.r_multiple,2) if t.r_multiple is not none else '—' }}</td>
           <td>{{ t.exit_reason }}</td>
           <td>{% if t.tp1_hit is none %}<span class="tag">UNKNOWN</span>{% elif t.tp1_hit %}<span class="badge t-ok">● ja</span>{% else %}<span class="tag">nee</span>{% endif %}</td>
