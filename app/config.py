@@ -100,7 +100,37 @@ class Settings(BaseSettings):
     planner_max_notional_per_trade_usdt: float = Field(default=35.0, alias="PLANNER_MAX_NOTIONAL_PER_TRADE_USDT")
     planner_min_live_notional_usdt: float = Field(default=10.0, alias="PLANNER_MIN_LIVE_NOTIONAL_USDT")
     symbol_cooldown_minutes: int = Field(default=30, alias="SYMBOL_COOLDOWN_MINUTES")
+    # Legacy, mutually-exclusive fallback only. Critical BE calculations use
+    # the itemised Decimal model below whenever confirmed entry/size exist.
     break_even_fee_buffer_pct: float = Field(default=0.12, alias="BREAK_EVEN_FEE_BUFFER_PCT")
+    # Decimal rate, not percent: 0.0006 = 6 bps. Stops are market-triggered, so
+    # the conservative taker rate is assumed for the expected closing fill.
+    break_even_expected_close_fee_rate: float = Field(
+        default=0.0006,
+        alias="BREAK_EVEN_EXPECTED_CLOSE_FEE_RATE",
+    )
+    break_even_spread_buffer_pct: float = Field(
+        default=0.02,
+        alias="BREAK_EVEN_SPREAD_BUFFER_PCT",
+    )
+    break_even_slippage_buffer_pct: float = Field(
+        default=0.03,
+        alias="BREAK_EVEN_SLIPPAGE_BUFFER_PCT",
+    )
+    break_even_extra_buffer_pct: float = Field(
+        default=0.01,
+        alias="BREAK_EVEN_EXTRA_BUFFER_PCT",
+    )
+    break_even_mark_safety_ticks: int = Field(
+        default=2,
+        alias="BREAK_EVEN_MARK_SAFETY_TICKS",
+    )
+    # Fatal migration assertions are development/test-only. Even when set,
+    # position_model.py suppresses them for LIVE execution.
+    position_model_dev_assertions: bool = Field(
+        default=False,
+        alias="POSITION_MODEL_DEV_ASSERTIONS",
+    )
     # UTC hour windows where live results are historically negative; risk is
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
