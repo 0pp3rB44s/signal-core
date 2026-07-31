@@ -59,6 +59,11 @@ def _client(open_positions: list[dict] | None = None) -> MagicMock:
     client.close_futures_position_full.return_value = {"status": "CLOSED"}
     client.move_futures_stop_loss.return_value = {"data": {"orderId": "sl-1"}}
     client.verify_active_stop_loss.return_value = {"verified": True}
+    client._contract_price_scale.return_value = 2
+    client.get_active_protection_snapshot.return_value = {
+        "stop_orders": [],
+        "take_profit_orders": [],
+    }
     client.extract_fill_metrics.return_value = {}
     return client
 

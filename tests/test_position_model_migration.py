@@ -127,6 +127,11 @@ def _manager() -> PositionManager:
     }
     manager.client.verify_active_stop_loss.return_value = {"verified": True}
     manager.client.cancel_futures_plan_order.return_value = {"code": "00000"}
+    manager.client._contract_price_scale.return_value = 2
+    manager.client.get_active_protection_snapshot.return_value = {
+        "stop_orders": [],
+        "take_profit_orders": [],
+    }
     manager.be_move_retries = 3
     manager.failed_continuation_sl_buffer_pct = 0.06
     manager.failed_continuation_min_age_minutes = 10.0
@@ -467,6 +472,60 @@ def test_24_old_sl_remains_active_during_replacement():
         symbol="BTCUSDT",
         order_id="old-sl",
     )
+
+
+def test_retry_refreshes_metadata_and_active_protection_on_every_attempt():
+    manager = _manager()
+    position = _position()
+    manager.client.get_all_positions.side_effect = [
+        {"data": [_live(mark="101")]},
+        {"data": [_live(mark="101.1")]},
+    ]
+    manager.client.move_futures_stop_loss.side_effect = [
+        RuntimeError("transient exchange error"),
+        {"placed": {"data": {"orderId": "new-sl"}}},
+    ]
+
+    assert manager._move_exchange_stop_loss_with_retries(
+        position,
+        100.19,
+        "PROFIT_LOCK_BE",
+    )
+
+    assert manager.client.get_active_protection_snapshot.call_count == 2
+    assert manager.client._contract_price_scale.call_count == 2
+    assert all(
+        call.kwargs == {"force_refresh": True}
+        for call in manager.client._contract_price_scale.call_args_list
+    )
+
+
+def test_retry_never_downgrades_a_tighter_exchange_active_stop():
+    manager = _manager()
+    position = _position(stop="99")
+    manager.client.get_all_positions.return_value = {"data": [_live(mark="102")]}
+    manager.client.get_active_protection_snapshot.return_value = {
+        "stop_orders": [
+            {
+                "order_id": "exchange-tighter-sl",
+                "trigger_price": 100.5,
+                "hold_side": "long",
+                "plan_type": "loss_plan",
+            }
+        ],
+        "take_profit_orders": [],
+    }
+
+    assert not manager._move_exchange_stop_loss_with_retries(
+        position,
+        100.19,
+        "PROFIT_LOCK_BE",
+    )
+
+    manager.client.move_futures_stop_loss.assert_not_called()
+    assert position["confirmed_stop"] == 100.5
+    assert position["exchange_stop_loss"] == 100.5
+    assert position["stop_loss"] == 100.5
 
 
 def test_25_long_protection_is_monotonic():
