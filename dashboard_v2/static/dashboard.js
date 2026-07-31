@@ -126,7 +126,7 @@ function renderPositions(positions, protectionRows) {
       const protection = protectionBySymbol[p.symbol];
       const borderClass = p.sl === "MISSING" || p.tp === "MISSING" ? "danger-border" : "good-border";
       const direction = (p.direction || "").toLowerCase();
-      const pnlClass = Number(p.pnl) >= 0 ? "good" : "danger";
+      const pnlClass = Number(p.estimated_net_unrealized_pnl) >= 0 ? "good" : "danger";
       return `
         <article class="position-card ${borderClass}">
           <header class="position-card-head">
@@ -135,8 +135,8 @@ function renderPositions(positions, protectionRows) {
               <span class="direction-pill ${direction === "short" ? "short" : ""}">${escapeHtml(p.direction)}</span>
             </div>
             <div class="position-pnl ${pnlClass}">
-              <strong>${escapeHtml(p.pnl)} USDT</strong>
-              <span>${escapeHtml(p.pnl_pct)}%</span>
+              <strong>${escapeHtml(p.estimated_net_unrealized_pnl)} USDT net est.</strong>
+              <span>${escapeHtml(p.price_return_pct)}% price return</span>
             </div>
           </header>
           <div class="position-lifecycle">
@@ -146,12 +146,20 @@ function renderPositions(positions, protectionRows) {
             <div class="lifecycle-step ${p.tp3_hit ? "good" : "pending"}"><span>TP3</span><strong>${p.tp3_hit ? "HIT" : "WAIT"}</strong></div>
           </div>
           <div class="position-grid">
-            <div><span>Entry</span><strong>${escapeHtml(p.entry)}</strong></div>
-            <div><span>Live Price</span><strong>${escapeHtml(p.price)}</strong></div>
+            <div><span>Planned Avg Entry</span><strong>${escapeHtml(p.planned_avg_entry)}</strong></div>
+            <div><span>Exchange Avg Entry</span><strong>${escapeHtml(p.exchange_avg_entry)}</strong></div>
+            <div><span>Entry Delta</span><strong>${escapeHtml(p.entry_delta)}</strong></div>
+            <div><span>Entry Provenance</span><strong>${escapeHtml(p.exchange_avg_entry_source)}</strong></div>
+            <div><span>Current Mark</span><strong>${escapeHtml(p.current_mark)}</strong></div>
+            <div><span>Gross Unrealized PnL</span><strong>${escapeHtml(p.gross_unrealized_pnl)} USDT</strong></div>
+            <div><span>Estimated Fees</span><strong>${escapeHtml(p.estimated_fees)} USDT</strong></div>
+            <div><span>Estimated Net UPL</span><strong>${escapeHtml(p.estimated_net_unrealized_pnl)} USDT</strong></div>
+            <div><span>Margin ROI</span><strong>${escapeHtml(p.margin_roi_pct)}%</strong></div>
             <div><span>Size</span><strong>${escapeHtml(p.size)}</strong></div>
-            <div><span>Stop Loss</span><strong class="${p.sl === "MISSING" ? "danger" : ""}">${escapeHtml(p.sl)}</strong></div>
+            <div><span>Confirmed Stop</span><strong class="${p.confirmed_stop === "MISSING" ? "danger" : ""}">${escapeHtml(p.confirmed_stop)}</strong></div>
+            <div><span>BE + Fees Level</span><strong>${escapeHtml(p.calculated_be_plus_fees)}</strong></div>
             <div><span>Take Profit</span><strong class="${p.tp === "MISSING" ? "danger" : ""}">${escapeHtml(p.tp)}</strong></div>
-            <div><span>Protection</span><strong class="${protection ? protection.level : "warning"}">${protection ? escapeHtml(protection.status) : "UNKNOWN"}</strong></div>
+            <div><span>Protection State</span><strong class="${protection ? protection.level : "warning"}">${escapeHtml(p.protection_state || "UNKNOWN")}</strong></div>
             <div><span>Live RR</span><strong>${escapeHtml(p.live_rr)}</strong></div>
             <div><span>Distance to SL</span><strong>${escapeHtml(p.distance_to_sl_pct)}%</strong></div>
             <div><span>Notional</span><strong>${escapeHtml(p.notional)}</strong></div>

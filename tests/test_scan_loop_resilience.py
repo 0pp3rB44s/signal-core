@@ -11,6 +11,7 @@ A long-running collector must outlive the network.
 from __future__ import annotations
 
 import json
+import fcntl
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -114,3 +115,25 @@ def test_fetch_contracts_failure_releases_the_scan_lock(runner):
     # A second cycle is still able to start.
     runner._scan_cycle()
     assert runner.fetcher.fetch_contracts.call_count == 2
+
+
+def test_second_runner_process_cannot_enter_an_active_scan_cycle(tmp_path, monkeypatch):
+    """The interprocess scan lock rejects overlap before market or execution work."""
+    monkeypatch.chdir(tmp_path)
+    lock_path = tmp_path / "state" / "scan_cycle.lock"
+    lock_path.parent.mkdir()
+    runner = StartupRunner.__new__(StartupRunner)
+    runner._scan_in_progress = False
+    runner._scan_lock_path = str(lock_path)
+    runner.log = MagicMock()
+
+    with lock_path.open("w") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with patch("app.runner.runtime_heartbeat") as heartbeat:
+            runner._scan_cycle()
+
+    runner.log.warning.assert_called_once_with(
+        "SCAN_SKIPPED | another runner process is already scanning"
+    )
+    assert runner._scan_in_progress is False
+    heartbeat.assert_called_once_with("scan_cycle_incomplete")

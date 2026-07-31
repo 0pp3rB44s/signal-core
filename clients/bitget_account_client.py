@@ -18,6 +18,26 @@ class BitgetAccountClientMixin:
             private=True,
         )
 
+    def get_symbol_account(
+        self,
+        symbol: str,
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+    ) -> dict[str, Any]:
+        """Read one symbol's current margin mode and leverage configuration."""
+        return self._request(
+            "GET",
+            "/api/v2/mix/account/account",
+            params={
+                "symbol": symbol.upper(),
+                "productType": (
+                    product_type or self.settings.bitget_product_type
+                ).upper(),
+                "marginCoin": margin_coin.upper(),
+            },
+            private=True,
+        )
+
     def get_all_positions(
         self,
         product_type: str | None = None,

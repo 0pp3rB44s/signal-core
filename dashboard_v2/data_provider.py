@@ -8,6 +8,7 @@ own `generated_at` timestamp, so it's never confused with live state.
 
 import csv
 import json
+import math
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +39,10 @@ def _read_json(path: Path) -> Any:
         return None
     try:
         with locked_open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+            payload = json.load(handle)
+        if isinstance(payload, dict) and "_state_metadata" in payload and "data" in payload:
+            return payload.get("data")
+        return payload
     except Exception:
         return None
 
@@ -138,13 +142,13 @@ def _position_direction(row: dict[str, Any]) -> str:
     return str(row.get("direction") or "-").upper()
 
 
-def _pnl_pct(direction: str, entry: float, price: float) -> float:
-    if entry <= 0 or price <= 0:
+def _price_return_pct(direction: str, exchange_entry: float, price: float) -> float:
+    if exchange_entry <= 0 or price <= 0:
         return 0.0
     if direction == "LONG":
-        return (price - entry) / entry * 100
+        return (price - exchange_entry) / exchange_entry * 100
     if direction == "SHORT":
-        return (entry - price) / entry * 100
+        return (exchange_entry - price) / exchange_entry * 100
     return 0.0
 
 
@@ -182,6 +186,7 @@ def _normalize_tpsl_orders(raw_tpsl: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    settings = get_settings()
     state_positions = _read_json(STATE_PATH / "executed_trades.json") or []
     state_by_symbol = {
         str(p.get("symbol") or ""): p for p in state_positions if isinstance(p, dict)
@@ -197,15 +202,71 @@ def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) 
         state = state_by_symbol.get(symbol, {})
 
         direction = _position_direction(row)
-        entry = _first_float(row, ["openPriceAvg", "averageOpenPrice", "avgEntryPrice", "entryPrice"], 0.0)
-        price = _first_float(row, ["markPrice", "lastPrice"], entry)
+        exchange_entry = _first_float(
+            row,
+            ["openPriceAvg", "averageOpenPrice", "avgEntryPrice", "entryPrice"],
+            0.0,
+        )
+        planned_entry = _safe_float(state.get("planned_avg_entry"))
+        price = _first_float(row, ["markPrice", "lastPrice"], exchange_entry)
         leverage = _first_float(row, ["leverage"], 1.0) or 1.0
         notional = _first_float(row, ["positionValue", "notional", "usdtValue"], 0.0)
         if notional <= 0 and price > 0:
             notional = price * size
 
-        pnl = _first_float(row, ["unrealizedPL", "unrealizedPnl", "upl"], 0.0)
-        pnl_pct = _pnl_pct(direction, entry, price)
+        gross_unrealized_pnl = _first_float(
+            row,
+            ["unrealizedPL", "unrealizedPnl", "upl"],
+            0.0,
+        )
+        price_return_pct_value = _price_return_pct(direction, exchange_entry, price)
+        exchange_opening_fee_raw = state.get("exchange_opening_fee_usdt")
+        confirmed_opening_fee_raw = state.get("confirmed_opening_fee_usdt")
+        exchange_opening_fee = abs(_safe_float(exchange_opening_fee_raw))
+        confirmed_opening_fee = abs(_safe_float(confirmed_opening_fee_raw))
+        exchange_fee_source = str(state.get("exchange_opening_fee_source") or "")
+        confirmed_fee_source = str(state.get("confirmed_opening_fee_source") or "")
+        exchange_open_rate = _safe_float(state.get("exchange_open_fee_rate"))
+        if (
+            exchange_opening_fee_raw not in (None, "")
+            and math.isfinite(exchange_opening_fee)
+            and exchange_fee_source == "EXCHANGE_ACTUAL"
+        ):
+            opening_fee = exchange_opening_fee
+            opening_fee_source = "EXCHANGE_ACTUAL"
+        elif (
+            confirmed_opening_fee_raw not in (None, "")
+            and math.isfinite(confirmed_opening_fee)
+            and confirmed_fee_source in {
+            "EXCHANGE_ACTUAL",
+            "PERSISTED_CONFIRMED_EXECUTION_FEE",
+            }
+        ):
+            opening_fee = confirmed_opening_fee
+            opening_fee_source = "PERSISTED_CONFIRMED"
+        elif exchange_open_rate > 0:
+            opening_fee = exchange_entry * size * exchange_open_rate
+            opening_fee_source = "EXCHANGE_RATE"
+        else:
+            opening_fee = (
+                exchange_entry
+                * size
+                * float(settings.break_even_open_fee_fallback_rate)
+            )
+            opening_fee_source = "CONFIGURED_FALLBACK"
+        close_fee_rate = float(settings.break_even_expected_close_fee_rate)
+        estimated_closing_fee = abs(notional * close_fee_rate)
+        estimated_fees = opening_fee + estimated_closing_fee
+        estimated_net_unrealized_pnl = gross_unrealized_pnl - estimated_fees
+        margin = notional / leverage if notional > 0 and leverage > 0 else 0.0
+        margin_roi_pct = (
+            estimated_net_unrealized_pnl / margin * 100.0 if margin > 0 else 0.0
+        )
+        estimated_net_return_pct = (
+            estimated_net_unrealized_pnl / (exchange_entry * size) * 100.0
+            if exchange_entry > 0 and size > 0
+            else 0.0
+        )
 
         matching = [order for order in tpsl_orders if order.get("symbol") == symbol]
         stop_orders = [order for order in matching if order.get("plan_type") == "loss_plan"]
@@ -220,18 +281,36 @@ def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) 
             distance_to_sl_pct = abs(price - sl) / price * 100.0
 
         live_rr = 0.0
-        if entry > 0 and isinstance(sl, (int, float)) and sl > 0:
-            risk = abs(entry - sl)
-            reward = abs(price - entry)
+        if exchange_entry > 0 and isinstance(sl, (int, float)) and sl > 0:
+            risk = abs(exchange_entry - sl)
+            reward = abs(price - exchange_entry)
             live_rr = reward / risk if risk > 0 else 0.0
 
         positions.append({
             "symbol": symbol,
             "direction": direction,
-            "entry": round(entry, 8),
-            "price": round(price, 8),
-            "pnl": round(pnl, 4),
-            "pnl_pct": round(pnl_pct, 3),
+            "planned_avg_entry": round(planned_entry, 8),
+            "exchange_avg_entry": round(exchange_entry, 8),
+            "entry_delta": round(exchange_entry - planned_entry, 8)
+            if exchange_entry > 0 and planned_entry > 0
+            else None,
+            "exchange_avg_entry_source": str(
+                state.get("exchange_avg_entry_source")
+                or "BITGET_OPEN_POSITION_DASHBOARD"
+            ),
+            "current_mark": round(price, 8),
+            "gross_unrealized_pnl": round(gross_unrealized_pnl, 4),
+            "estimated_opening_fee": round(opening_fee, 4),
+            "opening_fee_source": opening_fee_source,
+            "estimated_closing_fee": round(estimated_closing_fee, 4),
+            "estimated_fees": round(estimated_fees, 4),
+            "estimated_net_unrealized_pnl": round(
+                estimated_net_unrealized_pnl,
+                4,
+            ),
+            "price_return_pct": round(price_return_pct_value, 3),
+            "margin_roi_pct": round(margin_roi_pct, 3),
+            "estimated_net_return_pct": round(estimated_net_return_pct, 3),
             "size": size,
             "notional": round(notional, 4),
             "leverage": leverage,
@@ -239,11 +318,18 @@ def _normalize_positions(raw_positions: Any, tpsl_orders: list[dict[str, Any]]) 
             "tp": tp,
             "distance_to_sl_pct": round(distance_to_sl_pct, 3),
             "live_rr": round(live_rr, 3),
-            "break_even_active": bool(state.get("break_even_active")),
+            "break_even_active": str(state.get("protection_state") or "") in {
+                "BE_PLUS_FEES_CONFIRMED",
+                "PROFIT_LOCK_CONFIRMED",
+                "TRAILING_CONFIRMED",
+            },
             "tp1_hit": bool(state.get("tp1_hit")),
             "tp2_hit": bool(state.get("tp2_hit")),
             "tp3_hit": bool(state.get("tp3_hit")),
             "protection_verified": bool(state.get("protection_verified")),
+            "protection_state": str(state.get("protection_state") or "UNKNOWN"),
+            "confirmed_stop": state.get("confirmed_stop") or sl,
+            "calculated_be_plus_fees": state.get("calculated_be_plus_fees"),
         })
     return positions
 
@@ -255,10 +341,20 @@ def _fallback_positions() -> list[dict[str, Any]]:
         positions.append({
             "symbol": p.get("symbol"),
             "direction": p.get("direction"),
-            "entry": p.get("entry"),
-            "price": p.get("price") or p.get("entry"),
-            "pnl": p.get("pnl", 0),
-            "pnl_pct": p.get("pnl_pct", 0),
+            "planned_avg_entry": p.get("planned_avg_entry"),
+            "exchange_avg_entry": None,
+            "entry_delta": None,
+            "exchange_avg_entry_source": "UNAVAILABLE",
+            "current_mark": p.get("price"),
+            "gross_unrealized_pnl": None,
+            "estimated_opening_fee": None,
+            "opening_fee_source": "UNAVAILABLE",
+            "estimated_closing_fee": None,
+            "estimated_fees": None,
+            "estimated_net_unrealized_pnl": None,
+            "price_return_pct": None,
+            "margin_roi_pct": None,
+            "estimated_net_return_pct": None,
             "size": p.get("size"),
             "notional": p.get("notional", 0),
             "leverage": p.get("leverage", "-"),
@@ -266,6 +362,9 @@ def _fallback_positions() -> list[dict[str, Any]]:
             "tp": p.get("take_profit", "MISSING"),
             "distance_to_sl_pct": 0.0,
             "live_rr": 0.0,
+            "protection_state": p.get("protection_state", "UNKNOWN"),
+            "confirmed_stop": p.get("confirmed_stop"),
+            "calculated_be_plus_fees": p.get("calculated_be_plus_fees"),
         })
     return positions
 
@@ -318,7 +417,12 @@ def _build_protection_alerts() -> list[dict[str, str]]:
         stop_loss = _safe_float(p.get("stop_loss"))
         take_profits = p.get("take_profits") or []
         tp1_hit = bool(p.get("tp1_hit"))
-        break_even_active = bool(p.get("break_even_active"))
+        protection_state = str(p.get("protection_state") or "")
+        break_even_active = protection_state in {
+            "BE_PLUS_FEES_CONFIRMED",
+            "PROFIT_LOCK_CONFIRMED",
+            "TRAILING_CONFIRMED",
+        }
         protection_verified = bool(p.get("protection_verified"))
 
         if stop_loss <= 0 or not take_profits:
@@ -355,7 +459,12 @@ def _build_position_protection_status(positions: list[dict[str, Any]]) -> list[d
         state = state_by_symbol.get(symbol, {})
         sl, tp = p.get("sl"), p.get("tp")
         tp1_hit = bool(state.get("tp1_hit"))
-        be_active = bool(state.get("break_even_active"))
+        protection_state = str(state.get("protection_state") or "")
+        be_active = protection_state in {
+            "BE_PLUS_FEES_CONFIRMED",
+            "PROFIT_LOCK_CONFIRMED",
+            "TRAILING_CONFIRMED",
+        }
         trailing_active = bool(state.get("trailing_active"))
         protection_verified = bool(state.get("protection_verified"))
         exchange_synced = bool(state.get("exchange_synced", protection_verified))
@@ -385,6 +494,7 @@ def _build_position_protection_status(positions: list[dict[str, Any]]) -> list[d
             "tp2_hit": bool(state.get("tp2_hit")),
             "tp3_hit": bool(state.get("tp3_hit")),
             "be_active": be_active,
+            "protection_state": protection_state or "UNKNOWN",
             "trailing_active": trailing_active,
             "exchange_synced": exchange_synced,
             "orphan_risk": not exchange_synced and has_sl,
@@ -445,13 +555,23 @@ def _build_live_risk_panel(wallet: dict[str, float], positions: list[dict[str, A
     exposure_pct = (exposure / equity * 100.0) if equity > 0 else 0.0
 
     state_positions = _read_json(STATE_PATH / "executed_trades.json") or []
+    live_size_by_symbol = {
+        str(position.get("symbol") or ""): _safe_float(position.get("size"))
+        for position in positions
+        if isinstance(position, dict)
+    }
     open_trade_risk = 0.0
     for row in state_positions if isinstance(state_positions, list) else []:
         if not isinstance(row, dict) or str(row.get("status") or "").upper() != "OPEN":
             continue
-        entry = _safe_float(row.get("avg_entry") or row.get("entry"))
-        stop = _safe_float(row.get("stop_loss"))
-        size = _safe_float(row.get("size"))
+        entry = _safe_float(row.get("exchange_avg_entry"))
+        stop = _safe_float(row.get("confirmed_stop") or row.get("stop_loss"))
+        size = _safe_float(
+            live_size_by_symbol.get(str(row.get("symbol") or ""))
+            or row.get("confirmed_remaining_size")
+            or row.get("confirmed_fill_quantity")
+            or row.get("confirmed_position_size")
+        )
         if entry > 0 and stop > 0 and size > 0:
             open_trade_risk += abs(entry - stop) * size
 
@@ -540,11 +660,11 @@ def _build_equity_curve_panel(wallet: dict[str, float]) -> dict[str, Any]:
     points: list[dict[str, Any]] = []
 
     for idx, row in enumerate(closed_rows, start=1):
-        pnl_value = _safe_float(row.get("pnl"))
-        if pnl_value == 0.0:
-            pnl_pct = _safe_float(row.get("realized_pnl_pct"))
-            notional = _safe_float(row.get("notional") or row.get("position_notional_usdt"))
-            pnl_value = notional * (pnl_pct / 100.0) if notional else 0.0
+        pnl_value = _safe_float(
+            row.get("exchange_truth_pnl")
+            or row.get("realized_pnl")
+            or row.get("pnl")
+        )
 
         cumulative += pnl_value
         peak = max(peak, cumulative)

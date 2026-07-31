@@ -33,6 +33,7 @@ STALE_POLICY: dict[str, tuple[float, float | None]] = {
     "state/runtime_heartbeat.json": (600, 3600),
     "state/watchdog_heartbeat.json": (3600, None),
     "state/account_equity.json": (3600, None),
+    "state/executed_trades.json": (900, 7200),
     "data_store/funnel_events.jsonl": (900, 7200),
     "logs/live.out": (900, 7200),
     "logs/trade_plans.csv": (3600, None),

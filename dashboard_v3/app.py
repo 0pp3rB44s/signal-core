@@ -39,6 +39,7 @@ if not DASHBOARD_PASSWORD:
 #: secret-bearing setting cannot leak by being added to Settings later.
 SAFE_SETTINGS = (
     "execution_mode", "execution_enabled", "forward_paper_only", "max_symbols",
+    "production_symbol_allowlist",
     "max_open_positions", "max_leverage", "default_leverage",
     "execution_require_confirmation", "position_manager_enabled",
     "position_loop_enabled", "bitget_product_type", "dashboard_host",

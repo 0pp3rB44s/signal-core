@@ -106,6 +106,37 @@ guard_load_env() {
   echo "config: loaded $f"
 }
 
+# Canonical LIVE market scope.  PRODUCTION_SYMBOL_ALLOWLIST is the only owner-
+# controlled source; legacy WATCHLIST / EXECUTION_CONFIRM_SYMBOLS / MAX_SYMBOLS
+# values are derived in-memory and are never independent allowlists.
+guard_apply_canonical_symbol_allowlist() {
+  local raw="${PRODUCTION_SYMBOL_ALLOWLIST:-}" symbol normalized="" count=0
+  [ -n "$raw" ] || guard_die \
+    "LIVE requires owner-confirmed PRODUCTION_SYMBOL_ALLOWLIST; broad defaults are forbidden"
+
+  local IFS=',' seen=','
+  for symbol in $raw; do
+    symbol="$(printf '%s' "$symbol" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')"
+    [ -n "$symbol" ] || continue
+    [[ "$symbol" =~ ^[A-Z0-9]{2,24}USDT$ ]] || guard_die \
+      "invalid symbol in PRODUCTION_SYMBOL_ALLOWLIST: '$symbol'"
+    case "$seen" in
+      *",${symbol},"*) guard_die "duplicate symbol in PRODUCTION_SYMBOL_ALLOWLIST: '$symbol'" ;;
+    esac
+    seen="${seen}${symbol},"
+    normalized="${normalized}${normalized:+,}${symbol}"
+    count=$((count + 1))
+  done
+
+  [ "$count" -gt 0 ] || guard_die "PRODUCTION_SYMBOL_ALLOWLIST normalised to an empty list"
+  export PRODUCTION_SYMBOL_ALLOWLIST="$normalized"
+  export WATCHLIST="$normalized"
+  export EXECUTION_CONFIRM_SYMBOLS="$normalized"
+  export MAX_SYMBOLS="$count"
+  export ALLOW_AUTO_WATCHLIST_REFRESH=false
+  echo "guard: canonical production allowlist OK (count=$count; symbols=$normalized)"
+}
+
 # Assert the FORWARD PAPER invariants. Aborts if live execution is reachable.
 guard_assert_forward_mode() {
   [ "${FORWARD_PAPER_ONLY:-}" = "true" ]  || guard_die "forward mode requires FORWARD_PAPER_ONLY=true (got '${FORWARD_PAPER_ONLY:-unset}')"
@@ -134,11 +165,17 @@ guard_assert_live_mode() {
 # Pilot exposure ceilings. Independent of mode; applies to both.
 guard_assert_pilot_limits() {
   local max_sym="${MAX_SYMBOLS:-0}" max_pos="${MAX_OPEN_POSITIONS:-0}"
-  [ "$max_sym" -le 1 ] 2>/dev/null || guard_die "pilot ceiling: MAX_SYMBOLS must be <=1 (got '$max_sym')"
-  [ "$max_pos" -le 1 ] 2>/dev/null || guard_die "pilot ceiling: MAX_OPEN_POSITIONS must be <=1 (got '$max_pos')"
+  local allow_count=0 symbol IFS=','
+  for symbol in ${PRODUCTION_SYMBOL_ALLOWLIST:-}; do [ -n "$symbol" ] && allow_count=$((allow_count + 1)); done
+  [ "$allow_count" -gt 0 ] || guard_die "canonical production allowlist is unavailable"
+  [ "$max_sym" -eq "$allow_count" ] 2>/dev/null || guard_die \
+    "MAX_SYMBOLS must equal canonical allowlist size $allow_count (got '$max_sym')"
+  [ "$max_pos" -eq 1 ] 2>/dev/null || guard_die "MAX_OPEN_POSITIONS must equal 1 (got '$max_pos')"
+  [ "${EXECUTION_MAX_PER_CYCLE:-0}" -eq 1 ] 2>/dev/null || guard_die \
+    "EXECUTION_MAX_PER_CYCLE must equal 1"
   [ "${ALLOW_AUTO_WATCHLIST_REFRESH:-true}" = "false" ] || guard_die "pilot requires ALLOW_AUTO_WATCHLIST_REFRESH=false"
   [ "${FORWARD_PAPER_SMOKE_STRATEGY_ENABLED:-false}" = "false" ] || guard_die "smoke harness must be disabled"
-  echo "guard: pilot limits OK (symbols<=$max_sym, positions<=$max_pos)"
+  echo "guard: portfolio limits OK (symbols=$max_sym, positions=$max_pos, executions_per_cycle=1)"
 }
 
 # Repository must be clean: a dirty tree silently breaks every automatic restart.

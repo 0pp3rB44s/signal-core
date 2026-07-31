@@ -382,11 +382,10 @@ def test_dashboard_labels_the_new_code():
     assert "SYMBOL_EXPECTANCY_SOURCE_MALFORMED" in REASON_LABELS
 
 
-# --- integration: the real live dataset ---------------------------------
+# --- integration: an empty, schema-valid live dataset -------------------
 
-def test_empty_local_dataset_gives_btcusdt_no_pause_in_either_direction(tmp_path):
-    """A names-only checkout has no tracked LIVE closes, so neither direction may
-    be paused by symbol expectancy. The fixture remains hermetic."""
+def test_empty_live_dataset_gives_btcusdt_no_pause_in_either_direction(tmp_path):
+    """No exchange-confirmed closes means neither direction may be paused."""
     dataset = _dataset(tmp_path, [])
     for direction in ("LONG", "SHORT"):
         rec = se.record_for(
@@ -400,7 +399,10 @@ def test_empty_local_dataset_gives_btcusdt_no_pause_in_either_direction(tmp_path
 
 def _settings(**over) -> Settings:
     base = {"EXECUTION_ENABLED": True, "EXECUTION_MODE": "LIVE",
-            "EXECUTION_REQUIRE_CONFIRMATION": False, "MAKER_ENTRY_ENABLED": False,
+            "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT", "MAX_SYMBOLS": 1,
+            "MAX_OPEN_POSITIONS": 1, "EXECUTION_MAX_PER_CYCLE": 1,
+            "ALLOW_AUTO_WATCHLIST_REFRESH": False,
+            "EXECUTION_REQUIRE_CONFIRMATION": True, "MAKER_ENTRY_ENABLED": False,
             "SYMBOL_COOLDOWN_MINUTES": 0}
     base.update(over)
     return Settings(_env_file=None, **base)
@@ -425,7 +427,12 @@ def test_live_long_is_no_longer_paused_by_the_retired_offline_data(
     rm = RiskManager(settings=_settings(ENABLE_SHORTS=False))
     monkeypatch.setattr(rm, "_latest_backtest_summary", lambda: {"by_strategy": {}})
     monkeypatch.setattr(rm, "_latest_strategy_expectancy", lambda: {})
-    monkeypatch.setattr(rm, "_daily_defensive_status", lambda: {})
+    monkeypatch.setattr(
+        rm,
+        "_daily_defensive_status",
+        lambda: {"daily_total_net_pnl": 0.0, "consecutive_losses": 0},
+    )
+    monkeypatch.setattr(rm, "_weekly_realized_pnl", lambda: 0.0)
     allowed, reasons = rm._kill_switch_gate(_candidate("LONG"))
     joined = " | ".join(reasons)
     assert allowed is True

@@ -64,11 +64,9 @@ elif [[ "$mode" == "release" ]]; then
     [[ -z "$path" ]] || paths+=("$path")
   done < <(
     {
-      # Removing a forbidden baseline artifact is the cleanup itself. Deleted
-      # paths are not release contents and are therefore intentionally omitted.
-      git diff --name-only --diff-filter=ACMRT "${base_ref}...HEAD"
-      git diff --cached --name-only --diff-filter=ACMRT
-      git diff --name-only --diff-filter=ACMRT
+      git diff --name-only --diff-filter=ACDMRT "${base_ref}...HEAD"
+      git diff --cached --name-only --diff-filter=ACDMRT
+      git diff --name-only --diff-filter=ACDMRT
       git ls-files --others --exclude-standard
     } | LC_ALL=C sort -u
   )

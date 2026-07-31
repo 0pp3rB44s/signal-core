@@ -61,6 +61,22 @@ class BitgetMarketClientMixin:
             params["symbol"] = symbol.upper()
         return self._request("GET", "/api/v2/mix/market/contracts", params=params)
 
+    def get_symbol_price(
+        self,
+        symbol: str,
+        product_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Return exchange, index, and mark prices for one futures symbol."""
+        return self._request(
+            "GET",
+            "/api/v2/mix/market/symbol-price",
+            params={
+                "symbol": symbol.upper(),
+                "productType": product_type or self.settings.bitget_product_type,
+            },
+            private=False,
+        )
+
     def get_candles(
         self,
         symbol: str,

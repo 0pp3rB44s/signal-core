@@ -161,9 +161,10 @@ def test_schema_v1_heartbeat_is_flagged_as_degraded_telemetry(tmp_path, monkeypa
 # --- exchange: unreachable, empty, populated -----------------------------
 
 class _FakeClient:
-    def __init__(self, positions=None, fail=False):
+    def __init__(self, positions=None, fail=False, tpsl=None):
         self._positions = positions or []
         self._fail = fail
+        self._tpsl = tpsl or []
 
     def get_accounts(self, product_type=None):
         if self._fail:
@@ -175,7 +176,7 @@ class _FakeClient:
         return {"data": self._positions}
 
     def get_tpsl_orders(self, product_type=None):
-        return {"data": []}
+        return {"data": self._tpsl}
 
     def get_pending_orders(self, product_type=None):
         return {"data": {"entrustedList": None}}
@@ -185,9 +186,11 @@ class _FakeClient:
         return []
 
 
-def _exchange(positions=None, fail=False):
+def _exchange(positions=None, fail=False, tpsl=None):
     from dashboard_v3.panels import exchange
-    return exchange.build(client_factory=lambda: (_FakeClient(positions, fail), "USDT-FUTURES"))
+    return exchange.build(
+        client_factory=lambda: (_FakeClient(positions, fail, tpsl), "USDT-FUTURES")
+    )
 
 
 def test_unreachable_exchange_is_unknown_and_shows_no_positions():
@@ -228,6 +231,82 @@ def test_protected_position_is_healthy_and_never_guesses_strategy():
     # Strategy/score are not on the exchange payload -> must stay UNKNOWN.
     assert pos["strategy"] == "UNKNOWN"
     assert pos["score"] == "UNKNOWN"
+
+
+def test_exchange_panel_separates_planning_from_fill_and_matches_lifecycle(
+    tmp_path, monkeypatch
+):
+    from dashboard_v3.core import sources
+    from dashboard_v3.panels import exchange
+
+    monkeypatch.setattr(sources, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(exchange.src, "BASE_PATH", tmp_path)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "executed_trades.json").write_text(json.dumps([{
+        "symbol": "SOLUSDT",
+        "direction": "LONG",
+        "status": "OPEN",
+        "planned_avg_entry": 74.0,
+        "exchange_avg_entry": 75.0,
+        "exchange_avg_entry_source": "BITGET_ENTRY_FILL",
+        "position_lifecycle_id": "sol-life-1",
+        "protection_state": "PROFIT_LOCK_CONFIRMED",
+        # Legacy aliases must not become the displayed fill.
+        "avg_entry": 10.0,
+        "actual_entry": 11.0,
+    }]), encoding="utf-8")
+
+    data = _exchange(
+        positions=[{
+            "symbol": "SOLUSDT", "total": "2", "holdSide": "long",
+            "openPriceAvg": "75", "markPrice": "76.5", "leverage": "3",
+            "marginSize": "50", "unrealizedPL": "3", "stopLoss": "",
+            "takeProfit": "",
+        }],
+        tpsl=[
+            {"symbol": "SOLUSDT", "holdSide": "long", "planType": "loss_plan",
+             "triggerPrice": "75.4"},
+            {"symbol": "SOLUSDT", "holdSide": "long", "planType": "profit_plan",
+             "triggerPrice": "78"},
+        ],
+    )
+
+    pos = data["positions"][0]
+    assert pos["entry"] == 75.0
+    assert pos["exchange_entry"] == 75.0
+    assert pos["planned_entry"] == 74.0
+    assert pos["entry_provenance"] == "BITGET_OPEN_POSITION_API"
+    assert pos["lifecycle_id"] == "sol-life-1"
+    assert pos["active_stop"] == 75.4
+    assert pos["protection"] == "PROTECTED"
+    assert pos["protection_state"] == "PROFIT_LOCK_CONFIRMED"
+    assert pos["monetary_pnl"] == 3.0
+    assert pos["price_return_pct"] == pytest.approx(2.0)
+    assert pos["margin_roi_pct"] == pytest.approx(6.0)
+
+
+def test_exchange_panel_refuses_mismatched_local_lifecycle(tmp_path, monkeypatch):
+    from dashboard_v3.core import sources
+    from dashboard_v3.panels import exchange
+
+    monkeypatch.setattr(sources, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(exchange.src, "BASE_PATH", tmp_path)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "executed_trades.json").write_text(json.dumps([{
+        "symbol": "BTCUSDT", "direction": "LONG", "status": "OPEN",
+        "planned_avg_entry": 62000, "exchange_avg_entry": 62500,
+        "position_lifecycle_id": "stale-life",
+    }]), encoding="utf-8")
+
+    pos = _exchange(positions=[{
+        "symbol": "BTCUSDT", "total": "0.1", "holdSide": "long",
+        "openPriceAvg": "63000", "markPrice": "63100",
+    }])["positions"][0]
+
+    assert pos["exchange_entry"] == 63000.0
+    assert pos["planned_entry"] is None
+    assert pos["lifecycle_id"] == ""
+    assert pos["local_state_match"] is False
 
 
 # --- funnel --------------------------------------------------------------
@@ -304,6 +383,76 @@ def test_recovery_cohort_is_separated_from_live(tmp_path, monkeypatch):
     # The profitable recovery trade must NOT inflate the live cohort.
     assert data["live_stats"]["total"] == pytest.approx(-0.5)
     assert data["signals"].by_key("cohort") is not None
+
+
+def test_history_uses_only_canonical_entry_and_monetary_pnl(tmp_path, monkeypatch):
+    import csv
+    from datetime import datetime, timezone
+    from dashboard_v3.core import sources
+    from dashboard_v3.panels import history
+
+    monkeypatch.setattr(sources, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(history.src, "BASE_PATH", tmp_path)
+    (tmp_path / "logs").mkdir()
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [{
+        "event_type": "CLOSE", "status": "CLOSED", "symbol": "SOLUSDT",
+        "direction": "SHORT", "strategy": "momentum_breakdown",
+        "closed_at": now, "planned_avg_entry": "101", "exchange_avg_entry": "100",
+        "exchange_avg_entry_source": "BITGET_OPEN_POSITION",
+        "position_lifecycle_id": "sol-short-1", "actual_entry": "777",
+        "avg_entry": "888", "exchange_truth_exit_price": "98",
+        "exchange_truth_pnl": "4.0", "net_pnl": "999", "pnl_pct": "1234",
+        "price_return_pct": "2.0", "margin_roi_pct": "6.0",
+        "exchange_truth_size": "2", "exchange_truth_fee": "0.1",
+        "data_confidence": "EXCHANGE_TRUTH",
+    }]
+    path = tmp_path / "logs" / "trade_dataset_v2.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    data = history.build()
+    trade = data["trades"][0]
+    assert trade["entry"] == 100.0
+    assert trade["planned_entry"] == 101.0
+    assert trade["entry_provenance"] == "BITGET_OPEN_POSITION"
+    assert trade["lifecycle_id"] == "sol-short-1"
+    assert trade["exit"] == 98.0
+    assert trade["pnl"] == 4.0
+    assert trade["monetary_pnl"] == 4.0
+    assert trade["price_return_pct"] == 2.0
+    assert trade["margin_roi_pct"] == 6.0
+    assert trade["confirmed_size"] == 2.0
+    assert data["by_symbol_direction"][0]["symbol"] == "SOLUSDT"
+    assert data["by_symbol_direction"][0]["direction"] == "SHORT"
+
+
+def test_history_does_not_treat_percentage_only_row_as_monetary_pnl(
+    tmp_path, monkeypatch
+):
+    import csv
+    from datetime import datetime, timezone
+    from dashboard_v3.core import sources
+    from dashboard_v3.panels import history
+
+    monkeypatch.setattr(sources, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(history.src, "BASE_PATH", tmp_path)
+    (tmp_path / "logs").mkdir()
+    row = {
+        "event_type": "CLOSE", "status": "CLOSED", "symbol": "BTCUSDT",
+        "direction": "LONG", "closed_at": datetime.now(timezone.utc).isoformat(),
+        "pnl_pct": "8.5", "margin_roi_pct": "25.5",
+    }
+    with (tmp_path / "logs" / "trade_dataset_v2.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+
+    assert history.build()["trades"] == []
 
 
 # --- the safety guarantees ----------------------------------------------

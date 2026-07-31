@@ -176,7 +176,16 @@ class ExecutionReport:
     take_profits: list[float]
     position_notional_usdt: float
     leverage: float
+    planned_avg_entry: float = 0.0
+    exchange_avg_entry: float = 0.0
+    exchange_avg_entry_source: str = ""
+    position_lifecycle_id: str = ""
+    exchange_entry_order_id: str = ""
+    exchange_entry_client_oid: str = ""
+    confirmed_position_size: float = 0.0
+    confirmed_opening_fee_usdt: float = 0.0
     expected_entry: float = 0.0
+    # Legacy telemetry only. Never authoritative for protection or economics.
     actual_entry: float = 0.0
     slippage_pct: float = 0.0
     fees_paid: float = 0.0
@@ -196,3 +205,15 @@ class PositionUpdate:
     tp2_hit: bool
     tp3_hit: bool
     note: str
+    price_return_pct: float = 0.0
+    margin_roi_pct: float = 0.0
+    estimated_net_return_pct: float = 0.0
+    gross_unrealized_pnl: float = 0.0
+    estimated_fees: float = 0.0
+    estimated_net_unrealized_pnl: float = 0.0
+    planned_avg_entry: float = 0.0
+    exchange_avg_entry: float = 0.0
+    exchange_avg_entry_source: str = ""
+    protection_state: str = ""
+    confirmed_stop: float = 0.0
+    calculated_be_plus_fees: float = 0.0

@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol_allowlist
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -38,6 +40,12 @@ class Settings(BaseSettings):
             "AAVEUSDT,XLMUSDT,TRXUSDT,FILUSDT"
         ),
         alias="WATCHLIST",
+    )
+    # Empty by default on purpose.  A LIVE process must receive an explicit,
+    # owner-confirmed value; the broad development watchlist is never promoted.
+    production_symbol_allowlist: str = Field(
+        default="",
+        alias="PRODUCTION_SYMBOL_ALLOWLIST",
     )
     allow_auto_watchlist_refresh: bool = Field(default=True, alias="ALLOW_AUTO_WATCHLIST_REFRESH")
     min_usdt_volume_24h: float = Field(default=10_000_000, alias="MIN_USDT_VOLUME_24H")
@@ -100,7 +108,43 @@ class Settings(BaseSettings):
     planner_max_notional_per_trade_usdt: float = Field(default=35.0, alias="PLANNER_MAX_NOTIONAL_PER_TRADE_USDT")
     planner_min_live_notional_usdt: float = Field(default=10.0, alias="PLANNER_MIN_LIVE_NOTIONAL_USDT")
     symbol_cooldown_minutes: int = Field(default=30, alias="SYMBOL_COOLDOWN_MINUTES")
+    # Legacy, mutually-exclusive fallback only. Critical BE calculations use
+    # the itemised Decimal model below whenever confirmed entry/size exist.
     break_even_fee_buffer_pct: float = Field(default=0.12, alias="BREAK_EVEN_FEE_BUFFER_PCT")
+    # Decimal rate, not percent. Used only when no exchange-confirmed opening
+    # fee amount or exchange opening fee rate is available.
+    break_even_open_fee_fallback_rate: float = Field(
+        default=0.0006,
+        alias="BREAK_EVEN_OPEN_FEE_FALLBACK_RATE",
+    )
+    # Decimal rate, not percent: 0.0006 = 6 bps. Stops are market-triggered, so
+    # the conservative taker rate is assumed for the expected closing fill.
+    break_even_expected_close_fee_rate: float = Field(
+        default=0.0006,
+        alias="BREAK_EVEN_EXPECTED_CLOSE_FEE_RATE",
+    )
+    break_even_spread_buffer_pct: float = Field(
+        default=0.02,
+        alias="BREAK_EVEN_SPREAD_BUFFER_PCT",
+    )
+    break_even_slippage_buffer_pct: float = Field(
+        default=0.03,
+        alias="BREAK_EVEN_SLIPPAGE_BUFFER_PCT",
+    )
+    break_even_extra_buffer_pct: float = Field(
+        default=0.01,
+        alias="BREAK_EVEN_EXTRA_BUFFER_PCT",
+    )
+    break_even_mark_safety_ticks: int = Field(
+        default=2,
+        alias="BREAK_EVEN_MARK_SAFETY_TICKS",
+    )
+    # Fatal migration assertions are development/test-only. Even when set,
+    # position_model.py suppresses them for LIVE execution.
+    position_model_dev_assertions: bool = Field(
+        default=False,
+        alias="POSITION_MODEL_DEV_ASSERTIONS",
+    )
     # UTC hour windows where live results are historically negative; risk is
     # multiplied down (never up) inside them. Format: "08-12,23-01" (end exclusive).
     session_risk_reduction_windows_utc: str = Field(default="08-12,23-01", alias="SESSION_RISK_REDUCTION_WINDOWS_UTC")
@@ -143,6 +187,7 @@ class Settings(BaseSettings):
     execution_mode: str = Field(default="DRY_RUN", alias="EXECUTION_MODE")
     execution_require_confirmation: bool = Field(default=True, alias="EXECUTION_REQUIRE_CONFIRMATION")
     execution_confirm_symbols: str = Field(default="", alias="EXECUTION_CONFIRM_SYMBOLS")
+    execution_margin_mode: str = Field(default="isolated", alias="EXECUTION_MARGIN_MODE")
     execution_max_per_cycle: int = Field(default=1, alias="EXECUTION_MAX_PER_CYCLE")
     execution_plan_limit: int = Field(default=2, alias="EXECUTION_PLAN_LIMIT")
     execution_max_live_notional_per_trade_usdt: float = Field(default=35.0, alias="EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT")
@@ -206,6 +251,47 @@ class Settings(BaseSettings):
             and not self.execution_enabled
         ):
             self.forward_paper_smoke_strategy_enabled = False
+
+        if self.is_live_execution:
+            symbols = parse_symbol_allowlist(
+                self.production_symbol_allowlist,
+                required=True,
+            )
+            if self.max_open_positions != 1:
+                raise ValueError("LIVE requires MAX_OPEN_POSITIONS=1")
+            if self.execution_max_per_cycle != 1:
+                raise ValueError("LIVE requires EXECUTION_MAX_PER_CYCLE=1")
+            if self.max_symbols != len(symbols):
+                raise ValueError(
+                    "LIVE MAX_SYMBOLS must equal the canonical production allowlist size"
+                )
+            if self.allow_auto_watchlist_refresh:
+                raise ValueError("LIVE requires ALLOW_AUTO_WATCHLIST_REFRESH=false")
+            if not self.execution_require_confirmation:
+                raise ValueError("LIVE requires EXECUTION_REQUIRE_CONFIRMATION=true")
+            if self.execution_margin_mode.strip().lower() != "isolated":
+                raise ValueError("LIVE requires EXECUTION_MARGIN_MODE=isolated")
+            if self.is_production:
+                if tuple(symbols) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
+                    raise ValueError(
+                        "production LIVE requires the owner-approved nine-symbol allowlist"
+                    )
+                required_explicit = {
+                    "execution_margin_mode",
+                    "break_even_open_fee_fallback_rate",
+                    "break_even_expected_close_fee_rate",
+                    "break_even_spread_buffer_pct",
+                    "break_even_slippage_buffer_pct",
+                    "break_even_extra_buffer_pct",
+                    "break_even_fee_buffer_pct",
+                    "break_even_mark_safety_ticks",
+                }
+                missing = sorted(required_explicit - self.model_fields_set)
+                if missing:
+                    raise ValueError(
+                        "production LIVE requires explicit safety config: "
+                        + ",".join(missing)
+                    )
         return self
 
     @property
@@ -225,7 +311,20 @@ class Settings(BaseSettings):
 
     @property
     def watchlist_symbols(self) -> list[str]:
+        if self.is_live_execution:
+            return list(self.production_symbols)
         return [s.strip().upper() for s in self.watchlist.split(",") if s.strip()]
+
+    @property
+    def production_symbols(self) -> tuple[str, ...]:
+        return parse_symbol_allowlist(
+            self.production_symbol_allowlist,
+            required=self.is_live_execution,
+        )
+
+    @property
+    def production_symbol_set(self) -> frozenset[str]:
+        return frozenset(self.production_symbols)
 
     @property
     def strategy_debug_symbol_set(self) -> set[str]:
@@ -242,6 +341,8 @@ class Settings(BaseSettings):
 
     @property
     def execution_confirm_symbol_set(self) -> set[str]:
+        if self.is_live_execution:
+            return set(self.production_symbols)
         return {s.strip().upper() for s in self.execution_confirm_symbols.split(",") if s.strip()}
 
 

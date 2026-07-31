@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from app.config import Settings
@@ -12,6 +13,20 @@ from execution.state_store import JsonStateStore
 from risk.cooldown_manager import SymbolCooldownManager
 from execution.closed_trade_writer import ClosedTradeWriterMixin
 from execution.position_reconciler import PositionReconcilerMixin
+from execution.position_model import (
+    AuthoritativeEntryUnavailable,
+    INITIAL_PROTECTION_CONFIRMED,
+    PositionLifecycleMismatch,
+    PositionModelError,
+    confirm_exchange_position,
+    confirmed_position_size,
+    decimal_float,
+    decimal_value,
+    migrate_planned_entry,
+    position_economics,
+    position_prices,
+    select_opening_fee,
+)
 from execution.tp_sl_lifecycle import TpSlLifecycleMixin
 from telemetry.trade_logger import LiveTradeJournalLogger
 
@@ -44,6 +59,9 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         use_snapshot_context: bool = True,
     ) -> list[PositionUpdate]:
         positions = self.store.load(default=[])
+        for position in positions:
+            if isinstance(position, dict):
+                migrate_planned_entry(position)
 
         price_map = {snapshot.symbol: snapshot.primary.latest_close for snapshot in snapshots}
         snapshot_map = {snapshot.symbol: snapshot for snapshot in snapshots}
@@ -152,24 +170,49 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             if bitget_sync_ok and symbol in bitget_open_symbols:
                 self._heal_missing_protection_from_fallback(position)
             if not bitget_sync_ok:
-                current_price = float(price_map.get(symbol, position.get("last_price", position["avg_entry"])))
+                current_price = float(price_map.get(symbol, position.get("last_price") or 0.0))
                 position["last_price"] = current_price
-                note = "exchange sync failed; preserving OPEN state"
+                try:
+                    economics = self._live_economics(position, current_price=current_price)
+                    price_return_value = decimal_float(economics.price_return_pct)
+                    margin_roi_value = decimal_float(economics.margin_roi_pct)
+                    estimated_net_return_value = decimal_float(economics.estimated_net_return_pct)
+                except PositionModelError as exc:
+                    price_return_value = 0.0
+                    margin_roi_value = 0.0
+                    estimated_net_return_value = 0.0
+                    position["protection_data_status"] = "EXCHANGE_TRUTH_UNAVAILABLE"
+                    position["protection_data_error"] = str(exc)
+                    self.log.critical(
+                        "PROTECTION_DATA_UNAVAILABLE | %s | lifecycle_id=%s | module=position_manager.sync | "
+                        "confirmed_stop_retained=%s | error=%s",
+                        symbol,
+                        position.get("position_lifecycle_id") or "UNKNOWN",
+                        position.get("confirmed_stop") or position.get("stop_loss"),
+                        exc,
+                    )
+                note = "exchange sync failed; preserving OPEN state and confirmed stop"
                 updates.append(
                     PositionUpdate(
                         symbol=symbol,
                         status=position["status"],
                         current_price=current_price,
-                        unrealized_pnl_pct=round(
-                            self._pnl_pct(str(position.get("direction") or ""), float(position.get("avg_entry") or 0), current_price),
-                            3,
-                        ),
+                        unrealized_pnl_pct=round(price_return_value, 3),
                         stop_loss=float(position.get("stop_loss", 0)),
                         break_even_active=bool(position.get("break_even_active", False)),
                         tp1_hit=bool(position.get("tp1_hit", False)),
                         tp2_hit=bool(position.get("tp2_hit", False)),
                         tp3_hit=bool(position.get("tp3_hit", False)),
                         note=note,
+                        price_return_pct=round(price_return_value, 3),
+                        margin_roi_pct=round(margin_roi_value, 3),
+                        estimated_net_return_pct=round(estimated_net_return_value, 3),
+                        planned_avg_entry=float(position.get("planned_avg_entry") or 0.0),
+                        exchange_avg_entry=float(position.get("exchange_avg_entry") or 0.0),
+                        exchange_avg_entry_source=str(position.get("exchange_avg_entry_source") or ""),
+                        protection_state=str(position.get("protection_state") or ""),
+                        confirmed_stop=float(position.get("confirmed_stop") or position.get("stop_loss") or 0.0),
+                        calculated_be_plus_fees=float(position.get("calculated_be_plus_fees") or 0.0),
                     )
                 )
                 events.append(
@@ -178,10 +221,9 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         "symbol": symbol,
                         "status": position["status"],
                         "current_price": current_price,
-                        "unrealized_pnl_pct": round(
-                            self._pnl_pct(str(position.get("direction") or ""), float(position.get("avg_entry") or 0), current_price),
-                            3,
-                        ),
+                        "price_return_pct": round(price_return_value, 3),
+                        "margin_roi_pct": round(margin_roi_value, 3),
+                        "estimated_net_return_pct": round(estimated_net_return_value, 3),
                         "stop_loss": float(position.get("stop_loss", 0)),
                         "break_even_active": bool(position.get("break_even_active", False)),
                         "tp1_locked_stop_active": bool(position.get("tp1_locked_stop_active", False)),
@@ -194,7 +236,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 self.log.warning("POSITION_SYNC_UNCERTAIN | %s | preserving OPEN state because Bitget sync failed", symbol)
                 continue
             if symbol not in bitget_open_symbols:
-                entry_price = float(position.get("avg_entry") or 0)
+                try:
+                    entry_price = float(
+                        position_prices(
+                            position,
+                            require_executed=True,
+                        ).require_executed().price
+                    )
+                except PositionModelError:
+                    entry_price = 0.0
                 direction = str(position.get("direction") or "")
                 exchange_close_truth = self._exchange_close_truth_from_position_history(position)
                 position_history_source = str(exchange_close_truth.get("close_source") or "") == "bitget_position_history"
@@ -214,13 +264,21 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 closed_price = float(
                     exchange_close_truth.get("exit_price")
                     or position.get("last_price")
-                    or position["avg_entry"]
+                    or position.get("exchange_avg_entry")
+                    or 0.0
                 )
 
                 if exchange_close_truth.get("size", 0.0) > 0:
-                    position["size"] = float(exchange_close_truth.get("size") or 0.0)
-                    position["order_size"] = float(exchange_close_truth.get("size") or 0.0)
-                    position["position_size"] = float(exchange_close_truth.get("size") or 0.0)
+                    exchange_closed_size = float(exchange_close_truth.get("size") or 0.0)
+                    position["size"] = exchange_closed_size
+                    position["order_size"] = exchange_closed_size
+                    position["position_size"] = exchange_closed_size
+                    position["confirmed_position_size"] = exchange_closed_size
+                    position["confirmed_fill_quantity"] = exchange_closed_size
+                    position["confirmed_size_source"] = str(
+                        exchange_close_truth.get("close_source")
+                        or "BITGET_CLOSED_POSITION_HISTORY"
+                    ).upper()
 
                 if exchange_close_truth.get("pnl") is not None:
                     position["realized_pnl"] = float(exchange_close_truth.get("pnl") or 0.0)
@@ -229,7 +287,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 if exchange_close_truth.get("order_id"):
                     position["close_order_id"] = exchange_close_truth.get("order_id")
 
-                pnl_pct = self._realized_roi_pct_from_exchange_truth(
+                margin_roi_pct_value = self._realized_roi_pct_from_exchange_truth(
                     position=position,
                     exchange_close_truth=exchange_close_truth,
                     entry_price=entry_price,
@@ -247,14 +305,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 position["status"] = "CLOSED_SYNCED"
                 position["closed_reason"] = inferred_close_reason
                 position["closed_at"] = datetime.now(timezone.utc).isoformat()
-                position["realized_pnl_pct"] = round(pnl_pct, 4)
+                position["realized_margin_roi_pct"] = round(margin_roi_pct_value, 4)
+                position["realized_pnl_pct"] = round(margin_roi_pct_value, 4)
                 position["sync_reason"] = "Local OPEN was not present in Bitget open positions; marked CLOSED_SYNCED"
                 self.log.warning(
-                    "LOCAL_OPEN_NOT_ON_EXCHANGE_SYNCED | %s | bitget_open_symbols=%s | exit=%s | pnl_pct=%.4f | inferred_reason=%s | size=%s",
+                    "LOCAL_OPEN_NOT_ON_EXCHANGE_SYNCED | %s | bitget_open_symbols=%s | exit=%s | margin_roi_pct=%.4f | inferred_reason=%s | size=%s",
                     symbol,
                     sorted(bitget_open_symbols),
                     closed_price,
-                    pnl_pct,
+                    margin_roi_pct_value,
                     inferred_close_reason,
                     self._position_size(position),
                 )
@@ -278,7 +337,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         symbol,
                         exc,
                     )
-                self._sync_journal_close(symbol, position["closed_reason"], pnl_pct)
+                self._sync_journal_close(symbol, position["closed_reason"], margin_roi_pct_value)
                 position["close_source"] = exchange_close_truth.get("close_source") or "exchange_position_closed_sync"
                 exchange_truth_pnl_available = exchange_close_truth.get("pnl") not in (None, "")
                 close_source = str(exchange_close_truth.get("close_source") or "")
@@ -301,7 +360,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     position=position,
                     close_reason=position["closed_reason"],
                     exit_price=closed_price,
-                    pnl_pct=pnl_pct,
+                    margin_roi_pct=margin_roi_pct_value,
                     extra={
                         "close_source": position.get("close_source"),
                         "data_confidence": position.get("data_confidence"),
@@ -313,14 +372,14 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         "exchange_truth_fee": position.get("exchange_truth_fee", ""),
                     },
                 )
-                self._register_symbol_cooldown(symbol, position["closed_reason"], pnl_pct)
+                self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
 
                 self.log.warning(
-                    "POSITION_CLOSED_CLEAN | %s | reason=%s | exit=%s | pnl_pct=%.4f | stale_tpsl_cleanup_done=%s | close_source=%s | data_confidence=%s | process_verdict=%s",
+                    "POSITION_CLOSED_CLEAN | %s | reason=%s | exit=%s | margin_roi_pct=%.4f | stale_tpsl_cleanup_done=%s | close_source=%s | data_confidence=%s | process_verdict=%s",
                     symbol,
                     position.get("closed_reason"),
                     closed_price,
-                    pnl_pct,
+                    margin_roi_pct_value,
                     position.get("stale_tpsl_cleanup_done"),
                     position.get("close_source"),
                     position.get("data_confidence"),
@@ -332,7 +391,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "symbol": symbol,
                         "status": "CLOSED_SYNCED",
-                        "current_price": position.get("last_price", position["avg_entry"]),
+                        "current_price": position.get("last_price") or position.get("exchange_avg_entry") or 0.0,
                         "unrealized_pnl_pct": 0,
                         "stop_loss": float(position.get("stop_loss", 0)),
                         "break_even_active": bool(position.get("break_even_active", False)),
@@ -344,13 +403,75 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     }
                 )
                 continue
-            current_price = float(price_map.get(symbol, position.get("last_price", position["avg_entry"])))
+            live_position = self._find_live_position(symbol, positions_live)
+            live_mark = self._live_mark_price(live_position or {}) if live_position else 0.0
+            current_price = float(live_mark or price_map.get(symbol, position.get("last_price") or 0.0))
             candle_range = candle_range_map.get(symbol, {"high": current_price, "low": current_price})
             current_high = float(candle_range.get("high", current_price))
             current_low = float(candle_range.get("low", current_price))
-            live_position = self._find_live_position(symbol, positions_live)
             live_size = self._live_position_size(live_position or {}) if live_position else 0.0
-            original_size = float(position.get("size") or position.get("order_size") or live_size or 0.0)
+            try:
+                confirm_exchange_position(
+                    position,
+                    live_position or {},
+                    source="BITGET_OPEN_POSITION_READ_THROUGH",
+                )
+                confirmed_size = confirmed_position_size(
+                    position,
+                    live_position=live_position,
+                    critical=True,
+                )
+            except (AuthoritativeEntryUnavailable, PositionLifecycleMismatch, PositionModelError) as exc:
+                position["protection_data_status"] = "EXCHANGE_TRUTH_UNAVAILABLE"
+                position["protection_data_error"] = str(exc)
+                position["last_price"] = current_price
+                note = "critical exchange entry/size unavailable; confirmed stop retained; protection update deferred"
+                events.append(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "symbol": symbol,
+                        "status": "PROTECTION_DATA_UNAVAILABLE",
+                        "severity": "CRITICAL",
+                        "position_lifecycle_id": position.get("position_lifecycle_id") or "",
+                        "current_price": current_price,
+                        "confirmed_stop": float(position.get("confirmed_stop") or position.get("stop_loss") or 0.0),
+                        "note": note,
+                        "error": str(exc),
+                    }
+                )
+                updates.append(
+                    PositionUpdate(
+                        symbol=symbol,
+                        status=position["status"],
+                        current_price=current_price,
+                        unrealized_pnl_pct=0.0,
+                        stop_loss=float(position.get("stop_loss") or 0.0),
+                        break_even_active=bool(position.get("break_even_active", False)),
+                        tp1_hit=bool(position.get("tp1_hit", False)),
+                        tp2_hit=bool(position.get("tp2_hit", False)),
+                        tp3_hit=bool(position.get("tp3_hit", False)),
+                        note=note,
+                        planned_avg_entry=float(position.get("planned_avg_entry") or 0.0),
+                        exchange_avg_entry=float(position.get("exchange_avg_entry") or 0.0),
+                        exchange_avg_entry_source=str(position.get("exchange_avg_entry_source") or ""),
+                        protection_state=str(position.get("protection_state") or ""),
+                        confirmed_stop=float(position.get("confirmed_stop") or position.get("stop_loss") or 0.0),
+                    )
+                )
+                self.log.critical(
+                    "PROTECTION_DATA_UNAVAILABLE | %s | lifecycle_id=%s | confirmed_stop_retained=%s | error=%s",
+                    symbol,
+                    position.get("position_lifecycle_id") or "UNKNOWN",
+                    position.get("confirmed_stop") or position.get("stop_loss"),
+                    exc,
+                )
+                continue
+
+            original_size = float(
+                position.get("confirmed_position_size")
+                or position.get("confirmed_fill_quantity")
+                or decimal_float(confirmed_size.quantity)
+            )
             current_remaining_pct = (
                 (live_size / original_size) * 100.0
                 if original_size > 0 and live_size > 0
@@ -358,20 +479,35 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             )
             position["exchange_live_size"] = live_size
             position["exchange_remaining_pct"] = round(current_remaining_pct, 6)
+            position["confirmed_remaining_size"] = live_size
+            position["confirmed_remaining_size_source"] = "BITGET_OPEN_POSITION"
             position["last_price"] = current_price
-            entry = float(position["avg_entry"])
+            entry = float(position_prices(position, require_executed=True).require_executed().price)
             stop = float(position["stop_loss"])
             direction = position["direction"]
 
-            pnl_pct = self._pnl_pct(direction, entry, current_price)
+            economics = self._live_economics(
+                position,
+                current_price=current_price,
+                live_position=live_position,
+            )
+            price_return_pct_value = decimal_float(economics.price_return_pct)
+            margin_roi_pct_value = decimal_float(economics.margin_roi_pct)
+            estimated_net_return_pct_value = decimal_float(economics.estimated_net_return_pct)
+            position["price_return_pct"] = round(price_return_pct_value, 6)
+            position["margin_roi_pct"] = round(margin_roi_pct_value, 6)
+            position["estimated_net_return_pct"] = round(estimated_net_return_pct_value, 6)
+            position["gross_unrealized_pnl"] = decimal_float(economics.gross_pnl_usdt)
+            position["estimated_fees"] = decimal_float(economics.estimated_fees_usdt)
+            position["estimated_net_unrealized_pnl"] = decimal_float(economics.estimated_net_pnl_usdt)
 
             # MFE/MAE tracking for post-trade autopsy.
             # max_favorable_excursion_pct = best unrealized profit seen while open.
             # max_adverse_excursion_pct = worst unrealized drawdown seen while open.
             previous_mfe = float(position.get("max_favorable_excursion_pct") or 0.0)
             previous_mae = float(position.get("max_adverse_excursion_pct") or 0.0)
-            position["max_favorable_excursion_pct"] = round(max(previous_mfe, pnl_pct), 4)
-            position["max_adverse_excursion_pct"] = round(min(previous_mae, pnl_pct), 4)
+            position["max_favorable_excursion_pct"] = round(max(previous_mfe, price_return_pct_value), 4)
+            position["max_adverse_excursion_pct"] = round(min(previous_mae, price_return_pct_value), 4)
 
             # --- Telemetry: trade duration/timing fields ---
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -384,10 +520,10 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     age_seconds = max(0.0, (now_dt - opened_dt).total_seconds())
                     position["trade_duration_seconds"] = round(age_seconds, 3)
 
-                    if pnl_pct > 0 and not position.get("time_to_first_green_seconds"):
+                    if price_return_pct_value > 0 and not position.get("time_to_first_green_seconds"):
                         position["time_to_first_green_seconds"] = round(age_seconds, 3)
 
-                    if pnl_pct < 0 and not position.get("time_to_first_red_seconds"):
+                    if price_return_pct_value < 0 and not position.get("time_to_first_red_seconds"):
                         position["time_to_first_red_seconds"] = round(age_seconds, 3)
 
                     if position["max_favorable_excursion_pct"] > previous_mfe and not position.get("time_to_mfe_seconds"):
@@ -398,18 +534,18 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
 
                     # --- P0.5A: entry quality autopsy telemetry ---
                     # These are observation-based fields; they do not affect execution.
-                    if pnl_pct < 0 and not position.get("immediate_adverse_move_pct"):
-                        position["immediate_adverse_move_pct"] = round(pnl_pct, 4)
+                    if price_return_pct_value < 0 and not position.get("immediate_adverse_move_pct"):
+                        position["immediate_adverse_move_pct"] = round(price_return_pct_value, 4)
 
                     if age_seconds >= 300 and not position.get("first_5m_pnl"):
-                        position["first_5m_pnl"] = round(pnl_pct, 4)
+                        position["first_5m_pnl"] = round(price_return_pct_value, 4)
 
                     first_three_samples = position.get("first_3_candles_samples")
                     if not isinstance(first_three_samples, list):
                         first_three_samples = []
 
                     if len(first_three_samples) < 3:
-                        first_three_samples.append(round(pnl_pct, 4))
+                        first_three_samples.append(round(price_return_pct_value, 4))
                         position["first_3_candles_samples"] = first_three_samples
 
                     if len(first_three_samples) >= 3 and not position.get("first_3_candles_result"):
@@ -444,12 +580,16 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 position["tp1_reach_pct"] = round(tp_reach_pct, 2)
 
                 if tp_reach_pct >= self.near_tp_protection_trigger_pct and not bool(position.get("near_tp_protection_active", False)):
+                    protective_stop = self._candidate_break_even_stop(
+                        position,
+                        live_position=live_position,
+                    )
                     if direction == "LONG":
-                        protective_stop = round(entry * (1.0 + self.near_tp_be_fee_buffer_pct / 100.0), 8)
-                        should_move_stop = protective_stop > stop and protective_stop < current_price
+                        should_move_stop = protective_stop > stop
                     else:
-                        protective_stop = round(entry * (1.0 - self.near_tp_be_fee_buffer_pct / 100.0), 8)
-                        should_move_stop = protective_stop < stop and protective_stop > current_price
+                        should_move_stop = protective_stop > 0 and (
+                            protective_stop < stop or stop <= 0
+                        )
 
                     position["near_tp_seen"] = True
                     if not position.get("near_tp_seen_at"):
@@ -487,8 +627,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             "NEAR_TP_PROTECTION",
                         )
                         if moved:
-                            position["stop_loss"] = protective_stop
-                            stop = protective_stop
+                            confirmed_stop = float(
+                                position.get("confirmed_stop")
+                                or position.get("stop_loss")
+                                or 0.0
+                            )
+                            stop = confirmed_stop
                             position["near_tp_protection_active"] = True
                             position["break_even_active"] = True
                             position["tp1_locked_stop_active"] = True
@@ -496,7 +640,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             self.log.warning(
                                 "PROTECTION_ACTION_SUCCESS | %s | action=move_stop_loss | reason=NEAR_TP_PROTECTION | new_stop=%s | entry=%s | current=%s | tp1=%s | reach=%.2f",
                                 symbol,
-                                protective_stop,
+                                confirmed_stop,
                                 entry,
                                 current_price,
                                 tp1,
@@ -507,7 +651,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                                 symbol,
                                 direction,
                                 tp_reach_pct,
-                                protective_stop,
+                                confirmed_stop,
                                 entry,
                                 current_price,
                                 tp1,
@@ -535,6 +679,56 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
 
             note_parts: list[str] = []
 
+            # Persisted replacement intent is retried on every monitor cycle.
+            # The lifecycle id prevents an old trade's pending stop from being
+            # applied to a newly opened position in the same symbol.
+            if position.get("protection_update_pending"):
+                pending_lifecycle_id = str(
+                    position.get("pending_protection_lifecycle_id") or ""
+                )
+                current_lifecycle_id = str(
+                    position.get("position_lifecycle_id") or ""
+                )
+                if (
+                    pending_lifecycle_id
+                    and current_lifecycle_id
+                    and pending_lifecycle_id != current_lifecycle_id
+                ):
+                    position["protection_update_pending"] = False
+                    position["protection_state"] = PROTECTION_UPDATE_FAILED
+                    position["protection_update_error"] = (
+                        "pending protection lifecycle does not match live position"
+                    )
+                    self.log.critical(
+                        "PENDING_PROTECTION_LIFECYCLE_MISMATCH | %s | pending=%s | current=%s | "
+                        "confirmed_stop_retained=%s",
+                        symbol,
+                        pending_lifecycle_id,
+                        current_lifecycle_id,
+                        position.get("confirmed_stop") or position.get("stop_loss"),
+                    )
+                else:
+                    pending_reason = str(
+                        position.get("pending_protection_reason")
+                        or "PERSISTED_PROTECTION_RETRY"
+                    )
+                    pending_stop = float(
+                        position.get("pending_protection_requested_stop")
+                        or position.get("confirmed_stop")
+                        or position.get("stop_loss")
+                        or 0.0
+                    )
+                    if pending_stop > 0 and self._move_exchange_stop_loss_with_retries(
+                        position,
+                        pending_stop,
+                        pending_reason,
+                    ):
+                        position["last_sl_move_reason"] = pending_reason
+                        note_parts.append(
+                            f"PERSISTED_PROTECTION_RETRY_CONFIRMED @ "
+                            f"{float(position.get('confirmed_stop') or 0.0):.8f}"
+                        )
+
             exchange_tpsl_verified = self._exchange_position_has_tpsl(live_position or {})
             if exchange_tpsl_verified:
                 position["protection_verified"] = True
@@ -543,6 +737,14 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 position["exchange_stop_loss"] = live_position.get("stopLoss") if live_position else position.get("exchange_stop_loss")
                 position["exchange_take_profit_id"] = live_position.get("takeProfitId") if live_position else position.get("exchange_take_profit_id")
                 position["exchange_stop_loss_id"] = live_position.get("stopLossId") if live_position else position.get("exchange_stop_loss_id")
+                live_confirmed_stop = self._safe_float(
+                    live_position.get("stopLoss") if live_position else 0.0,
+                    0.0,
+                )
+                if live_confirmed_stop > 0:
+                    position["confirmed_stop"] = live_confirmed_stop
+                if not str(position.get("protection_state") or "").endswith("_CONFIRMED"):
+                    position["protection_state"] = INITIAL_PROTECTION_CONFIRMED
 
             local_marked_done = (
                 bool(position.get("tp3_hit", False))
@@ -588,15 +790,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         current_remaining_pct,
                         residual_close_result,
                     )
-                    self._sync_journal_close(symbol, "residual_position_cleanup", pnl_pct)
+                    self._sync_journal_close(symbol, "residual_position_cleanup", margin_roi_pct_value)
                     self._append_closed_trade_dataset_row(
                         position=position,
                         close_reason="residual_position_cleanup",
                         exit_price=current_price,
-                        pnl_pct=pnl_pct,
+                        margin_roi_pct=margin_roi_pct_value,
                         extra={"close_source": "residual_position_cleanup", "live_size": live_size},
                     )
-                    self._register_symbol_cooldown(symbol, "residual_position_cleanup", pnl_pct)
+                    self._register_symbol_cooldown(symbol, "residual_position_cleanup", margin_roi_pct_value)
                 except Exception as exc:
                     position["stale_tpsl_cleanup_done"] = False
                     position["residual_cleanup_error"] = str(exc)
@@ -617,19 +819,19 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             current_remaining_pct,
                             exc,
                         )
-                        self._sync_journal_close(symbol, position["closed_reason"], pnl_pct)
+                        self._sync_journal_close(symbol, position["closed_reason"], margin_roi_pct_value)
                         self._append_closed_trade_dataset_row(
                             position=position,
                             close_reason=position["closed_reason"],
                             exit_price=current_price,
-                            pnl_pct=pnl_pct,
+                            margin_roi_pct=margin_roi_pct_value,
                             extra={
                                 "close_source": "residual_exchange_no_position_to_close_desync_resolved",
                                 "attempted_live_size": live_size,
                                 "remaining_pct": current_remaining_pct,
                             },
                         )
-                        self._register_symbol_cooldown(symbol, position["closed_reason"], pnl_pct)
+                        self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
                     else:
                         note_parts.append("CRITICAL: residual position cleanup failed")
                         self.log.error(
@@ -739,26 +941,26 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         position["closed_at"] = datetime.now(timezone.utc).isoformat()
                         position["remaining_size_pct"] = 0.0
                         position["protection_integrity"] = "FAILED_CLOSED"
-                        self._sync_journal_close(symbol, "protection_repair_failed", pnl_pct)
+                        self._sync_journal_close(symbol, "protection_repair_failed", margin_roi_pct_value)
                         self._append_closed_trade_dataset_row(
                             position=position,
                             close_reason="protection_repair_failed",
                             exit_price=current_price,
-                            pnl_pct=pnl_pct,
+                            margin_roi_pct=margin_roi_pct_value,
                             extra={
                                 "close_source": "unprotected_position_emergency_close",
                                 "failure_type": "PROTECTION_FAILURE",
                                 "process_verdict": "EXECUTION_FAILURE",
                             },
                         )
-                        self._register_symbol_cooldown(symbol, "protection_repair_failed", pnl_pct)
+                        self._register_symbol_cooldown(symbol, "protection_repair_failed", margin_roi_pct_value)
                         position["failure_type"] = "PROTECTION_FAILURE"
                         position["process_verdict"] = "EXECUTION_FAILURE"
                         self.log.error(
-                            "UNPROTECTED_POSITION_CLOSED | %s | reason=protection_repair_failed | exit=%s | pnl_pct=%.4f",
+                            "UNPROTECTED_POSITION_CLOSED | %s | reason=protection_repair_failed | exit=%s | price_return_pct_value=%.4f",
                             symbol,
                             current_price,
-                            pnl_pct,
+                            price_return_pct_value,
                         )
                     else:
                         note_parts.append("CRITICAL: close attempt failed")
@@ -781,7 +983,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         position["near_tp_seen_at"] = datetime.now(timezone.utc).isoformat()
                         position["near_tp_first_price"] = current_price
                         position["near_tp_first_target"] = next_target
-                        position["mfe_at_near_tp_seen_pct"] = position.get("max_favorable_excursion_pct", pnl_pct)
+                        position["mfe_at_near_tp_seen_pct"] = position.get("max_favorable_excursion_pct", price_return_pct_value)
                     position["near_tp_seen"] = True
                     position["near_tp_latest_price"] = current_price
                     position["near_tp_latest_target"] = next_target
@@ -801,12 +1003,14 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 and position.get("status") == "OPEN"
                 and not position.get("tp1_hit")
                 and not position.get("profit_lock_active")
-                and not position.get("break_even_active")
             ):
                 tp1_distance_pct = abs(float(tps[0]) - entry) / entry * 100.0
                 mfe_pct = float(position.get("max_favorable_excursion_pct") or 0.0)
                 if tp1_distance_pct > 0 and mfe_pct >= profit_lock_fraction * tp1_distance_pct:
-                    fee_adjusted_be = self._fee_adjusted_break_even(direction, entry)
+                    fee_adjusted_be = self._candidate_break_even_stop(
+                        position,
+                        live_position=live_position,
+                    )
                     current_stop_value = float(position.get("stop_loss") or 0.0)
                     be_is_tighter = (
                         fee_adjusted_be > current_stop_value
@@ -853,13 +1057,17 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 single_tp_mode = len(tps) == 1
 
                 if self.settings.move_stop_to_be_after_tp1 and not single_tp_mode:
-                    fee_adjusted_be = self._fee_adjusted_break_even(direction, entry)
-                    self._protect_after_tp_fill(
-                        position=position,
-                        target_stop=fee_adjusted_be,
-                        reason="TP1_FEE_BE",
-                        note_parts=note_parts,
+                    fee_adjusted_be = self._candidate_break_even_stop(
+                        position,
+                        live_position=live_position,
                     )
+                    if fee_adjusted_be > 0:
+                        self._protect_after_tp_fill(
+                            position=position,
+                            target_stop=fee_adjusted_be,
+                            reason="TP1_FEE_BE",
+                            note_parts=note_parts,
+                        )
                     self.log.warning(
                         "TP1_FILLED_MOVE_SL_BE | %s | target_stop=%s | protection_integrity=%s | exchange_trigger_price=%s",
                         symbol,
@@ -960,15 +1168,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         live_size,
                         position.get("stale_tpsl_cleanup_done"),
                     )
-                    self._sync_journal_close(symbol, "tp3", pnl_pct)
+                    self._sync_journal_close(symbol, "tp3", margin_roi_pct_value)
                     self._append_closed_trade_dataset_row(
                         position=position,
                         close_reason="tp3",
                         exit_price=current_price,
-                        pnl_pct=pnl_pct,
+                        margin_roi_pct=margin_roi_pct_value,
                         extra={"close_source": "tp3_close_all_remainder", "live_size_before_close": live_size},
                     )
-                    self._register_symbol_cooldown(symbol, "tp3", pnl_pct)
+                    self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
                 else:
                     position["remaining_size_pct"] = max(
                         0.0,
@@ -981,15 +1189,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         position["closed_reason"] = "tp3"
                         position["closed_at"] = datetime.now(timezone.utc).isoformat()
                         note_parts.append("TP3 hit; position closed by configured pct remainder")
-                        self._sync_journal_close(symbol, "tp3", pnl_pct)
+                        self._sync_journal_close(symbol, "tp3", margin_roi_pct_value)
                         self._append_closed_trade_dataset_row(
                             position=position,
                             close_reason="tp3",
                             exit_price=current_price,
-                            pnl_pct=pnl_pct,
+                            margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "tp3_configured_pct_remainder"},
                         )
-                        self._register_symbol_cooldown(symbol, "tp3", pnl_pct)
+                        self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
                     else:
                         note_parts.append("TP3 hit; configured partial TP3 close applied")
 
@@ -1000,8 +1208,14 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             if (
                 position.get("failed_continuation_tighten_pending")
                 and not position.get("failed_continuation_protection_active")
+                and not position.get("protection_update_pending")
             ):
-                pending_stop = self._failed_continuation_target_stop(direction, entry, current_price)
+                pending_stop = self._failed_continuation_target_stop(
+                    position,
+                    direction,
+                    current_price,
+                    live_position=live_position,
+                )
                 pending_current_stop = float(position.get("stop_loss") or 0.0)
                 pending_tighter = (
                     (direction == "LONG" and pending_stop > pending_current_stop)
@@ -1010,19 +1224,21 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 if pending_tighter and self._move_exchange_stop_loss_with_retries(
                     position, pending_stop, "FAILED_CONTINUATION_PROTECTION_RETRY"
                 ):
-                    position["stop_loss"] = pending_stop
-                    position["exchange_stop_loss"] = pending_stop
+                    confirmed_stop = float(
+                        position.get("confirmed_stop")
+                        or position.get("stop_loss")
+                        or 0.0
+                    )
                     position["break_even_active"] = True
                     position["tp1_locked_stop_active"] = True
                     position["failed_continuation_protection_active"] = True
                     position["failed_continuation_tighten_pending"] = False
                     position["last_sl_move_reason"] = "FAILED_CONTINUATION_PROTECTION"
-                    position["old_stop_loss_removed"] = True
-                    note_parts.append(f"FAILED_CONTINUATION_SL_TIGHTENED_RETRY @ {pending_stop:.8f}")
+                    note_parts.append(f"FAILED_CONTINUATION_SL_TIGHTENED_RETRY @ {confirmed_stop:.8f}")
                     self.log.warning(
                         "FAILED_CONTINUATION_SL_TIGHTENED_RETRY | %s | new_stop=%s",
                         symbol,
-                        pending_stop,
+                        confirmed_stop,
                     )
 
             if use_snapshot_context:
@@ -1030,9 +1246,9 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     position=position,
                     snapshot=snapshot_map.get(symbol),
                     direction=direction,
-                    entry=entry,
+                    exchange_entry=entry,
                     current_price=current_price,
-                    pnl_pct=pnl_pct,
+                    price_return_pct=price_return_pct_value,
                 )
             else:
                 should_tighten_failed = False
@@ -1041,48 +1257,50 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             if should_tighten_failed:
                 previous_stop = float(position.get("stop_loss") or 0.0)
                 self.log.warning(
-                    "FAILED_CONTINUATION_DETECTED | %s | direction=%s | current_price=%s | pnl_pct=%.4f | old_stop=%s | new_stop=%s | context=%s",
+                    "FAILED_CONTINUATION_DETECTED | %s | direction=%s | current_price=%s | price_return_pct_value=%.4f | old_stop=%s | new_stop=%s | context=%s",
                     symbol,
                     direction,
                     current_price,
-                    pnl_pct,
+                    price_return_pct_value,
                     previous_stop,
                     failed_continuation_stop,
                     failed_continuation_context,
                 )
                 self.log.warning(
-                    "PROTECTION_ACTION_STARTED | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | direction=%s | old_stop=%s | new_stop=%s | current=%s | pnl_pct=%.4f",
+                    "PROTECTION_ACTION_STARTED | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | direction=%s | old_stop=%s | new_stop=%s | current=%s | price_return_pct_value=%.4f",
                     symbol,
                     direction,
                     previous_stop,
                     failed_continuation_stop,
                     current_price,
-                    pnl_pct,
+                    price_return_pct_value,
                 )
                 if self._move_exchange_stop_loss_with_retries(position, failed_continuation_stop, "FAILED_CONTINUATION_PROTECTION"):
                     self.log.warning(
-                        "PROTECTION_ACTION_SUCCESS | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | old_stop=%s | new_stop=%s | current=%s | pnl_pct=%.4f",
+                        "PROTECTION_ACTION_SUCCESS | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | old_stop=%s | new_stop=%s | current=%s | price_return_pct_value=%.4f",
                         symbol,
                         previous_stop,
                         failed_continuation_stop,
                         current_price,
-                        pnl_pct,
+                        price_return_pct_value,
                     )
-                    position["stop_loss"] = failed_continuation_stop
-                    position["exchange_stop_loss"] = failed_continuation_stop
+                    confirmed_stop = float(
+                        position.get("confirmed_stop")
+                        or position.get("stop_loss")
+                        or 0.0
+                    )
                     position["break_even_active"] = True
                     position["tp1_locked_stop_active"] = True
                     position["failed_continuation_protection_active"] = True
                     position["failed_continuation_tighten_pending"] = False
                     position["failed_continuation_context"] = failed_continuation_context
                     position["last_sl_move_reason"] = "FAILED_CONTINUATION_PROTECTION"
-                    position["old_stop_loss_removed"] = True
-                    note_parts.append(f"FAILED_CONTINUATION_SL_TIGHTENED @ {failed_continuation_stop:.8f}")
+                    note_parts.append(f"FAILED_CONTINUATION_SL_TIGHTENED @ {confirmed_stop:.8f}")
                     self.log.warning(
                         "FAILED_CONTINUATION_SL_TIGHTENED | %s | old_stop=%s | new_stop=%s | context=%s",
                         symbol,
                         previous_stop,
-                        failed_continuation_stop,
+                        confirmed_stop,
                         failed_continuation_context,
                     )
                 else:
@@ -1091,12 +1309,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     position["failed_continuation_context"] = failed_continuation_context
                     note_parts.append("WARNING: failed continuation detected but SL tighten failed")
                     self.log.error(
-                        "PROTECTION_ACTION_FAILED | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | old_stop=%s | new_stop=%s | current=%s | pnl_pct=%.4f | context=%s",
+                        "PROTECTION_ACTION_FAILED | %s | action=move_stop_loss | reason=FAILED_CONTINUATION_PROTECTION | old_stop=%s | new_stop=%s | current=%s | price_return_pct_value=%.4f | context=%s",
                         symbol,
                         previous_stop,
                         failed_continuation_stop,
                         current_price,
-                        pnl_pct,
+                        price_return_pct_value,
                         failed_continuation_context,
                     )
                     self.log.error(
@@ -1122,7 +1340,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     dead_timeout_minutes > 0
                     and position_age_minutes >= dead_timeout_minutes
                     and not position.get("tp1_hit")
-                    and abs(pnl_pct) < dead_max_abs_pnl
+                    and abs(price_return_pct_value) < dead_max_abs_pnl
                     and bitget_sync_ok
                     and symbol in bitget_open_symbols
                     and live_size > 0
@@ -1147,22 +1365,22 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             f"DEAD_TRADE_TIMEOUT close after {position_age_minutes:.0f}min flat"
                         )
                         self.log.warning(
-                            "DEAD_TRADE_TIMEOUT_CLOSED | %s | strategy=%s | age_min=%.0f | pnl_pct=%.4f | timeout_min=%.0f",
+                            "DEAD_TRADE_TIMEOUT_CLOSED | %s | strategy=%s | age_min=%.0f | price_return_pct_value=%.4f | timeout_min=%.0f",
                             symbol,
                             position.get("strategy"),
                             position_age_minutes,
-                            pnl_pct,
+                            price_return_pct_value,
                             dead_timeout_minutes,
                         )
-                        self._sync_journal_close(symbol, "dead_trade_timeout", pnl_pct)
+                        self._sync_journal_close(symbol, "dead_trade_timeout", margin_roi_pct_value)
                         self._append_closed_trade_dataset_row(
                             position=position,
                             close_reason="dead_trade_timeout",
                             exit_price=current_price,
-                            pnl_pct=pnl_pct,
+                            margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "dead_trade_timeout", "age_minutes": round(position_age_minutes, 1)},
                         )
-                        self._register_symbol_cooldown(symbol, "dead_trade_timeout", pnl_pct)
+                        self._register_symbol_cooldown(symbol, "dead_trade_timeout", margin_roi_pct_value)
                     else:
                         self.log.error(
                             "DEAD_TRADE_TIMEOUT_CLOSE_FAILED | %s | result=%s",
@@ -1225,15 +1443,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     current_low,
                     current_high,
                 )
-                self._sync_journal_close(symbol, closed_reason, pnl_pct)
+                self._sync_journal_close(symbol, closed_reason, margin_roi_pct_value)
                 self._append_closed_trade_dataset_row(
                     position=position,
                     close_reason=closed_reason,
                     exit_price=current_price,
-                    pnl_pct=pnl_pct,
+                    margin_roi_pct=margin_roi_pct_value,
                     extra={"close_source": "local_stop_hit"},
                 )
-                self._register_symbol_cooldown(symbol, closed_reason, pnl_pct)
+                self._register_symbol_cooldown(symbol, closed_reason, margin_roi_pct_value)
 
             note = " | ".join(note_parts) if note_parts else "position synced"
 
@@ -1242,14 +1460,26 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     symbol=symbol,
                     status=position["status"],
                     current_price=current_price,
-                    unrealized_pnl_pct=round(pnl_pct, 3),
+                    unrealized_pnl_pct=round(price_return_pct_value, 3),
                     stop_loss=float(position["stop_loss"]),
                     break_even_active=bool(position.get("break_even_active", False)),
                     tp1_hit=bool(position.get("tp1_hit", False)),
                     tp2_hit=bool(position.get("tp2_hit", False)),
                     tp3_hit=bool(position.get("tp3_hit", False)),
                     note=note,
-                    )
+                    price_return_pct=round(price_return_pct_value, 3),
+                    margin_roi_pct=round(margin_roi_pct_value, 3),
+                    estimated_net_return_pct=round(estimated_net_return_pct_value, 3),
+                    gross_unrealized_pnl=float(position.get("gross_unrealized_pnl") or 0.0),
+                    estimated_fees=float(position.get("estimated_fees") or 0.0),
+                    estimated_net_unrealized_pnl=float(position.get("estimated_net_unrealized_pnl") or 0.0),
+                    planned_avg_entry=float(position.get("planned_avg_entry") or 0.0),
+                    exchange_avg_entry=float(position.get("exchange_avg_entry") or 0.0),
+                    exchange_avg_entry_source=str(position.get("exchange_avg_entry_source") or ""),
+                    protection_state=str(position.get("protection_state") or ""),
+                    confirmed_stop=float(position.get("confirmed_stop") or position.get("stop_loss") or 0.0),
+                    calculated_be_plus_fees=float(position.get("calculated_be_plus_fees") or 0.0),
+                )
             )
             events.append(
                 {
@@ -1257,7 +1487,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     "symbol": symbol,
                     "status": position["status"],
                     "current_price": current_price,
-                    "unrealized_pnl_pct": round(pnl_pct, 3),
+                    "price_return_pct": round(price_return_pct_value, 3),
+                    "margin_roi_pct": round(margin_roi_pct_value, 3),
+                    "estimated_net_return_pct": round(estimated_net_return_pct_value, 3),
+                    "gross_unrealized_pnl": position.get("gross_unrealized_pnl", 0.0),
+                    "estimated_fees": position.get("estimated_fees", 0.0),
+                    "estimated_net_unrealized_pnl": position.get("estimated_net_unrealized_pnl", 0.0),
                     "stop_loss": float(position["stop_loss"]),
                     "break_even_active": bool(position.get("break_even_active", False)),
                     "tp1_locked_stop_active": bool(position.get("tp1_locked_stop_active", False)),
@@ -1282,15 +1517,51 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         except (TypeError, ValueError):
             return default
 
+    def _live_economics(
+        self,
+        position: dict,
+        *,
+        current_price: float,
+        live_position: dict | None = None,
+    ):
+        prices = position_prices(position, require_executed=True)
+        entry = prices.require_executed().price
+        size = confirmed_position_size(
+            position,
+            live_position=live_position,
+            critical=True,
+        ).quantity
+        mark = decimal_value(current_price)
+        close_rate = decimal_value(
+            self.settings.break_even_expected_close_fee_rate
+        )
+        open_fallback_rate = decimal_value(
+            self.settings.break_even_open_fee_fallback_rate
+        )
+        opening_fee = select_opening_fee(
+            position,
+            exchange_entry=entry,
+            remaining_quantity=size,
+            configured_fallback_rate=open_fallback_rate,
+        )
+        expected_close_fee = mark * size * close_rate
+        return position_economics(
+            direction=str(position.get("direction") or ""),
+            exchange_entry=entry,
+            current_price=mark,
+            remaining_quantity=size,
+            leverage=decimal_value(position.get("leverage"), Decimal("1")),
+            opening_fee_usdt=opening_fee.amount_usdt,
+            expected_closing_fee_usdt=expected_close_fee,
+        )
+
     @staticmethod
     def _position_size(position: dict) -> float:
-        size = float(position.get("size") or position.get("order_size") or position.get("position_size") or 0)
-        if size > 0:
-            return size
-
-        notional = float(position.get("position_notional_usdt") or 0)
-        avg_entry = float(position.get("avg_entry") or position.get("last_price") or 0)
-        if notional > 0 and avg_entry > 0:
-            return round(notional / avg_entry, 6)
-
-        return 0.0
+        """Critical quantity only; planned-notional derivation is forbidden."""
+        try:
+            return decimal_float(
+                confirmed_position_size(position, critical=True).quantity,
+                places=8,
+            )
+        except PositionModelError:
+            return 0.0

@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify_repository_hygiene.sh"
-LIVE_BASELINE = "cd8671c09df56b238e2c52727f6f54731ab5fac1"
+LIVE_BASELINE = "f0742de19d309a26e9b6a821fa3860c6bbbd3289"
 
 
 def _run(*args: str, cwd: Path = ROOT, stdin: str = "") -> subprocess.CompletedProcess[str]:
@@ -124,7 +124,7 @@ def test_release_mode_checks_commit_staged_worktree_and_untracked_diffs(tmp_path
         assert relative in result.stderr
 
 
-def test_release_mode_allows_removal_of_forbidden_tracked_path(tmp_path):
+def test_release_mode_rejects_forbidden_deleted_path(tmp_path):
     repo = _repo(tmp_path)
     path = repo / "logs" / "historical.log"
     path.parent.mkdir()
@@ -143,8 +143,8 @@ def test_release_mode_allows_removal_of_forbidden_tracked_path(tmp_path):
 
     result = _run("--base", baseline, cwd=repo)
 
-    assert result.returncode == 0
-    assert result.stdout.strip() == "repository_hygiene=PASS"
+    assert result.returncode == 1
+    assert "logs/historical.log" in result.stderr
 
 
 def test_release_mode_rejects_symlink_without_following_it(tmp_path):
@@ -160,7 +160,7 @@ def test_release_mode_rejects_symlink_without_following_it(tmp_path):
     assert "symbolic links" in result.stderr
 
 
-def test_real_cleanup_patch_is_hygienic_relative_to_approved_live_baseline():
+def test_real_release_patch_is_hygienic_relative_to_approved_live_baseline():
     result = _run("--base", LIVE_BASELINE)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "repository_hygiene=PASS"

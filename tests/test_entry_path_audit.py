@@ -107,10 +107,15 @@ def _live_settings(**overrides) -> Settings:
     values = {
         "EXECUTION_ENABLED": True,
         "EXECUTION_MODE": "LIVE",
+        "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT,ETHUSDT,SOLUSDT",
+        "MAX_SYMBOLS": 3,
+        "MAX_OPEN_POSITIONS": 1,
+        "EXECUTION_MAX_PER_CYCLE": 1,
+        "ALLOW_AUTO_WATCHLIST_REFRESH": False,
         "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT": 50.0,
         "MAKER_ENTRY_ENABLED": False,
         "SYMBOL_COOLDOWN_MINUTES": 0,
-        "EXECUTION_REQUIRE_CONFIRMATION": False,
+        "EXECUTION_REQUIRE_CONFIRMATION": True,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -149,7 +154,9 @@ def _service(monkeypatch, **setting_overrides) -> ExecutionService:
     service = ExecutionService(settings=_live_settings(**setting_overrides))
     client = MagicMock()
     client.get_all_positions.return_value = {"data": []}
+    client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
     client._format_size.return_value = 0.5
+    client._contract_price_scale.return_value = 2
     client.extract_order_id.side_effect = lambda payload: str(
         ((payload or {}).get("data") or {}).get("orderId") or ""
     )
@@ -184,7 +191,17 @@ def test_live_entry_passes_a_deterministic_client_oid(monkeypatch, direction, ex
     service.client.get_all_positions.side_effect = [
         {"data": []},  # pre-flight open-symbol sync
         {"data": []},  # per-plan exchange-truth max-positions check
-        {"data": [{"symbol": plan.symbol, "total": "0.5", "openPriceAvg": "100.0"}]},
+        {
+            "data": [
+                {
+                    "symbol": plan.symbol,
+                    "holdSide": "long" if direction == "LONG" else "short",
+                    "total": "0.5",
+                    "openPriceAvg": "100.0",
+                    "markPrice": "100.0",
+                }
+            ]
+        },
     ]
 
     reports = service.execute([plan])
@@ -218,7 +235,17 @@ def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
     service.client.get_all_positions.side_effect = [
         {"data": []},
         {"data": []},
-        {"data": [{"symbol": plan.symbol, "total": "0.5", "openPriceAvg": "100.4"}]},
+        {
+            "data": [
+                {
+                    "symbol": plan.symbol,
+                    "holdSide": "long",
+                    "total": "0.5",
+                    "openPriceAvg": "100.4",
+                    "markPrice": "100.4",
+                }
+            ]
+        },
     ]
 
     reports = service.execute([plan])
@@ -230,7 +257,7 @@ def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
 
 
 def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypatch):
-    service = _service(monkeypatch, EXECUTION_MAX_PER_CYCLE=2)
+    service = _service(monkeypatch)
     first, second = _plan("BTCUSDT"), _plan("ETHUSDT")
 
     service.client.place_futures_market_order.side_effect = BitgetOrderSubmissionAmbiguous(
@@ -243,8 +270,10 @@ def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypa
     reports = service.execute([first, second])
 
     assert service.client.place_futures_market_order.call_count == 1
-    assert [report.status for report in reports] == ["SKIPPED", "SKIPPED"]
-    assert "blocked" in reports[1].message
+    assert [report.status for report in reports] == ["SKIPPED"]
+    assert reports[0].symbol == "BTCUSDT"
+    assert "could not be established" in reports[0].message.lower()
+    assert service.intent_store.blocking()[0]["state"] == "UNKNOWN"
 
 
 def test_next_cycle_stays_blocked_until_the_intent_is_reconciled(monkeypatch):
@@ -264,6 +293,55 @@ def test_next_cycle_stays_blocked_until_the_intent_is_reconciled(monkeypatch):
     assert service.client.place_futures_market_order.call_count == 0
     assert reports[0].status == "SKIPPED"
     assert "UNKNOWN" in reports[0].message
+
+
+def test_pending_exchange_entry_blocks_every_new_symbol(monkeypatch):
+    service = _service(monkeypatch)
+    service.client.get_pending_orders.return_value = {
+        "data": {
+            "entrustedList": [{
+                "symbol": "BTCUSDT",
+                "orderId": "pending-entry-1",
+                "tradeSide": "open",
+                "reduceOnly": "NO",
+            }]
+        }
+    }
+
+    reports = service.execute([_plan("SOLUSDT")])
+
+    assert reports[0].status == "SKIPPED"
+    assert "pending exchange entry order" in reports[0].message
+    service.client.place_futures_market_order.assert_not_called()
+    assert service.intent_store.all() == []
+
+
+def test_pending_reduce_only_close_does_not_look_like_a_new_entry(monkeypatch):
+    service = _service(monkeypatch)
+    service.client.get_pending_orders.return_value = {
+        "data": {
+            "entrustedList": [{
+                "symbol": "BTCUSDT",
+                "orderId": "pending-close-1",
+                "tradeSide": "close",
+                "reduceOnly": "YES",
+            }]
+        }
+    }
+    plan = _plan("SOLUSDT")
+    service.client.get_all_positions.side_effect = [
+        {"data": []},
+        {"data": []},
+        {"data": [{
+            "symbol": "SOLUSDT", "holdSide": "long", "total": "0.5",
+            "openPriceAvg": "100", "markPrice": "100",
+        }]},
+    ]
+
+    reports = service.execute([plan])
+
+    assert reports[0].status == "EXECUTED"
+    assert service.client.place_futures_market_order.call_count == 1
 
 
 def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monkeypatch):

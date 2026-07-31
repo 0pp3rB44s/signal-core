@@ -24,6 +24,7 @@ from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
+from execution.portfolio_selector import select_execution_winner
 from execution.runtime_lock import trading_state_lock
 from forward_paper.service import ForwardPaperService
 from execution.state_store import JsonStateStore
@@ -1491,9 +1492,38 @@ class StartupRunner:
                 # execution safety. Corruption fails the paper writer closed.
                 self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
 
+            execution_scores = {
+                snapshot.symbol.upper(): _execution_aware_score(snapshot)
+                for snapshot in snapshots
+            }
+            selection = select_execution_winner(
+                plans,
+                allowed_symbols=(
+                    self.settings.production_symbol_set
+                    if self.settings.is_live_execution
+                    else None
+                ),
+                execution_scores=execution_scores,
+            )
+            selected_plans = [selection.winner] if selection.winner is not None else []
+            if selection.winner_metrics is not None:
+                metrics = selection.winner_metrics
+                self.log.info(
+                    "PORTFOLIO_WINNER | symbol=%s | plan_id=%s | execution_score=%.8f | "
+                    "expectancy=%.8f | setup_quality=%.8f | liquidity_spread_quality=%.8f | "
+                    "valid_candidates=%s | rejected_candidates=%s",
+                    metrics.plan.symbol,
+                    metrics.plan.plan_id,
+                    metrics.execution_score,
+                    metrics.expectancy,
+                    metrics.setup_quality,
+                    metrics.liquidity_spread_quality,
+                    len(selection.ranked),
+                    len(selection.rejected),
+                )
             with trading_state_lock():
                 exec_reports = (
-                    self.execution_service.execute(plans)
+                    self.execution_service.execute(selected_plans)
                     if self.execution_service is not None
                     else []
                 )
@@ -1550,10 +1580,10 @@ class StartupRunner:
             return None
 
         reason = str(payload.get("reason") or "")
-        pnl_pct = float(payload.get("pnl_pct") or 0.0)
+        price_return_pct_value = float(payload.get("price_return_pct") or 0.0)
         cooldown_minutes = int(payload.get("cooldown_minutes") or 0)
 
-        explosive_move = pnl_pct >= 0.5
+        explosive_move = price_return_pct_value >= 0.5
         recent_close = cooldown_minutes > 0
 
         if explosive_move and recent_close:
@@ -1651,13 +1681,16 @@ class StartupRunner:
         )
         for idx, report in enumerate(reports[: self.settings.execution_plan_limit], start=1):
             self.log.info(
-                "EXECUTION%d | %s | %s | mode=%s | status=%s | avg_entry=%.6f | sl=%.6f | tp1=%.6f | msg=%s",
+                "EXECUTION%d | %s | %s | mode=%s | status=%s | planned_avg_entry=%.6f | "
+                "exchange_avg_entry=%.6f | entry_source=%s | sl=%.6f | tp1=%.6f | msg=%s",
                 idx,
                 report.symbol,
                 report.direction,
                 report.mode,
                 report.status,
-                report.avg_entry,
+                report.planned_avg_entry,
+                report.exchange_avg_entry,
+                report.exchange_avg_entry_source or "UNCONFIRMED",
                 report.stop_loss,
                 report.take_profits[0] if report.take_profits else 0.0,
                 report.message,
@@ -1675,7 +1708,7 @@ class StartupRunner:
             position_signature = (
                 update.status,
                 round(update.current_price, 4),
-                round(update.unrealized_pnl_pct, 2),
+                round(update.price_return_pct, 2),
                 round(update.stop_loss, 6),
                 update.break_even_active,
                 update.tp1_hit,
@@ -1687,13 +1720,18 @@ class StartupRunner:
 
             if previous_signature != position_signature:
                 self.log.info(
-                    "POSITION%d | %s | status=%s | px=%.6f | upnl=%.3f%% | sl=%.6f | be=%s | tp1=%s | tp2=%s | tp3=%s | note=%s",
+                    "POSITION%d | %s | status=%s | mark=%.6f | price_return_pct=%.3f%% | "
+                    "margin_roi_pct=%.3f%% | net_return_pct=%.3f%% | sl=%.6f | "
+                    "protection_state=%s | be=%s | tp1=%s | tp2=%s | tp3=%s | note=%s",
                     idx,
                     update.symbol,
                     update.status,
                     update.current_price,
-                    update.unrealized_pnl_pct,
+                    update.price_return_pct,
+                    update.margin_roi_pct,
+                    update.estimated_net_return_pct,
                     update.stop_loss,
+                    update.protection_state,
                     update.break_even_active,
                     update.tp1_hit,
                     update.tp2_hit,
