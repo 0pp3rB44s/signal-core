@@ -384,11 +384,14 @@ def test_dashboard_labels_the_new_code():
 
 # --- integration: the real live dataset ---------------------------------
 
-def test_real_dataset_gives_btcusdt_no_pause_in_either_direction():
-    """BTCUSDT has zero exchange-confirmed live closes, so neither direction may
-    be paused by symbol expectancy. Documents live behaviour after this repair."""
+def test_empty_local_dataset_gives_btcusdt_no_pause_in_either_direction(tmp_path):
+    """A names-only checkout has no tracked LIVE closes, so neither direction may
+    be paused by symbol expectancy. The fixture remains hermetic."""
+    dataset = _dataset(tmp_path, [])
     for direction in ("LONG", "SHORT"):
-        rec = se.record_for("BTCUSDT", direction, use_cache=False)
+        rec = se.record_for(
+            "BTCUSDT", direction, dataset_path=dataset, use_cache=False
+        )
         assert rec.sample_size == 0
         assert rec.status == se.INSUFFICIENT_LIVE_DATA
         assert rec.confidence == se.LOW
@@ -412,13 +415,20 @@ def _candidate(direction: str, symbol: str = "BTCUSDT") -> StrategyCandidate:
         detection=MagicMock(spec=SweepDetection), notes=[])
 
 
-def test_live_long_is_no_longer_paused_by_the_retired_offline_data():
+def test_live_long_is_no_longer_paused_by_the_retired_offline_data(
+    tmp_path, monkeypatch
+):
     """Before: BTCUSDT LONG carried 'kill-switch: symbol paused by expectancy'
     from a 25-day-old backtest. After: no symbol-expectancy pause at all."""
+    monkeypatch.setattr(se, "DATASET_PATH", _dataset(tmp_path, []))
+    se.reset_cache()
     rm = RiskManager(settings=_settings(ENABLE_SHORTS=False))
-    verdict = rm.evaluate(_candidate("LONG"),
-                          StrategyScore(total=92.0, breakdown={}, verdict="GO", reasons=[]))
-    joined = " | ".join(verdict.reasons)
+    monkeypatch.setattr(rm, "_latest_backtest_summary", lambda: {"by_strategy": {}})
+    monkeypatch.setattr(rm, "_latest_strategy_expectancy", lambda: {})
+    monkeypatch.setattr(rm, "_daily_defensive_status", lambda: {})
+    allowed, reasons = rm._kill_switch_gate(_candidate("LONG"))
+    joined = " | ".join(reasons)
+    assert allowed is True
     assert "symbol paused by expectancy" not in joined
     assert "symbol failed TP1 too often" not in joined
     assert "symbol expectancy source=" in joined, "provenance must still be reported"

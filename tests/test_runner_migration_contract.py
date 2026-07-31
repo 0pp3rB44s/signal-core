@@ -39,11 +39,11 @@ def test_deploy_never_starts_live_execution():
 
 
 def test_operational_roots_are_documented_but_not_hardwired_into_trading():
-    example = text(".env.example")
+    registry = text("config/runtime_keys.txt")
     for name in ("CGC_STATE_ROOT", "CGC_REPORTS_ROOT", "CGC_DATA_ROOT", "CGC_RUNTIME_MODE"):
-        assert f"{name}=" in example
+        assert name in registry.splitlines()
     changed_paths = {
-        ".env.example", ".gitignore", ".python-version", ".github/workflows/ci.yml",
+        "config/runtime_keys.txt", ".gitignore", ".python-version", ".github/workflows/ci.yml",
         "scripts/bootstrap_mac.sh", "scripts/deploy_runner.sh", "scripts/verify_checkout.sh",
         "scripts/verify_repository_hygiene.sh", "docs/RUNNER_MIGRATION.md",
     }

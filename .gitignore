@@ -1,6 +1,21 @@
 .env
 .env.*
-!.env.example
+**/.env
+**/.env.*
+
+# Credentials, keys, and machine-local configuration
+credentials/
+**/credentials/
+secrets/
+**/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Python and tool caches
 .venv/
 venv/
 __pycache__/
@@ -8,7 +23,18 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
+cache/
+**/cache/
+
+# Editor and operating-system artifacts
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime state and output
 logs/
 state/
 state_backup/
@@ -20,6 +46,8 @@ pids/
 reports/runtime_snapshots/
 *.bak*
 *.backup*
+*.tmp
+*.temp
 
 # Generated reports / audits
 reports/
@@ -28,14 +56,18 @@ project_inventory.txt
 *.save
 0
 archive/
-# Historical datasets
+# Local datasets
 data/historical/
+data/**/*.csv
+data/**/*.tsv
+data/**/*.json
+data/**/*.jsonl
+data/**/*.parquet
+data/**/*.pkl
+data/**/*.pickle
+data/**/*.db
+data/**/*.sqlite
+datasets/
+local_data/
 .worktrees/
-
-# Per-mode configuration (RC2). The forward config and the live TEMPLATE carry no
-# credentials and are tracked so the deployed configuration is auditable. The real
-# .env.live and the owner authorisation token are never committed.
-!.env.forward
-!.env.live.example
-.env.live
 state/LIVE_PILOT_AUTHORISATION
