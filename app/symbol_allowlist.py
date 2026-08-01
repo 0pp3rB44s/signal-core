@@ -11,6 +11,9 @@ import re
 
 
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,24}USDT$")
+
+#: The symbols the owner has approved for LIVE execution in this release.
+#: Exactly this set is accepted — not a superset, not "any allowlist".
 OWNER_APPROVED_PRODUCTION_SYMBOLS = (
     "BTCUSDT",
     "SOLUSDT",
@@ -18,10 +21,19 @@ OWNER_APPROVED_PRODUCTION_SYMBOLS = (
     "XLMUSDT",
     "AVAXUSDT",
     "DOGEUSDT",
-    "WIFUSDT",
     "SEIUSDT",
     "TRXUSDT",
 )
+
+#: Owner-approved in principle but withheld from execution, with the reason.
+#: WIFUSDT measured 6.91-7.01 bps across seven readings over twelve hours
+#: against the unchanged 5.0 bps execution limit — a structural gap, not a
+#: spike. It is not removed from future consideration: re-admitting it requires
+#: a fresh read-only qualification plus a separate owner-approved config change.
+#: The spread limit itself is deliberately left untouched.
+CONDITIONAL_PRODUCTION_SYMBOLS: dict[str, str] = {
+    "WIFUSDT": "CONDITIONAL_SPREAD",
+}
 
 
 class SymbolAllowlistError(ValueError):
