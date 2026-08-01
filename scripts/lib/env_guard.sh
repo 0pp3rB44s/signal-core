@@ -170,12 +170,15 @@ guard_assert_pilot_limits() {
   [ "$allow_count" -gt 0 ] || guard_die "canonical production allowlist is unavailable"
   [ "$max_sym" -eq "$allow_count" ] 2>/dev/null || guard_die \
     "MAX_SYMBOLS must equal canonical allowlist size $allow_count (got '$max_sym')"
-  [ "$max_pos" -eq 1 ] 2>/dev/null || guard_die "MAX_OPEN_POSITIONS must equal 1 (got '$max_pos')"
-  [ "${EXECUTION_MAX_PER_CYCLE:-0}" -eq 1 ] 2>/dev/null || guard_die \
-    "EXECUTION_MAX_PER_CYCLE must equal 1"
+  # Owner-approved two-position portfolio. Pinned to exactly 2 rather than
+  # "at most 2": 0, 1 and 3 all fail closed, so a mistyped or unset value can
+  # never widen exposure. Mirrors LIVE_MAX_OPEN_POSITIONS in app/config.py.
+  [ "$max_pos" -eq 2 ] 2>/dev/null || guard_die "MAX_OPEN_POSITIONS must equal 2 (got '$max_pos')"
+  [ "${EXECUTION_MAX_PER_CYCLE:-0}" -eq 2 ] 2>/dev/null || guard_die \
+    "EXECUTION_MAX_PER_CYCLE must equal 2 (got '${EXECUTION_MAX_PER_CYCLE:-unset}')"
   [ "${ALLOW_AUTO_WATCHLIST_REFRESH:-true}" = "false" ] || guard_die "pilot requires ALLOW_AUTO_WATCHLIST_REFRESH=false"
   [ "${FORWARD_PAPER_SMOKE_STRATEGY_ENABLED:-false}" = "false" ] || guard_die "smoke harness must be disabled"
-  echo "guard: portfolio limits OK (symbols=$max_sym, positions=$max_pos, executions_per_cycle=1)"
+  echo "guard: portfolio limits OK (symbols=$max_sym, positions=$max_pos, executions_per_cycle=${EXECUTION_MAX_PER_CYCLE:-0})"
 }
 
 # Repository must be clean: a dirty tree silently breaks every automatic restart.

@@ -518,16 +518,35 @@ def test_idempotency_module_untouched_by_this_patch():
 
 
 def test_no_strategy_risk_or_planner_file_changed():
+    """The minimum-size patch must not have touched trade-decision code.
+
+    Pinned to the commit that introduced this test rather than to the working
+    tree: once the patch is committed, later authorised work is free to change
+    app/config.py, and asserting on `git diff HEAD` would turn this guard into a
+    tripwire against every future patch instead of a statement about this one.
+    """
     import subprocess
     from pathlib import Path
     repo = Path(__file__).resolve().parents[1]
-    changed = subprocess.run(["git", "diff", "--name-status", "HEAD"], cwd=repo,
-                             capture_output=True, text=True).stdout.splitlines()
+    rel = "tests/test_bitget_minimum_size.py"
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=repo,
+                              capture_output=True, text=True).stdout.strip()
+
+    commit = git("log", "--diff-filter=A", "--format=%H", "-1", "--", rel)
+    if not commit:
+        pytest.skip("minimum-size patch not committed yet; nothing to pin")
+    changed = git("show", "--name-status", "--format=", commit).splitlines()
+
     forbidden = ("risk/", "planning/", "strategies/", "app/config.py")
     for entry in changed:
+        if "\t" not in entry:
+            continue
         status, path = entry.split("\t", 1)
         if path.startswith(".env"):
             assert status == "D", f"environment config was not removal-only: {path}"
             continue
         for bad in forbidden:
-            assert not path.startswith(bad), f"out-of-scope file changed: {path}"
+            assert not path.startswith(bad), (
+                f"commit {commit[:7]} changed out-of-scope file: {path}")

@@ -21,8 +21,8 @@ def _settings(**overrides) -> Settings:
         "FORWARD_PAPER_SMOKE_SYMBOL": "SOLUSDT",
         "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT",
         "MAX_SYMBOLS": 1,
-        "MAX_OPEN_POSITIONS": 1,
-        "EXECUTION_MAX_PER_CYCLE": 1,
+        "MAX_OPEN_POSITIONS": 2,
+        "EXECUTION_MAX_PER_CYCLE": 2,
         "ALLOW_AUTO_WATCHLIST_REFRESH": False,
         "EXECUTION_REQUIRE_CONFIRMATION": True,
     }

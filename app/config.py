@@ -5,6 +5,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol_allowlist
 
+#: Owner-approved two-position portfolio for this release. Pinned to exact
+#: values rather than an upper bound: 0, 1 or 3 must all fail closed, so a
+#: mistyped or silently-defaulted setting can never widen exposure.
+LIVE_MAX_OPEN_POSITIONS = 2
+LIVE_MAX_EXECUTIONS_PER_CYCLE = 2
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -257,10 +263,12 @@ class Settings(BaseSettings):
                 self.production_symbol_allowlist,
                 required=True,
             )
-            if self.max_open_positions != 1:
-                raise ValueError("LIVE requires MAX_OPEN_POSITIONS=1")
-            if self.execution_max_per_cycle != 1:
-                raise ValueError("LIVE requires EXECUTION_MAX_PER_CYCLE=1")
+            if self.max_open_positions != LIVE_MAX_OPEN_POSITIONS:
+                raise ValueError(
+                    f"LIVE requires MAX_OPEN_POSITIONS={LIVE_MAX_OPEN_POSITIONS}")
+            if self.execution_max_per_cycle != LIVE_MAX_EXECUTIONS_PER_CYCLE:
+                raise ValueError(
+                    f"LIVE requires EXECUTION_MAX_PER_CYCLE={LIVE_MAX_EXECUTIONS_PER_CYCLE}")
             if self.max_symbols != len(symbols):
                 raise ValueError(
                     "LIVE MAX_SYMBOLS must equal the canonical production allowlist size"
@@ -274,7 +282,9 @@ class Settings(BaseSettings):
             if self.is_production:
                 if tuple(symbols) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
                     raise ValueError(
-                        "production LIVE requires the owner-approved nine-symbol allowlist"
+                        "production LIVE requires exactly the owner-approved allowlist "
+                        f"({len(OWNER_APPROVED_PRODUCTION_SYMBOLS)} symbols): "
+                        + ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS)
                     )
                 required_explicit = {
                     "execution_margin_mode",

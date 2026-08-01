@@ -103,14 +103,19 @@ def test_three_symbols_remain_isolated_across_three_sequential_lifecycles(monkey
     assert new_sol["reasons"] == sol_new.reasons
 
 
-def test_two_overlapping_execution_cycles_create_only_one_position(monkeypatch, tmp_path):
+def test_overlapping_execution_cycles_never_exceed_the_position_cap(monkeypatch, tmp_path):
+    """Three cycles race for two slots. The trading-state lock must admit
+    exactly two and refuse the third — the cap is the invariant, not the count
+    of cycles that happened to run."""
     first = _service(monkeypatch)
     second = _service(monkeypatch)
+    third = _service(monkeypatch)
     first_plan = _plan("BTCUSDT", 90)
     second_plan = _plan("SOLUSDT", 95)
+    third_plan = _plan("XLMUSDT", 85)
     exchange_positions: list[dict] = []
     exchange_guard = threading.Lock()
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(3)
     reports: list = []
 
     def get_positions():
@@ -121,10 +126,10 @@ def test_two_overlapping_execution_cycles_create_only_one_position(monkeypatch, 
         # Simulate exchange latency while the production trading-state lock is held.
         time.sleep(0.04)
         with exchange_guard:
-            exchange_positions[:] = [_exchange_position(symbol)]
+            exchange_positions.append(_exchange_position(symbol))
         return {"data": {"orderId": f"order-{symbol}"}}
 
-    for service in (first, second):
+    for service in (first, second, third):
         service.client.get_all_positions.side_effect = get_positions
         service.client.place_futures_market_order.side_effect = place_order
         service.client.extract_fill_metrics.return_value = {
@@ -142,6 +147,7 @@ def test_two_overlapping_execution_cycles_create_only_one_position(monkeypatch, 
     threads = [
         threading.Thread(target=run, args=(first, first_plan)),
         threading.Thread(target=run, args=(second, second_plan)),
+        threading.Thread(target=run, args=(third, third_plan)),
     ]
     for thread in threads:
         thread.start()
@@ -149,15 +155,21 @@ def test_two_overlapping_execution_cycles_create_only_one_position(monkeypatch, 
         thread.join(timeout=2)
 
     assert all(not thread.is_alive() for thread in threads)
-    assert (
+    submitted = (
         first.client.place_futures_market_order.call_count
         + second.client.place_futures_market_order.call_count
-    ) == 1
-    assert len(exchange_positions) == 1
-    assert len([report for report in reports if report.status == "EXECUTED"]) == 1
-    assert len([report for report in reports if report.status == "SKIPPED"]) == 1
+        + third.client.place_futures_market_order.call_count
+    )
+    assert submitted == 2, "the cap of two must hold across concurrent cycles"
+    assert len(exchange_positions) == 2
+    assert len([report for report in reports if report.status == "EXECUTED"]) == 2
+    # The third cycle must not open anything. How it declines — a SKIPPED report
+    # or no report at all — is an implementation detail; the invariant is that it
+    # submits no order and adds no position.
+    assert not any(report.status == "EXECUTED" for report in reports[2:])
     stored = first.store.load(default=[])
-    assert len([row for row in stored if row["status"] == "OPEN"]) == 1
+    assert len([row for row in stored if row["status"] == "OPEN"]) == 2
+    assert len({row["symbol"] for row in stored if row["status"] == "OPEN"}) == 2
 
 
 def test_late_legality_failure_never_falls_through_to_runner_up(monkeypatch):

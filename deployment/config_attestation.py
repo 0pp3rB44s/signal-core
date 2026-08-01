@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol_allowlist
+from app.config import LIVE_MAX_EXECUTIONS_PER_CYCLE, LIVE_MAX_OPEN_POSITIONS
 
 
 SAFE_KEYS = frozenset({
@@ -70,8 +71,8 @@ class ConfigExpectations:
     break_even_extra_buffer_pct: float
     break_even_fee_buffer_pct: float
     break_even_mark_safety_ticks: int
-    max_open_positions: int = 1
-    execution_max_per_cycle: int = 1
+    max_open_positions: int = LIVE_MAX_OPEN_POSITIONS
+    execution_max_per_cycle: int = LIVE_MAX_EXECUTIONS_PER_CYCLE
     execution_margin_mode: str = "isolated"
 
 
@@ -361,9 +362,12 @@ def attest_config_file(
         "risk_per_trade_valid": bool(risk_pct is not None and 0 < risk_pct <= 100),
         "notional_cap_usdt": notional_cap == float(expected.notional_cap_usdt),
         "notional_cap_valid": bool(notional_cap is not None and notional_cap > 0),
-        "max_open_positions": max_open == int(expected.max_open_positions) == 1,
+        "max_open_positions": (
+            max_open == int(expected.max_open_positions) == LIVE_MAX_OPEN_POSITIONS
+        ),
         "execution_max_per_cycle": (
-            execution_max == int(expected.execution_max_per_cycle) == 1
+            execution_max == int(expected.execution_max_per_cycle)
+            == LIVE_MAX_EXECUTIONS_PER_CYCLE
         ),
         "symbols": tuple(symbols) == tuple(expected.symbols),
         "owner_approved_symbols": tuple(symbols) == OWNER_APPROVED_PRODUCTION_SYMBOLS,

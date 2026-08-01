@@ -22,12 +22,26 @@ def _live(**overrides) -> Settings:
         "EXECUTION_REQUIRE_CONFIRMATION": True,
         "PRODUCTION_SYMBOL_ALLOWLIST": "BTCUSDT,SOLUSDT,SUIUSDT",
         "MAX_SYMBOLS": 3,
-        "MAX_OPEN_POSITIONS": 1,
-        "EXECUTION_MAX_PER_CYCLE": 1,
+        "MAX_OPEN_POSITIONS": 2,
+        "EXECUTION_MAX_PER_CYCLE": 2,
         "ALLOW_AUTO_WATCHLIST_REFRESH": False,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
+
+
+#: Production LIVE additionally demands every safety value be set explicitly
+#: rather than defaulted. Mirrors what .env.live carries.
+_PRODUCTION_SAFETY_CONFIG = {
+    "EXECUTION_MARGIN_MODE": "isolated",
+    "BREAK_EVEN_OPEN_FEE_FALLBACK_RATE": 0.0006,
+    "BREAK_EVEN_EXPECTED_CLOSE_FEE_RATE": 0.0006,
+    "BREAK_EVEN_SPREAD_BUFFER_PCT": 0.02,
+    "BREAK_EVEN_SLIPPAGE_BUFFER_PCT": 0.03,
+    "BREAK_EVEN_EXTRA_BUFFER_PCT": 0.01,
+    "BREAK_EVEN_FEE_BUFFER_PCT": 0.12,
+    "BREAK_EVEN_MARK_SAFETY_TICKS": 2,
+}
 
 
 def test_allowlist_normalises_but_never_reorders_owner_selection():
@@ -66,8 +80,12 @@ def test_live_scanner_and_execution_derive_the_same_canonical_set():
 @pytest.mark.parametrize(
     ("override", "message"),
     [
-        ({"MAX_OPEN_POSITIONS": 2}, "MAX_OPEN_POSITIONS=1"),
-        ({"EXECUTION_MAX_PER_CYCLE": 2}, "EXECUTION_MAX_PER_CYCLE=1"),
+        # Pinned to exactly 2: both a lower and a higher value must fail closed,
+        # so a mistyped or silently-defaulted setting can never widen exposure.
+        ({"MAX_OPEN_POSITIONS": 1}, "MAX_OPEN_POSITIONS=2"),
+        ({"MAX_OPEN_POSITIONS": 3}, "MAX_OPEN_POSITIONS=2"),
+        ({"EXECUTION_MAX_PER_CYCLE": 1}, "EXECUTION_MAX_PER_CYCLE=2"),
+        ({"EXECUTION_MAX_PER_CYCLE": 3}, "EXECUTION_MAX_PER_CYCLE=2"),
         ({"MAX_SYMBOLS": 2}, "MAX_SYMBOLS"),
         ({"ALLOW_AUTO_WATCHLIST_REFRESH": True}, "ALLOW_AUTO_WATCHLIST_REFRESH=false"),
         ({"EXECUTION_REQUIRE_CONFIRMATION": False}, "EXECUTION_REQUIRE_CONFIRMATION=true"),
@@ -78,9 +96,37 @@ def test_live_portfolio_and_scope_invariants_fail_closed(override, message):
         _live(**override)
 
 
-def test_production_live_requires_exact_owner_approved_nine_symbols():
-    with pytest.raises(ValidationError, match="owner-approved nine-symbol"):
+def test_production_live_requires_exact_owner_approved_allowlist():
+    """A three-symbol subset is not the owner-approved set, even though every
+    symbol in it is individually approved."""
+    with pytest.raises(ValidationError, match="owner-approved allowlist"):
         _live(APP_ENV="production")
+
+
+def test_production_live_accepts_exactly_the_owner_approved_eight():
+    from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
+    approved = ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS)
+    settings = _live(APP_ENV="production", PRODUCTION_SYMBOL_ALLOWLIST=approved,
+                     MAX_SYMBOLS=len(OWNER_APPROVED_PRODUCTION_SYMBOLS),
+                     **_PRODUCTION_SAFETY_CONFIG)
+    assert tuple(settings.watchlist_symbols) == OWNER_APPROVED_PRODUCTION_SYMBOLS
+    assert len(OWNER_APPROVED_PRODUCTION_SYMBOLS) == 8
+
+
+def test_wifusdt_is_conditional_and_not_executable():
+    """WIFUSDT stays a known symbol with a recorded reason; it is simply not in
+    the active set. Adding it back needs a separate owner-approved change."""
+    from app.symbol_allowlist import (CONDITIONAL_PRODUCTION_SYMBOLS,
+                                      OWNER_APPROVED_PRODUCTION_SYMBOLS)
+    assert "WIFUSDT" not in OWNER_APPROVED_PRODUCTION_SYMBOLS
+    assert CONDITIONAL_PRODUCTION_SYMBOLS["WIFUSDT"] == "CONDITIONAL_SPREAD"
+
+
+def test_adding_wif_back_silently_fails_closed():
+    from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
+    nine = ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS) + ",WIFUSDT"
+    with pytest.raises(ValidationError, match="owner-approved allowlist"):
+        _live(APP_ENV="production", PRODUCTION_SYMBOL_ALLOWLIST=nine, MAX_SYMBOLS=9)
 
 
 def _run_guard(body: str) -> subprocess.CompletedProcess[str]:
@@ -94,7 +140,7 @@ def _run_guard(body: str) -> subprocess.CompletedProcess[str]:
 def test_shell_guard_derives_all_legacy_views_from_one_source():
     result = _run_guard(
         "PRODUCTION_SYMBOL_ALLOWLIST='btcusdt,SOLUSDT,SUIUSDT'; "
-        "MAX_OPEN_POSITIONS=1; EXECUTION_MAX_PER_CYCLE=1; "
+        "MAX_OPEN_POSITIONS=2; EXECUTION_MAX_PER_CYCLE=2; "
         "FORWARD_PAPER_SMOKE_STRATEGY_ENABLED=false; "
         "guard_apply_canonical_symbol_allowlist; guard_assert_pilot_limits; "
         "printf '%s|%s|%s|%s' \"$WATCHLIST\" \"$EXECUTION_CONFIRM_SYMBOLS\" "

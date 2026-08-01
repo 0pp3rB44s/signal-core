@@ -178,18 +178,17 @@ def test_execution_service_creates_state_only_for_the_single_winner(monkeypatch)
     assert service.intent_store.get(service.entry_submitter.client_oid_for(eth)) is None
 
 
-def test_open_exchange_position_blocks_winner_without_falling_through(monkeypatch):
+def test_full_position_cap_blocks_winner_without_falling_through(monkeypatch):
     service = _service(monkeypatch)
     sol, btc = _plan("SOLUSDT", 95), _plan("BTCUSDT", 80)
-    open_position = {
-        "symbol": "ETHUSDT",
-        "holdSide": "long",
-        "total": "0.5",
-        "openPriceAvg": "100.0",
-    }
+    # Both slots occupied, so the cap is reached before any candidate is sized.
+    open_positions = [
+        {"symbol": "ETHUSDT", "holdSide": "long", "total": "0.5", "openPriceAvg": "100.0"},
+        {"symbol": "ADAUSDT", "holdSide": "short", "total": "10", "openPriceAvg": "1.0"},
+    ]
     service.client.get_all_positions.side_effect = [
-        {"data": [open_position]},
-        {"data": [open_position]},
+        {"data": open_positions},
+        {"data": open_positions},
     ]
 
     reports = service.execute([btc, sol])
