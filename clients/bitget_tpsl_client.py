@@ -3,9 +3,42 @@ from __future__ import annotations
 import time
 from typing import Any
 
+#: Bitget plan types that belong to the *position-level* TP/SL model, the one
+#: entry protection installs via ``place-pos-tpsl``. A position carrying one of
+#: these cannot also be protected by a separate ``loss_plan``: the exchange
+#: accepts the plan order and cancels it about a second later.
+POSITION_LEVEL_LOSS_TYPES = frozenset({"pos_loss"})
+POSITION_LEVEL_PROFIT_TYPES = frozenset({"pos_profit"})
+
 
 class BitgetTPSLClientMixin:
     """TPSL placement, verification and cleanup only."""
+
+    #: Wait before reading a replacement stop back. Bitget cancelled a competing
+    #: loss_plan 1s after accepting it (order 1467519838684409856, created
+    #: 18:45:15, cancelled 18:45:16); an immediate read-back inside that window
+    #: reported a stop that no longer existed.
+    STOP_REPLACEMENT_SETTLE_SECONDS = 2.0
+
+    #: Fraction of the trigger price treated as "the same price". Covers tick
+    #: rounding without hiding a real divergence — the observed BTCUSDT gap was
+    #: 62665 vs 62298.1, roughly 0.59%, some 300x this bound.
+    STOP_TICK_TOLERANCE_PCT = 0.002
+
+    def _stop_tick_tolerance(self, symbol: str, expected_price: float = 0.0) -> float:
+        """Absolute price tolerance for calling two stop triggers equal.
+
+        Scaled to the price so one bound works for BTC at ~62 000 and XLM at
+        ~0.17. Falls back to an exact match when no price is supplied, because
+        guessing wide is how a divergence gets waved through.
+        """
+        try:
+            price = abs(float(expected_price))
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            return 0.0
+        return price * self.STOP_TICK_TOLERANCE_PCT
 
     def get_tpsl_orders(
         self,
@@ -1016,6 +1049,178 @@ class BitgetTPSLClientMixin:
 
         return results
 
+    def _active_position_stop(
+        self,
+        symbol: str,
+        hold_side: str,
+        product_type: str,
+    ) -> dict[str, Any] | None:
+        """The single live stop currently protecting this position, if any.
+
+        Returns plan type, trigger and order id so a caller can decide which
+        Bitget operation is safe rather than assuming a model.
+        """
+        try:
+            plans, _ = self._fetch_tpsl_orders_broad(symbol=symbol, product_type=product_type)
+        except Exception as exc:
+            self.log.warning("ACTIVE_STOP_LOOKUP_FAILED | %s | error=%s", symbol, exc)
+            return None
+
+        for plan in plans:
+            plan_type = str(plan.get("planType") or plan.get("orderType") or "").lower()
+            if "loss" not in plan_type:
+                continue
+            plan_hold = str(plan.get("posSide") or plan.get("holdSide") or "").lower()
+            if plan_hold and plan_hold != hold_side:
+                continue
+            trigger = (
+                plan.get("triggerPrice")
+                or plan.get("planTriggerPrice")
+                or plan.get("stopLossTriggerPrice")
+            )
+            try:
+                trigger_float = float(trigger)
+            except (TypeError, ValueError):
+                continue
+            return {
+                "plan_type": plan_type,
+                "trigger_price": trigger_float,
+                "order_id": str(plan.get("orderId") or ""),
+                "size": plan.get("size"),
+                "hold_side": plan_hold or hold_side,
+            }
+        return None
+
+    def _active_position_take_profit(
+        self,
+        symbol: str,
+        hold_side: str,
+        product_type: str,
+    ) -> float | None:
+        try:
+            plans, _ = self._fetch_tpsl_orders_broad(symbol=symbol, product_type=product_type)
+        except Exception:
+            return None
+        for plan in plans:
+            plan_type = str(plan.get("planType") or plan.get("orderType") or "").lower()
+            if "profit" not in plan_type:
+                continue
+            plan_hold = str(plan.get("posSide") or plan.get("holdSide") or "").lower()
+            if plan_hold and plan_hold != hold_side:
+                continue
+            trigger = (
+                plan.get("triggerPrice")
+                or plan.get("planTriggerPrice")
+                or plan.get("stopSurplusTriggerPrice")
+            )
+            try:
+                return float(trigger)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _move_position_level_stop(
+        self,
+        *,
+        symbol: str,
+        hold_side: str,
+        formatted_trigger: float,
+        product: str,
+        margin_coin: str,
+        margin_mode: str,
+        existing: dict[str, Any],
+        reason: str | None,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Replace a position-level stop using the endpoint that owns that model.
+
+        ``place-pos-tpsl`` rewrites the position's own TP/SL pair in one call, so
+        there is never a second competing order and never a moment without a
+        stop. The take-profit is read back first and re-sent unchanged: the
+        endpoint sets both legs, and omitting the TP would silently drop it.
+        """
+        take_profit = self._active_position_take_profit(symbol, hold_side, product)
+        if take_profit is None:
+            result["verified"] = False
+            result["reason_detail"] = "no_active_take_profit_to_preserve"
+            self.log.error(
+                "MOVE_SL_ABORTED_NO_TP | %s | hold_side=%s | existing_stop=%s | "
+                "refusing to rewrite position TPSL without the current take-profit",
+                symbol,
+                hold_side,
+                existing.get("trigger_price"),
+            )
+            return result
+
+        result["preserved_take_profit"] = take_profit
+        try:
+            result["placed"] = self.place_position_tpsl(
+                symbol=symbol,
+                hold_side=hold_side,
+                stop_loss=float(formatted_trigger),
+                take_profit=float(take_profit),
+                margin_mode=margin_mode,
+                product_type=product,
+                margin_coin=margin_coin,
+            )
+        except Exception as exc:
+            result["verified"] = False
+            result["reason_detail"] = f"place_pos_tpsl_failed: {exc}"
+            self.log.error(
+                "MOVE_SL_POSITION_LEVEL_FAILED | %s | hold_side=%s | target=%s | "
+                "existing_stop_retained=%s | error=%s",
+                symbol, hold_side, formatted_trigger, existing.get("trigger_price"), exc,
+            )
+            return result
+
+        # Settle before reading back. The defect this replaces reported success
+        # from a read that happened inside the window before Bitget cancelled the
+        # competing order; a stop that exists for one second is not protection.
+        time.sleep(self.STOP_REPLACEMENT_SETTLE_SECONDS)
+
+        confirmed = self._active_position_stop(symbol, hold_side, product)
+        result["verify"] = confirmed
+        if not confirmed:
+            result["verified"] = False
+            result["reason_detail"] = "replacement_absent_after_settle"
+            self.log.error(
+                "MOVE_SL_REPLACEMENT_VANISHED | %s | hold_side=%s | target=%s | "
+                "no live stop found after %.1fs",
+                symbol, hold_side, formatted_trigger, self.STOP_REPLACEMENT_SETTLE_SECONDS,
+            )
+            return result
+
+        tolerance = self._stop_tick_tolerance(symbol, float(formatted_trigger))
+        drift = abs(float(confirmed["trigger_price"]) - float(formatted_trigger))
+        matches_type = confirmed["plan_type"] in POSITION_LEVEL_LOSS_TYPES
+        matches_side = str(confirmed.get("hold_side") or hold_side).lower() == hold_side
+
+        result["tick_tolerance"] = tolerance
+        result["drift"] = drift
+        result["verified"] = bool(matches_type and matches_side and drift <= tolerance)
+
+        if not result["verified"]:
+            result["reason_detail"] = (
+                f"divergence plan_type={confirmed['plan_type']} "
+                f"trigger={confirmed['trigger_price']} expected={formatted_trigger} "
+                f"drift={drift} tolerance={tolerance}"
+            )
+            self.log.error(
+                "MOVE_SL_DIVERGED | %s | hold_side=%s | expected=%s | exchange=%s | "
+                "plan_type=%s | drift=%s | tolerance=%s",
+                symbol, hold_side, formatted_trigger, confirmed["trigger_price"],
+                confirmed["plan_type"], drift, tolerance,
+            )
+            return result
+
+        self.log.warning(
+            "MOVED_SL_POSITION_LEVEL | %s | hold_side=%s | trigger=%s | tp_preserved=%s | "
+            "verified=True | reason=%s | order_id=%s",
+            symbol, hold_side, confirmed["trigger_price"], take_profit, reason,
+            confirmed.get("order_id"),
+        )
+        return result
+
     def move_futures_stop_loss(
         self,
         symbol: str,
@@ -1075,6 +1280,37 @@ class BitgetTPSLClientMixin:
             "live_size": live_size,
         }
 
+        # Which protection model does this position actually run on? Entry
+        # protection places a *position-level* pos_loss/pos_profit pair via
+        # place-pos-tpsl. Placing a loss_plan alongside it does not replace it:
+        # Bitget accepts the plan and then cancels it within about a second,
+        # because the position already carries a position-level stop.
+        #
+        # Observed on BTCUSDT 2026-08-01:
+        #   1467517375415836672 pos_loss   62665    live       (entry protection)
+        #   1467519838684409856 loss_plan  62298.1  cancelled  created 18:45:15,
+        #                                                      cancelled 18:45:16
+        # The immediate read-back landed inside that one-second window, reported
+        # verified=True, and local state adopted 62298.1 while the exchange kept
+        # 62665 — a 366-point divergence that then suppressed the local failsafe
+        # 697 times.
+        active = self._active_position_stop(symbol, hold_side, product)
+        result["existing_stop"] = active
+        if active and active.get("plan_type") in POSITION_LEVEL_LOSS_TYPES:
+            result["model"] = "POSITION_LEVEL"
+            return self._move_position_level_stop(
+                symbol=symbol,
+                hold_side=hold_side,
+                formatted_trigger=formatted_trigger,
+                product=product,
+                margin_coin=margin_coin,
+                margin_mode=margin_mode,
+                existing=active,
+                reason=reason,
+                result=result,
+            )
+
+        result["model"] = "PLAN_LEVEL"
         if cleanup_existing:
             try:
                 result["cleanup"] = self.cancel_all_futures_tpsl_orders(
@@ -1114,6 +1350,10 @@ class BitgetTPSLClientMixin:
             private=True,
         )
 
+        # Settle first: a plan the exchange cancels a second later must not be
+        # read back as live protection.
+        time.sleep(self.STOP_REPLACEMENT_SETTLE_SECONDS)
+
         verify = self.verify_active_stop_loss(
             symbol=symbol,
             hold_side=hold_side,
@@ -1122,6 +1362,35 @@ class BitgetTPSLClientMixin:
         )
         result["verify"] = verify
         result["verified"] = bool(verify.get("verified"))
+
+        # Presence is not enough. Re-read the authoritative stop and require it
+        # to be this one, at this price, on this side.
+        confirmed = self._active_position_stop(symbol, hold_side, product)
+        result["confirmed_stop"] = confirmed
+        if not confirmed:
+            result["verified"] = False
+            result["reason_detail"] = "replacement_absent_after_settle"
+            self.log.error(
+                "MOVE_SL_REPLACEMENT_VANISHED | %s | hold_side=%s | target=%s",
+                symbol, hold_side, formatted_trigger,
+            )
+        else:
+            tolerance = self._stop_tick_tolerance(symbol, float(formatted_trigger))
+            drift = abs(float(confirmed["trigger_price"]) - float(formatted_trigger))
+            result["tick_tolerance"] = tolerance
+            result["drift"] = drift
+            if drift > tolerance:
+                result["verified"] = False
+                result["reason_detail"] = (
+                    f"divergence trigger={confirmed['trigger_price']} "
+                    f"expected={formatted_trigger} drift={drift} tolerance={tolerance}"
+                )
+                self.log.error(
+                    "MOVE_SL_DIVERGED | %s | hold_side=%s | expected=%s | exchange=%s | "
+                    "plan_type=%s | drift=%s | tolerance=%s",
+                    symbol, hold_side, formatted_trigger, confirmed["trigger_price"],
+                    confirmed["plan_type"], drift, tolerance,
+                )
 
         self.log.warning(
             "MOVED_SL_PLACED | %s | hold_side=%s | trigger=%s | size=%s | verified=%s | reason=%s | order_id=%s",

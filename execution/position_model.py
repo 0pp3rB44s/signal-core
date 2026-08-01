@@ -38,6 +38,12 @@ TRAILING_PENDING = "TRAILING_PENDING"
 TRAILING_CONFIRMED = "TRAILING_CONFIRMED"
 PROTECTION_UPDATE_FAILED = "PROTECTION_UPDATE_FAILED"
 
+#: Local state and the exchange disagree about the active stop price beyond tick
+#: tolerance. Never a confirmed state: the exchange stop is authoritative and is
+#: kept, no local move may be recorded as confirmed, and new entries are blocked
+#: until the two agree again.
+PROTECTION_DIVERGED = "DIVERGED"
+
 _EXCHANGE_ENTRY_KEYS = (
     "openPriceAvg",
     "averageOpenPrice",
@@ -688,6 +694,7 @@ __all__ = [
     "OpeningFeeSelection",
     "PROFIT_LOCK_CONFIRMED",
     "PROFIT_LOCK_PENDING",
+    "PROTECTION_DIVERGED",
     "PROTECTION_UPDATE_FAILED",
     "PlannedPriceOnExecutedPosition",
     "PositionEconomics",
