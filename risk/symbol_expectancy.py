@@ -30,6 +30,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from telemetry.close_record_sources import (
+    ECONOMIC_CLOSE_EVENT_TYPES,
+    EXCHANGE_CONFIRMED_CLOSE_SOURCES,
+)
+
 BASE_PATH = Path(__file__).resolve().parents[1]
 DATASET_PATH = BASE_PATH / "logs" / "trade_dataset_v2.csv"
 SOURCE_NAME = "trade_dataset_v2.csv"
@@ -37,23 +42,11 @@ SOURCE_NAME = "trade_dataset_v2.csv"
 logger = logging.getLogger("symbol_expectancy")
 
 #: Only closes are evidence; opens and amendments say nothing about outcome.
-CLOSE_EVENT_TYPES = frozenset({"CLOSE", "POSITION_CLOSED"})
-
-#: ``sync_source`` values that represent an exchange-confirmed close. Anything
-#: outside this set is excluded rather than trusted:
-#:   * ``position_manager``               — internal bookkeeping, not exchange truth;
-#:   * ``unprotected_position_emergency_close`` — internal emergency path;
-#:   * numeric/empty values              — observed on 15 rows of the live file,
-#:     a CSV column shift; treating those as a source would silently admit
-#:     mis-parsed records.
-#: Simulation output never carries any of these values, which is what keeps
-#: simulated and live results from being pooled.
-EXCHANGE_CONFIRMED_SOURCES = frozenset({
-    "validated_exchange_position_closed_sync",
-    "bitget_position_history",
-    "bitget_export_backfill",
-    "bitget_position_history_manual_backfill_20260712",
-})
+#: Both sets now come from ``telemetry/close_record_sources.py`` so this module
+#: and the weekly-PnL kill-switch cannot drift apart. The local names are kept
+#: because callers and tests already refer to them.
+CLOSE_EVENT_TYPES = ECONOMIC_CLOSE_EVENT_TYPES
+EXCHANGE_CONFIRMED_SOURCES = EXCHANGE_CONFIRMED_CLOSE_SOURCES
 
 #: Rolling evidence window, matching ``expectancy_window_days`` already used by
 #: the strategy-level dataset so the two levels describe the same period.

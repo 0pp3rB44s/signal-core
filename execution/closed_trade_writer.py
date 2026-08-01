@@ -7,8 +7,32 @@ PositionManager instance (self.log/self.settings/self.journal/self.cooldowns).
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+#: Two writers can report the same close a second apart: the position manager
+#: stamps when it observed the position was flat, the exchange stamps its own
+#: fill time. Mirrors ``TradeDatasetV2Logger.CLOSE_TIME_TOLERANCE_SECONDS``.
+CLOSE_TIME_TOLERANCE_SECONDS = 1
+
+
+def _within_close_tolerance(left: str, right: str) -> bool:
+    """True when two close timestamps describe the same moment.
+
+    Falls back to a second-precision string compare when either value cannot be
+    parsed, so a malformed timestamp never widens the match.
+    """
+    a, b = str(left or "").strip(), str(right or "").strip()
+    if not a or not b:
+        return False
+    if a[:19] == b[:19]:
+        return True
+    try:
+        parsed_a = datetime.fromisoformat(a.replace("Z", "+00:00"))
+        parsed_b = datetime.fromisoformat(b.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return abs(parsed_a - parsed_b) <= timedelta(seconds=CLOSE_TIME_TOLERANCE_SECONDS)
 
 from execution.position_model import (
     PositionModelError,
@@ -344,14 +368,18 @@ class ClosedTradeWriterMixin:
                     if str(row.get("symbol") or "").upper() != target_symbol:
                         continue
                     row_lifecycle = str(row.get("position_lifecycle_id") or "").strip()
+                    if target_lifecycle and row_lifecycle and row_lifecycle == target_lifecycle:
+                        return True
+                    # Only a *different* lifecycle id proves a different trade.
+                    # When either side lacks one — the provisional row never
+                    # carries it — fall through to the timestamp identity instead
+                    # of giving up, which is what let a second row through.
                     if target_lifecycle and row_lifecycle:
-                        if row_lifecycle == target_lifecycle:
-                            return True
                         continue
                     row_closed_at = str(row.get("closed_at") or row.get("timestamp") or "")
                     if row_closed_at == target_closed_at:
                         return True
-                    if target_prefix and row_closed_at[:19] == target_prefix:
+                    if target_prefix and _within_close_tolerance(row_closed_at, target_closed_at):
                         return True
         except Exception as exc:
             self.log.warning(
@@ -450,8 +478,24 @@ class ClosedTradeWriterMixin:
             )
 
     def _sync_journal_close(self, symbol: str, reason: str, margin_roi_pct: float) -> None:
+        """Record that the position is closed, without claiming to know the money.
+
+        This runs from ``PositionManager`` the moment a close is detected, which
+        is before Bitget has supplied realized PnL. The only figure available
+        here is a *return percentage*, so it is passed under its own name.
+        ``log_close`` fills the USDT columns from exchange truth when it has it
+        and writes a provisional, non-economic row when it does not.
+
+        Passing this value as ``pnl=`` is what wrote a ROI percentage into a USDT
+        column on every close, and ``RiskManager._weekly_realized_pnl`` summed
+        those into the WEEKLY_FREEZE_LOSS_PCT kill-switch.
+        """
         try:
-            self.journal.log_close(symbol=symbol, result=reason, pnl=round(margin_roi_pct, 4))
+            self.journal.log_close(
+                symbol=symbol,
+                result=reason,
+                margin_roi_pct=round(margin_roi_pct, 4),
+            )
         except Exception as exc:
             self.log.warning("Live journal log_close failed for %s: %s", symbol, exc)
 

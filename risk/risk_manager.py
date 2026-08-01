@@ -11,6 +11,10 @@ from app.config import Settings
 from app.equity import resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
 from risk import symbol_expectancy
+from telemetry.close_record_sources import (
+    ECONOMIC_CLOSE_EVENT_TYPES,
+    is_economic_close,
+)
 
 BASE_PATH = Path(__file__).resolve().parents[1]
 REPORTS_PATH = BASE_PATH / "reports" / "backtests"
@@ -308,6 +312,8 @@ class RiskManager:
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         total = 0.0
+        counted: set[str] = set()
+        skipped_non_economic = 0
         try:
             dataset_path = BASE_PATH / "logs" / "trade_dataset_v2.csv"
             for path in (dataset_path.with_name(dataset_path.name + ".1"), dataset_path):
@@ -315,19 +321,44 @@ class RiskManager:
                     continue
                 with path.open("r", newline="", encoding="utf-8") as handle:
                     for row in csv.DictReader(handle):
-                        if str(row.get("event_type") or "").upper() not in ("CLOSE", "POSITION_CLOSED"):
+                        # Only exchange-confirmed money may move this kill-switch.
+                        # A provisional position_manager row carries a return
+                        # percentage rather than USDT; summing those is what
+                        # inflated the meter and could freeze trading on a
+                        # phantom loss. Unknown or empty sources fail closed.
+                        if not is_economic_close(row):
+                            if str(row.get("event_type") or "").upper() in ECONOMIC_CLOSE_EVENT_TYPES:
+                                skipped_non_economic += 1
                             continue
                         closed_at = str(row.get("closed_at") or row.get("timestamp") or "")
                         if closed_at < cutoff:
+                            continue
+                        # The rotated segment and the active file can both carry
+                        # the same close; count each trade exactly once.
+                        identity = str(row.get("position_lifecycle_id") or "").strip() or "{}|{}|{}".format(
+                            str(row.get("symbol") or "").upper(),
+                            str(row.get("direction") or "").upper(),
+                            closed_at[:19],
+                        )
+                        if identity in counted:
                             continue
                         raw = row.get("net_pnl") or row.get("pnl") or 0
                         try:
                             total += float(raw)
                         except (TypeError, ValueError):
                             continue
+                        counted.add(identity)
         except Exception as exc:
             logger.warning("WEEKLY_PNL_READ_FAILED | error=%s", exc)
             total = 0.0
+
+        if skipped_non_economic:
+            logger.info(
+                "WEEKLY_PNL_NON_ECONOMIC_SKIPPED | rows=%s | counted=%s | total=%.8f",
+                skipped_non_economic,
+                len(counted),
+                total,
+            )
 
         self._weekly_pnl_cache = (now, total)
         return total
