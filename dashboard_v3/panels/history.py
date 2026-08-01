@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from dashboard_v3.core import sources as src
+from telemetry.close_record_sources import is_displayable_close
 from dashboard_v3.core.status import Signal, SignalSet, Status
 
 COHORTS = {
@@ -106,10 +107,19 @@ def build(window_days: int = 30) -> dict[str, Any]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
     trades: list[dict[str, Any]] = []
     undated = 0
+    non_economic = 0
 
     for row in rows:
         status = str(row.get("status") or "").upper()
         if not status.startswith("CLOSED"):
+            continue
+        # `status` stays "CLOSED" on provisional and quarantined rows, so it
+        # cannot decide what counts as money — a retired row still carries a ROI
+        # percentage in net_pnl. Provisional, quarantined and position_manager
+        # rows are therefore dropped here, while legacy rows written before the
+        # sync_source column existed are still rendered.
+        if not is_displayable_close(row):
+            non_economic += 1
             continue
         pnl = _pnl(row)
         if pnl is None:
@@ -217,6 +227,7 @@ def build(window_days: int = 30) -> dict[str, Any]:
         "window_days": window_days,
         "windowed_count": len(windowed),
         "undated": undated,
+        "non_economic_rows": non_economic,
         "live_stats": live_stats,
         "recovery_stats": recovery_stats,
         "equity_curve": equity_curve,

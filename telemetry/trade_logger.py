@@ -1,9 +1,13 @@
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan
+from telemetry.close_record_sources import (
+    ECONOMIC_CLOSE_EVENT_TYPES,
+    PROVISIONAL_CLOSE_EVENT_TYPE,
+)
 from telemetry.csv_rotation import rotate_if_needed
 from telemetry.safe_io import locked_open
 
@@ -16,6 +20,24 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _shift_iso_seconds(stamp: str, offset_seconds: int) -> str:
+    """Return ``stamp`` moved by ``offset_seconds``, truncated to whole seconds.
+
+    Used only to build duplicate-detection keys, so an unparsable timestamp
+    degrades to the plain second-precision prefix rather than raising.
+    """
+    text = str(stamp or "").strip()
+    if not text:
+        return ""
+    if offset_seconds == 0:
+        return text[:19]
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return text[:19]
+    return (parsed + timedelta(seconds=offset_seconds)).isoformat(timespec="seconds")[:19]
 
 
 def _safe_bool(value) -> bool:
@@ -781,52 +803,108 @@ class TradeDatasetV2Logger:
     def __init__(self, path: str | Path = "logs/trade_dataset_v2.csv") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._seen_close_keys: set[tuple] | None = None
+        #: identity -> lifecycle id that claimed it ("" when the row had none).
+        self._seen_close_keys: dict[tuple, str] | None = None
 
-    def _close_key(
+    #: Two writers can report the same close a second apart: ``position_manager``
+    #: stamps the moment it observed the position was flat, ``bitget_position_history``
+    #: the exchange's own timestamp. One second of tolerance links them without
+    #: being wide enough to merge two genuine closes of the same symbol and
+    #: direction, which the 30-minute post-execution cooldown already prevents.
+    CLOSE_TIME_TOLERANCE_SECONDS = 1
+
+    def _close_identities(
         self,
         symbol: str,
         direction: str,
         closed_at: str,
-        pnl,
         position_lifecycle_id: str = "",
-    ) -> tuple:
+        exchange_order_id: str = "",
+        client_oid: str = "",
+    ) -> list[tuple]:
+        """Every identity under which this close may already be known.
+
+        Deliberately ordered strongest first, and deliberately *not* short-circuiting:
+        the provisional row carries no lifecycle id while the exchange-truth row
+        does, so a single key can never link the pair. Emitting all of them and
+        matching on any overlap is what makes the two rows recognisable as one
+        trade. ``pnl`` is never part of an identity — the two rows disagree about
+        the money, which is the whole reason they must be linked.
+        """
+        identities: list[tuple] = []
+
         lifecycle_id = str(position_lifecycle_id or "").strip()
         if lifecycle_id:
-            return ("LIFECYCLE", lifecycle_id)
-        return (
-            "LEGACY",
-            str(symbol or "").upper(),
-            str(direction or "").upper(),
-            str(closed_at or "")[:19],
-            f"{_safe_float(pnl):.6f}",
-        )
+            identities.append(("LIFECYCLE", lifecycle_id))
 
-    def _is_duplicate_close(self, key: tuple) -> bool:
+        for raw in (exchange_order_id, client_oid):
+            token = str(raw or "").strip()
+            if token:
+                identities.append(("ORDER", token))
+
+        stamp = str(closed_at or "").strip()
+        sym = str(symbol or "").upper()
+        direction_upper = str(direction or "").upper()
+        if sym and stamp:
+            for offset in range(
+                -self.CLOSE_TIME_TOLERANCE_SECONDS,
+                self.CLOSE_TIME_TOLERANCE_SECONDS + 1,
+            ):
+                shifted = _shift_iso_seconds(stamp, offset)
+                if shifted:
+                    identities.append(("TRADE", sym, direction_upper, shifted))
+
+        return identities
+
+    def _is_duplicate_close(self, identities: list[tuple], lifecycle_id: str = "") -> bool:
         """Duplicate closes (re-syncs, replays) poison expectancy; block them.
 
-        Keys are seeded from the on-disk tail once per process so duplicates
-        are also caught across restarts.
+        Keys are seeded from the on-disk tail once per process so duplicates are
+        also caught across restarts. Each key remembers which lifecycle claimed
+        it, because two *different* lifecycles closing in the same second are two
+        real trades: a timestamp match must not merge them. The loose
+        symbol/direction/second identity therefore only decides the outcome when
+        at least one of the two rows has no lifecycle id — which is exactly the
+        provisional-versus-exchange-truth case it exists for.
         """
         if self._seen_close_keys is None:
-            self._seen_close_keys = set()
+            self._seen_close_keys = {}
             if self.path.exists():
                 try:
                     with locked_open(self.path, "r", newline="", encoding="utf-8") as handle:
                         rows = list(csv.DictReader(handle))
                     for row in rows[-500:]:
-                        if str(row.get("event_type") or "").upper() in ("CLOSE", "POSITION_CLOSED"):
-                            self._seen_close_keys.add(self._close_key(
-                                row.get("symbol"), row.get("direction"),
-                                row.get("closed_at") or row.get("timestamp"), row.get("pnl"),
-                                row.get("position_lifecycle_id"),
-                            ))
+                        event_type = str(row.get("event_type") or "").upper()
+                        if event_type not in ECONOMIC_CLOSE_EVENT_TYPES:
+                            continue
+                        row_lifecycle = str(row.get("position_lifecycle_id") or "").strip()
+                        for identity in self._close_identities(
+                            row.get("symbol"),
+                            row.get("direction"),
+                            row.get("closed_at") or row.get("timestamp"),
+                            row_lifecycle,
+                            row.get("exchange_entry_order_id"),
+                            row.get("exchange_entry_client_oid"),
+                        ):
+                            self._seen_close_keys.setdefault(identity, row_lifecycle)
                 except Exception:
                     pass
 
-        if key in self._seen_close_keys:
+        lifecycle_id = str(lifecycle_id or "").strip()
+        for identity in identities:
+            if identity not in self._seen_close_keys:
+                continue
+            if identity[0] in ("LIFECYCLE", "ORDER"):
+                return True
+            seen_lifecycle = self._seen_close_keys[identity]
+            if lifecycle_id and seen_lifecycle and lifecycle_id != seen_lifecycle:
+                continue
             return True
-        self._seen_close_keys.add(key)
+
+        for identity in identities:
+            self._seen_close_keys.setdefault(identity, lifecycle_id)
+            if lifecycle_id and not self._seen_close_keys[identity]:
+                self._seen_close_keys[identity] = lifecycle_id
         return False
 
     def _fieldnames(self) -> list[str]:
@@ -997,31 +1075,60 @@ class TradeDatasetV2Logger:
             "message": report.message,
         })
 
-    def append_close(self, trade: dict, result: str, pnl: float, quality: dict) -> None:
+    def append_close(
+        self,
+        trade: dict,
+        result: str,
+        pnl: float | None,
+        quality: dict,
+        margin_roi_pct: float | None = None,
+    ) -> None:
+        """Append one close row.
+
+        A row is economic (``event_type=CLOSE``) only when the money came from
+        the exchange or was handed in as USDT. Without that, the position is
+        still known to be closed, but the row is written as
+        ``CLOSE_PROVISIONAL`` with empty money columns: no consumer of
+        ``ECONOMIC_CLOSE_EVENT_TYPES`` reads it, and the return percentage is
+        preserved under its own name for observability.
+        """
         exchange_truth_pnl = trade.get("exchange_truth_pnl")
         exchange_truth_fee = trade.get("exchange_truth_fee")
 
+        provisional = False
         if exchange_truth_pnl not in ("", None):
             pnl = _safe_float(exchange_truth_pnl)
             fees = _safe_float(exchange_truth_fee, 0.0) if exchange_truth_fee not in ("", None) else 0.0
             net_pnl = pnl
-        else:
+        elif pnl is not None:
+            pnl = _safe_float(pnl)
             fees = _safe_float(trade.get("fees_paid", trade.get("fees", 0.0)), 0.0)
             net_pnl = pnl - abs(fees)
+        else:
+            provisional = True
+            fees = _safe_float(trade.get("fees_paid", trade.get("fees", 0.0)), 0.0)
+            pnl = None
+            net_pnl = None
 
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
         closed_at = trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        close_key = self._close_key(
+        identities = self._close_identities(
             trade.get("symbol"),
             trade.get("direction"),
             closed_at,
-            pnl,
             trade.get("position_lifecycle_id"),
+            trade.get("exchange_entry_order_id"),
+            trade.get("exchange_entry_client_oid"),
         )
-        if self._is_duplicate_close(close_key):
+        # Provisional rows never claim an identity, so the exchange-truth row that
+        # follows is still written; economic rows dedupe against each other.
+        if not provisional and self._is_duplicate_close(
+            identities,
+            str(trade.get("position_lifecycle_id") or "").strip(),
+        ):
             return
         self._append_row({
-            "event_type": "CLOSE",
+            "event_type": PROVISIONAL_CLOSE_EVENT_TYPE if provisional else "CLOSE",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "symbol": str(trade.get("symbol") or "").upper(),
             "direction": trade.get("direction", ""),
@@ -1052,14 +1159,21 @@ class TradeDatasetV2Logger:
             "take_profits": " | ".join(str(x) for x in (trade.get("take_profits") or [])),
             "notional": trade.get("notional", ""),
             "leverage": trade.get("leverage", ""),
-            "fees": fees,
+            # Money columns stay empty on a provisional close. Writing a
+            # placeholder here is precisely how a ROI percentage once became a
+            # USDT figure inside the weekly kill-switch.
+            "fees": "" if provisional else fees,
             "slippage_pct": trade.get("slippage_pct", ""),
-            "pnl": pnl,
-            "net_pnl": round(net_pnl, 8),
+            "pnl": "" if pnl is None else pnl,
+            "net_pnl": "" if net_pnl is None else round(net_pnl, 8),
             "price_return_pct": trade.get("price_return_pct", ""),
-            "margin_roi_pct": trade.get(
-                "margin_roi_pct",
-                trade.get("realized_margin_roi_pct", ""),
+            "margin_roi_pct": (
+                margin_roi_pct
+                if margin_roi_pct is not None
+                else trade.get(
+                    "margin_roi_pct",
+                    trade.get("realized_margin_roi_pct", ""),
+                )
             ),
             "exchange_order_id": trade.get("exchange_order_id", ""),
             "tp1_hit": trade.get("tp1_hit", ""),
@@ -1409,7 +1523,26 @@ class LiveTradeJournalLogger:
         )
         self._write(journal)
 
-    def log_close(self, symbol: str, result: str, pnl: float) -> None:
+    def log_close(
+        self,
+        symbol: str,
+        result: str,
+        pnl: float | None = None,
+        *,
+        margin_roi_pct: float | None = None,
+    ) -> None:
+        """Close the journal row for ``symbol``.
+
+        ``pnl`` is money in USDT and nothing else. ``margin_roi_pct`` is a return
+        percentage and is never promoted into a money column — callers that only
+        know the percentage (``PositionManager``, which runs before Bitget
+        reports realized PnL) must pass it under that name.
+
+        When neither exchange truth nor a monetary ``pnl`` is available the close
+        is recorded as provisional: the position is known to be flat, but no
+        money figure is asserted, so the weekly-PnL kill-switch and expectancy
+        both skip it until the exchange-confirmed row arrives.
+        """
         journal = self._read()
         closed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         symbol_upper = symbol.upper()
@@ -1432,9 +1565,10 @@ class LiveTradeJournalLogger:
         if target is not None:
             target["status"] = "CLOSED"
             target["result"] = result
-            target["pnl"] = pnl
             target["closed_at"] = closed_at
             target["sync_source"] = "position_manager"
+            if margin_roi_pct is not None:
+                target["margin_roi_pct"] = margin_roi_pct
 
             exchange_truth_pnl = target.get("exchange_truth_pnl")
             exchange_truth_fee = target.get("exchange_truth_fee")
@@ -1443,17 +1577,28 @@ class LiveTradeJournalLogger:
                 fees_paid = _safe_float(exchange_truth_fee, 0.0) if exchange_truth_fee not in ("", None) else 0.0
                 quality_pnl = pnl
                 quality_fees = 0.0
-            else:
+                target["pnl"] = pnl
+            elif pnl is not None:
                 fees_paid = _safe_float(target.get("fees_paid", target.get("fees", 0.0)), 0.0)
-                quality_pnl = pnl
+                quality_pnl = _safe_float(pnl)
+                quality_fees = fees_paid
+                target["pnl"] = quality_pnl
+            else:
+                # No exchange truth and no monetary figure: provisional close.
+                fees_paid = _safe_float(target.get("fees_paid", target.get("fees", 0.0)), 0.0)
+                quality_pnl = 0.0
                 quality_fees = fees_paid
             quality = _trade_quality_from_journal(target, pnl=quality_pnl, fees=quality_fees)
             target.update(quality)
 
+            # ``pnl`` stays None on a provisional close; downstream money columns
+            # are left empty rather than filled with a stand-in value.
+            monetary_pnl = pnl
+
             self.dataset.append_close(
                 symbol=symbol_upper,
                 result=result,
-                pnl=pnl,
+                pnl=monetary_pnl if monetary_pnl is not None else "",
                 exit_price=target.get("exit", ""),
                 tp1_hit=target.get("tp1_hit", ""),
                 tp2_hit=target.get("tp2_hit", ""),
@@ -1474,8 +1619,9 @@ class LiveTradeJournalLogger:
             self.dataset_v2.append_close(
                 trade=target,
                 result=result,
-                pnl=pnl,
+                pnl=monetary_pnl,
                 quality=quality,
+                margin_roi_pct=margin_roi_pct,
             )
 
             self.validation.append_event(
@@ -1487,9 +1633,20 @@ class LiveTradeJournalLogger:
                 message=str(target.get("message", "")),
                 details={
                     "result": result,
-                    "pnl": pnl,
+                    "pnl": monetary_pnl if monetary_pnl is not None else "",
                     "fees": fees_paid,
-                    "net_pnl": round(pnl if exchange_truth_pnl not in ("", None) else pnl - abs(fees_paid), 8),
+                    "net_pnl": (
+                        ""
+                        if monetary_pnl is None
+                        else round(
+                            monetary_pnl
+                            if exchange_truth_pnl not in ("", None)
+                            else monetary_pnl - abs(fees_paid),
+                            8,
+                        )
+                    ),
+                    "margin_roi_pct": margin_roi_pct if margin_roi_pct is not None else "",
+                    "provisional": monetary_pnl is None,
                     "tp1_hit": target.get("tp1_hit", ""),
                     "tp2_hit": target.get("tp2_hit", ""),
                     "tp3_hit": target.get("tp3_hit", ""),
@@ -1503,12 +1660,15 @@ class LiveTradeJournalLogger:
                 },
             )
             target["strategy"] = _normalize_strategy_label(target.get("strategy"), target)
-            self.strategy_performance.append_close_event(
-                trade=target,
-                result=result,
-                pnl=pnl,
-                quality=quality,
-            )
+            if monetary_pnl is not None:
+                # Strategy performance is an economic ledger; a provisional close
+                # contributes nothing to it until exchange truth lands.
+                self.strategy_performance.append_close_event(
+                    trade=target,
+                    result=result,
+                    pnl=monetary_pnl,
+                    quality=quality,
+                )
 
         self._write(journal)
 

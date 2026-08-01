@@ -16,6 +16,7 @@ from execution.position_reconciler import PositionReconcilerMixin
 from execution.position_model import (
     AuthoritativeEntryUnavailable,
     INITIAL_PROTECTION_CONFIRMED,
+    PROTECTION_DIVERGED,
     PositionLifecycleMismatch,
     PositionModelError,
     confirm_exchange_position,
@@ -1400,18 +1401,50 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 closed_reason = "break_even_stop" if position.get("break_even_active") else "stop_loss"
                 position["exchange_position_still_open_after_local_stop"] = True
 
-                if exchange_tpsl_verified:
+                # Suppressing the local failsafe is only safe when the exchange
+                # stop *is* this stop. "A TPSL exists" is not that check: on
+                # BTCUSDT the exchange held 62665 while local state held 62298.1,
+                # and this branch swallowed the local exit 697 times across three
+                # hours purely because some stop was present.
+                exchange_stop = self._exchange_stop_price(position)
+                stops_agree = self._stops_agree(current_stop, exchange_stop)
+
+                if exchange_tpsl_verified and stops_agree:
                     note_parts.append("LOCAL_STOP_TOUCHED_BUT_EXCHANGE_TPSL_ACTIVE_NO_CLOSE")
                     position["local_stop_touched_exchange_tpsl_active"] = True
                     position["last_recovery_hold_reason"] = "exchange_tpsl_active_local_stop_close_blocked"
                     self.log.warning(
-                        "LOCAL_STOP_TOUCHED_EXCHANGE_TPSL_ACTIVE_NO_CLOSE | %s | stop=%s | current_low=%s | current_high=%s | live_size=%s | protection_integrity=%s",
+                        "LOCAL_STOP_TOUCHED_EXCHANGE_TPSL_ACTIVE_NO_CLOSE | %s | stop=%s | exchange_stop=%s | current_low=%s | current_high=%s | live_size=%s | protection_integrity=%s",
                         symbol,
                         current_stop,
+                        exchange_stop,
                         current_low,
                         current_high,
                         live_size,
                         position.get("protection_integrity"),
+                    )
+                    stop_hit = False
+                elif exchange_tpsl_verified and not stops_agree:
+                    # The exchange protects at a different price than local state
+                    # believes. Closing on a stale local stop and trusting the
+                    # mismatch are both unsafe: mark DIVERGED, keep the exchange
+                    # stop, block new entries, and stop reporting confirmation.
+                    position["protection_state"] = PROTECTION_DIVERGED
+                    position["protection_integrity"] = "DIVERGED"
+                    position["stop_divergence_local"] = current_stop
+                    position["stop_divergence_exchange"] = exchange_stop
+                    position["last_recovery_hold_reason"] = "local_stop_diverged_from_exchange_stop"
+                    note_parts.append("PROTECTION_DIVERGED_LOCAL_VS_EXCHANGE_STOP")
+                    self.log.critical(
+                        "PROTECTION_DIVERGED | %s | local_stop=%s | exchange_stop=%s | "
+                        "current_low=%s | current_high=%s | live_size=%s | "
+                        "new_entries_blocked=True | exchange_stop_retained=True",
+                        symbol,
+                        current_stop,
+                        exchange_stop,
+                        current_low,
+                        current_high,
+                        live_size,
                     )
                     stop_hit = False
                 else:

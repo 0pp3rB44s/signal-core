@@ -1191,6 +1191,48 @@ class TpSlLifecycleMixin:
     def _stop_hit_range(direction: str, candle_high: float, candle_low: float, stop: float) -> bool:
         return candle_low <= stop if direction == "LONG" else candle_high >= stop
 
+    #: Fraction of the stop price treated as "the same price". Mirrors
+    #: ``BitgetTPSLClientMixin.STOP_TICK_TOLERANCE_PCT`` so the client and the
+    #: position manager cannot disagree about what counts as a divergence.
+    STOP_TICK_TOLERANCE_PCT = 0.002
+
+    @staticmethod
+    def _exchange_stop_price(position: dict) -> float | None:
+        """The stop the exchange is actually holding, if we know it.
+
+        Reads only fields written from exchange responses. Deliberately does not
+        fall back to ``stop_loss``: that is local intent, and treating it as
+        exchange truth is what made a 366-point gap invisible.
+        """
+        for key in ("exchange_stop_loss", "confirmed_stop"):
+            raw = position.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
+    @classmethod
+    def _stops_agree(cls, local_stop: float | None, exchange_stop: float | None) -> bool:
+        """True when local and exchange describe the same stop.
+
+        Unknown exchange stop returns False: without proof the two agree, the
+        local failsafe must not be suppressed.
+        """
+        try:
+            local_value = float(local_stop)
+            exchange_value = float(exchange_stop)
+        except (TypeError, ValueError):
+            return False
+        if local_value <= 0 or exchange_value <= 0:
+            return False
+        tolerance = abs(exchange_value) * cls.STOP_TICK_TOLERANCE_PCT
+        return abs(local_value - exchange_value) <= tolerance
+
     @staticmethod
     def _is_no_position_to_close_error(exc: Exception) -> bool:
         message = str(exc).lower()
