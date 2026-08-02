@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.config import Settings
+from clients.bitget_order_client import CLOSE_CONFIRMED_FLAT_STATUSES
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import MarketSnapshot, PositionUpdate
 from execution.state_store import JsonStateStore
@@ -30,6 +31,13 @@ from execution.position_model import (
 )
 from execution.tp_sl_lifecycle import TpSlLifecycleMixin
 from telemetry.trade_logger import LiveTradeJournalLogger
+
+
+#: How often the dead-trade housekeeping close may be re-sent for one position
+#: before it gives up and escalates. The close is a slot-reclaim convenience:
+#: the position keeps its exchange stop either way, so abandoning is safe and
+#: repeating forever is not.
+DEAD_TRADE_CLOSE_MAX_ATTEMPTS = 3
 
 
 class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifecycleMixin):
@@ -778,47 +786,42 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         cleanup_tpsl=True,
                     )
                     position["residual_cleanup_result"] = residual_close_result
-                    position["remaining_size_pct"] = 0.0
-                    position["status"] = "CLOSED"
-                    position["closed_reason"] = "residual_position_cleanup"
-                    position["closed_at"] = datetime.now(timezone.utc).isoformat()
-                    position["stale_tpsl_cleanup_done"] = True
-                    note_parts.append("RESIDUAL_POSITION_CLEANUP_SENT")
-                    self.log.warning(
-                        "RESIDUAL_POSITION_CLEANUP_SENT | %s | live_size=%s | remaining_pct=%.4f | result=%s",
-                        symbol,
-                        live_size,
-                        current_remaining_pct,
-                        residual_close_result,
-                    )
-                    self._sync_journal_close(symbol, "residual_position_cleanup", margin_roi_pct_value)
-                    self._append_closed_trade_dataset_row(
-                        position=position,
-                        close_reason="residual_position_cleanup",
-                        exit_price=current_price,
-                        margin_roi_pct=margin_roi_pct_value,
-                        extra={"close_source": "residual_position_cleanup", "live_size": live_size},
-                    )
-                    self._register_symbol_cooldown(symbol, "residual_position_cleanup", margin_roi_pct_value)
-                except Exception as exc:
-                    position["stale_tpsl_cleanup_done"] = False
-                    position["residual_cleanup_error"] = str(exc)
+                    residual_status = str(residual_close_result.get("status") or "").upper()
 
-                    if self._is_no_position_to_close_error(exc):
+                    if residual_status not in CLOSE_CONFIRMED_FLAT_STATUSES:
+                        # The exchange still holds size. Leave the position
+                        # open and protected rather than booking a close that
+                        # did not happen.
+                        note_parts.append("RESIDUAL_POSITION_CLEANUP_NOT_FLAT")
+                        self.log.error(
+                            "RESIDUAL_POSITION_CLEANUP_NOT_FLAT | %s | status=%s | "
+                            "remaining_size=%s | position_kept_open=True",
+                            symbol,
+                            residual_status,
+                            residual_close_result.get("remaining_size"),
+                        )
+                    elif residual_status == "NO_POSITION":
+                        # Verified flat before we sent anything, or already
+                        # flat by the time the exchange answered. One
+                        # economic path: the desync resolution.
+                        position["remaining_size_pct"] = 0.0
                         position["status"] = "CLOSED_SYNCED"
                         position["closed_reason"] = "residual_position_exchange_no_position_to_close"
                         position["closed_at"] = datetime.now(timezone.utc).isoformat()
-                        position["remaining_size_pct"] = 0.0
                         position["exchange_live_size"] = 0.0
                         position["exchange_remaining_pct"] = 0.0
-                        position["sync_reason"] = "Bitget returned 22002 No position to close during residual cleanup; local OPEN resolved as CLOSED_SYNCED"
+                        position["stale_tpsl_cleanup_done"] = True
+                        position["sync_reason"] = (
+                            "Bitget reported no position during residual cleanup and the "
+                            "re-read confirmed flat; local OPEN resolved as CLOSED_SYNCED"
+                        )
                         note_parts.append("RESIDUAL_DESYNC_RESOLVED_NO_POSITION_TO_CLOSE")
                         self.log.warning(
-                            "RESIDUAL_DESYNC_RESOLVED_NO_POSITION_TO_CLOSE | %s | attempted_live_size=%s | remaining_pct=%.4f | error=%s",
+                            "RESIDUAL_DESYNC_RESOLVED_NO_POSITION_TO_CLOSE | %s | "
+                            "attempted_live_size=%s | remaining_pct=%.4f",
                             symbol,
                             live_size,
                             current_remaining_pct,
-                            exc,
                         )
                         self._sync_journal_close(symbol, position["closed_reason"], margin_roi_pct_value)
                         self._append_closed_trade_dataset_row(
@@ -834,14 +837,45 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         )
                         self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
                     else:
-                        note_parts.append("CRITICAL: residual position cleanup failed")
-                        self.log.error(
-                            "RESIDUAL_POSITION_CLEANUP_FAILED | %s | live_size=%s | remaining_pct=%.4f | error=%s",
+                        position["remaining_size_pct"] = 0.0
+                        position["status"] = "CLOSED"
+                        position["closed_reason"] = "residual_position_cleanup"
+                        position["closed_at"] = datetime.now(timezone.utc).isoformat()
+                        position["stale_tpsl_cleanup_done"] = True
+                        note_parts.append("RESIDUAL_POSITION_CLEANUP_SENT")
+                        self.log.warning(
+                            "RESIDUAL_POSITION_CLEANUP_SENT | %s | live_size=%s | remaining_pct=%.4f | result=%s",
                             symbol,
                             live_size,
                             current_remaining_pct,
-                            exc,
+                            residual_close_result,
                         )
+                        self._sync_journal_close(symbol, "residual_position_cleanup", margin_roi_pct_value)
+                        self._append_closed_trade_dataset_row(
+                            position=position,
+                            close_reason="residual_position_cleanup",
+                            exit_price=current_price,
+                            margin_roi_pct=margin_roi_pct_value,
+                            extra={"close_source": "residual_position_cleanup", "live_size": live_size},
+                        )
+                        self._register_symbol_cooldown(symbol, "residual_position_cleanup", margin_roi_pct_value)
+                except Exception as exc:
+                    # A raised close means the position was NOT confirmed flat.
+                    # 22002 is no longer read as "already gone": the client
+                    # re-reads the exchange and only returns NO_POSITION when
+                    # the size is really zero, so reaching here means size
+                    # remains. Keep the position open and protected.
+                    position["stale_tpsl_cleanup_done"] = False
+                    position["residual_cleanup_error"] = str(exc)
+                    note_parts.append("CRITICAL: residual position cleanup failed")
+                    self.log.error(
+                        "RESIDUAL_POSITION_CLEANUP_FAILED | %s | live_size=%s | remaining_pct=%.4f | "
+                        "position_kept_open=True | error=%s",
+                        symbol,
+                        live_size,
+                        current_remaining_pct,
+                        exc,
+                    )
             tp2_debug_mismatch = (
                 bool(position.get("tp2_hit", False))
                 and (
@@ -1146,38 +1180,54 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         cleanup_tpsl=True,
                     )
                     position["tp3_close_all_result"] = close_all_result
-                    position["remaining_size_pct"] = 0.0
-                    position["break_even_active"] = True
-                    position["tp1_locked_stop_active"] = True
-                    position["status"] = "CLOSED"
-                    position["closed_reason"] = "tp3"
-                    position["closed_at"] = datetime.now(timezone.utc).isoformat()
-                    position["stale_tpsl_cleanup_done"] = True
-                    note_parts.append("TP3_CLOSE_ALL_REMAINDER_EXCHANGE_SENT")
-                    note_parts.append("TP3 hit; full live remainder close-all requested on Bitget")
-                    self.log.warning(
-                        "TP3_CLOSE_ALL_REMAINDER_EXCHANGE_SENT | %s | direction=%s | live_size=%s | result=%s",
-                        symbol,
-                        direction,
-                        live_size,
-                        close_all_result,
-                    )
-                    self.log.warning(
-                        "POSITION_CLOSED_CLEAN | %s | remaining_size_pct=%s | live_size_before_close=%s | tpsl_cleanup_done=%s",
-                        symbol,
-                        position.get("remaining_size_pct"),
-                        live_size,
-                        position.get("stale_tpsl_cleanup_done"),
-                    )
-                    self._sync_journal_close(symbol, "tp3", margin_roi_pct_value)
-                    self._append_closed_trade_dataset_row(
-                        position=position,
-                        close_reason="tp3",
-                        exit_price=current_price,
-                        margin_roi_pct=margin_roi_pct_value,
-                        extra={"close_source": "tp3_close_all_remainder", "live_size_before_close": live_size},
-                    )
-                    self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
+                    tp3_close_status = str(close_all_result.get("status") or "").upper()
+                    if tp3_close_status not in CLOSE_CONFIRMED_FLAT_STATUSES:
+                        # Remainder still on the exchange: it keeps its stop and
+                        # stays OPEN. Booking it as closed here is how a live
+                        # remainder becomes an unmanaged position.
+                        note_parts.append("TP3_CLOSE_ALL_REMAINDER_NOT_FLAT")
+                        self.log.error(
+                            "TP3_CLOSE_ALL_REMAINDER_NOT_FLAT | %s | status=%s | remaining_size=%s | "
+                            "position_kept_open=True",
+                            symbol,
+                            tp3_close_status,
+                            close_all_result.get("remaining_size"),
+                        )
+                    else:
+                        position["remaining_size_pct"] = 0.0
+                        position["break_even_active"] = True
+                        position["tp1_locked_stop_active"] = True
+                        position["status"] = "CLOSED"
+                        position["closed_reason"] = "tp3"
+                        position["closed_at"] = datetime.now(timezone.utc).isoformat()
+                        position["stale_tpsl_cleanup_done"] = True
+                        note_parts.append("TP3_CLOSE_ALL_REMAINDER_EXCHANGE_SENT")
+                        note_parts.append("TP3 hit; full live remainder close-all requested on Bitget")
+                        self.log.warning(
+                            "TP3_CLOSE_ALL_REMAINDER_EXCHANGE_SENT | %s | direction=%s | live_size=%s | result=%s",
+                            symbol,
+                            direction,
+                            live_size,
+                            close_all_result,
+                        )
+                        self.log.warning(
+                            "POSITION_CLOSED_CLEAN | %s | remaining_size_pct=%s | live_size_before_close=%s | tpsl_cleanup_done=%s",
+                            symbol,
+                            position.get("remaining_size_pct"),
+                            live_size,
+                            position.get("stale_tpsl_cleanup_done"),
+                        )
+                        # Economics are booked only on a confirmed-flat close,
+                        # so an unclosed remainder never produces a CLOSE record.
+                        self._sync_journal_close(symbol, "tp3", margin_roi_pct_value)
+                        self._append_closed_trade_dataset_row(
+                            position=position,
+                            close_reason="tp3",
+                            exit_price=current_price,
+                            margin_roi_pct=margin_roi_pct_value,
+                            extra={"close_source": "tp3_close_all_remainder", "live_size_before_close": live_size},
+                        )
+                        self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
                 else:
                     position["remaining_size_pct"] = max(
                         0.0,
@@ -1345,7 +1395,11 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     and bitget_sync_ok
                     and symbol in bitget_open_symbols
                     and live_size > 0
+                    and int(position.get("dead_trade_close_attempts") or 0)
+                    < DEAD_TRADE_CLOSE_MAX_ATTEMPTS
                 ):
+                    attempts = int(position.get("dead_trade_close_attempts") or 0) + 1
+                    position["dead_trade_close_attempts"] = attempts
                     try:
                         dead_close_result = self.client.close_futures_position_full(
                             symbol=symbol,
@@ -1355,7 +1409,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         )
                     except Exception as exc:
                         dead_close_result = {"status": "CLOSE_FAILED", "error": str(exc)}
-                    if str(dead_close_result.get("status") or "").upper() not in {"CLOSE_FAILED"}:
+                    if str(dead_close_result.get("status") or "").upper() in CLOSE_CONFIRMED_FLAT_STATUSES:
                         position["dead_trade_close_result"] = dead_close_result
                         position["remaining_size_pct"] = 0.0
                         position["status"] = "CLOSED"
@@ -1383,11 +1437,27 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         )
                         self._register_symbol_cooldown(symbol, "dead_trade_timeout", margin_roi_pct_value)
                     else:
+                        # Position stays OPEN and keeps its exchange stop. It is
+                        # a housekeeping close, never a protection action, so a
+                        # failure here costs a slot -- not safety.
                         self.log.error(
-                            "DEAD_TRADE_TIMEOUT_CLOSE_FAILED | %s | result=%s",
+                            "DEAD_TRADE_TIMEOUT_CLOSE_FAILED | %s | attempt=%d/%d | result=%s",
                             symbol,
+                            attempts,
+                            DEAD_TRADE_CLOSE_MAX_ATTEMPTS,
                             dead_close_result,
                         )
+                        if attempts >= DEAD_TRADE_CLOSE_MAX_ATTEMPTS:
+                            # Stop asking. Before this bound the same rejected
+                            # close was re-sent every cycle -- 111 times on
+                            # SOLUSDT -- burning API budget and drowning the log.
+                            note_parts.append("DEAD_TRADE_TIMEOUT_CLOSE_ABANDONED")
+                            self.log.critical(
+                                "DEAD_TRADE_TIMEOUT_CLOSE_ABANDONED | %s | attempts=%d | "
+                                "position_open_and_protected=True | owner_action_required=True",
+                                symbol,
+                                attempts,
+                            )
 
             current_stop = float(position["stop_loss"])
             stop_hit = self._stop_hit_range(direction, current_high, current_low, current_stop)
