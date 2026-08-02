@@ -1235,5 +1235,13 @@ class TpSlLifecycleMixin:
 
     @staticmethod
     def _is_no_position_to_close_error(exc: Exception) -> bool:
+        """Deprecated -- do not treat this as proof the position is gone.
+
+        22002 was raised just as readily by an inverted side<->holdSide pair as
+        by a genuinely absent position, so acting on it alone could book a
+        close for a position that was still live. The close path now asks the
+        exchange for the remaining size instead; see
+        ``close_futures_position_full``.
+        """
         message = str(exc).lower()
         return "22002" in message and "no position to close" in message
