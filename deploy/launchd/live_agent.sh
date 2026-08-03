@@ -73,8 +73,16 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 fi
 
 if pgrep -f "[Pp]ython(3)?.*(-m )?app\.main" >/dev/null 2>&1; then
-  log "engine already running; nothing to do"
-  exit 0
+  # launch_live.sh deliberately starts the authorised engine before it
+  # bootstraps this agent. Exiting here made launchd consider the job
+  # successfully finished, so the already-running engine had no crash
+  # supervisor. Adopt and monitor that exact process instead.
+  BOT_PID="$(pgrep -f "[Pp]ython(3)?.*(-m )?app\.main" | head -n 1)"
+  log "adopting already-running authorised engine (pid $BOT_PID)"
+  hold_power_assertion "$BOT_PID" "live" 2>/dev/null || true
+  while ps -p "$BOT_PID" >/dev/null 2>&1; do sleep 10; done
+  log "adopted engine exited; agent returning non-zero so launchd restarts it"
+  exit 1
 fi
 
 # --- R2 precondition: never resurrect the engine onto a host that will sleep ---
