@@ -122,6 +122,52 @@ def record_closed_lifecycle(
     return "RECONCILED"
 
 
+def reconcile_fail_safe_close(
+    *,
+    lifecycle_identity: dict | None,
+    close_result: Any,
+    dataset_path: str,
+    fetch_history: Callable[[], list[dict]],
+    write_economic_close: Callable[[dict, dict], None],
+    log_: logging.Logger | None = None,
+    reconcile: Callable[..., dict] = reconcile_close,
+) -> str:
+    """Record economics for a close made by the entry flow's fail-safe.
+
+    Separate entry point from `record_closed_lifecycle` only because the caller
+    holds an identity dict rather than a position dict — the fail-safe fires
+    before PositionManager has ever seen the position. Everything downstream is
+    the same code path, so there is no second copy of the reconciliation or
+    dataset rules living in ExecutionService.
+
+    Returns ``NO_IDENTITY`` when the position was never confirmed on the
+    exchange, which is the one case a position-based caller cannot hit.
+    """
+    lg = log_ or log
+    if not lifecycle_identity or not lifecycle_identity.get("opened_at_ms"):
+        # Without the exchange's own open time, the only way to find this
+        # lifecycle in position-history would be symbol+side — and two
+        # lifecycles on one symbol and side can close in the same second.
+        lg.critical(
+            "FAIL_SAFE_CLOSE_NO_IDENTITY | symbol=%s | side=%s | size=%s | "
+            "available=%s | no economic close recorded",
+            (lifecycle_identity or {}).get("symbol"),
+            (lifecycle_identity or {}).get("hold_side"),
+            (lifecycle_identity or {}).get("confirmed_position_size"),
+            sorted((lifecycle_identity or {}).keys()) or "none",
+        )
+        return "NO_IDENTITY"
+
+    return record_closed_lifecycle(
+        position=dict(lifecycle_identity),
+        close_result=close_result,
+        dataset_path=dataset_path,
+        fetch_history=fetch_history,
+        write_economic_close=write_economic_close,
+        reconcile=reconcile,
+    )
+
+
 def recover_provisional_closes(
     *,
     provisional_rows: list[dict],
@@ -175,6 +221,7 @@ def _f(value: Any) -> float | None:
 
 __all__ = [
     "EXCHANGE_FLAT_STATUS",
+    "reconcile_fail_safe_close",
     "MAX_RECOVERY_PER_SWEEP",
     "exchange_confirmed_flat",
     "recover_provisional_closes",
