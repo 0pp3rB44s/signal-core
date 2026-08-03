@@ -1,5 +1,7 @@
 import csv
+import math
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 
@@ -13,6 +15,36 @@ from telemetry.safe_io import locked_open
 
 
 # --- Trade Quality/Grade helpers ---
+class MoneyFieldError(TypeError):
+    """A non-money value reached a USDT column."""
+
+
+def _money_or_none(value, *, field: str, symbol: str = "") -> float | None:
+    """Return USDT as a float, or None when the caller has no figure yet.
+
+    The single place where "is this money?" is decided for the close datasets.
+    ``None`` and ``""`` both mean *not known yet* — a provisional close — and
+    leave the column empty. Anything else must be numeric; a value that is not
+    is a caller bug (a ROI percentage or a formatted string reaching a money
+    column) and raises instead of being coerced to 0.0, because a silent 0.0 is
+    indistinguishable from a real break-even trade and would quietly corrupt the
+    weekly PnL meter that gates live trading.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise MoneyFieldError(f"{field}={value!r} is a bool, not USDT ({symbol})")
+    try:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise MoneyFieldError(f"{field}={value!r} is not finite ({symbol})")
+        return parsed
+    except (TypeError, ValueError) as exc:
+        raise MoneyFieldError(
+            f"{field}={value!r} ({type(value).__name__}) is not a USDT amount ({symbol})"
+        ) from exc
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         if value in ("", None):
@@ -671,7 +703,7 @@ class TradeDatasetLogger:
         self,
         symbol: str,
         result: str,
-        pnl: float,
+        pnl: float | None,
         exit_price: float | str = "",
         tp1_hit: bool | str = "",
         tp2_hit: bool | str = "",
@@ -688,13 +720,18 @@ class TradeDatasetLogger:
         entry_volume_ratio: float | str = "",
         timed_exit: bool | str = "",
     ) -> None:
-        fee_value = 0.0
-        try:
-            if fees not in ("", None):
-                fee_value = float(fees)
-        except (TypeError, ValueError):
-            fee_value = 0.0
-        net_pnl = pnl - fee_value
+        # `pnl` is money in USDT, or None when the caller does not yet know it.
+        # A provisional close (position gone, exchange PnL not yet reported) has
+        # no monetary figure, and inventing one — 0.0, or the empty string this
+        # used to receive — would either understate a real result or crash on the
+        # arithmetic below. Both money columns stay empty instead.
+        #
+        # Anything that is neither None nor numeric is a caller bug: it means a
+        # non-money value (a ROI percentage, a formatted string) reached a money
+        # column. Fail closed and name the offender rather than coercing it.
+        monetary_pnl = _money_or_none(pnl, field="pnl", symbol=symbol)
+        fee_value = _money_or_none(fees, field="fees", symbol=symbol)
+        net_pnl = "" if monetary_pnl is None else monetary_pnl - abs(fee_value or 0.0)
         self._append_row({
             "event_type": "CLOSE",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -707,8 +744,8 @@ class TradeDatasetLogger:
             "expected_entry": "",
             "actual_entry": "",
             "slippage": "",
-            "fees": fees,
-            "net_pnl": round(net_pnl, 8),
+            "fees": "" if fee_value is None else fee_value,
+            "net_pnl": "" if net_pnl == "" else round(net_pnl, 8),
             "trade_grade": trade_grade,
             "quality_score": quality_score,
             "quality_notes": quality_notes,
@@ -722,7 +759,7 @@ class TradeDatasetLogger:
             "take_profits": "",
             "notional": "",
             "leverage": "",
-            "pnl": pnl,
+            "pnl": "" if monetary_pnl is None else monetary_pnl,
             "tp1_hit": tp1_hit,
             "tp2_hit": tp2_hit,
             "tp3_hit": tp3_hit,
@@ -938,6 +975,13 @@ class TradeDatasetV2Logger:
             "slippage_pct",
             "pnl",
             "net_pnl",
+            "gross_pnl",
+            "open_fee",
+            "close_fee",
+            "funding",
+            "exchange_position_id",
+            "exchange_open_time",
+            "exchange_close_time",
             "price_return_pct",
             "margin_roi_pct",
             "exchange_order_id",
@@ -1094,9 +1138,30 @@ class TradeDatasetV2Logger:
         """
         exchange_truth_pnl = trade.get("exchange_truth_pnl")
         exchange_truth_fee = trade.get("exchange_truth_fee")
+        exchange_net = _money_or_none(
+            trade.get("exchange_truth_net_profit"),
+            field="exchange_truth_net_profit",
+            symbol=str(trade.get("symbol") or ""),
+        )
 
         provisional = False
-        if exchange_truth_pnl not in ("", None):
+        if exchange_net is not None:
+            required = {
+                name: _money_or_none(trade.get(name), field=name, symbol=str(trade.get("symbol") or ""))
+                for name in (
+                    "exchange_truth_gross_pnl",
+                    "exchange_truth_open_fee",
+                    "exchange_truth_close_fee",
+                    "exchange_truth_funding",
+                )
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise MoneyFieldError(f"exchange close contract missing fields: {missing}")
+            pnl = required["exchange_truth_gross_pnl"]
+            fees = abs(required["exchange_truth_open_fee"]) + abs(required["exchange_truth_close_fee"])
+            net_pnl = exchange_net
+        elif exchange_truth_pnl not in ("", None):
             pnl = _safe_float(exchange_truth_pnl)
             fees = _safe_float(exchange_truth_fee, 0.0) if exchange_truth_fee not in ("", None) else 0.0
             net_pnl = pnl
@@ -1112,6 +1177,11 @@ class TradeDatasetV2Logger:
 
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
         closed_at = trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        opened_at = trade.get("opened_at", "")
+        if not opened_at and trade.get("opened_at_ms") not in (None, ""):
+            opened_at = datetime.fromtimestamp(
+                int(trade["opened_at_ms"]) / 1000, timezone.utc
+            ).isoformat(timespec="milliseconds")
         identities = self._close_identities(
             trade.get("symbol"),
             trade.get("direction"),
@@ -1120,13 +1190,13 @@ class TradeDatasetV2Logger:
             trade.get("exchange_entry_order_id"),
             trade.get("exchange_entry_client_oid"),
         )
-        # Provisional rows never claim an identity, so the exchange-truth row that
-        # follows is still written; economic rows dedupe against each other.
-        if not provisional and self._is_duplicate_close(
-            identities,
-            str(trade.get("position_lifecycle_id") or "").strip(),
-        ):
-            return
+        # Provisional rows never block their economic replacement. Economic
+        # rows use the repository-wide identity matcher, including rotations,
+        # open-time and size tolerances.
+        if not provisional:
+            from execution.close_dedup import economic_close_exists
+            if economic_close_exists(self.path, trade):
+                return
         self._append_row({
             "event_type": PROVISIONAL_CLOSE_EVENT_TYPE if provisional else "CLOSE",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1135,7 +1205,7 @@ class TradeDatasetV2Logger:
             "strategy": strategy_label,
             "status": "CLOSED",
             "result": result,
-            "opened_at": trade.get("opened_at", ""),
+            "opened_at": opened_at,
             "closed_at": closed_at,
             "entry": trade.get("exchange_avg_entry") or trade.get("entry", ""),
             "planned_avg_entry": trade.get("planned_avg_entry", ""),
@@ -1166,6 +1236,13 @@ class TradeDatasetV2Logger:
             "slippage_pct": trade.get("slippage_pct", ""),
             "pnl": "" if pnl is None else pnl,
             "net_pnl": "" if net_pnl is None else round(net_pnl, 8),
+            "gross_pnl": "" if provisional else trade.get("exchange_truth_gross_pnl", trade.get("gross_pnl", "")),
+            "open_fee": "" if provisional else trade.get("exchange_truth_open_fee", trade.get("open_fee", "")),
+            "close_fee": "" if provisional else trade.get("exchange_truth_close_fee", trade.get("close_fee", "")),
+            "funding": "" if provisional else trade.get("exchange_truth_funding", trade.get("funding", "")),
+            "exchange_position_id": trade.get("exchange_position_id", ""),
+            "exchange_open_time": trade.get("exchange_open_time", trade.get("opened_at_ms", "")),
+            "exchange_close_time": trade.get("exchange_close_time", ""),
             "price_return_pct": trade.get("price_return_pct", ""),
             "margin_roi_pct": (
                 margin_roi_pct
@@ -1212,7 +1289,11 @@ class TradeDatasetV2Logger:
             "alignment": trade.get("alignment", ""),
             "risk_verdict": trade.get("risk_verdict", ""),
             "close_reason": result,
-            "sync_source": trade.get("sync_source", trade.get("close_source", "position_manager")),
+            "sync_source": (
+                trade.get("sync_source")
+                or trade.get("close_source")
+                or ("bitget_position_history" if exchange_net is not None or exchange_truth_pnl not in ("", None) else "position_manager")
+            ),
             "data_confidence": trade.get("data_confidence", ""),
             "process_verdict": trade.get("process_verdict", quality.get("process_verdict", "")),
             "failure_type": trade.get("failure_type", ""),
@@ -1714,7 +1795,12 @@ def append_closed_trade_row(
     )
 
     exchange_truth_pnl = trade_payload.get("exchange_truth_pnl")
-    if exchange_truth_pnl not in ("", None):
+    exchange_truth_net = trade_payload.get("exchange_truth_net_profit")
+    if exchange_truth_net not in ("", None):
+        resolved_pnl = trade_payload.get("exchange_truth_gross_pnl")
+        if resolved_pnl in ("", None):
+            raise ValueError("exchange_truth_gross_pnl is required with exchange_truth_net_profit")
+    elif exchange_truth_pnl not in ("", None):
         resolved_pnl = exchange_truth_pnl
     elif pnl not in ("", None):
         resolved_pnl = pnl
@@ -1755,7 +1841,12 @@ def append_closed_trade_row(
     trade_payload["close_reason"] = resolved_reason
 
     exchange_truth_fee = trade_payload.get("exchange_truth_fee")
-    if exchange_truth_pnl not in ("", None):
+    if exchange_truth_net not in ("", None):
+        resolved_pnl_float = _safe_float(trade_payload.get("exchange_truth_gross_pnl"))
+        quality_fees = abs(_safe_float(trade_payload.get("exchange_truth_open_fee"))) + abs(
+            _safe_float(trade_payload.get("exchange_truth_close_fee"))
+        )
+    elif exchange_truth_pnl not in ("", None):
         resolved_pnl_float = _safe_float(exchange_truth_pnl)
         quality_fees = 0.0
     else:
@@ -1771,5 +1862,75 @@ def append_closed_trade_row(
         trade=trade_payload,
         result=str(resolved_reason),
         pnl=resolved_pnl_float,
+        quality=quality,
+    )
+
+
+def append_exchange_truth_close(
+    *,
+    position: dict,
+    economics,
+    close_reason: str,
+    dataset_path: str | Path = "logs/trade_dataset_v2.csv",
+) -> None:
+    """Serialize the explicit exchange close contract without recomputing net."""
+    required = (
+        "gross_pnl", "open_fee", "close_fee", "funding", "net_profit",
+        "exchange_position_id", "symbol", "side", "open_time", "close_time",
+        "size", "open_price", "close_price",
+    )
+    values = {name: economics.get(name) for name in required}
+    missing = [name for name, value in values.items() if value in (None, "")]
+    if missing:
+        raise MoneyFieldError(f"exchange close contract missing fields: {missing}")
+    side = str(values["side"]).lower()
+    if side not in {"long", "short"}:
+        raise ValueError(f"exchange close contract has invalid side: {values['side']!r}")
+    monetary = {
+        name: _money_or_none(values[name], field=name, symbol=str(values["symbol"]))
+        for name in ("gross_pnl", "open_fee", "close_fee", "funding", "net_profit")
+    }
+    expected = (
+        Decimal(str(monetary["gross_pnl"]))
+        - abs(Decimal(str(monetary["open_fee"])))
+        - abs(Decimal(str(monetary["close_fee"])))
+        + Decimal(str(monetary["funding"]))
+    )
+    if abs(expected - Decimal(str(monetary["net_profit"]))) > Decimal("0.0000001"):
+        raise MoneyFieldError(
+            f"exchange close contract inconsistent: formula={expected} net={monetary['net_profit']}"
+        )
+
+    payload = dict(position)
+    payload.update({
+        "symbol": values["symbol"],
+        "direction": "LONG" if side == "long" else "SHORT",
+        "opened_at": payload.get("opened_at") or datetime.fromtimestamp(
+            int(values["open_time"]) / 1000, timezone.utc
+        ).isoformat(timespec="milliseconds"),
+        "closed_at": datetime.fromtimestamp(
+            int(values["close_time"]) / 1000, timezone.utc
+        ).isoformat(timespec="milliseconds"),
+        "exchange_avg_entry": values["open_price"],
+        "confirmed_position_size": values["size"],
+        "exit": values["close_price"],
+        "exchange_position_id": values["exchange_position_id"],
+        "exchange_open_time": values["open_time"],
+        "exchange_close_time": values["close_time"],
+        "exchange_truth_gross_pnl": values["gross_pnl"],
+        "exchange_truth_open_fee": values["open_fee"],
+        "exchange_truth_close_fee": values["close_fee"],
+        "exchange_truth_funding": values["funding"],
+        "exchange_truth_net_profit": values["net_profit"],
+        "sync_source": economics.get("sync_source", "bitget_position_history"),
+        "close_source": economics.get("sync_source", "bitget_position_history"),
+        "data_confidence": "EXCHANGE_TRUTH",
+    })
+    fees = abs(float(values["open_fee"])) + abs(float(values["close_fee"]))
+    quality = _trade_quality_from_journal(payload, pnl=float(values["gross_pnl"]), fees=fees)
+    TradeDatasetV2Logger(dataset_path).append_close(
+        trade=payload,
+        result=close_reason,
+        pnl=float(values["gross_pnl"]),
         quality=quality,
     )
