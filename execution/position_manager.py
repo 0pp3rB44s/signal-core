@@ -407,13 +407,53 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         extra={"close_source": position.get("close_source")},
                     )
                 else:
+                    from execution.closed_lifecycle_recorder import (
+                        record_known_economics_close,
+                    )
                     from telemetry.trade_logger import append_exchange_truth_close
-                    append_exchange_truth_close(
+
+                    dataset_path = "logs/trade_dataset_v2.csv"
+                    economics_outcome = record_known_economics_close(
                         position=position,
                         economics=economics,
-                        close_reason=position["closed_reason"],
-                        dataset_path="logs/trade_dataset_v2.csv",
+                        dataset_path=dataset_path,
+                        write_economic_close=lambda pos, econ: append_exchange_truth_close(
+                            position=pos,
+                            economics=econ,
+                            close_reason=position["closed_reason"],
+                            dataset_path=dataset_path,
+                        ),
+                        log_=self.log,
                     )
+                    position["close_economics_outcome"] = economics_outcome
+                    if economics_outcome not in {"RECORDED", "ALREADY"}:
+                        # Nothing economic reached the dataset, and this position
+                        # is about to be retired as CLOSED_SYNCED. Leave the
+                        # provisional marker so the recovery sweep can still find
+                        # the trade; a redundant provisional row counts in no risk
+                        # decision, whereas losing the close counts nowhere at all.
+                        self.log.critical(
+                            "EXCHANGE_CLOSE_ECONOMICS_NOT_RECORDED | %s | outcome=%s | "
+                            "falling back to provisional row",
+                            symbol, economics_outcome,
+                        )
+                        self._append_provisional_close_dataset_row(
+                            position=position,
+                            close_reason=position["closed_reason"],
+                            exit_price=closed_price,
+                            margin_roi_pct=margin_roi_pct_value,
+                            extra={
+                                "close_source": position.get("close_source"),
+                                # The money is known but could not be proven
+                                # unique, and `append_close` would promote a row
+                                # carrying it to an economic CLOSE. Blank it so
+                                # this stays a marker; the recovery sweep refetches
+                                # the economics from the exchange.
+                                "exchange_truth_pnl": "",
+                                "exchange_truth_fee": "",
+                                "exchange_truth_net_profit": "",
+                            },
+                        )
                 self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
 
                 self.log.warning(

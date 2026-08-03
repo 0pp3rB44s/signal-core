@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import csv
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Callable
 
@@ -144,6 +145,80 @@ def record_closed_lifecycle(
         symbol, lifecycle or "UNKNOWN", econ["net_pnl"], econ["fees"], econ["funding"],
     )
     return "RECONCILED"
+
+
+def record_known_economics_close(
+    *,
+    position: dict,
+    economics: Any,
+    dataset_path: str,
+    write_economic_close: Callable[[dict, Any], None],
+    log_: logging.Logger | None = None,
+) -> str:
+    """Record a close whose exchange economics are already in hand.
+
+    The exchange-disappearance path fetches position-history itself, so there is
+    nothing left to reconcile — but that is no reason for it to be the one close
+    path that writes straight to the dataset. Routing it here puts every close
+    behind the same dedup, and, more importantly, gives the caller an *outcome*.
+    The direct writer returned None, so a refused write was invisible: the
+    position was retired as CLOSED_SYNCED while nothing economic and nothing
+    provisional reached the dataset, and no sweep would ever look for it again.
+
+    Outcomes:
+      ``RECORDED``            written
+      ``ALREADY``             an economic CLOSE for this lifecycle already exists
+      ``BLOCKED_UNREADABLE``  dedup could not read storage; nothing written
+      ``NO_IDENTITY``         nothing to dedup on; nothing written
+    """
+    logger = log_ or log
+    symbol = str(position.get("symbol") or "").upper()
+
+    candidate = dict(position)
+    if isinstance(economics, Mapping):
+        for source, target in (
+            ("exchange_position_id", "exchange_position_id"),
+            ("symbol", "symbol"),
+            ("open_time", "exchange_open_time"),
+            ("size", "confirmed_position_size"),
+        ):
+            value = economics.get(source)
+            if value not in (None, ""):
+                candidate[target] = value
+
+    lifecycle = str(candidate.get("position_lifecycle_id") or "")
+    position_id = str(candidate.get("exchange_position_id") or "").strip()
+    if not position_id and not lifecycle:
+        # Without an identity a second run cannot recognise this row, so writing
+        # it would make a duplicate indistinguishable from a first write.
+        logger.critical(
+            "CLOSE_ECONOMICS_NO_IDENTITY | %s | economics carry no exchange position id | "
+            "nothing written",
+            symbol or "UNKNOWN",
+        )
+        return "NO_IDENTITY"
+
+    dedup = economic_close_status(dataset_path, candidate)
+    if dedup is DedupOutcome.BLOCKED_UNREADABLE:
+        logger.critical(
+            "CLOSE_ECONOMICS_DEDUP_UNCERTAIN | %s | lifecycle=%s | position_id=%s | "
+            "no economic close recorded",
+            symbol or "UNKNOWN", lifecycle or "UNKNOWN", position_id or "UNKNOWN",
+        )
+        return "BLOCKED_UNREADABLE"
+    if dedup is DedupOutcome.FOUND:
+        logger.info(
+            "CLOSE_ALREADY_RECONCILED | %s | lifecycle=%s | position_id=%s | second write refused",
+            symbol or "UNKNOWN", lifecycle or "UNKNOWN", position_id or "UNKNOWN",
+        )
+        return "ALREADY"
+
+    write_economic_close(position, economics)
+    logger.warning(
+        "CLOSE_ECONOMICS_RECORDED | %s | lifecycle=%s | position_id=%s | source=known_economics",
+        symbol or "UNKNOWN", lifecycle or "UNKNOWN", position_id or "UNKNOWN",
+    )
+    return "RECORDED"
 
 
 def reconcile_fail_safe_close(
