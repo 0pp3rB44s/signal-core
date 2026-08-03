@@ -267,6 +267,50 @@ def reconcile_fail_safe_close(
     )
 
 
+def _parse_cursor(value: Any) -> tuple | None:
+    """Turn a persisted cursor back into a comparable key, or None.
+
+    Anything unrecognisable means "start from the beginning" — a lost cursor
+    costs one pass of fairness, never a skipped row.
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        return (int(value[0]), str(value[1]), str(value[2]), int(value[3]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialize_cursor(key: tuple | None) -> list | None:
+    return list(key) if key is not None else None
+
+
+def _select_fair_window(
+    unresolved: list[dict], *, limit: int, cursor: tuple | None,
+) -> tuple[list[dict], tuple | None]:
+    """Pick this sweep's batch, resuming after the cursor and wrapping around.
+
+    Returns the batch and the cursor for the next sweep. When everything fits in
+    one batch the cursor is cleared: there is nothing to rotate past, and keeping
+    a stale key would make the next sweep start in the middle for no reason.
+    """
+    if limit <= 0 or not unresolved:
+        return [], None
+    ordered = sorted(unresolved, key=_oldest_key)
+    if len(ordered) <= limit:
+        return ordered, None
+
+    start = 0
+    if cursor is not None:
+        start = next(
+            (i for i, row in enumerate(ordered) if _oldest_key(row) > cursor),
+            0,  # cursor is at or past the end: wrap to the oldest row
+        )
+    end = start + limit
+    window = ordered[start:end] if end <= len(ordered) else ordered[start:] + ordered[: end - len(ordered)]
+    return window, _oldest_key(window[-1])
+
+
 def recover_provisional_closes(
     *,
     provisional_rows: list[dict],
@@ -276,6 +320,7 @@ def recover_provisional_closes(
     retire_provisional: Callable[[dict], None] | None = None,
     reconcile: Callable[..., dict] = reconcile_close,
     limit: int = MAX_RECOVERY_PER_SWEEP,
+    cursor: Any = None,
 ) -> dict:
     """Fill in economics for closes that were provisional at the time.
 
@@ -283,10 +328,23 @@ def recover_provisional_closes(
     late — or one whose process died mid-poll — is not lost forever. Bounded by
     `limit`, and idempotent: a lifecycle that already has an economic CLOSE is
     skipped without touching the exchange.
+
+    Selection rotates. Taking `unresolved[:limit]` off an oldest-first list looks
+    fair and is not: a row the exchange can no longer produce — too old for the
+    history window — never resolves, stays oldest, and holds its slot forever.
+    Twenty of those starve every newer row behind them permanently. So the sweep
+    resumes after the row it last attempted and wraps around, which keeps the
+    order deterministic and the batch bounded while guaranteeing every row is
+    reached within one full pass.
+
+    `cursor` is the `next_cursor` of the previous sweep. Losing it costs
+    fairness for one pass, never correctness, so a crash between the write and
+    the cursor save simply repeats a window that dedup then skips.
     """
     stats = {
         "seen": 0, "skipped": 0, "recovered": 0, "still_pending": 0,
         "ambiguous": 0, "blocked": False, "unresolved_total": 0,
+        "next_cursor": _serialize_cursor(_parse_cursor(cursor)),
     }
     unresolved: list[dict] = []
     for row in sorted(provisional_rows, key=_oldest_key):
@@ -308,7 +366,10 @@ def recover_provisional_closes(
         else:
             unresolved.append(row)
     stats["unresolved_total"] = len(unresolved)
-    selected = unresolved[:max(0, limit)]
+    selected, next_cursor = _select_fair_window(
+        unresolved, limit=max(0, limit), cursor=_parse_cursor(cursor),
+    )
+    stats["next_cursor"] = _serialize_cursor(next_cursor)
     if not selected:
         return stats
     try:

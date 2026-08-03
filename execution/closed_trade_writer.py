@@ -15,6 +15,14 @@ from pathlib import Path
 #: fill time. Mirrors ``TradeDatasetV2Logger.CLOSE_TIME_TOLERANCE_SECONDS``.
 CLOSE_TIME_TOLERANCE_SECONDS = 1
 
+#: Where the recovery rotation cursor lives, so fairness survives a restart.
+CLOSE_RECOVERY_CURSOR_PATH = "state/close_recovery_cursor.json"
+
+#: Position-history paging. Bounded so a non-advancing cursor cannot spin, and
+#: deep enough that a lifecycle older than one page is still reachable.
+CLOSE_HISTORY_PAGE_LIMIT = 100
+CLOSE_HISTORY_MAX_PAGES = 5
+
 
 def _within_close_tolerance(left: str, right: str) -> bool:
     """True when two close timestamps describe the same moment.
@@ -570,11 +578,17 @@ class ClosedTradeWriterMixin:
             return "ERROR"
 
     def recover_provisional_close_rows(self, limit: int = 20) -> dict:
-        """Run one bounded, oldest-unresolved-first exchange recovery sweep."""
+        """Run one bounded, fair, resumable exchange recovery sweep.
+
+        The rotation cursor is persisted so fairness survives a restart. It is
+        saved after the sweep, never before: a crash in between repeats one
+        window, and dedup skips whatever that window already recorded.
+        """
         from execution.closed_lifecycle_recorder import (
             load_provisional_rows,
             recover_provisional_closes,
         )
+        from execution.state_store import JsonStateStore
         from telemetry.trade_logger import append_exchange_truth_close
 
         dataset_path = "logs/trade_dataset_v2.csv"
@@ -588,13 +602,26 @@ class ClosedTradeWriterMixin:
                 dataset_path=dataset_path,
             )
 
-        return recover_provisional_closes(
+        cursor_store = JsonStateStore(CLOSE_RECOVERY_CURSOR_PATH)
+        saved = cursor_store.load(default={})
+        cursor = saved.get("cursor") if isinstance(saved, dict) else None
+
+        stats = recover_provisional_closes(
             provisional_rows=rows,
             dataset_path=dataset_path,
             fetch_history=self._fetch_closed_position_history,
             write_economic_close=_write,
             limit=limit,
+            cursor=cursor,
         )
+
+        try:
+            cursor_store.save({"cursor": stats.get("next_cursor")})
+        except Exception as exc:
+            # Losing the cursor costs one pass of fairness, never a row, so this
+            # must not turn a completed sweep into a failed one.
+            self.log.warning("CLOSE_RECOVERY_CURSOR_SAVE_FAILED | error=%s", exc)
+        return stats
 
     def _append_provisional_close_dataset_row(
         self,
@@ -626,15 +653,49 @@ class ClosedTradeWriterMixin:
         )
 
     def _fetch_closed_position_history(self) -> list:
-        """Recent closed lifecycles from Bitget. Read-only."""
-        payload = self.client._request(
-            "GET",
-            "/api/v2/mix/position/history-position",
-            {"productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
-             "limit": "50"},
-            private=True,
-        )
-        return (payload.get("data") or {}).get("list") or []
+        """Closed lifecycles from Bitget, paged. Read-only.
+
+        One page of 50 was the other half of recovery starvation: a lifecycle
+        older than the newest 50 could never be matched, so its provisional row
+        stayed unresolved forever. Paging walks further back with `idLessThan`,
+        bounded by `CLOSE_HISTORY_MAX_PAGES` so a stuck cursor cannot spin.
+        """
+        rows: list = []
+        seen_ids: set[str] = set()
+        cursor: str | None = None
+
+        for _ in range(CLOSE_HISTORY_MAX_PAGES):
+            params = {
+                "productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
+                "limit": str(CLOSE_HISTORY_PAGE_LIMIT),
+            }
+            if cursor:
+                params["idLessThan"] = str(cursor)
+            payload = self.client._request(
+                "GET", "/api/v2/mix/position/history-position", params, private=True,
+            )
+            page = (payload.get("data") or {}).get("list") or []
+            if not page:
+                break
+
+            # A page that repeats what we already hold means the endpoint is not
+            # advancing; stop rather than request the same rows again.
+            fresh = [r for r in page if str(r.get("positionId") or "") not in seen_ids]
+            if not fresh:
+                break
+            for row in fresh:
+                position_id = str(row.get("positionId") or "")
+                if position_id:
+                    seen_ids.add(position_id)
+                rows.append(row)
+
+            if len(page) < CLOSE_HISTORY_PAGE_LIMIT:
+                break
+            cursor = str(page[-1].get("positionId") or "")
+            if not cursor:
+                break
+
+        return rows
 
     def _append_closed_trade_dataset_row(
         self,
