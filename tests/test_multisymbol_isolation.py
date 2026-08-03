@@ -192,7 +192,8 @@ def test_late_legality_failure_never_falls_through_to_runner_up(monkeypatch):
     assert [report.symbol for report in reports] == ["SOLUSDT"]
     assert reports[0].status == "ERROR"
     assert service.client.place_futures_market_order.call_count == 1
-    service.client.close_futures_position.assert_called_once()
+    service.client.close_futures_position.assert_not_called()
+    service.client.close_futures_position_full.assert_called_once()
     assert service.intent_store.get(service.entry_submitter.client_oid_for(btc)) is None
 
 

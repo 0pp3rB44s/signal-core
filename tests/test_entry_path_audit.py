@@ -355,9 +355,10 @@ def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monke
     )
 
     service.client.place_futures_market_order.assert_not_called()
-    service.client.close_futures_position.assert_called_once()
-    kwargs = service.client.close_futures_position.call_args.kwargs
-    assert kwargs["hold_side"] == "long"
+    service.client.close_futures_position.assert_not_called()
+    service.client.close_futures_position_full.assert_called_once()
+    kwargs = service.client.close_futures_position_full.call_args.kwargs
+    assert kwargs["direction"] == "LONG"
     assert kwargs["size"] == 0.5
 
 

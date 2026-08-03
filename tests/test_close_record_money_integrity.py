@@ -257,7 +257,7 @@ def test_lifecycle_id_dedups_two_economic_rows(tmp_path):
 
 
 def test_dedup_falls_back_when_one_row_has_no_lifecycle_id(tmp_path):
-    """The provisional row never carries a lifecycle id — the exact live case."""
+    """Missing open size makes the composite ambiguous, so rows are not merged."""
     path = tmp_path / "d.csv"
     logger = TradeDatasetV2Logger(path)
     logger.append_close(
@@ -270,11 +270,11 @@ def test_dedup_falls_back_when_one_row_has_no_lifecycle_id(tmp_path):
                      sync_source=EXCHANGE_SOURCE, position_lifecycle_id="pos-1019b0f"),
         result="tp1", pnl=None, quality={},
     )
-    assert len(_closes(path)) == 1
+    assert len(_closes(path)) == 2
 
 
 def test_one_second_timestamp_tolerance(tmp_path):
-    """SOLUSDT closed at 18:49:58 locally and 18:49:57 on the exchange."""
+    """Close time is not identity; missing size must fail closed against merging."""
     path = tmp_path / "d.csv"
     logger = TradeDatasetV2Logger(path)
     logger.append_close(
@@ -289,7 +289,7 @@ def test_one_second_timestamp_tolerance(tmp_path):
                      sync_source=EXCHANGE_SOURCE, position_lifecycle_id="pos-cf10843"),
         result="tp1", pnl=None, quality={},
     )
-    assert len(_closes(path)) == 1
+    assert len(_closes(path)) == 2
 
 
 def test_two_seconds_apart_is_not_merged(tmp_path):
