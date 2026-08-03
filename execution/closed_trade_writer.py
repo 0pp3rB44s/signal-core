@@ -363,7 +363,10 @@ class ClosedTradeWriterMixin:
                 for row in csv.DictReader(handle):
                     event_type = str(row.get("event_type") or "").upper()
                     status = str(row.get("status") or "").upper()
-                    if event_type not in {"CLOSE", "POSITION_CLOSED"} and not status.startswith("CLOSED"):
+                    # A CLOSE_PROVISIONAL row deliberately has status=CLOSED,
+                    # but it is not an economic close. Treating status alone as
+                    # proof blocked exchange-truth recovery forever.
+                    if event_type not in {"CLOSE", "POSITION_CLOSED"}:
                         continue
                     if str(row.get("symbol") or "").upper() != target_symbol:
                         continue
@@ -529,6 +532,106 @@ class ClosedTradeWriterMixin:
         if not symbol or not opened_at:
             return ""
         return f"{symbol}|{opened_at[:19]}"
+
+    def reconcile_closed_lifecycle(self, position: dict, close_result: dict, reason: str) -> str:
+        """Give a confirmed close its exchange economics. Returns the outcome.
+
+        Called from every bot-initiated close path *after* the client has proven
+        remaining size is 0. `record_closed_lifecycle` re-checks that itself, so
+        a caller that passes a non-flat result cannot slip through.
+
+        Nothing here can lose money: a failed reconciliation leaves the
+        provisional row untouched and non-economic, and the periodic recovery
+        sweep picks it up later.
+        """
+        from execution.closed_lifecycle_recorder import record_closed_lifecycle
+
+        def _write(pos: dict, econ: dict) -> None:
+            self._append_closed_trade_dataset_row(
+                position=pos,
+                close_reason=reason,
+                exit_price=econ.get("exit_price"),
+                margin_roi_pct=self._safe_float(pos.get("margin_roi_pct"), 0.0),
+                extra={
+                    "close_source": econ["sync_source"],
+                    "sync_source": econ["sync_source"],
+                    "gross_pnl": econ["gross_pnl"],
+                    "net_pnl": econ["net_pnl"],
+                    "pnl": econ["net_pnl"],
+                    "fees": econ["fees"],
+                    "open_fee": econ["open_fee"],
+                    "close_fee": econ["close_fee"],
+                    "funding": econ["funding"],
+                    "exchange_position_id": econ["position_id"],
+                    "data_confidence": "EXCHANGE_TRUTH",
+                },
+            )
+
+        try:
+            return record_closed_lifecycle(
+                position=position,
+                close_result=close_result,
+                dataset_path="logs/trade_dataset_v2.csv",
+                fetch_history=self._fetch_closed_position_history,
+                write_economic_close=_write,
+            )
+        except Exception as exc:  # never let bookkeeping break a close
+            self.log.critical(
+                "CLOSE_ECONOMICS_WIRING_FAILED | %s | lifecycle=%s | error=%s",
+                position.get("symbol"),
+                position.get("position_lifecycle_id") or "UNKNOWN",
+                exc,
+            )
+            return "ERROR"
+
+    def recover_provisional_close_rows(self) -> dict:
+        """Periodic dataset-backed recovery, independent of local state JSON."""
+        from execution.closed_lifecycle_recorder import (
+            read_provisional_rows,
+            recover_provisional_closes,
+        )
+
+        dataset_path = "logs/trade_dataset_v2.csv"
+        rows = read_provisional_rows(dataset_path)
+
+        def _write(pos: dict, econ: dict) -> None:
+            self._append_closed_trade_dataset_row(
+                position=pos,
+                close_reason=str(pos.get("close_reason") or pos.get("closed_reason") or "recovered_close"),
+                exit_price=econ.get("exit_price"),
+                margin_roi_pct=self._safe_float(pos.get("margin_roi_pct"), 0.0),
+                extra={
+                    "close_source": econ["sync_source"],
+                    "sync_source": econ["sync_source"],
+                    "gross_pnl": econ["gross_pnl"],
+                    "net_pnl": econ["net_pnl"],
+                    "pnl": econ["net_pnl"],
+                    "fees": econ["fees"],
+                    "open_fee": econ["open_fee"],
+                    "close_fee": econ["close_fee"],
+                    "funding": econ["funding"],
+                    "exchange_position_id": econ["position_id"],
+                    "data_confidence": "EXCHANGE_TRUTH",
+                },
+            )
+
+        return recover_provisional_closes(
+            provisional_rows=rows,
+            dataset_path=dataset_path,
+            fetch_history=self._fetch_closed_position_history,
+            write_economic_close=_write,
+        )
+
+    def _fetch_closed_position_history(self) -> list:
+        """Recent closed lifecycles from Bitget. Read-only."""
+        payload = self.client._request(
+            "GET",
+            "/api/v2/mix/position/history-position",
+            {"productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
+             "limit": "50"},
+            private=True,
+        )
+        return (payload.get("data") or {}).get("list") or []
 
     def _append_closed_trade_dataset_row(
         self,

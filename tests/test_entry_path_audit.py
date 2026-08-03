@@ -217,6 +217,34 @@ def test_live_entry_passes_a_deterministic_client_oid(monkeypatch, direction, ex
     assert intent["protection_state"] == "CONFIRMED"
 
 
+def test_cancelled_unfilled_maker_intent_becomes_terminal(monkeypatch):
+    service = _service(
+        monkeypatch,
+        MAKER_ENTRY_ENABLED=True,
+        MAKER_ENTRY_FALLBACK_MARKET=False,
+        MAKER_ENTRY_WAIT_SECONDS=0.0,
+    )
+    plan = _plan()
+    service.client.place_futures_limit_order.return_value = {
+        "data": {"orderId": "maker-1"}
+    }
+    service.client.cancel_futures_order.return_value = {"code": "00000"}
+    service.client.get_all_positions.side_effect = [
+        {"data": []},  # cycle pre-flight
+        {"data": []},  # per-plan capacity check
+        {"data": []},  # mandatory post-cancel fill check
+    ]
+
+    reports = service.execute([plan])
+
+    oid = service.entry_submitter.client_oid_for(plan, leg="maker")
+    intent = service.intent_store.get(oid)
+    assert reports[0].status == "SKIPPED"
+    assert intent["state"] == "ABANDONED"
+    assert intent["classification"] == "MAKER_UNFILLED_CANCELLED"
+    assert service.intent_store.recoverable() == []
+
+
 def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
     service = _service(monkeypatch)
     plan = _plan()
@@ -344,7 +372,7 @@ def test_pending_reduce_only_close_does_not_look_like_a_new_entry(monkeypatch):
     assert service.client.place_futures_market_order.call_count == 1
 
 
-def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monkeypatch):
+def test_fail_safe_close_uses_verified_full_close_not_a_new_opening_order(monkeypatch):
     """place_futures_market_order() always sends tradeSide=open, so the
     fail-safe must never route through it."""
     service = _service(monkeypatch)
@@ -355,9 +383,9 @@ def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monke
     )
 
     service.client.place_futures_market_order.assert_not_called()
-    service.client.close_futures_position.assert_called_once()
-    kwargs = service.client.close_futures_position.call_args.kwargs
-    assert kwargs["hold_side"] == "long"
+    service.client.close_futures_position_full.assert_called_once()
+    kwargs = service.client.close_futures_position_full.call_args.kwargs
+    assert kwargs["direction"] == "LONG"
     assert kwargs["size"] == 0.5
 
 
