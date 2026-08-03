@@ -141,7 +141,12 @@ def match_lifecycle(
     """Pick the one history row that is this lifecycle.
 
     Identity is deliberately layered. Symbol and side are required — they are
-    never ambiguous. Beyond that we prefer the row whose open time is closest to
+    never ambiguous. A unique exchange identifier resolves outright. The
+    composite fallback only matches when exactly one row satisfies every
+    tolerance; distance inside the window is never a tie-breaker, because two
+    lifecycles on one symbol and side can close in the same second and picking
+    the nearer one would be a guess. Historically we preferred the row whose
+    open time was closest to
     ours within tolerance, because two lifecycles on the same symbol and side can
     close within the same second (a scale-out, or two cycles in a row), and a
     looser match would silently merge them into one.
@@ -187,14 +192,22 @@ def match_lifecycle(
     if not within:
         return None
     cands = within
-    cands.sort(key=lambda r: abs(int(r.get("ctime") or 0) - opened_at_ms))
     if len(cands) > 1:
-        first = abs(int(cands[0].get("ctime") or 0) - opened_at_ms)
-        second = abs(int(cands[1].get("ctime") or 0) - opened_at_ms)
-        if first == second:
-            raise AmbiguousLifecycle("two lifecycle rows have equal identity distance")
-    if not cands:
-        return None
+        # Distance inside the tolerance window is NOT a tie-breaker. Two rows
+        # that both satisfy symbol, side, size and open-time tolerance are
+        # indistinguishable evidence: picking the nearer one is a guess, and a
+        # wrong guess attaches one lifecycle's money to another. Preferring the
+        # closest was exactly the misattribution this fails closed on.
+        raise AmbiguousLifecycle(
+            "multiple lifecycle rows satisfy the composite fallback: "
+            + ", ".join(
+                "positionId={} ctime={} size={}".format(
+                    r.get("positionId"), r.get("ctime"),
+                    r.get("closeTotalPos") or r.get("openTotalPos"),
+                )
+                for r in cands
+            )
+        )
     return cands[0]
 
 
