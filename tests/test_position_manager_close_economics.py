@@ -153,6 +153,27 @@ def test_history_absent_leaves_it_provisional(tmp_path):
     assert h.rows == []  # no phantom PnL
 
 
+def test_provisional_status_closed_does_not_block_economic_recovery(tmp_path):
+    """The on-disk existence gate must distinguish flatness from economics."""
+    ds = tmp_path / "trade_dataset_v2.csv"
+    fields = ["event_type", "status", "symbol", "direction", "closed_at",
+              "position_lifecycle_id"]
+    with open(ds, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        writer.writerow({
+            "event_type": "CLOSE_PROVISIONAL", "status": "CLOSED",
+            "symbol": "TRXUSDT", "direction": "SHORT",
+            "closed_at": "2026-08-03T06:01:36",
+            "position_lifecycle_id": "pos-abc",
+        })
+
+    h = Harness(lambda: [hist()], ds)
+    assert h._closed_trade_dataset_row_exists(
+        "TRXUSDT", "2026-08-03T06:01:36", "pos-abc"
+    ) is False
+
+
 # ── D: ambiguous match -> fail closed ───────────────────────────────────────
 
 def test_ambiguous_history_does_not_guess(tmp_path):

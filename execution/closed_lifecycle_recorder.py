@@ -8,9 +8,8 @@ worth). Every bot-initiated close route funnels through it:
     position_manager.py:782     residual cleanup
     position_manager.py:1176    tp3 close-all
     position_manager.py:1404    dead-trade timeout
-    bitget_rest.py:70           emergency flatten
 
-They all call `close_futures_position_full`, which only reports
+The wired production routes call `close_futures_position_full`, which only reports
 ``status="CLOSED"`` after re-reading the position and finding remaining size 0.
 Anything short of that is `CLOSE_FULL_POSITION_REMAINS`, and this module refuses
 to record economics for it — a local CLOSED before exchange flatness is how a

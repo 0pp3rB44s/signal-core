@@ -363,7 +363,10 @@ class ClosedTradeWriterMixin:
                 for row in csv.DictReader(handle):
                     event_type = str(row.get("event_type") or "").upper()
                     status = str(row.get("status") or "").upper()
-                    if event_type not in {"CLOSE", "POSITION_CLOSED"} and not status.startswith("CLOSED"):
+                    # A CLOSE_PROVISIONAL row deliberately has status=CLOSED,
+                    # but it is not an economic close. Treating status alone as
+                    # proof blocked exchange-truth recovery forever.
+                    if event_type not in {"CLOSE", "POSITION_CLOSED"}:
                         continue
                     if str(row.get("symbol") or "").upper() != target_symbol:
                         continue

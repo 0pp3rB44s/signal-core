@@ -169,6 +169,17 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         if not positions:
             return updates
 
+        # Startup/periodic recovery for late Bitget position-history rows.
+        # Revisit only the newest bounded set; economic rows dedupe on disk,
+        # while provisional rows remain eligible until exchange truth appears.
+        closed_for_recovery = [
+            position for position in positions
+            if isinstance(position, dict)
+            and str(position.get("status") or "") in {"CLOSED", "CLOSED_SYNCED"}
+        ][-20:]
+        for closed_position in closed_for_recovery:
+            self._ensure_closed_trade_dataset_row(closed_position)
+
         for position in positions:
             if position.get("status") != "OPEN":
                 if not bool(position.get("dataset_close_written", False)):
