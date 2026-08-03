@@ -11,6 +11,20 @@ from clients.bitget_precision import BitgetPrecisionMixin
 from clients.bitget_tpsl_client import BitgetTPSLClientMixin
 
 
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class BitgetRestClient(
     BitgetBaseClient,
     BitgetMarketClientMixin,
@@ -74,11 +88,26 @@ class BitgetRestClient(
                     cleanup_tpsl=True,
                 )
 
+                # Carry the identity forward so the caller can reconcile this
+                # lifecycle against position-history without guessing. Every
+                # field here comes from the position payload we just read; the
+                # client stays transport-only and does no bookkeeping itself.
                 results["closed"].append(
                     {
                         "symbol": symbol,
                         "direction": direction,
                         "result": close_result,
+                        "lifecycle_identity": {
+                            "symbol": symbol,
+                            "direction": direction,
+                            "hold_side": hold_side,
+                            "opened_at_ms": _int_or_none(position.get("cTime")),
+                            "confirmed_position_size": _float_or_none(
+                                position.get("total") or position.get("size")
+                            ),
+                            "exchange_avg_entry": _float_or_none(position.get("openPriceAvg")),
+                            "source": "emergency_flatten_all",
+                        },
                     }
                 )
 
