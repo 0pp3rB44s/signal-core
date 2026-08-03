@@ -208,8 +208,15 @@ def test_m9_startup_recovery_runs_before_real_execution_call(monkeypatch):
     runner = StartupRunner.__new__(StartupRunner)
     runner.log = logging.getLogger("runner-test")
     runner._startup_close_recovery_complete = False
+    # A fully accounted sweep: nothing blocked, nothing pending, nothing
+    # ambiguous, and no row left unattempted. `{"blocked": False}` alone is an
+    # unknown state now, not a clean one -- see the startup-recovery gate.
+    clean_sweep = {
+        "seen": 0, "skipped": 0, "recovered": 0, "still_pending": 0,
+        "ambiguous": 0, "blocked": False, "unresolved_total": 0,
+    }
     runner.position_manager = type("PM", (), {
-        "recover_provisional_close_rows": lambda self: events.append("recovery") or {"blocked": False}
+        "recover_provisional_close_rows": lambda self: events.append("recovery") or clean_sweep
     })()
     runner.execution_service = type("ES", (), {
         "execute": lambda self, plans: events.append("execute") or ["ok"]

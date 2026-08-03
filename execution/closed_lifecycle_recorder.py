@@ -286,7 +286,7 @@ def recover_provisional_closes(
     """
     stats = {
         "seen": 0, "skipped": 0, "recovered": 0, "still_pending": 0,
-        "blocked": False, "unresolved_total": 0,
+        "ambiguous": 0, "blocked": False, "unresolved_total": 0,
     }
     unresolved: list[dict] = []
     for row in sorted(provisional_rows, key=_oldest_key):
@@ -337,9 +337,16 @@ def recover_provisional_closes(
             econ = economics_from_history(hit)
         except (CloseReconciliationUnavailable, AmbiguousLifecycle) as exc:
             stats["still_pending"] += 1
+            # Ambiguity is not the same failure as "the exchange has not
+            # published it yet": it means several lifecycles fit and picking one
+            # would be a guess. Counted separately so a caller can refuse on it
+            # by name instead of reading it out of a lumped pending total.
+            if isinstance(exc, AmbiguousLifecycle):
+                stats["ambiguous"] += 1
             log.critical(
-                "CLOSE_RECOVERY_PENDING | symbol=%s | opened_at=%s | error=%s",
-                row.get("symbol"), row.get("opened_at"), exc,
+                "CLOSE_RECOVERY_PENDING | symbol=%s | opened_at=%s | ambiguous=%s | error=%s",
+                row.get("symbol"), row.get("opened_at"),
+                isinstance(exc, AmbiguousLifecycle), exc,
             )
             continue
         write_economic_close(row, econ)
