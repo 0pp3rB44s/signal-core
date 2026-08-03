@@ -42,6 +42,14 @@ if grep -Eiq "Private API OK|PING_PRIVATE|GET_ACCOUNTS|get_all_positions|place_f
   exit 6
 fi
 
+# The paper writer fails closed: it logs and lets the scan continue. That kept the
+# bot looking HEALTHY for 10 days in July 2026 while a serialization error dropped
+# all 147 executable plans. A write failure must be a health failure.
+if grep -Fq "FORWARD_PAPER_FAILED_CLOSED" logs/forward_paper.out 2>/dev/null; then
+  echo "status=FORWARD_PAPER_WRITE_FAILING"
+  exit 7
+fi
+
 PYTHONPATH=. .venv/bin/python scripts/rebuild_forward_paper_outcomes.py >/dev/null
 
 PYTHONPATH=. .venv/bin/python - <<'PY'
@@ -83,6 +91,37 @@ if heartbeat_path.exists():
     print("scan_cycles_completed=" + str(heartbeat.get("scan_cycles_completed", 0)))
     print("runtime_ppid=" + str(heartbeat.get("ppid")))
     print("runtime_process_group=" + str(heartbeat.get("process_group")))
+
+    # An executable plan must leave a trace: either an opened trade or a logged
+    # rejection. Producing executable plans while the store stays empty is the
+    # exact signature of the July 2026 silent failure.
+    executable = int((heartbeat.get("details") or {}).get("executable_plan_count", 0) or 0)
+    rejected = sum(1 for event in events if event["event_type"] == "PAPER_REJECTED")
+    if executable > 0 and not opened_ids and not rejected:
+        print("status=FORWARD_PAPER_OUTPUT_MISSING")
+        raise SystemExit(9)
+
+    # A live process is not a working process. On 2026-07-25 an invalid confirmation
+    # granularity returned HTTP 400 for every symbol: the bot reported 106 "completed"
+    # cycles with snapshot_count=0 and this check said HEALTHY for two hours. Treat a
+    # cycle that produced no market data, and repeated scan failures, as hard failures.
+    details = heartbeat.get("details") or {}
+    failures = int(details.get("consecutive_scan_failures", 0) or 0)
+    snapshot_count = details.get("snapshot_count")
+    stage = str(heartbeat.get("stage") or "")
+    print("consecutive_scan_failures=" + str(failures))
+    print("last_snapshot_count=" + ("unknown" if snapshot_count is None else str(snapshot_count)))
+
+    if stage == "scan_cycle_complete" and snapshot_count is not None and int(snapshot_count) == 0:
+        print("status=SCAN_PRODUCED_NO_MARKET_DATA")
+        raise SystemExit(10)
+    if failures >= 3:
+        print("status=SCAN_LOOP_FAILING")
+        raise SystemExit(11)
+    if failures > 0:
+        print("degraded_reason=consecutive_scan_failures=" + str(failures))
+        print("status=DEGRADED")
+        raise SystemExit(12)
 PY
 
 echo "status=HEALTHY"

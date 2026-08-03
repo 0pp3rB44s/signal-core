@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import csv
 from collections import Counter
+import dataclasses
+from decimal import Decimal
+from enum import Enum
 import hashlib
 import json
+import logging
+import math
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +31,80 @@ class ForwardPaperSemanticConflictError(ForwardPaperCorruptionError):
     pass
 
 
+_log = logging.getLogger(__name__)
+
+UNSERIALIZABLE_PREFIX = "<unserializable:"
+
+
+def json_safe(value: Any) -> Any:
+    """Last-resort coercion for values json.dumps cannot encode natively.
+
+    A paper trade must never be lost because an upstream producer put a rich
+    object into a payload (this happened: a ContractSpec in MarketSnapshot.context
+    silently blocked every forward-paper write from 2026-07-19 to 2026-07-25).
+    Coercion is deterministic so content hashes stay stable, and the fallback
+    branch is logged loudly so the producer still gets fixed.
+    """
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(str(item) for item in value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", errors="replace")
+    _log.warning(
+        "FORWARD_PAPER_UNSERIALIZABLE_VALUE | type=%s | coerced_to_repr",
+        type(value).__name__,
+    )
+    return f"{UNSERIALIZABLE_PREFIX}{type(value).__name__}>"
+
+
+def jsonable(value: Any) -> Any:
+    """Convert an arbitrary payload into pure JSON data.
+
+    Market snapshots carry live dataclasses (ContractSpec, LiveMarketContext) in
+    their context, which json.dumps cannot encode. An unencodable payload used to
+    raise from content_hash and abort the whole paper write, so every executable
+    plan was silently dropped. Sanitizing here keeps the hash chain stable: the
+    stored form is real JSON, so re-reading and re-hashing reproduces it exactly.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        # NaN/Infinity are not valid JSON and round-trip inconsistently.
+        return value if math.isfinite(value) else None
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            field_.name: jsonable(getattr(value, field_.name, None))
+            for field_ in dataclasses.fields(value)
+        }
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return jsonable(model_dump(mode="json"))
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return sorted(jsonable(item) for item in value)
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    return str(value)
+
+
 def canonical_json(payload: Any) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Two layers, deliberately. jsonable() sanitizes everything on the write path;
+    # default=json_safe is defence in depth so a hash can never raise, and it logs
+    # loudly so a new offending producer still gets found and fixed. allow_nan is
+    # left at its default so re-hashing a legacy event containing NaN reproduces
+    # how it was written rather than raising during chain verification.
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        default=json_safe,
+    )
 
 
 def content_hash(payload: Any) -> str:
@@ -165,7 +242,7 @@ class ForwardPaperEventStore:
                 "plan_id": str(event["plan_id"]),
                 "event_type": str(event["event_type"]),
                 "timestamp": str(event["timestamp"]),
-                "payload": event["payload"],
+                "payload": jsonable(event["payload"]),
                 "previous_hash": events[-1]["event_hash"] if events else "GENESIS",
             }
             stored["event_hash"] = content_hash(stored)

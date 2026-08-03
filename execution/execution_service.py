@@ -9,6 +9,13 @@ from app.config import Settings
 from app.equity import resolve_account_equity
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, TradePlan
+from execution.entry_submitter import (
+    EntryOrderSubmitter,
+    RESULT_ADOPTED,
+    RESULT_BLOCKED_UNKNOWN,
+)
+from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
+from execution.order_intent_store import OrderIntentStore, new_session_id
 from execution.state_store import JsonStateStore
 from risk.cooldown_manager import SymbolCooldownManager
 from telemetry.trade_logger import LiveTradeJournalLogger, TradeDecisionSnapshotLogger
@@ -51,6 +58,18 @@ class ExecutionService:
         self.journal = LiveTradeJournalLogger()
         self.decision_snapshot_logger = TradeDecisionSnapshotLogger()
         self.symbol_cooldown_minutes = int(getattr(settings, "symbol_cooldown_minutes", 30))
+        # Idempotent live-entry path: one deterministic clientOid per logical
+        # entry, persisted before submit and reconciled after any ambiguity.
+        self.session_id = new_session_id()
+        self.intent_store = OrderIntentStore()
+        self.entry_submitter = EntryOrderSubmitter(
+            client=self.client,
+            intent_store=self.intent_store,
+            session_id=self.session_id,
+            execution_mode=str(settings.execution_mode),
+            log=self.log,
+        )
+        self._entry_recovery_done = False
 
     def execute(self, plans: list[TradePlan]) -> list[ExecutionReport]:
         if not self.settings.execution_enabled:
@@ -104,6 +123,10 @@ class ExecutionService:
         max_open_positions = int(self.settings.max_open_positions)
         hard_cap_notional = resolve_account_equity(self.settings)[0] * float(self.settings.max_leverage)
 
+        # Unfinished order intents are reconciled against Bitget before any new
+        # entry may be created, and an unresolvable one blocks entries entirely.
+        entry_block_reason = self._entry_guard_reason()
+
         executable: list[TradePlan] = []
         seen_symbols: set[str] = set()
         for plan in plans:
@@ -119,6 +142,24 @@ class ExecutionService:
         for plan in executable:
             # --- Telemetry: log trade decision snapshot before execution logic ---
             decision_snapshot_opened_at = self.decision_snapshot_logger.append_plan(plan)
+            if entry_block_reason:
+                self.log.critical(
+                    "NEW_ENTRIES_BLOCKED | symbol=%s | plan_id=%s | reason=%s",
+                    plan.symbol,
+                    plan.plan_id,
+                    entry_block_reason,
+                )
+                reports.append(
+                    self._report(
+                        plan=plan,
+                        status="SKIPPED",
+                        message=f"new entries blocked: {entry_block_reason}",
+                        avg_entry=round(sum(plan.entry_prices) / len(plan.entry_prices), 8),
+                        notional=min(plan.position_notional_usdt, hard_cap_notional),
+                        leverage=plan.leverage,
+                    )
+                )
+                continue
             if self.settings.execution_mode.upper() == "LIVE":
                 try:
                     live_positions_payload = self.client.get_all_positions()
@@ -323,6 +364,7 @@ class ExecutionService:
             )
             live_order_payload = None
             live_order_id = None
+            entry_client_oid = ""
             leverage_payload = None
             protection_payload = None
             execution_status = "SIMULATED"
@@ -501,10 +543,36 @@ class ExecutionService:
                             client=self.client, settings=self.settings, symbol=plan.symbol,
                             direction=plan.direction, size=order_size, anchor_price=maker_anchor,
                             hold_side=hold_side, log=self.log,
+                            submit=lambda place, _plan=plan, _size=order_size, _side=side: (
+                                self.entry_submitter.submit_entry(
+                                    plan=_plan, size=_size, side=_side, order_type="limit",
+                                    leg=ENTRY_LEG_MAKER, place=place, notional_usdt=live_notional,
+                                )
+                            ),
                         )
+                        if maker_result["status"] == "BLOCKED_UNKNOWN":
+                            # Maker leg left the exchange state unknown: entering
+                            # again (market fallback) could duplicate the position.
+                            entry_block_reason = maker_result.get("message") or "maker entry state unknown"
+                            self.log.critical(
+                                "LIVE_ENTRY_BLOCKED_MAKER_STATE_UNKNOWN | %s | plan_id=%s | reason=%s",
+                                plan.symbol, plan.plan_id, entry_block_reason,
+                            )
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"new entries blocked: {entry_block_reason}",
+                                    avg_entry=avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
                         if maker_result["status"] == "FILLED":
                             live_order_payload = maker_result["payload"]
                             live_order_id = maker_result["order_id"]
+                            entry_client_oid = maker_result.get("client_oid") or ""
                             entry_via = "maker"
                         elif not bool(getattr(self.settings, "maker_entry_fallback_market", True)):
                             # Pure maker-modus: niet gevuld -> skippen, geen taker.
@@ -523,14 +591,63 @@ class ExecutionService:
                             entry_via = "maker_then_market_fallback"
 
                     if live_order_id is None:
-                        live_order_payload = self.client.place_futures_market_order(
-                            symbol=plan.symbol,
+                        def _place_market_entry(client_oid: str, _plan=plan, _size=order_size, _side=side):
+                            return self.client.place_futures_market_order(
+                                symbol=_plan.symbol,
+                                size=_size,
+                                side=_side,
+                                trade_side=trade_side,
+                                margin_mode="isolated",
+                                client_oid=client_oid,
+                            )
+
+                        submission = self.entry_submitter.submit_entry(
+                            plan=plan,
                             size=order_size,
                             side=side,
-                            trade_side=trade_side,
-                            margin_mode="isolated",
+                            order_type="market",
+                            leg=ENTRY_LEG_MARKET,
+                            place=_place_market_entry,
+                            notional_usdt=live_notional,
                         )
-                        live_order_id = self.client.extract_order_id(live_order_payload)
+                        entry_client_oid = submission.client_oid
+
+                        if submission.status == RESULT_BLOCKED_UNKNOWN:
+                            entry_block_reason = submission.message
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"new entries blocked: {submission.message}",
+                                    avg_entry=avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
+
+                        if not submission.has_live_order:
+                            self.log.warning(
+                                "LIVE_ENTRY_NOT_CREATED | %s | plan_id=%s | client_oid=%s | status=%s | classification=%s | submissions=%s",
+                                plan.symbol, plan.plan_id, submission.client_oid,
+                                submission.status, submission.classification, submission.submissions,
+                            )
+                            reports.append(
+                                self._report(
+                                    plan=plan,
+                                    status="SKIPPED",
+                                    message=f"live entry not created ({submission.status}): {submission.message}",
+                                    avg_entry=avg_entry,
+                                    notional=live_notional,
+                                    leverage=effective_leverage,
+                                )
+                            )
+                            continue
+
+                        live_order_payload = submission.payload
+                        live_order_id = submission.order_id
+                        if submission.status == RESULT_ADOPTED:
+                            entry_via = f"{entry_via}_adopted_after_reconciliation"
 
                     self.log.warning("ENTRY_VIA | %s | %s", plan.symbol, entry_via)
 
@@ -594,10 +711,18 @@ class ExecutionService:
                         )
 
                     self.log.warning(
-                        "EXCHANGE_POSITION_CONFIRMED | %s | order_id=%s",
+                        "EXCHANGE_POSITION_CONFIRMED | %s | order_id=%s | client_oid=%s",
                         plan.symbol,
                         live_order_id,
+                        entry_client_oid or "-",
                     )
+
+                    if entry_client_oid:
+                        self.entry_submitter.mark_filled(
+                            entry_client_oid,
+                            filled_qty=_safe_float(live_size, 0.0),
+                            avg_price=live_fill_entry,
+                        )
 
 
                     # --- SL/TP herankeren op de ECHTE fill (bug 2026-07-08) ---
@@ -633,8 +758,38 @@ class ExecutionService:
                     has_sl = False
                     has_tp = False
                     entry_protection_verified = False
+                    actual_tp_count = 0
+                    expected_tp_count = len(valid_take_profits)
 
-                    for protection_attempt in range(1, 4):
+                    # Protection uses Bitget's position-level TP/SL endpoint, which
+                    # SETS the position's protection rather than stacking orders, so
+                    # a re-attempt reconciles instead of duplicating. Placement is
+                    # skipped entirely when this intent is already PROTECTED.
+                    intent_record = (
+                        self.intent_store.get(entry_client_oid) if entry_client_oid else None
+                    )
+                    if intent_record and intent_record.get("protection_state") == "CONFIRMED":
+                        self.log.critical(
+                            "ENTRY_PROTECTION_ALREADY_CONFIRMED | %s | client_oid=%s | placement_skipped=True",
+                            plan.symbol,
+                            entry_client_oid,
+                        )
+                        has_sl = True
+                        has_tp = True
+                        entry_protection_verified = True
+                        protection_payload = {
+                            "protection_verified": True,
+                            "protection_integrity": "RECONCILED_ALREADY_PROTECTED",
+                            "stop_loss_verified": True,
+                            "take_profit_count": expected_tp_count,
+                            "expected_take_profit_count": expected_tp_count,
+                        }
+                        protection_integrity = "RECONCILED_ALREADY_PROTECTED"
+                        actual_tp_count = expected_tp_count
+
+                    protection_attempts_allowed = 0 if entry_protection_verified else 3
+
+                    for protection_attempt in range(1, protection_attempts_allowed + 1):
                         try:
                             protection_payload = self.client.place_futures_protection_orders(
                                 symbol=plan.symbol,
@@ -720,6 +875,11 @@ class ExecutionService:
                             reason="entry_protection_failed",
                         )
 
+                        if entry_client_oid:
+                            self.entry_submitter.mark_closed_out(
+                                entry_client_oid, reason="entry_protection_failed"
+                            )
+
                         reports.append(
                             self._report(
                                 plan=plan,
@@ -743,6 +903,19 @@ class ExecutionService:
 
                     protection_verified = bool(protection_payload.get("protection_verified")) if protection_payload else False
                     protection_integrity = str(protection_payload.get("protection_integrity") or "UNKNOWN") if protection_payload else "MISSING_PAYLOAD"
+
+                    if entry_client_oid and protection_verified:
+                        self.entry_submitter.mark_protected(
+                            entry_client_oid, integrity=protection_integrity
+                        )
+                        self.log.critical(
+                            "ENTRY_PROTECTION_RECONCILED | %s | plan_id=%s | client_oid=%s | order_id=%s | integrity=%s",
+                            plan.symbol,
+                            plan.plan_id,
+                            entry_client_oid,
+                            live_order_id,
+                            protection_integrity,
+                        )
                     exchange_stop_loss = protection_payload.get("stop_loss") if protection_payload else None
                     exchange_take_profit_count = int(protection_payload.get("take_profit_count") or len(protection_payload.get("take_profits") or [])) if protection_payload else 0
                     self.log.warning(
@@ -896,6 +1069,10 @@ class ExecutionService:
                             direction=plan.direction,
                             reason="entry_protection_failed_exception",
                         )
+                        if entry_client_oid:
+                            self.entry_submitter.mark_closed_out(
+                                entry_client_oid, reason="entry_protection_failed_exception"
+                            )
                         reports.append(
                             self._report(
                                 plan=plan,
@@ -1013,6 +1190,37 @@ class ExecutionService:
         self.event_store.save(execution_events)
         return reports
 
+    def _entry_guard_reason(self) -> str:
+        """Return a non-empty reason when no new live entry may be created.
+
+        On the first LIVE cycle of a process this reconciles every persisted
+        order intent against Bitget, so a bot that died mid-submission adopts
+        the order it may have created instead of placing a second one.
+        """
+        if self.settings.execution_mode.upper() != "LIVE":
+            return ""
+
+        if not self._entry_recovery_done:
+            try:
+                recovery = self.entry_submitter.recover_pending_intents()
+            except Exception as exc:
+                self.log.critical(
+                    "STARTUP_RECOVERY_FAILED | new_entries_blocked=True | error=%s", exc
+                )
+                return f"order-intent recovery failed: {exc}"
+            self._entry_recovery_done = True
+            if recovery.get("blocked"):
+                return "; ".join(recovery.get("reasons") or ["unreconciled order intent"])
+
+        blocking = self.intent_store.blocking()
+        if blocking:
+            details = ", ".join(
+                f"{row.get('symbol')}:{row.get('client_oid')}" for row in blocking
+            )
+            return f"unreconciled order intent(s) in UNKNOWN state: {details}"
+
+        return ""
+
     def _format_order_size_for_exchange(self, symbol: str, raw_size: float) -> float:
         try:
             if hasattr(self.client, "_format_size"):
@@ -1077,13 +1285,17 @@ class ExecutionService:
         reason: str = "fail_safe_close",
     ) -> None:
         close_errors: list[str] = []
+        hold_side = "long" if str(direction).upper() == "LONG" else "short"
 
         try:
-            response = self.client.place_futures_market_order(
+            # Must be the reduce-only close path. place_futures_market_order()
+            # hardcodes tradeSide=open and drops trade_side, so routing the
+            # fail-safe through it opened an opposite position instead of
+            # closing the unprotected one.
+            response = self.client.close_futures_position(
                 symbol=symbol,
+                hold_side=hold_side,
                 size=size,
-                side=close_side,
-                trade_side="close",
                 margin_mode="isolated",
             )
             self.log.critical(

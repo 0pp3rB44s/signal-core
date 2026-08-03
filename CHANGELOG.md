@@ -3,6 +3,29 @@
 Alleen gemergede wijzigingen op `main`. Details per onderwerp: gekoppelde
 docs; onderzoeksverdicts: docs/RESEARCH_JOURNAL.md.
 
+## 2026-07-27 — RC1: forward-paper-validatie afgesloten en gearchiveerd
+- **Release Candidate 1** vastgelegd. Volledige forward-paper-levenscyclus
+  aantoonbaar; 72-uursvalidatie **niet gehaald** (20,56 u effectief van 72 u).
+  Eindoordeel audit: NOT READY FOR NEXT PHASE. Zie RELEASE_NOTES.md.
+- Vijf defecten opgelost, elk met regressietest (suite: 339 passed, 2×):
+  ContractSpec-serialisatie (brak elke paper-write), scanloop zonder
+  exception-afhandeling (20 u uitval), break-even-stop die winst boekte op een
+  niet-verhandelde prijs, `granularity=1h` door Bitget geweigerd (400171, 742×),
+  en een mislukte scan die zichzelf als `scan_cycle_complete` publiceerde.
+- Timeframe-normalisatie heeft nu één canonieke grens:
+  `clients/bitget_market_client.py:api_granularity()`. Minuten kleine letter,
+  uren/dagen/weken/maanden hoofdletter; `1M` (maand) hoofdlettergevoelig
+  gescheiden van `1m` (minuut). Alle 18 aliassen live geverifieerd.
+- Healthcheck kent nu `SCAN_PRODUCED_NO_MARKET_DATA`, `SCAN_LOOP_FAILING` en
+  `DEGRADED`; een levend proces telt niet langer als een werkend proces.
+- Bewijsarchief: `validation_72h/archive/RC1_forward_paper_validation.tar.gz`
+  (912 KB, 63 bestanden, integriteit 63/63 geverifieerd).
+- Nieuwe documentatie: docs/FORWARD_PAPER_VALIDATION.md, docs/RISK_REGISTER.md,
+  docs/RECOVERY_PROCEDURES.md, docs/MONITORING_GUIDE.md,
+  docs/KNOWN_LIMITATIONS.md, docs/REPOSITORY_STRUCTURE.md, RELEASE_NOTES.md.
+- **Onveranderd:** geen bewezen edge; 2 gesloten papertrades hebben geen
+  statistische betekenis; `EXECUTION_ENABLED=false` blijft van kracht.
+
 ## 2026-07-18 — PR #11: microstructuur-archivering + loggerfix
 - `archiving/`-pakket: orderbook (Bitget REST, 10 s), funding (poll +
   settlements), liquidations (Bybit v5 WS; Bitget heeft geen publiek

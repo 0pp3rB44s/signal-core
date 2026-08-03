@@ -81,3 +81,29 @@ uitsluitend publieke endpoints. CI draait compile-, shell-, hygiene- en
 testchecks op elke PR; `main` is beschermd en wordt alleen via PR's
 bijgewerkt. Zie [docs/RUNNER_MIGRATION.md](docs/RUNNER_MIGRATION.md) voor
 wat GitHub wel en nooit transporteert.
+
+---
+
+## Release Candidate 1 — forward-paper-validatie (2026-07-27)
+
+De forward-paper-levenscyclus is end-to-end aantoonbaar (signaal → order → fill →
+positie → SL/TP → beheer → sluiting → outcome → PnL, inclusief herstel na herstart).
+De 72-uursbetrouwbaarheidsvalidatie is **niet gehaald**: run 2 eindigde na 42,75 uur
+door een host-reboot, waarvan 22,19 uur host-sleep — effectief **20,56 uur = 28,5 %**
+van de eis. Auditoordeel: **NOT READY FOR NEXT PHASE**.
+
+Wel bewezen binnen die tijd: veiligheid 13/13 (0 private endpoints, 0 orderaanroepen,
+9 892 requests 100 % HTTP 200), event-integriteit (hashketen VALID ná 22 u suspensie én
+SIGTERM), boekhouding (beide gesloten trades reconciliëren tot < 1e-6) en herstel van
+een **echte** DNS-storing. Niet bewezen: continue uptime, sleep-preventie, herstart na
+reboot, monitoringcontinuïteit — en het **live orderpad is nooit uitgevoerd**.
+
+- Volledig verhaal en bewijs: [docs/FORWARD_PAPER_VALIDATION.md](docs/FORWARD_PAPER_VALIDATION.md)
+- Release-definitie: [RELEASE_NOTES.md](RELEASE_NOTES.md)
+- Risico's: [docs/RISK_REGISTER.md](docs/RISK_REGISTER.md) · Beperkingen: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)
+- Operationeel: [docs/RECOVERY_PROCEDURES.md](docs/RECOVERY_PROCEDURES.md) · [docs/MONITORING_GUIDE.md](docs/MONITORING_GUIDE.md)
+- Repo-indeling: [docs/REPOSITORY_STRUCTURE.md](docs/REPOSITORY_STRUCTURE.md)
+- Bewijsarchief: `validation_72h/archive/` (912 KB, 63 bestanden, integriteit geverifieerd)
+
+**Ongewijzigd:** er is nog steeds **geen bewezen edge**. De 2 gesloten papertrades uit
+deze validatie hebben geen statistische betekenis.

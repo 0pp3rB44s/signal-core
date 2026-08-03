@@ -42,8 +42,15 @@ check_once() {
         log "FAIL-CLOSED: $RECENT herstarts binnen ${WINDOW_SECONDS}s; menselijke controle vereist"
         return 1
       fi
-      log "forward paper niet actief (status=${STATUS:-LEEG}); herstart via strict launcher"
-      if ./scripts/start_forward_paper.sh "$SCAN_INTERVAL" >> "$LOG" 2>&1; then
+      # Restart through scripts/launch_forward.sh: the single production entry
+      # point. The legacy scripts/start_forward_paper.sh enforced mode safety but
+      # read the ambient .env, so automatic restarts silently ran at the ambient
+      # scope (MAX_SYMBOLS=40, MAX_OPEN_POSITIONS=4) instead of the pilot ceilings
+      # in .env.forward (1 and 1). Found by the 2026-07-27 production acceptance
+      # test (defect D2). launch_forward.sh pins .env.forward and asserts those
+      # ceilings, so a manual start and an automatic restart are now identical.
+      log "forward paper niet actief (status=${STATUS:-LEEG}); herstart via launch_forward.sh"
+      if ./scripts/launch_forward.sh "$SCAN_INTERVAL" >> "$LOG" 2>&1; then
         echo "$NOW" >> "$HISTORY"
         log "herstart gelukt"
       else

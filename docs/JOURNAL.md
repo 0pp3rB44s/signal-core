@@ -272,3 +272,20 @@ VOLGENDE FASE
 - Follow-up Runner audit identified Intel `x86_64`, macOS 14.8.7 and a Python 3.11 virtualenv. The architecture contract now supports both Intel and Apple Silicon.
 - Selected Python 3.12: all locked wheels resolve on both architectures and 237 tests pass natively on the M4; Python 3.13 is blocked by the pyarrow wheel chain.
 - Added non-mutating deployment preflight, preserved-venv recreation, names-only environment templating and presence-only configuration comparison. No Runner deployment occurred.
+- **2026-07-25/27 — Forward-paper validation campaign (RC1).** Run 1 was invalidated
+  after 1 h 51 m: `granularity=1h` is rejected by Bitget (only `1H`), so all 106 scans
+  failed while the health check reported HEALTHY — 742 × HTTP 400171 against an empty
+  event store. Two defects, not one: a wrong value at an un-normalised API boundary,
+  and an observability layer that reported a cycle as complete having built zero
+  snapshots. Run 2 started on `cda8187` and ended at T+42.75 h when the host rebooted;
+  22.19 h of that had already been lost to host sleep despite an active power
+  assertion, leaving 20.56 h effective — 28.5 % of the 72 h criterion. Within that
+  time the system was clean: 9 892 API requests at 100 % HTTP 200, zero private
+  endpoints, hash chain VALID across 49 events after a 22-hour suspension and a
+  SIGTERM, both closed trades reconciling to < 1e-6, and a **real** DNS outage absorbed
+  by the retry layer. The audit verdict is NOT READY FOR NEXT PHASE, with the three
+  failures — restart recovery, supervisor, monitoring — all in the operational envelope
+  around the bot rather than in its trading logic. The lasting lesson is that the
+  monitor itself died silently 22.7 h before the end and nothing noticed: absence of
+  alerts is not evidence of health. Evidence frozen in
+  `validation_72h/archive/RC1_forward_paper_validation.tar.gz`.

@@ -23,6 +23,30 @@ class CandleContractError(ValueError):
     pass
 
 
+def instrument_context(contract: ContractSpec | None) -> dict[str, Any] | None:
+    """JSON-safe instrument metadata for MarketSnapshot.context.
+
+    The snapshot context is persisted verbatim by the forward-paper writer, so
+    every value in it must be JSON-serialisable. The full ContractSpec object
+    remains available on MarketSnapshot.contract; `raw` is dropped because it
+    is an unbounded exchange payload with no downstream reader.
+    """
+    if contract is None:
+        return None
+    return {
+        "symbol": contract.symbol,
+        "product_type": contract.product_type,
+        "base_coin": contract.base_coin,
+        "quote_coin": contract.quote_coin,
+        "status": contract.status,
+        "min_trade_num": contract.min_trade_num,
+        "size_multiplier": contract.size_multiplier,
+        "price_place": contract.price_place,
+        "volume_24h_usdt": contract.volume_24h_usdt,
+        "change_pct_24h": contract.change_pct_24h,
+    }
+
+
 @dataclass(frozen=True)
 class LiveMarketContext:
     """Typed raw/live inputs; all derived fields are produced by this module."""
@@ -260,7 +284,7 @@ def build_market_snapshot(symbol: str, primary_candles: list[Candle], confirmati
     return MarketSnapshot(
         symbol=symbol.upper(), contract=inputs.contract, primary=primary, confirmation=confirmation,
         alignment=alignment_value, score_hint=round(score_hint_value, 2), notes=notes,
-        volatility_rank=round(volatility_rank_value, 2), context={"live": live_context, "volatility": volatility, "breakout": breakout, "pressure": breakout, "structure": breakout, "spread_bps": spread_bps, "spread_available": spread_bps is not None, "htf": inputs.htf_context, "orderbook": orderbook_context, "liquidity": liquidity, "entry_quality": entry_quality, "risk_off": risk_off, "instrument": inputs.contract},
+        volatility_rank=round(volatility_rank_value, 2), context={"live": live_context, "volatility": volatility, "breakout": breakout, "pressure": breakout, "structure": breakout, "spread_bps": spread_bps, "spread_available": spread_bps is not None, "htf": inputs.htf_context, "orderbook": orderbook_context, "liquidity": liquidity, "entry_quality": entry_quality, "risk_off": risk_off, "instrument": instrument_context(inputs.contract)},
         origin_distance_score=round(float(breakout.get("origin_distance_score", 0) or 0), 2),
         impulse_freshness_score=round(float(breakout.get("impulse_freshness_score", 100) or 100), 2),
         expansion_exhaustion_score=round(float(breakout.get("expansion_exhaustion_score", 0) or 0), 2),

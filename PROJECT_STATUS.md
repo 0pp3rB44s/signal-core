@@ -84,3 +84,31 @@ runner-deployment — géén live trading.
 6. Liquidatiebron is Bybit (Bitget heeft geen publiek kanaal; Binance-WS
    bereikt dit netwerk niet) — cross-venue-aanname documenteren in elke
    toekomstige liquidatie-hypothese.
+
+---
+
+## Statusupdate 2026-07-27 — RC1 (aanvulling, vervangt niets hierboven)
+
+**Peildatum: 2026-07-27.** De bot draait op dit moment **niet**: run 2 van de
+forward-paper-validatie kreeg een SIGTERM (exit 143) op 2026-07-27T10:53:51Z, 16
+seconden vóór een host-reboot (`kern.boottime` 10:54:07Z). Daarna heeft niets de run
+hersteld — 7,82 uur dood tot aan de audit. Ook de archiver is bij die reboot gestopt.
+
+**Validatiestand.** 72-uurscriterium niet gehaald: 20,56 uur effectief van 72
+(28,5 %). Auditoordeel **NOT READY FOR NEXT PHASE**; live-readiness PASS 7 · PASS WITH
+LIMITATION 5 · FAIL 3 (Restart Recovery, Supervisor, Monitoring).
+
+**Wat er wél staat.** De handelslevenscyclus zelf werkt: 1 177 scancycli, mediaan
+cadans 63 s, API-latency mediaan 317 ms over 9 892 requests met 100 % HTTP 200, 0
+tracebacks, 0 scanfouten, hashketen VALID over 49 events, beide gesloten trades
+reconciliëren tot < 1e-6. Drie trades geopend, twee gesloten, één onopgelost bij freeze.
+
+**Wat het blokkeert.** De omgeving, niet de code: host-sleep schortte het proces 22,19
+uur op ondanks een actieve power-assertion, er is geen boot-persistente supervisie, en
+de monitor stopte stil op 2026-07-26T12:09:03Z zonder dat iets dat opmerkte.
+
+**Onveranderd:** geen bewezen edge; `EXECUTION_ENABLED=false` sinds 2026-07-13.
+
+Details: [RELEASE_NOTES.md](RELEASE_NOTES.md),
+[docs/FORWARD_PAPER_VALIDATION.md](docs/FORWARD_PAPER_VALIDATION.md),
+[docs/RISK_REGISTER.md](docs/RISK_REGISTER.md).

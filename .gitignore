@@ -31,3 +31,11 @@ archive/
 # Historical datasets
 data/historical/
 .worktrees/
+
+# Per-mode configuration (RC2). The forward config and the live TEMPLATE carry no
+# credentials and are tracked so the deployed configuration is auditable. The real
+# .env.live and the owner authorisation token are never committed.
+!.env.forward
+!.env.live.example
+.env.live
+state/LIVE_PILOT_AUTHORISATION

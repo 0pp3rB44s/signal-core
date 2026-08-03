@@ -6,6 +6,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# shellcheck source=scripts/lib/power_assertion.sh
+source "$PROJECT_DIR/scripts/lib/power_assertion.sh"
+
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$PROJECT_DIR/data/archive}"
 export ARCHIVE_DIR
@@ -31,6 +34,8 @@ echo "$ARCH_PID" > "$PID_FILE"
 sleep 2
 if kill -0 "$ARCH_PID" 2>/dev/null; then
   echo "archiver gestart | pid=$ARCH_PID | dir=$ARCHIVE_DIR"
+  hold_power_assertion "$ARCH_PID" "archiver"
+  assert_power_settings_sane
   echo "status:   cat $ARCHIVE_DIR/status.json"
   echo "stoppen:  scripts/stop_archiver.sh"
 else

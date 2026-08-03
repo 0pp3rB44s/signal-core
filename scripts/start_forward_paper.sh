@@ -4,6 +4,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# shellcheck source=scripts/lib/power_assertion.sh
+source "$PROJECT_DIR/scripts/lib/power_assertion.sh"
+
 SCAN_INTERVAL="${1:-60}"
 if ! [[ "$SCAN_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: scan interval must be a positive integer in seconds"
@@ -86,6 +89,9 @@ PY
   fi
   exit 8
 fi
+
+hold_power_assertion "$BOT_PID" "forward_paper"
+assert_power_settings_sane
 
 echo "$STARTED_AT | FORWARD_PAPER_START | reason=$START_REASON | interval=${SCAN_INTERVAL}s" >> logs/runtime.log
 echo "strict forward-paper started (PID $BOT_PID, interval ${SCAN_INTERVAL}s)"

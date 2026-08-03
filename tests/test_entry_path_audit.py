@@ -1,0 +1,283 @@
+"""Whole-path guarantees for the live entry order.
+
+Complements tests/test_entry_order_idempotency.py (which proves the submitter's
+behaviour) by proving that the *execution service* actually routes through it,
+that no other code path can create an entry without an identity, and that the
+reduce-only close behaviour is unchanged.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from app.config import Settings
+from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
+from clients.bitget_base_client import BitgetOrderSubmissionAmbiguous
+from clients.schemas import TradePlan
+from execution.execution_service import ExecutionService
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+# --- repository-wide audit ----------------------------------------------
+
+
+def _production_python_files() -> list[Path]:
+    skip_parts = {
+        "tests", ".claude", "__pycache__", ".venv", ".venv-archiver",
+        "archiving", "backtesting", "research", "agents", "agents_v2", "agents_v3",
+    }
+    return [
+        path
+        for path in REPO.rglob("*.py")
+        if not skip_parts & set(path.relative_to(REPO).parts)
+    ]
+
+
+def test_no_production_code_places_an_entry_order_outside_the_protected_path():
+    """Every live entry call site must go through EntryOrderSubmitter.
+
+    The only permitted direct callers of the entry endpoints are the order
+    client itself (which defines them) and maker_entry's _place helper, which
+    receives its clientOid from the submitter.
+    """
+    allowed = {
+        REPO / "clients" / "bitget_order_client.py",   # definition site
+        REPO / "clients" / "bitget_rest.py",           # thin alias
+        REPO / "execution" / "maker_entry.py",         # _place(), fed by the submitter
+        REPO / "execution" / "execution_service.py",   # wrapped in submit_entry()
+    }
+    pattern = re.compile(r"\.place_futures_(market|limit)_order\s*\(")
+
+    offenders: list[str] = []
+    for path in _production_python_files():
+        if path in allowed:
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(REPO)}:{lineno}")
+
+    assert offenders == [], (
+        "live entry orders may only be created through EntryOrderSubmitter; "
+        f"unprotected call sites: {offenders}"
+    )
+
+
+def test_execution_service_entry_call_supplies_the_client_oid():
+    """The execution service must hand the identity to the order client."""
+    source = (REPO / "execution" / "execution_service.py").read_text()
+    market_call = source.split("self.client.place_futures_market_order(", 1)
+    assert len(market_call) == 2, "entry call site not found"
+    call_body = market_call[1].split(")", 1)[0]
+    assert "client_oid=client_oid" in call_body
+
+    # ...and that call must be wrapped by submit_entry().
+    assert "self.entry_submitter.submit_entry(" in source
+    assert "place=_place_market_entry" in source
+
+
+def test_entry_endpoints_are_marked_non_idempotent():
+    source = (REPO / "clients" / "bitget_order_client.py").read_text()
+    for func in ("place_futures_market_order", "place_futures_limit_order"):
+        body = source.split(f"def {func}(", 1)[1].split("\n    def ", 1)[0]
+        assert "allow_blind_retry=False" in body, f"{func} may still be retried blindly"
+
+
+def test_reduce_only_close_keeps_its_retry_behaviour_and_flags():
+    """Closing is reduce-only and stays on the normal retry policy (unchanged)."""
+    source = (REPO / "clients" / "bitget_order_client.py").read_text()
+    body = source.split("def close_futures_position(", 1)[1].split("\n    def ", 1)[0]
+
+    assert '"reduceOnly": "YES"' in body
+    assert '"tradeSide": "close"' in body
+    assert "allow_blind_retry" not in body, "close path behaviour must stay unchanged"
+
+
+# --- execution service integration --------------------------------------
+
+
+def _live_settings(**overrides) -> Settings:
+    values = {
+        "EXECUTION_ENABLED": True,
+        "EXECUTION_MODE": "LIVE",
+        "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT": 50.0,
+        "MAKER_ENTRY_ENABLED": False,
+        "SYMBOL_COOLDOWN_MINUTES": 0,
+        "EXECUTION_REQUIRE_CONFIRMATION": False,
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def _plan(symbol: str = "BTCUSDT", direction: str = "LONG") -> TradePlan:
+    strategy = "low_vol_reclaim"
+    candle_ms = 1_700_000_000_000
+    candidate_id = deterministic_candidate_id(strategy, symbol, direction, candle_ms)
+    return TradePlan(
+        candidate_id=candidate_id,
+        candidate_candle_open_timestamp_ms=candle_ms,
+        plan_id=deterministic_plan_id(candidate_id),
+        symbol=symbol,
+        strategy=strategy,
+        direction=direction,
+        verdict="EXECUTABLE",
+        score=80.0,
+        entry_prices=[100.0],
+        stop_loss=95.0 if direction == "LONG" else 105.0,
+        take_profits=[110.0 if direction == "LONG" else 90.0],
+        risk_reward_ratio=2.0,
+        account_risk_pct=1.0,
+        leverage=5.0,
+        position_notional_usdt=50.0,
+        notes=[],
+        reasons=[],
+        geometry_entry=100.0,
+    )
+
+
+def _service(monkeypatch, **setting_overrides) -> ExecutionService:
+    monkeypatch.setattr(
+        "execution.execution_service.resolve_account_equity", lambda _s: (1000.0, "test")
+    )
+    service = ExecutionService(settings=_live_settings(**setting_overrides))
+    client = MagicMock()
+    client.get_all_positions.return_value = {"data": []}
+    client._format_size.return_value = 0.5
+    client.extract_order_id.side_effect = lambda payload: str(
+        ((payload or {}).get("data") or {}).get("orderId") or ""
+    )
+    client.extract_fill_metrics.return_value = {
+        "order_id": "srv-1", "avg_price": 100.0, "filled_qty": 0.5, "fee": 0.01,
+        "pnl": 0.0, "state": "filled",
+    }
+    client.place_futures_market_order.return_value = {"data": {"orderId": "srv-1"}}
+    client.set_futures_leverage.return_value = {"code": "00000", "data": {}}
+    client.place_futures_protection_orders.return_value = {
+        "protection_verified": True,
+        "protection_integrity": "OK",
+        "stop_loss_verified": True,
+        "take_profit_count": 1,
+        "expected_take_profit_count": 1,
+        "stop_loss": 95.0,
+    }
+    client.get_order_detail.return_value = {"data": {"orderId": "srv-1"}}
+    service.client = client
+    service.entry_submitter.client = client
+    return service
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_side"), [("LONG", "buy"), ("SHORT", "sell")]
+)
+def test_live_entry_passes_a_deterministic_client_oid(monkeypatch, direction, expected_side):
+    service = _service(monkeypatch)
+    plan = _plan(direction=direction)
+
+    # Position confirmation after the entry.
+    service.client.get_all_positions.side_effect = [
+        {"data": []},  # pre-flight open-symbol sync
+        {"data": []},  # per-plan exchange-truth max-positions check
+        {"data": [{"symbol": plan.symbol, "total": "0.5", "openPriceAvg": "100.0"}]},
+    ]
+
+    reports = service.execute([plan])
+
+    assert service.client.place_futures_market_order.call_count == 1
+    kwargs = service.client.place_futures_market_order.call_args.kwargs
+    assert kwargs["side"] == expected_side
+    assert kwargs["client_oid"] == service.entry_submitter.client_oid_for(plan)
+    assert reports[0].status == "EXECUTED"
+
+    intent = service.intent_store.get(kwargs["client_oid"])
+    assert intent["state"] == "PROTECTED"
+    assert intent["protection_state"] == "CONFIRMED"
+
+
+def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
+    service = _service(monkeypatch)
+    plan = _plan()
+    oid = service.entry_submitter.client_oid_for(plan)
+
+    service.client.place_futures_market_order.side_effect = BitgetOrderSubmissionAmbiguous(
+        "status=504 gateway timeout", status_code=504
+    )
+    service.client.find_order_by_client_oid.return_value = {
+        "status": "FOUND",
+        "order": {"orderId": "srv-adopted", "clientOid": oid, "state": "filled",
+                  "priceAvg": "100.4", "baseVolume": "0.5"},
+        "source": "order_detail",
+        "errors": [],
+    }
+    service.client.get_all_positions.side_effect = [
+        {"data": []},
+        {"data": []},
+        {"data": [{"symbol": plan.symbol, "total": "0.5", "openPriceAvg": "100.4"}]},
+    ]
+
+    reports = service.execute([plan])
+
+    assert service.client.place_futures_market_order.call_count == 1
+    assert reports[0].status == "EXECUTED"
+    assert reports[0].exchange_order_id == "srv-adopted"
+    assert service.intent_store.get(oid)["exchange_order_id"] == "srv-adopted"
+
+
+def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypatch):
+    service = _service(monkeypatch, EXECUTION_MAX_PER_CYCLE=2)
+    first, second = _plan("BTCUSDT"), _plan("ETHUSDT")
+
+    service.client.place_futures_market_order.side_effect = BitgetOrderSubmissionAmbiguous(
+        "read timeout"
+    )
+    service.client.find_order_by_client_oid.return_value = {
+        "status": "UNKNOWN", "order": None, "source": "inconclusive", "errors": ["boom"],
+    }
+
+    reports = service.execute([first, second])
+
+    assert service.client.place_futures_market_order.call_count == 1
+    assert [report.status for report in reports] == ["SKIPPED", "SKIPPED"]
+    assert "blocked" in reports[1].message
+
+
+def test_next_cycle_stays_blocked_until_the_intent_is_reconciled(monkeypatch):
+    service = _service(monkeypatch)
+    plan = _plan()
+    service.client.place_futures_market_order.side_effect = BitgetOrderSubmissionAmbiguous("t/o")
+    service.client.find_order_by_client_oid.return_value = {
+        "status": "UNKNOWN", "order": None, "source": "inconclusive", "errors": ["boom"],
+    }
+
+    service.execute([plan])
+    service.client.place_futures_market_order.reset_mock()
+    service.client.place_futures_market_order.side_effect = None
+
+    reports = service.execute([_plan("SOLUSDT")])
+
+    assert service.client.place_futures_market_order.call_count == 0
+    assert reports[0].status == "SKIPPED"
+    assert "UNKNOWN" in reports[0].message
+
+
+def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monkeypatch):
+    """place_futures_market_order() always sends tradeSide=open, so the
+    fail-safe must never route through it."""
+    service = _service(monkeypatch)
+
+    service._fail_safe_close(
+        symbol="BTCUSDT", size=0.5, close_side="sell",
+        direction="LONG", reason="entry_protection_failed",
+    )
+
+    service.client.place_futures_market_order.assert_not_called()
+    service.client.close_futures_position.assert_called_once()
+    kwargs = service.client.close_futures_position.call_args.kwargs
+    assert kwargs["hold_side"] == "long"
+    assert kwargs["size"] == 0.5

@@ -256,3 +256,32 @@ MASTER_ENTRY_QUALITY_OBSERVE → zou geblokkeerd hebben (observe-only)
 4. Geen TP/SL- of strategie-tuning zonder data-onderbouwing.
 5. Exchange truth wint altijd van lokale staat.
 6. Tests groen vóór deploy; bot herstart via scripts/start_bot.sh.
+
+---
+
+## Aanvulling 2026-07-27 — architectuurgrenzen bevestigd door RC1-validatie
+
+Drie grenzen zijn door de forward-paper-campagne empirisch bevestigd en horen bij de
+architectuur, niet bij een losse module:
+
+1. **Eén canonieke timeframe-normalisatiegrens.**
+   `clients/bitget_market_client.py:api_granularity()` is de enige plek waar een intern
+   timeframe naar een API-waarde wordt vertaald, toegepast bovenin `get_candles` vóór
+   het request. De voorganger — een privé, gedeeltelijke map in
+   `get_multi_timeframe_candles` — dekte 1h/4h en liet elk ander pad een geweigerde
+   waarde versturen. Regel: nooit een tweede vertaaltabel toevoegen.
+
+2. **Een levend proces is geen werkend proces.**
+   Per-symbool fouten worden bewust opgeslikt zodat één slecht symbool de rest niet
+   stopt. Daardoor kan een storing die *élk* symbool raakt het einde van de cyclus
+   halen. `ScanCycleProducedNoMarketData` maakt van "nul snapshots uit een niet-lege
+   symboollijst" een gefaalde cyclus, en de healthcheck kent
+   `SCAN_PRODUCED_NO_MARKET_DATA`, `SCAN_LOOP_FAILING` en `DEGRADED`.
+
+3. **De veiligheidsgrens ligt in de launcher, niet in `.env`.**
+   `scripts/start_forward_paper.sh` forceert `FORWARD_PAPER_ONLY`, zet
+   `EXECUTION_ENABLED=false`, blankt de credentials en weigert te starten op een vuile
+   werkboom of naast een bestaand botproces. Gevolg dat operationeel telt: een vuile
+   werkboom breekt **elke** automatische herstart stil.
+
+Bewijs: docs/FORWARD_PAPER_VALIDATION.md · validation_72h/archive/
