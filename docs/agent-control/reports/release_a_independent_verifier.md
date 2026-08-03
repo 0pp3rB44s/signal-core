@@ -1,119 +1,132 @@
-# Release A Independent Verifier
+# Release A Independent Verifier — Fresh Verification
 
 ## Verdict
 
-- `SAFE_TO_REVIEW: no`
-- `SAFE_TO_DEPLOY_TECHNICALLY: no`
+- `SAFE_TO_REVIEW: yes`
+- `SAFE_TO_DEPLOY_TECHNICALLY: yes`
 - Base: `817bc72f5b7b85f12b23fd6d7b03b09542addaed`
-- Verified tip: `dba04d9fbd02e9d25557e2d554d24807a195af1c`
+- Verified tip: `c03c51786c59703504282e2320cf38cf45454f06`
 - Branch: `codex/release-a-close-economics-recovery`
-- Merge-base: `817bc72f5b7b85f12b23fd6d7b03b09542addaed` (exact)
+- Exact merge-base: `817bc72f5b7b85f12b23fd6d7b03b09542addaed`
 
-Release A is not ready for owner review or technical deployment. Two production-wiring defects remain despite a green full suite: the unprotected-emergency helper can accept a typed UNKNOWN response as closed, and the identity-consuming emergency-flatten orchestrator has no production caller. Consequently M2 and M7 do not credibly guard the claimed production behavior.
+Both blockers from the prior independent pass are closed. Release A is technically safe for owner code review and, from the code/wiring/test perspective, technically deployable. This is not authorization to merge, migrate data, deploy, or send exchange orders; those actions remain explicitly owner-gated.
 
-## Blocking findings
+## Prior blockers reverified
 
-### 1. CAPITAL RISK / DEFECT — unprotected emergency accepts `status=CLOSED` without typed flatness proof
+### M2 / unprotected UNKNOWN flatness — FIXED / PROVEN / WIRED
 
-`execution/tp_sl_lifecycle.py::_close_unprotected_position()` accepts any result whose status is `CLOSED` or `NO_POSITION`. It does not require `flatness == FLAT` and `remaining_size == 0.0` through `exchange_confirmed_flat()`.
+`execution/tp_sl_lifecycle.py::_close_unprotected_position()` now uses the shared `exchange_confirmed_flat()` predicate. It requires status `CLOSED` or `NO_POSITION`, literal `flatness=FLAT`, and `remaining_size=0.0`.
 
-The caller then marks the local position `CLOSED`, sets remaining size to zero and proceeds with provisional/economic reconciliation. The recorder later rejects malformed flatness, but that is too late: local lifecycle state has already forgotten a potentially live, unprotected position.
+Evidence reaches the real PositionManager runtime path: `test_unprotected_close_unknown_flatness_keeps_local_position_open` drives `PositionManager.sync()` through failed protection repair with a malformed `{status:CLOSED, flatness:UNKNOWN, remaining_size:None}` result and proves local status remains OPEN. The narrower M2 test also proves the close helper returns false.
 
-Independent reproduction against the real helper:
+The earlier CAPITAL RISK defect is closed.
 
-`{'status':'CLOSED','flatness':'UNKNOWN','remaining_size':None}` produced `malformed_closed_accepted=True`.
+### M7 / emergency-flatten production caller — FIXED / PROVEN / WIRED
 
-Required fix: make `_close_unprotected_position()` use the same strict typed flatness predicate as every recorder/orchestrator, and add a real call-path negative test proving UNKNOWN/bare CLOSED cannot mutate local state to closed.
+`scripts/emergency_flatten.py` is the explicit owner-operated production entrypoint. With `--confirm-emergency-flatten`, it constructs `PositionManager` and calls `PositionManager.emergency_flatten_all()`, which consumes every transport lifecycle identity, writes provisional records and invokes shared reconciliation for confirmed-flat outcomes.
 
-### 2. PIPELINE INCOMPLETE / OPERATIONAL RISK — emergency-flatten recorder has no production caller
+The M7 test starts at the CLI `main()` function and proves the lifecycle-aware orchestrator is called and recording outcomes are surfaced. AST call-site audit now finds:
 
-`PositionManager.emergency_flatten_all()` correctly consumes each transport identity and reconciles confirmed-flat outcomes. However, AST and repository call-site audit found only one non-test `emergency_flatten_all()` call: the method's internal call to `self.client.emergency_flatten_all()` at `execution/position_manager.py:68`. No app, command, dashboard, operator or safety path calls `PositionManager.emergency_flatten_all()`.
+- `scripts/emergency_flatten.py:37` -> `PositionManager.emergency_flatten_all()`
+- `execution/position_manager.py:68` -> transport `client.emergency_flatten_all()`
 
-Therefore the identity-consuming recorder path is implemented but not WIRED. A production caller invoking `BitgetRestClient.emergency_flatten_all()` directly would close positions without the promised provisional/economic lifecycle bookkeeping.
+Direct operator behavior was also verified:
 
-M7 is mislabeled: `test_m7_real_emergency_production_caller_consumes_each_identity` directly invokes `manager.emergency_flatten_all()` in a unit harness. It proves method internals, not a real production caller.
+- `python3 scripts/emergency_flatten.py --help` succeeds from repo root.
+- Default invocation without the confirmation flag exits `2` with `--confirm-emergency-flatten is required; no exchange action was taken` before Settings or PositionManager construction.
+- No confirmed invocation was run during verification.
 
-Required fix: route the actual authorized emergency-flatten entrypoint through `PositionManager.emergency_flatten_all()` and add a call-site test starting from that production entrypoint. Do not add or exercise any LIVE/order mutation during testing.
+The later bootstrap commit also makes `scripts/audit_provisional_close_migration.py --help` directly runnable from repo root.
 
-## Verified runtime wiring
+## Required Release A gates
 
-- PROVEN / WIRED: dead-trade timeout writes a provisional row and invokes `reconcile_closed_lifecycle()` after full-close success.
-- PROVEN / WIRED: residual cleanup writes provisional economics and invokes the shared recorder after its full-close gate.
-- PROVEN / WIRED: TP3 close-all invokes the shared recorder after confirmed full close.
-- PROVEN / WIRED: primary entry fail-safe uses `close_futures_position_full()` and the shared fail-safe recorder.
-- PROVEN / WIRED: protection-repair/unprotected emergency invokes the close helper, provisional writer and shared recorder, but its local-state flatness gate is defective as described above.
-- PIPELINE INCOMPLETE: emergency-flatten recorder exists but has no upstream production caller.
+### Scope, ancestry and drift
 
-## Typed flatness contract
-
-- PROVEN: `PositionReadbackState` distinguishes `FLAT`, `REMAINS` and `UNKNOWN`; transport errors and malformed rows remain UNKNOWN with `size=None`.
-- PROVEN: `close_futures_position_full()` performs a post-close readback before cleanup, retains protection for UNKNOWN/REMAINS, and only emits CLOSED after FLAT.
-- PROVEN: `exchange_confirmed_flat()` requires status CLOSED/NO_POSITION, literal `flatness=FLAT`, and `remaining_size=0.0`.
-- DEFECT: `_close_unprotected_position()` bypasses that predicate and checks status alone.
-
-## Startup and periodic recovery
-
-- PROVEN / WIRED: `StartupRunner._execute_selected_plans()` is the sole production call to `ExecutionService.execute()` and gates it behind `_ensure_startup_close_recovery()`.
-- PROVEN: startup history/recovery failure blocks execution rather than assuming success.
-- PROVEN / WIRED: `PositionManager.sync()` performs periodic recovery.
-- PROVEN: recovery loads the active dataset and all numeric rotations, removes already-resolved economics before applying the limit, sorts unresolved rows oldest-first, and processes a bounded batch.
-- PROVEN: a single history fetch is reused for the batch; unknown history marks the sweep blocked.
-
-## Economics, deduplication and migration
-
-- PROVEN: `ExchangeCloseEconomics` carries explicit gross PnL, open fee, close fee, funding and literal `net_profit`/`netProfit` semantics.
-- PROVEN: required identity/money fields must be finite and present; UNKNOWN is not defaulted to zero.
-- PROVEN: `gross - abs(openFee) - abs(closeFee) + funding == netProfit` is checked with Decimal tolerance `0.0000001`; mismatch fails closed.
-- PROVEN: the real writer preserves literal exchange net profit and does not subtract fees twice.
-- PROVEN: lifecycle matching prefers exchange `positionId`; fallback requires symbol, side, open time within tolerance and size within tolerance; equal-distance ambiguity fails closed.
-- PROVEN: dedup checks exchange position ID, lifecycle ID, order ID, and open-time/size composite across the active dataset and every numeric rotation.
-- PROVEN: duplicate/ambiguous composite economics are blocked.
-- PROVEN: `scripts/audit_provisional_close_migration.py` defaults to read-only; writes require explicit `--apply`; its test confirms byte-for-byte unchanged input without apply.
-- OPERATIONAL RISK: `--apply` is a local append operation and remains owner-controlled; it was not executed during verification.
-
-## Scope and drift
-
-- PROVEN: base ancestry is exact; the branch is four commits ahead of the declared base.
-- Diff scope: 29 files, 3,304 insertions and 247 deletions.
-- PROVEN: no `.env`, secret, credential, token or private-key path is changed; no private-key marker appears in the diff.
-- PROVEN: no `app/config.py`, risk, strategy or planning file is changed.
+- PROVEN: exact declared base and merge-base.
+- Final diff: 31 files, 3,529 insertions and 247 deletions; this includes the independent verifier report already committed earlier on the branch.
+- PROVEN: no `.env`, application config, risk, strategy or planning file changed.
 - PROVEN: no leverage, sizing, margin, max-position, TP/SL distance, protection parameter or entry-routing setting drift was found.
-- The changes are confined to close/readback transport, close lifecycle/economics, recovery/migration, runtime gating, documentation and tests.
+- PROVEN: no sensitive-path match or private-key marker appears in the diff.
 
-## M1–M15 credibility
+### Close-path production wiring
 
-- Credible production-boundary evidence: M1, M3, M4, M5, M6, M8, M9, M10, M11, M12, M13, M14 and M15.
-- M2 is incomplete: it tests the shared recorder predicate but misses `_close_unprotected_position()`'s status-only production gate.
-- M7 is insufficient: it directly calls the new orchestrator method and does not prove any production entrypoint invokes it.
-- Classification: mutation matrix overall is SUGGESTIVE, not PROVEN, until M2 and M7 are corrected. These are regression-style mutation scenarios rather than an executed mutation-testing framework.
+- PROVEN / WIRED: dead-trade timeout -> confirmed full-close -> provisional row -> shared recorder.
+- PROVEN / WIRED: residual cleanup -> confirmed full-close -> provisional row -> shared recorder.
+- PROVEN / WIRED: TP3 close-all -> confirmed full-close -> provisional row -> shared recorder.
+- PROVEN / WIRED: primary entry fail-safe -> `close_futures_position_full()` -> shared fail-safe recorder.
+- PROVEN / WIRED: protection-repair/unprotected emergency -> strict typed-flatness helper -> provisional row -> shared recorder.
+- PROVEN / WIRED: owner-confirmed emergency-flatten CLI -> PositionManager orchestrator -> transport identities -> provisional/economic recorder outcomes.
 
-## Commands and results
+### Typed FLAT / REMAINS / UNKNOWN semantics
 
-1. `git status --short --branch` — clean branch before report creation.
-2. `git rev-parse HEAD` — `dba04d9fbd02e9d25557e2d554d24807a195af1c`.
-3. `git merge-base HEAD 817bc72...` — exact declared base.
-4. `git diff --stat 817bc72...HEAD` — 29 files, 3,304 insertions, 247 deletions.
-5. Repository `rg` and Python AST call-site audits — one non-test emergency-flatten call, internal to the uncalled PositionManager orchestrator.
-6. Focused Release A pytest command covering mutation, reconciliation, recorder, PositionManager, fail-safe, provisional money and lifecycle safety tests — `127 passed in 88.64s`.
-7. `python3 -m pytest -q` — `1030 passed, 1 skipped in 113.87s`.
-8. `python3 -m compileall -q app clients execution telemetry scripts tests` — passed.
-9. `git diff --check 817bc72...HEAD` — passed.
-10. Config/risk/strategy/planning and sensitive-path diff audit — no matching changed paths.
-11. Private-key marker scan of the diff — `private_key_marker_found=no`.
-12. Read-only malformed-flatness reproduction — `malformed_closed_accepted=True`.
+- PROVEN: transport errors, malformed lists/rows, invalid or ambiguous sizes remain UNKNOWN with no zero fabrication.
+- PROVEN: accepted close acknowledgement is followed by a fresh readback before local close or protection cleanup.
+- PROVEN: REMAINS/UNKNOWN retains protection and does not produce economic closure.
+- PROVEN: all reviewed local-close gates now use the strict typed-flatness contract.
 
-No LIVE checkout, process, exchange order, protection, remote, deployment, secret, implementation file, test, control plane or git history was modified by this verification.
+### Startup and periodic recovery
+
+- PROVEN / WIRED: `StartupRunner._execute_selected_plans()` is the sole production call to `ExecutionService.execute()`.
+- PROVEN: startup recovery precedes that call and unknown/blocked recovery prevents execution.
+- PROVEN / WIRED: `PositionManager.sync()` performs periodic recovery.
+- PROVEN: active plus every numeric rotated dataset is loaded; already-resolved rows are filtered before the limit; unresolved rows are sorted oldest-first; the batch is bounded.
+- PROVEN: history UNKNOWN blocks the sweep instead of inventing economics.
+
+### Economics and deduplication
+
+- PROVEN: typed economics preserves explicit gross PnL, open fee, close fee, funding and literal exchange `netProfit`.
+- PROVEN: required identity and money fields must be present and finite.
+- PROVEN: Decimal formula `gross - abs(openFee) - abs(closeFee) + funding == netProfit` is checked with `0.0000001` tolerance and mismatch fails closed.
+- PROVEN: the writer uses literal net profit and does not subtract fees twice.
+- PROVEN: lifecycle matching uses exchange position ID first; fallback requires symbol, side, open time and size; ambiguity fails closed.
+- PROVEN: dedup covers position ID, lifecycle ID, order ID and open-time/size composite across active and all numeric rotations.
+
+### Migration
+
+- PROVEN: `scripts/audit_provisional_close_migration.py` defaults to read-only.
+- PROVEN: local appends require explicit `--apply`; the default-read-only test proves byte-for-byte unchanged input.
+- PROVEN: direct `--help` works after repo-root bootstrap.
+- Owner approval, backup and reviewed audit output remain required before any `--apply` use.
+
+### M1–M15 credibility
+
+All M1–M15 scenarios now bind to production boundaries or call-sites. M2 reaches real PositionManager sync state mutation; M7 reaches the real operator CLI main. The matrix is credible regression/mutation evidence. It is still not an executed third-party mutation-testing framework, so claims should remain limited to the named mutations.
+
+## Commands and exact results
+
+1. `git status --short --branch` — clean at start of fresh verification.
+2. `git rev-parse HEAD` — `c03c51786c59703504282e2320cf38cf45454f06`.
+3. `git merge-base HEAD 817bc72...` — exact base.
+4. Focused Release A suite on the immediately preceding implementation tip — `129 passed in 88.58s` (the final tip adds only script import bootstrap).
+5. Final-tip blocker selection — `4 passed in 0.13s`.
+6. `python3 -m pytest -q` at final tip — `1032 passed, 1 skipped in 112.92s`.
+7. `python3 scripts/emergency_flatten.py --help` — exit 0; confirmation flag documented.
+8. `python3 scripts/audit_provisional_close_migration.py --help` — exit 0; default and `--apply` documented.
+9. `python3 scripts/emergency_flatten.py` without confirmation — exit 2; no exchange action path reached.
+10. `python3 -m compileall -q app clients execution telemetry scripts tests` — passed.
+11. `git diff --check 817bc72...HEAD` — passed.
+12. AST call-site audit — two emergency calls (CLI -> PositionManager; PositionManager -> client) and exactly one `execution_service.execute` call (`app/runner.py:379`).
+13. Config/risk/strategy/planning/sensitive-path audit — no matching changed paths.
+14. Private-key marker audit — `private_key_marker_found=no`.
+
+No LIVE checkout, exchange call, order, cancellation, protection, process, remote, deployment, secret, implementation file, test, control plane or git history was modified by this fresh verification. Only this report is updated and committed as authorized.
+
+## Non-blocking release boundaries
+
+- The frozen 25-trade economic sample from the broader program remains an ECONOMIC EDGE DEFECT and does not justify strategy/risk expansion. Release A changes close safety/economic recording, not strategy parameters.
+- Historical strategy backtesting remains an independent gate for strategy deployment decisions; it does not invalidate this close-integrity release's technical wiring.
+- Emergency flatten is intentionally destructive and can only be owner-triggered with its explicit confirmation flag.
+- Migration `--apply`, merge and deployment remain owner-authorized operations.
 
 ## Rollback
 
 - Before merge: leave Release A unmerged.
-- After merge but before deployment: revert the four Release A commits through normal reviewed history.
-- Dataset migration is separately owner-triggered; do not run `--apply` until audit output, backup and rollback handling are approved.
-- No push, merge, rebase, deployment or branch cleanup is authorized or performed.
+- After merge but before deployment: revert the Release A implementation commits through normal reviewed history.
+- Before any migration apply: preserve a dataset backup and reviewed dry-run totals. If apply results are rejected, restore the local dataset backup; do not infer or rewrite exchange truth.
+- No push, merge, rebase, deploy or migration apply was performed.
 
-## Required disposition
+## Final disposition
 
-Return Release A to the builder. Fix both blockers, add real negative/call-site evidence, and request a fresh independent verification. Until then:
-
-- `SAFE_TO_REVIEW: no`
-- `SAFE_TO_DEPLOY_TECHNICALLY: no`
+- `SAFE_TO_REVIEW: yes`
+- `SAFE_TO_DEPLOY_TECHNICALLY: yes`
+- `OWNER_AUTHORIZATION_TO_DEPLOY: not granted by this verification`
