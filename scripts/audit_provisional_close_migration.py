@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.config import get_settings
 from clients.bitget_rest import BitgetRestClient
