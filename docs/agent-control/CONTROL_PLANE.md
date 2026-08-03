@@ -5,10 +5,11 @@
 - Release branch: `codex/exchange-truth-integrity-release`
 - LIVE checkout: read-only and unchanged
 - Exchange audit: GET-only; 25 unique post-fix lifecycles frozen
-- Build status: complete; independent verification pending
+- Build status: complete; independent verification `SAFE_TO_REVIEW=YES`
 - Merge/deploy status: owner-gated; not performed
 - Economic gate: failed (25-trade net PnL `-0.97513810` USDT)
 - Trading continuation: technically protected under supervision, but not economically validated
+- Deployment verdict: `SAFE_TO_DEPLOY=NO` (economic gate failed; backtest gate invalid; owner-gated)
 
 ## Release scope
 
