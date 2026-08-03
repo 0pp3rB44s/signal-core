@@ -13,6 +13,33 @@ from telemetry.safe_io import locked_open
 
 
 # --- Trade Quality/Grade helpers ---
+class MoneyFieldError(TypeError):
+    """A non-money value reached a USDT column."""
+
+
+def _money_or_none(value, *, field: str, symbol: str = "") -> float | None:
+    """Return USDT as a float, or None when the caller has no figure yet.
+
+    The single place where "is this money?" is decided for the close datasets.
+    ``None`` and ``""`` both mean *not known yet* — a provisional close — and
+    leave the column empty. Anything else must be numeric; a value that is not
+    is a caller bug (a ROI percentage or a formatted string reaching a money
+    column) and raises instead of being coerced to 0.0, because a silent 0.0 is
+    indistinguishable from a real break-even trade and would quietly corrupt the
+    weekly PnL meter that gates live trading.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise MoneyFieldError(f"{field}={value!r} is a bool, not USDT ({symbol})")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise MoneyFieldError(
+            f"{field}={value!r} ({type(value).__name__}) is not a USDT amount ({symbol})"
+        ) from exc
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         if value in ("", None):
@@ -671,7 +698,7 @@ class TradeDatasetLogger:
         self,
         symbol: str,
         result: str,
-        pnl: float,
+        pnl: float | None,
         exit_price: float | str = "",
         tp1_hit: bool | str = "",
         tp2_hit: bool | str = "",
@@ -688,13 +715,18 @@ class TradeDatasetLogger:
         entry_volume_ratio: float | str = "",
         timed_exit: bool | str = "",
     ) -> None:
-        fee_value = 0.0
-        try:
-            if fees not in ("", None):
-                fee_value = float(fees)
-        except (TypeError, ValueError):
-            fee_value = 0.0
-        net_pnl = pnl - fee_value
+        # `pnl` is money in USDT, or None when the caller does not yet know it.
+        # A provisional close (position gone, exchange PnL not yet reported) has
+        # no monetary figure, and inventing one — 0.0, or the empty string this
+        # used to receive — would either understate a real result or crash on the
+        # arithmetic below. Both money columns stay empty instead.
+        #
+        # Anything that is neither None nor numeric is a caller bug: it means a
+        # non-money value (a ROI percentage, a formatted string) reached a money
+        # column. Fail closed and name the offender rather than coercing it.
+        monetary_pnl = _money_or_none(pnl, field="pnl", symbol=symbol)
+        fee_value = _money_or_none(fees, field="fees", symbol=symbol)
+        net_pnl = "" if monetary_pnl is None else monetary_pnl - abs(fee_value or 0.0)
         self._append_row({
             "event_type": "CLOSE",
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -707,8 +739,8 @@ class TradeDatasetLogger:
             "expected_entry": "",
             "actual_entry": "",
             "slippage": "",
-            "fees": fees,
-            "net_pnl": round(net_pnl, 8),
+            "fees": "" if fee_value is None else fee_value,
+            "net_pnl": "" if net_pnl == "" else round(net_pnl, 8),
             "trade_grade": trade_grade,
             "quality_score": quality_score,
             "quality_notes": quality_notes,
@@ -722,7 +754,7 @@ class TradeDatasetLogger:
             "take_profits": "",
             "notional": "",
             "leverage": "",
-            "pnl": pnl,
+            "pnl": "" if monetary_pnl is None else monetary_pnl,
             "tp1_hit": tp1_hit,
             "tp2_hit": tp2_hit,
             "tp3_hit": tp3_hit,

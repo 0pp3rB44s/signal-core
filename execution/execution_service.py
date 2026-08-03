@@ -718,6 +718,8 @@ class ExecutionService:
                     verification_payload = self.client.get_all_positions()
                     verification_positions = verification_payload.get("data") or []
 
+                    exchange_position_identity = None
+
                     exchange_position_found = False
                     live_fill_entry = 0.0
                     live_mark_price = 0.0
@@ -772,6 +774,23 @@ class ExecutionService:
                                 or 0.0,
                                 0.0,
                             )
+                            # The one moment the exchange tells us when this
+                            # position opened. Captured here because a fail-safe
+                            # close later in this flow has no other identity.
+                            try:
+                                _opened_ms = int(position.get("cTime") or 0) or None
+                            except (TypeError, ValueError):
+                                _opened_ms = None
+                            exchange_position_identity = {
+                                "symbol": str(plan.symbol).upper(),
+                                "direction": str(plan.direction).upper(),
+                                "hold_side": live_hold_side,
+                                "opened_at_ms": _opened_ms,
+                                "confirmed_position_size": live_size,
+                                "exchange_avg_entry": live_fill_entry,
+                                "exchange_position_id": str(position.get("positionId") or ""),
+                                "entry_order_id": live_order_id,
+                            }
                             break
 
                     if not exchange_position_found:
@@ -960,6 +979,7 @@ class ExecutionService:
 
                         self._fail_safe_close(
                             symbol=plan.symbol,
+                            lifecycle_identity=exchange_position_identity,
                             size=live_size,
                             close_side=close_side,
                             direction=plan.direction,
@@ -1163,6 +1183,7 @@ class ExecutionService:
                         )
                         self._fail_safe_close(
                             symbol=plan.symbol,
+                            lifecycle_identity=exchange_position_identity,
                             size=order_size,
                             close_side=close_side,
                             direction=plan.direction,
@@ -1494,7 +1515,21 @@ class ExecutionService:
         close_side: str,
         direction: str = "",
         reason: str = "fail_safe_close",
+        lifecycle_identity: dict | None = None,
     ) -> None:
+        """Close a position this flow opened but could not protect.
+
+        ``lifecycle_identity`` holds what the exchange told us at
+        EXCHANGE_POSITION_CONFIRMED -- above all ``opened_at_ms`` from cTime.
+        This close happens inside the entry flow, before PositionManager has
+        ever seen the position, so there is no lifecycle id yet. Without the
+        captured open time a later reconciliation could only match on symbol and
+        side, which is a guess: two lifecycles on one symbol and side can close
+        in the same second.
+
+        When it is None -- the position was never confirmed -- the close still
+        runs, but no economics are claimed for it.
+        """
         close_errors: list[str] = []
         hold_side = "long" if str(direction).upper() == "LONG" else "short"
 
@@ -1545,6 +1580,12 @@ class ExecutionService:
                     reason,
                     response,
                 )
+                # The client only reports CLOSED after re-reading the position
+                # and finding remaining size 0; `reconcile_fail_safe_close`
+                # re-checks that itself, so a non-flat response records nothing.
+                # Orchestration only: the reconciliation and dataset rules live
+                # in the shared recorder, not here.
+                self._record_fail_safe_close_economics(response, lifecycle_identity)
                 return
         except Exception as exc:
             close_errors.append(f"close_full={exc}")
@@ -1566,6 +1607,75 @@ class ExecutionService:
             reason,
             " | ".join(close_errors),
         )
+
+    def _record_fail_safe_close_economics(self, close_result, lifecycle_identity) -> str:
+        """Hand a completed fail-safe close to the shared close-economics recorder.
+
+        Orchestration only. Every rule about what counts as flat, how a
+        lifecycle is matched, and what a provisional row looks like lives in
+        `execution.closed_lifecycle_recorder`, shared with the three
+        PositionManager close paths — nothing about it is re-implemented here.
+
+        Never raises: bookkeeping must not turn a completed close into an
+        exception inside the entry flow.
+        """
+        try:
+            from execution.closed_lifecycle_recorder import reconcile_fail_safe_close
+
+            def _write(identity: dict, econ: dict) -> None:
+                from telemetry.trade_logger import append_closed_trade_row
+
+                append_closed_trade_row(
+                    position={
+                        "symbol": identity.get("symbol", ""),
+                        "direction": identity.get("direction", ""),
+                        "opened_at": identity.get("opened_at", ""),
+                        "confirmed_position_size": econ.get("size"),
+                        "exchange_avg_entry": econ.get("entry_price"),
+                    },
+                    close_reason="fail_safe_close",
+                    pnl=econ["net_pnl"],
+                    exit_price=econ.get("exit_price"),
+                    extra={
+                        "sync_source": econ["sync_source"],
+                        "close_source": econ["sync_source"],
+                        "gross_pnl": econ["gross_pnl"],
+                        "net_pnl": econ["net_pnl"],
+                        "fees": econ["fees"],
+                        "open_fee": econ["open_fee"],
+                        "close_fee": econ["close_fee"],
+                        "funding": econ["funding"],
+                        "exchange_position_id": econ.get("position_id", ""),
+                        "data_confidence": "EXCHANGE_TRUTH",
+                    },
+                )
+
+            return reconcile_fail_safe_close(
+                lifecycle_identity=lifecycle_identity,
+                close_result=close_result,
+                dataset_path="logs/trade_dataset_v2.csv",
+                fetch_history=self._fetch_closed_position_history,
+                write_economic_close=_write,
+                log_=self.log,
+            )
+        except Exception as exc:
+            self.log.critical(
+                "FAIL_SAFE_CLOSE_ECONOMICS_FAILED | %s | error=%s",
+                (lifecycle_identity or {}).get("symbol"),
+                exc,
+            )
+            return "ERROR"
+
+    def _fetch_closed_position_history(self) -> list:
+        """Recent closed lifecycles from Bitget. Read-only."""
+        payload = self.client._request(
+            "GET",
+            "/api/v2/mix/position/history-position",
+            {"productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
+             "limit": "50"},
+            private=True,
+        )
+        return (payload.get("data") or {}).get("list") or []
 
     def _verify_no_live_position_after_fail_safe(
         self,
