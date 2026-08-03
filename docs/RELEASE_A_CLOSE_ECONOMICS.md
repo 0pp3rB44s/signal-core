@@ -36,6 +36,11 @@ and before/expected-after totals. Local dataset mutation requires the separate
 `--apply` flag. Release A does not run the script automatically and does not
 migrate existing rows.
 
+The owner-triggered emergency entrypoint is `scripts/emergency_flatten.py`.
+It routes through `PositionManager.emergency_flatten_all()` so lifecycle
+identities are recorded and reconciled. It performs no action unless invoked
+with the exact `--confirm-emergency-flatten` flag; it is not run automatically.
+
 ## Rollback
 
 Rollback is a normal revert of the Release A commits followed by the project's

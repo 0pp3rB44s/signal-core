@@ -275,6 +275,21 @@ def test_exchange_open_local_missing_recovers_and_never_leaves_unprotected_open(
     assert any(e.get("status") == "STATE_RECOVERED" for e in events)
 
 
+def test_unprotected_close_unknown_flatness_keeps_local_position_open():
+    manager = _manager([_live_payload(size=1.0, with_tpsl=False)])
+    manager._ensure_exchange_protection_with_retries = lambda position: False
+    manager.client.close_futures_position_full.return_value = {
+        "status": "CLOSED", "flatness": "UNKNOWN", "remaining_size": None,
+    }
+    manager.store.save([_position(protection_verified=False)])
+
+    manager.sync([_snapshot(price=100.0)])
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["status"] == "OPEN"
+    assert saved.get("closed_reason") != "protection_repair_failed"
+
+
 # --- 7. Dubbele monitor-cycle: geen dubbele close/order/dataset-row ---
 
 def test_double_cycle_is_idempotent_for_tp3_close():

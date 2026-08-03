@@ -1110,6 +1110,8 @@ class TpSlLifecycleMixin:
             return False
 
         try:
+            from execution.closed_lifecycle_recorder import exchange_confirmed_flat
+
             result = closer(
                 symbol=symbol,
                 direction=direction,
@@ -1118,7 +1120,7 @@ class TpSlLifecycleMixin:
                 cleanup_tpsl=True,
             )
             position["unprotected_close_result"] = result
-            if str((result or {}).get("status") or "").upper() not in {"CLOSED", "NO_POSITION"}:
+            if not exchange_confirmed_flat(result):
                 self.log.critical(
                     "UNPROTECTED_CLOSE_NOT_FLAT | %s | reason=%s | result=%s",
                     symbol, reason, result,

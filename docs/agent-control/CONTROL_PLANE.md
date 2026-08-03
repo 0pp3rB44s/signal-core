@@ -8,6 +8,6 @@
 - Scope: exchange flatness, exchange close economics, lifecycle identity,
   deduplication, provisional recovery, startup/periodic wiring, tests and
   read-only-by-default migration audit
-- Build state: implementation complete; verification in progress
+- Build state: verifier blockers M2/M7 fixed; re-verification pending
 - Deployment state: prohibited; owner review required
-- Independent verifier: pending final branch commits
+- Independent verifier: first pass blocked at `3e8c199`; fresh pass required

@@ -120,6 +120,14 @@ def test_m2_unknown_or_bare_closed_is_not_flat():
         "BTCUSDT", "short"
     )
     assert malformed.state is PositionReadbackState.UNKNOWN
+    manager = PositionManager.__new__(PositionManager)
+    manager.log = logging.getLogger("unprotected-negative-test")
+    manager.client = type("Client", (), {
+        "close_futures_position_full": lambda self, **kwargs: {
+            "status": "CLOSED", "flatness": "UNKNOWN", "remaining_size": None,
+        }
+    })()
+    assert manager._close_unprotected_position(identity(), "protection_repair_failed") is False
 
 
 def test_m3_and_m4_post_readback_precedes_cleanup():
@@ -146,7 +154,7 @@ def test_m5_and_m6_real_writer_preserves_literal_net_once(tmp_path):
     assert row["net_pnl"] == "-0.06631471"
 
 
-def test_m7_real_emergency_production_caller_consumes_each_identity():
+def test_emergency_orchestrator_consumes_each_identity():
     manager = PositionManager.__new__(PositionManager)
     manager.client = type("Client", (), {"emergency_flatten_all": lambda self: {
         "status": "OK", "closed": [
@@ -162,6 +170,26 @@ def test_m7_real_emergency_production_caller_consumes_each_identity():
     result = manager.emergency_flatten_all()
     assert seen == ["BTCUSDT", "ETHUSDT"]
     assert [x["recording"] for x in result["recording_outcomes"]] == ["RECONCILED", "RECONCILED"]
+
+
+def test_m7_real_emergency_production_caller_consumes_each_identity(monkeypatch, capsys):
+    from scripts import emergency_flatten
+
+    calls: list[str] = []
+    fake_manager = type("Manager", (), {
+        "emergency_flatten_all": lambda self: calls.append("orchestrator") or {
+            "status": "OK", "positions_found": 2, "closed": [{}, {}], "errors": [],
+            "recording_outcomes": [
+                {"symbol": "BTCUSDT", "recording": "RECONCILED"},
+                {"symbol": "ETHUSDT", "recording": "PROVISIONAL"},
+            ],
+        }
+    })()
+    monkeypatch.setattr(emergency_flatten, "get_settings", lambda: object())
+    monkeypatch.setattr(emergency_flatten, "PositionManager", lambda settings: fake_manager)
+    assert emergency_flatten.main(["--confirm-emergency-flatten"]) == 0
+    assert calls == ["orchestrator"]
+    assert '"recording_outcomes"' in capsys.readouterr().out
 
 
 def test_m8_emergency_unknown_hold_side_is_not_mapped_to_short():
