@@ -16,7 +16,11 @@ from execution.entry_submitter import (
     RESULT_BLOCKED_UNKNOWN,
 )
 from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
-from execution.order_intent_store import OrderIntentStore, new_session_id
+from execution.order_intent_store import (
+    OrderIntentStore,
+    STATE_ABANDONED,
+    new_session_id,
+)
 from execution.position_model import (
     EXCHANGE_ACTUAL,
     decimal_value,
@@ -595,6 +599,20 @@ class ExecutionService:
                                 )
                             ),
                         )
+                        if (
+                            maker_result["status"] == "UNFILLED_CANCELLED"
+                            and maker_result.get("client_oid")
+                        ):
+                            # Cancel succeeded and the mandatory post-cancel
+                            # position read found no fill. The maker intent no
+                            # longer represents a live or ambiguous order and
+                            # must not be recovered forever as SUBMITTED.
+                            self.intent_store.mark(
+                                maker_result["client_oid"],
+                                STATE_ABANDONED,
+                                note="maker cancelled; post-cancel position absent",
+                                classification="MAKER_UNFILLED_CANCELLED",
+                            )
                         if maker_result["status"] == "BLOCKED_UNKNOWN":
                             # Maker leg left the exchange state unknown: entering
                             # again (market fallback) could duplicate the position.
