@@ -718,6 +718,8 @@ class ExecutionService:
                     verification_payload = self.client.get_all_positions()
                     verification_positions = verification_payload.get("data") or []
 
+                    exchange_position_identity = None
+
                     exchange_position_found = False
                     live_fill_entry = 0.0
                     live_mark_price = 0.0
@@ -772,6 +774,23 @@ class ExecutionService:
                                 or 0.0,
                                 0.0,
                             )
+                            # The one moment the exchange tells us when this
+                            # position opened. Captured here because a fail-safe
+                            # close later in this flow has no other identity.
+                            try:
+                                _opened_ms = int(position.get("cTime") or 0) or None
+                            except (TypeError, ValueError):
+                                _opened_ms = None
+                            exchange_position_identity = {
+                                "symbol": str(plan.symbol).upper(),
+                                "direction": str(plan.direction).upper(),
+                                "hold_side": live_hold_side,
+                                "opened_at_ms": _opened_ms,
+                                "confirmed_position_size": live_size,
+                                "exchange_avg_entry": live_fill_entry,
+                                "exchange_position_id": str(position.get("positionId") or ""),
+                                "entry_order_id": live_order_id,
+                            }
                             break
 
                     if not exchange_position_found:
@@ -960,6 +979,7 @@ class ExecutionService:
 
                         self._fail_safe_close(
                             symbol=plan.symbol,
+                            lifecycle_identity=exchange_position_identity,
                             size=live_size,
                             close_side=close_side,
                             direction=plan.direction,
@@ -1163,6 +1183,7 @@ class ExecutionService:
                         )
                         self._fail_safe_close(
                             symbol=plan.symbol,
+                            lifecycle_identity=exchange_position_identity,
                             size=order_size,
                             close_side=close_side,
                             direction=plan.direction,
@@ -1494,7 +1515,21 @@ class ExecutionService:
         close_side: str,
         direction: str = "",
         reason: str = "fail_safe_close",
+        lifecycle_identity: dict | None = None,
     ) -> None:
+        """Close a position this flow opened but could not protect.
+
+        ``lifecycle_identity`` holds what the exchange told us at
+        EXCHANGE_POSITION_CONFIRMED -- above all ``opened_at_ms`` from cTime.
+        This close happens inside the entry flow, before PositionManager has
+        ever seen the position, so there is no lifecycle id yet. Without the
+        captured open time a later reconciliation could only match on symbol and
+        side, which is a guess: two lifecycles on one symbol and side can close
+        in the same second.
+
+        When it is None -- the position was never confirmed -- the close still
+        runs, but no economics are claimed for it.
+        """
         close_errors: list[str] = []
         hold_side = "long" if str(direction).upper() == "LONG" else "short"
 
