@@ -1644,9 +1644,16 @@ class ExecutionService:
             def _write_provisional(identity: dict) -> None:
                 from telemetry.trade_logger import TradeDatasetV2Logger
 
+                provisional = dict(identity)
+                opened_ms = provisional.get("opened_at_ms")
+                if opened_ms not in (None, "") and not provisional.get("opened_at"):
+                    provisional["opened_at"] = datetime.fromtimestamp(
+                        float(opened_ms) / 1000.0,
+                        tz=timezone.utc,
+                    ).isoformat()
                 TradeDatasetV2Logger("logs/trade_dataset_v2.csv").append_close(
                     trade={
-                        **identity,
+                        **provisional,
                         "closed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                         "close_reason": "fail_safe_close",
                         "sync_source": "entry_fail_safe",

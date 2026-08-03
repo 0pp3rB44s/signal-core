@@ -159,6 +159,44 @@ def test_flat_fail_safe_persists_identity_before_late_history(tmp_path):
     assert provisional == [identity()]
 
 
+def test_production_fail_safe_serializer_preserves_exchange_open_time(
+    tmp_path, monkeypatch
+):
+    """Restart recovery must receive time identity from the real CSV writer."""
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_reconcile(**kwargs):
+        kwargs["write_provisional_close"](kwargs["lifecycle_identity"])
+        captured.update(kwargs)
+        return "PROVISIONAL"
+
+    monkeypatch.setattr(
+        "execution.closed_lifecycle_recorder.reconcile_fail_safe_close",
+        fake_reconcile,
+    )
+
+    class Service:
+        from execution.execution_service import ExecutionService as _ES
+        _record_fail_safe_close_economics = _ES._record_fail_safe_close_economics
+        log = logging.getLogger("serializer-test")
+        settings = type("S", (), {"bitget_product_type": "USDT-FUTURES"})()
+        _fetch_closed_position_history = lambda self: []
+
+    assert Service()._record_fail_safe_close_economics(
+        {"status": "CLOSED"}, identity()
+    ) == "PROVISIONAL"
+
+    with open("logs/trade_dataset_v2.csv", newline="", encoding="utf-8") as fh:
+        row = next(csv.DictReader(fh))
+    assert row["event_type"] == "CLOSE_PROVISIONAL"
+    assert row["opened_at"]
+    assert int(
+        __import__("datetime").datetime.fromisoformat(row["opened_at"])
+        .timestamp() * 1000
+    ) == OPEN_MS
+
+
 def test_ambiguous_history_is_not_guessed(tmp_path):
     """Two lifecycles, neither within the open-time tolerance: refuse."""
     far = OPEN_MS + 3_600_000
