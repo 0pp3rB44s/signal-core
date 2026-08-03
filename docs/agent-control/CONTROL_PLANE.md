@@ -8,6 +8,9 @@
 - Scope: exchange flatness, exchange close economics, lifecycle identity,
   deduplication, provisional recovery, startup/periodic wiring, tests and
   read-only-by-default migration audit
-- Build state: verifier blockers M2/M7 fixed; re-verification pending
+- Build state: complete; focused and full verification passed
 - Deployment state: prohibited; owner review required
-- Independent verifier: first pass blocked at `3e8c199`; fresh pass required
+- Independent verifier: passed implementation tip `c03c517`; final report commit
+  `3187a59`; `SAFE_TO_REVIEW=yes`, `SAFE_TO_DEPLOY_TECHNICALLY=yes`
+- Owner gates: merge, migration `--apply`, emergency flatten invocation and
+  deployment remain unauthorized
