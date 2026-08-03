@@ -372,7 +372,7 @@ def test_pending_reduce_only_close_does_not_look_like_a_new_entry(monkeypatch):
     assert service.client.place_futures_market_order.call_count == 1
 
 
-def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monkeypatch):
+def test_fail_safe_close_uses_verified_full_close_not_a_new_opening_order(monkeypatch):
     """place_futures_market_order() always sends tradeSide=open, so the
     fail-safe must never route through it."""
     service = _service(monkeypatch)
@@ -383,9 +383,9 @@ def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monke
     )
 
     service.client.place_futures_market_order.assert_not_called()
-    service.client.close_futures_position.assert_called_once()
-    kwargs = service.client.close_futures_position.call_args.kwargs
-    assert kwargs["hold_side"] == "long"
+    service.client.close_futures_position_full.assert_called_once()
+    kwargs = service.client.close_futures_position_full.call_args.kwargs
+    assert kwargs["direction"] == "LONG"
     assert kwargs["size"] == 0.5
 
 

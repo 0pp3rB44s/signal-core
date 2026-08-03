@@ -1552,37 +1552,6 @@ class ExecutionService:
         hold_side = "long" if str(direction).upper() == "LONG" else "short"
 
         try:
-            # Must be the reduce-only close path. place_futures_market_order()
-            # hardcodes tradeSide=open and drops trade_side, so routing the
-            # fail-safe through it opened an opposite position instead of
-            # closing the unprotected one.
-            response = self.client.close_futures_position(
-                symbol=symbol,
-                hold_side=hold_side,
-                size=size,
-                margin_mode="isolated",
-            )
-            self.log.critical(
-                "FAIL_SAFE_CLOSE_DIRECT_SENT | %s | close_side=%s | size=%s | reason=%s | response=%s",
-                symbol,
-                close_side,
-                size,
-                reason,
-                response,
-            )
-            return
-        except Exception as exc:
-            close_errors.append(f"direct_close={exc}")
-            self.log.critical(
-                "FAIL_SAFE_CLOSE_DIRECT_FAILED | %s | close_side=%s | size=%s | reason=%s | error=%s",
-                symbol,
-                close_side,
-                size,
-                reason,
-                exc,
-            )
-
-        try:
             if hasattr(self.client, "close_futures_position_full"):
                 response = self.client.close_futures_position_full(
                     symbol=symbol,
@@ -1604,7 +1573,11 @@ class ExecutionService:
                 # Orchestration only: the reconciliation and dataset rules live
                 # in the shared recorder, not here.
                 self._record_fail_safe_close_economics(response, lifecycle_identity)
-                return
+                if str((response or {}).get("status") or "").upper() == "CLOSED":
+                    return
+                close_errors.append(
+                    f"close_full_status={(response or {}).get('status', 'UNKNOWN')}"
+                )
         except Exception as exc:
             close_errors.append(f"close_full={exc}")
             self.log.critical(
@@ -1668,12 +1641,28 @@ class ExecutionService:
                     },
                 )
 
+            def _write_provisional(identity: dict) -> None:
+                from telemetry.trade_logger import TradeDatasetV2Logger
+
+                TradeDatasetV2Logger("logs/trade_dataset_v2.csv").append_close(
+                    trade={
+                        **identity,
+                        "closed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "close_reason": "fail_safe_close",
+                        "sync_source": "entry_fail_safe",
+                    },
+                    result="fail_safe_close",
+                    pnl=None,
+                    quality={},
+                )
+
             return reconcile_fail_safe_close(
                 lifecycle_identity=lifecycle_identity,
                 close_result=close_result,
                 dataset_path="logs/trade_dataset_v2.csv",
                 fetch_history=self._fetch_closed_position_history,
                 write_economic_close=_write,
+                write_provisional_close=_write_provisional,
                 log_=self.log,
             )
         except Exception as exc:

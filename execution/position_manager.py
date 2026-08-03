@@ -167,18 +167,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             self.event_store.save(events[-500:])
 
         if not positions:
+            self.recover_provisional_close_rows()
             return updates
 
-        # Startup/periodic recovery for late Bitget position-history rows.
-        # Revisit only the newest bounded set; economic rows dedupe on disk,
-        # while provisional rows remain eligible until exchange truth appears.
-        closed_for_recovery = [
-            position for position in positions
-            if isinstance(position, dict)
-            and str(position.get("status") or "") in {"CLOSED", "CLOSED_SYNCED"}
-        ][-20:]
-        for closed_position in closed_for_recovery:
-            self._ensure_closed_trade_dataset_row(closed_position)
+        # Actual ledger-backed recovery also covers a restart where local
+        # executed-trades state was never persisted (notably entry fail-safe).
+        self.recover_provisional_close_rows()
 
         for position in positions:
             if position.get("status") != "OPEN":

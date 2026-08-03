@@ -47,6 +47,18 @@ def test_open_time_outside_tolerance_is_refused():
                            direction="short", opened_at_ms=OPEN_MS, size=77.0) is None
 
 
+def test_size_mismatch_is_refused_instead_of_falling_back():
+    assert match_lifecycle([hist(size="80")], symbol="TRXUSDT", direction="short",
+                           opened_at_ms=OPEN_MS, size=77.0) is None
+
+
+def test_missing_exchange_size_is_refused_when_expected_size_is_known():
+    row = hist()
+    row["openTotalPos"] = row["closeTotalPos"] = ""
+    assert match_lifecycle([row], symbol="TRXUSDT", direction="short",
+                           opened_at_ms=OPEN_MS, size=77.0) is None
+
+
 def test_two_lifecycles_closing_in_the_same_second_stay_separate():
     """Same symbol, same side, closes one second apart: must not merge."""
     a = hist(ctime=OPEN_MS, pid="AAA", size="77")
@@ -78,6 +90,11 @@ def test_money_is_copied_verbatim_from_exchange():
 def test_missing_money_field_fails_closed_not_zero():
     with pytest.raises(CloseReconciliationUnavailable):
         economics_from_history(hist(net=""))
+
+
+def test_missing_funding_fails_closed_not_zero():
+    with pytest.raises(CloseReconciliationUnavailable):
+        economics_from_history(hist(fund=""))
 
 
 def test_fees_are_magnitudes():
@@ -189,6 +206,15 @@ def test_composite_fallback_separates_same_second_lifecycles(tmp_path):
              "opened_at": "2026-08-03T06:11:36", "confirmed_position_size": "80"}
     assert economic_close_exists(p, same) is True
     assert economic_close_exists(p, other) is False
+
+
+def test_composite_size_format_is_numeric_not_textual(tmp_path):
+    p = tmp_path / "trade_dataset_v2.csv"
+    _write(p, [_econ_row(position_lifecycle_id="", exchange_position_id="",
+                         confirmed_position_size="77")])
+    same = {"symbol": "TRXUSDT", "direction": "SHORT",
+            "opened_at": "2026-08-03T06:01:36", "confirmed_position_size": "77.0"}
+    assert economic_close_exists(p, same) is True
 
 
 def test_reconciled_row_counts_economically():

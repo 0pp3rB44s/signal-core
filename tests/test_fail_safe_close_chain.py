@@ -51,14 +51,7 @@ class Client(BitgetOrderClientMixin, BitgetAccountClientMixin):
         return {"data": rows}
 
     def close_futures_position(self, **kw):
-        # _fail_safe_close tries this method directly first and RETURNS on
-        # success -- bypassing the remaining-size read-back and the economics
-        # hop entirely. Only the first (direct) call is failed here, so the run
-        # continues into close_futures_position_full, which then calls this same
-        # method again as its own close leg. That second call succeeds.
         self.close_orders.append(kw)
-        if len(self.close_orders) == 1:
-            raise RuntimeError("direct close unavailable")
         return {"code": "00000", "msg": "success", "data": {"orderId": "C1"}}
 
     def cancel_all_futures_tpsl_orders(self, **kw):

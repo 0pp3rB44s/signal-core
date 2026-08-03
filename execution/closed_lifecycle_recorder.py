@@ -27,11 +27,15 @@ those up later, bounded and idempotent.
 from __future__ import annotations
 
 import logging
+import csv
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from execution.close_dedup import economic_close_exists
 from execution.close_reconciler import (
     CloseReconciliationUnavailable,
+    is_provisional,
     reconcile_close,
 )
 
@@ -65,6 +69,7 @@ def record_closed_lifecycle(
     fetch_history: Callable[[], list[dict]],
     write_economic_close: Callable[[dict, dict], None],
     retire_provisional: Callable[[dict], None] | None = None,
+    write_provisional_close: Callable[[dict], None] | None = None,
     reconcile: Callable[..., dict] = reconcile_close,
 ) -> str:
     """Record one confirmed close. Returns the outcome for logging/tests.
@@ -93,6 +98,12 @@ def record_closed_lifecycle(
             symbol, lifecycle or "UNKNOWN",
         )
         return "ALREADY"
+
+    # Entry-flow fail-safe closes have no PositionManager state object. Persist
+    # their identity before polling so a crash or late Bitget history row can
+    # be recovered from the dataset alone after restart.
+    if write_provisional_close is not None:
+        write_provisional_close(position)
 
     try:
         econ = reconcile(
@@ -128,6 +139,7 @@ def reconcile_fail_safe_close(
     dataset_path: str,
     fetch_history: Callable[[], list[dict]],
     write_economic_close: Callable[[dict, dict], None],
+    write_provisional_close: Callable[[dict], None] | None = None,
     log_: logging.Logger | None = None,
     reconcile: Callable[..., dict] = reconcile_close,
 ) -> str:
@@ -163,6 +175,7 @@ def reconcile_fail_safe_close(
         dataset_path=dataset_path,
         fetch_history=fetch_history,
         write_economic_close=write_economic_close,
+        write_provisional_close=write_provisional_close,
         reconcile=reconcile,
     )
 
@@ -186,6 +199,15 @@ def recover_provisional_closes(
     """
     stats = {"seen": 0, "skipped": 0, "recovered": 0, "still_pending": 0}
     for row in provisional_rows[:limit]:
+        row = dict(row)
+        if not row.get("opened_at_ms") and row.get("opened_at"):
+            try:
+                opened = datetime.fromisoformat(
+                    str(row["opened_at"]).replace("Z", "+00:00")
+                )
+                row["opened_at_ms"] = int(opened.timestamp() * 1000)
+            except (TypeError, ValueError):
+                pass
         stats["seen"] += 1
         if economic_close_exists(dataset_path, row):
             stats["skipped"] += 1
@@ -209,6 +231,19 @@ def recover_provisional_closes(
     return stats
 
 
+def read_provisional_rows(dataset_path: str, *, limit: int = MAX_RECOVERY_PER_SWEEP) -> list[dict]:
+    """Read the newest bounded provisional identities from the actual ledger."""
+    path = Path(dataset_path)
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", newline="", encoding="utf-8", errors="replace") as handle:
+            rows = [row for row in csv.DictReader(handle) if is_provisional(row)]
+    except OSError:
+        return []
+    return rows[-limit:]
+
+
 def _f(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -224,5 +259,6 @@ __all__ = [
     "MAX_RECOVERY_PER_SWEEP",
     "exchange_confirmed_flat",
     "recover_provisional_closes",
+    "read_provisional_rows",
     "record_closed_lifecycle",
 ]

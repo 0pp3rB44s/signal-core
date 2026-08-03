@@ -98,8 +98,12 @@ def match_lifecycle(
                 continue
             if abs(got - size) / size <= SIZE_TOLERANCE_REL:
                 sized.append(r)
-        if sized:
-            cands = sized
+        if not sized:
+            # A supplied exchange-confirmed size is part of the lifecycle
+            # identity. Falling back to symbol/side after every candidate
+            # disagrees can attach another trade's money to this close.
+            return None
+        cands = sized
 
     if opened_at_ms is not None:
         within = [
@@ -126,10 +130,14 @@ def economics_from_history(row: dict) -> dict:
     open_fee = _f(row.get("openFee"))
     close_fee = _f(row.get("closeFee"))
     funding = _f(row.get("totalFunding"))
-    if gross is None or net is None or open_fee is None or close_fee is None:
+    if (
+        gross is None or net is None or open_fee is None
+        or close_fee is None or funding is None
+    ):
         raise CloseReconciliationUnavailable(
-            "history row lacks a money field: pnl={!r} netProfit={!r} openFee={!r} closeFee={!r}".format(
-                row.get("pnl"), row.get("netProfit"), row.get("openFee"), row.get("closeFee"))
+            "history row lacks a money field: pnl={!r} netProfit={!r} openFee={!r} closeFee={!r} totalFunding={!r}".format(
+                row.get("pnl"), row.get("netProfit"), row.get("openFee"),
+                row.get("closeFee"), row.get("totalFunding"))
         )
     return {
         "gross_pnl": gross,
@@ -137,7 +145,7 @@ def economics_from_history(row: dict) -> dict:
         "open_fee": abs(open_fee),
         "close_fee": abs(close_fee),
         "fees": abs(open_fee) + abs(close_fee),
-        "funding": funding if funding is not None else 0.0,
+        "funding": funding,
         "exit_price": _f(row.get("closeAvgPrice")),
         "entry_price": _f(row.get("openAvgPrice")),
         "size": _f(row.get("closeTotalPos")),

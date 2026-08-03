@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
 
 import pytest
 
@@ -10,6 +11,7 @@ from execution.close_reconciler import CloseReconciliationUnavailable, RECONCILE
 from execution.closed_lifecycle_recorder import (
     exchange_confirmed_flat,
     recover_provisional_closes,
+    read_provisional_rows,
     record_closed_lifecycle,
 )
 from telemetry.close_record_sources import is_economic_close
@@ -168,6 +170,33 @@ def test_recovery_fills_in_a_late_lifecycle(tmp_path):
         .reconcile_close(sleep=lambda _: None, **kw),
     )
     assert stats["recovered"] == 1 and len(s.written) == 1
+
+
+def test_restart_recovery_reads_actual_provisional_ledger(tmp_path):
+    p = dataset(tmp_path, [{
+        **pos(), "event_type": "CLOSE_PROVISIONAL",
+        "opened_at": datetime.fromtimestamp(
+            OPEN_MS / 1000, tz=timezone.utc
+        ).isoformat(),
+    }])
+    rows = read_provisional_rows(str(p))
+    assert len(rows) == 1
+    s = Sink()
+    stats = recover_provisional_closes(
+        provisional_rows=rows, dataset_path=str(p),
+        fetch_history=lambda: [hist()], write_economic_close=s.write,
+        reconcile=lambda **kw: __import__(
+            "execution.close_reconciler", fromlist=["x"]
+        ).reconcile_close(sleep=lambda _: None, **kw),
+    )
+    assert stats["recovered"] == 1
+
+
+def test_position_manager_has_real_periodic_recovery_caller():
+    import inspect
+    from execution.position_manager import PositionManager
+    source = inspect.getsource(PositionManager.sync)
+    assert "self.recover_provisional_close_rows()" in source
 
 
 def test_second_recovery_run_is_idempotent(tmp_path):

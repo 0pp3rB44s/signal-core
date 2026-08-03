@@ -141,6 +141,24 @@ def test_history_absent_stays_provisional(tmp_path):
     assert s.written == []
 
 
+def test_flat_fail_safe_persists_identity_before_late_history(tmp_path):
+    provisional = []
+    out = reconcile_fail_safe_close(
+        lifecycle_identity=identity(),
+        close_result={"status": "CLOSED"},
+        dataset_path=str(dataset(tmp_path)),
+        fetch_history=lambda: [],
+        write_economic_close=lambda *_: None,
+        write_provisional_close=lambda row: provisional.append(dict(row)),
+        reconcile=lambda **kw: (_ for _ in ()).throw(
+            __import__("execution.close_reconciler", fromlist=["x"])
+            .CloseReconciliationUnavailable("late")
+        ),
+    )
+    assert out == "PROVISIONAL"
+    assert provisional == [identity()]
+
+
 def test_ambiguous_history_is_not_guessed(tmp_path):
     """Two lifecycles, neither within the open-time tolerance: refuse."""
     far = OPEN_MS + 3_600_000

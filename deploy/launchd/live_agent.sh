@@ -20,6 +20,7 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$PROJECT_DIR"
 mkdir -p logs state
 . scripts/lib/env_guard.sh
+. scripts/lib/power_assertion.sh 2>/dev/null || true
 # stdout only: launchd already captures it to logs/launchd_live.out via
 # StandardOutPath. Tee-ing to that same file duplicated every line.
 log() { printf '%s | LIVE_AGENT | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
@@ -72,12 +73,14 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
   exit 0
 fi
 
-if pgrep -f "[Pp]ython(3)?.*(-m )?app\.main" >/dev/null 2>&1; then
+RECORDED_PID="$(cat state/bot.pid 2>/dev/null || true)"
+if [ -n "$RECORDED_PID" ] \
+  && ps -p "$RECORDED_PID" -o command= 2>/dev/null | grep -Eq "[Pp]ython(3)?.*(-m )?app\.main"; then
   # launch_live.sh deliberately starts the authorised engine before it
   # bootstraps this agent. Exiting here made launchd consider the job
   # successfully finished, so the already-running engine had no crash
   # supervisor. Adopt and monitor that exact process instead.
-  BOT_PID="$(pgrep -f "[Pp]ython(3)?.*(-m )?app\.main" | head -n 1)"
+  BOT_PID="$RECORDED_PID"
   log "adopting already-running authorised engine (pid $BOT_PID)"
   hold_power_assertion "$BOT_PID" "live" 2>/dev/null || true
   while ps -p "$BOT_PID" >/dev/null 2>&1; do sleep 10; done
@@ -88,7 +91,6 @@ fi
 # --- R2 precondition: never resurrect the engine onto a host that will sleep ---
 # A bot that is restarted onto a sleeping host reproduces the 22 h silent
 # suspension instead of fixing it.
-. scripts/lib/power_assertion.sh 2>/dev/null || true
 SLEEP_MIN="$(pmset -g 2>/dev/null | awk '$1=="sleep" {print $2; exit}')"
 if [ -n "${SLEEP_MIN:-}" ] && [ "$SLEEP_MIN" != "0" ]; then
   log "REFUSING: host idle sleep is ${SLEEP_MIN} min; continuous operation impossible."

@@ -23,6 +23,7 @@ make a duplicate look like a first write.
 from __future__ import annotations
 
 import csv
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from telemetry.close_record_sources import is_economic_close
@@ -66,7 +67,11 @@ def lifecycle_keys(row: dict) -> set[tuple]:
     sym = str(row.get("symbol") or "").upper()
     direction = str(row.get("direction") or "").upper()
     opened = str(row.get("opened_at") or "")[:19]
-    size = str(row.get("confirmed_position_size") or row.get("position_size") or "").strip()
+    raw_size = row.get("confirmed_position_size") or row.get("position_size") or ""
+    try:
+        size = format(Decimal(str(raw_size)).normalize(), "f") if raw_size != "" else ""
+    except (InvalidOperation, ValueError):
+        size = str(raw_size).strip()
     if sym and direction and opened:
         keys.add(("composite", sym, direction, opened, size))
     return keys
