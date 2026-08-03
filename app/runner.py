@@ -345,6 +345,38 @@ class StartupRunner:
         self._position_sync_lock = threading.Lock()
         self._position_monitor_wakeup = threading.Event()
         self._position_monitor_thread: threading.Thread | None = None
+        self._startup_close_recovery_complete = bool(settings.forward_paper_only)
+
+    def _ensure_startup_close_recovery(self) -> bool:
+        """Gate every new execution behind one successful exchange-truth sweep."""
+        if self._startup_close_recovery_complete:
+            return True
+        if self.position_manager is None:
+            return False
+        try:
+            stats = self.position_manager.recover_provisional_close_rows()
+        except Exception as exc:
+            self.log.critical("STARTUP_CLOSE_RECOVERY_BLOCKED | error=%s", exc)
+            return False
+        if not isinstance(stats, dict) or stats.get("blocked"):
+            self.log.critical("STARTUP_CLOSE_RECOVERY_BLOCKED | stats=%s", stats)
+            return False
+        self._startup_close_recovery_complete = True
+        self.log.warning("STARTUP_CLOSE_RECOVERY_COMPLETE | %s", stats)
+        return True
+
+    def _execute_selected_plans(self, selected_plans: list) -> list:
+        """The only scanner entry to ExecutionService, recovery-gated."""
+        if self.execution_service is None:
+            return []
+        if not self._ensure_startup_close_recovery():
+            self.log.critical(
+                "EXECUTION_BLOCKED_BY_STARTUP_CLOSE_RECOVERY | selected_plans=%s",
+                len(selected_plans),
+            )
+            return []
+        with trading_state_lock():
+            return self.execution_service.execute(selected_plans)
 
     def _maybe_refresh_learning_reports(self) -> None:
         """Regenerate the daily learning/expectancy reports when they go stale.
@@ -1521,12 +1553,7 @@ class StartupRunner:
                     len(selection.ranked),
                     len(selection.rejected),
                 )
-            with trading_state_lock():
-                exec_reports = (
-                    self.execution_service.execute(selected_plans)
-                    if self.execution_service is not None
-                    else []
-                )
+            exec_reports = self._execute_selected_plans(selected_plans)
             if exec_reports:
                 self._emit_execution_summary(exec_reports)
                 self.execution_logger.append_rows(exec_reports)

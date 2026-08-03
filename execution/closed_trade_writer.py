@@ -530,6 +530,112 @@ class ClosedTradeWriterMixin:
             return ""
         return f"{symbol}|{opened_at[:19]}"
 
+    def reconcile_closed_lifecycle(self, position: dict, close_result: dict, reason: str) -> str:
+        """Give a confirmed close its exchange economics. Returns the outcome.
+
+        Called from every bot-initiated close path *after* the client has proven
+        remaining size is 0. `record_closed_lifecycle` re-checks that itself, so
+        a caller that passes a non-flat result cannot slip through.
+
+        Nothing here can lose money: a failed reconciliation leaves the
+        provisional row untouched and non-economic, and the periodic recovery
+        sweep picks it up later.
+        """
+        from execution.closed_lifecycle_recorder import record_closed_lifecycle
+
+        def _write(pos: dict, econ: dict) -> None:
+            from telemetry.trade_logger import append_exchange_truth_close
+            append_exchange_truth_close(
+                position=pos,
+                economics=econ,
+                close_reason=reason,
+                dataset_path="logs/trade_dataset_v2.csv",
+            )
+
+        try:
+            return record_closed_lifecycle(
+                position=position,
+                close_result=close_result,
+                dataset_path="logs/trade_dataset_v2.csv",
+                fetch_history=self._fetch_closed_position_history,
+                write_economic_close=_write,
+            )
+        except Exception as exc:  # never let bookkeeping break a close
+            self.log.critical(
+                "CLOSE_ECONOMICS_WIRING_FAILED | %s | lifecycle=%s | error=%s",
+                position.get("symbol"),
+                position.get("position_lifecycle_id") or "UNKNOWN",
+                exc,
+            )
+            return "ERROR"
+
+    def recover_provisional_close_rows(self, limit: int = 20) -> dict:
+        """Run one bounded, oldest-unresolved-first exchange recovery sweep."""
+        from execution.closed_lifecycle_recorder import (
+            load_provisional_rows,
+            recover_provisional_closes,
+        )
+        from telemetry.trade_logger import append_exchange_truth_close
+
+        dataset_path = "logs/trade_dataset_v2.csv"
+        rows = load_provisional_rows(dataset_path)
+
+        def _write(position: dict, economics) -> None:
+            append_exchange_truth_close(
+                position=position,
+                economics=economics,
+                close_reason=str(position.get("close_reason") or position.get("result") or "recovered_close"),
+                dataset_path=dataset_path,
+            )
+
+        return recover_provisional_closes(
+            provisional_rows=rows,
+            dataset_path=dataset_path,
+            fetch_history=self._fetch_closed_position_history,
+            write_economic_close=_write,
+            limit=limit,
+        )
+
+    def _append_provisional_close_dataset_row(
+        self,
+        *,
+        position: dict,
+        close_reason: str,
+        exit_price: float,
+        margin_roi_pct: float,
+        extra: dict | None = None,
+    ) -> None:
+        """Persist lifecycle visibility while leaving every money field unknown."""
+        from telemetry.trade_logger import TradeDatasetV2Logger
+
+        payload = dict(position)
+        payload.update(extra or {})
+        payload.update({
+            "exit": exit_price,
+            "closed_reason": close_reason,
+            "close_reason": close_reason,
+            "margin_roi_pct": margin_roi_pct,
+            "sync_source": "position_manager",
+        })
+        TradeDatasetV2Logger("logs/trade_dataset_v2.csv").append_close(
+            trade=payload,
+            result=close_reason,
+            pnl=None,
+            quality={},
+            margin_roi_pct=margin_roi_pct,
+        )
+
+    def _fetch_closed_position_history(self) -> list:
+        """Recent closed lifecycles from Bitget. Read-only."""
+        payload = self.client._request(
+            "GET",
+            "/api/v2/mix/position/history-position",
+            {"productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
+             "limit": "50"},
+            private=True,
+        )
+        return (payload.get("data") or {}).get("list") or []
+
     def _append_closed_trade_dataset_row(
         self,
         position: dict,
