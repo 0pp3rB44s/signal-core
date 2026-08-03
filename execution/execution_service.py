@@ -4,6 +4,7 @@ import logging
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 
 from app.config import Settings
 from app.equity import resolve_account_equity
@@ -37,6 +38,37 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+class FailSafeFlatness(str, Enum):
+    """What a post-fail-safe readback actually established.
+
+    `FLAT` is the only verdict that may retire an entry intent, and it means the
+    exchange answered and the answer said there is no position. `REMAINS` and
+    `UNKNOWN` are both refusals: the first knows the position is alive, the
+    second knows nothing at all, and neither is grounds for CLOSED_OUT.
+    """
+
+    FLAT = "FLAT"
+    REMAINS = "REMAINS"
+    UNKNOWN = "UNKNOWN"
+
+
+def _fail_safe_position_size(position: dict) -> float | None:
+    """Size of one position row, or None when it cannot be read.
+
+    Deliberately not `_safe_float`, whose 0.0 default turns an unreadable size
+    into a flat position — the one mistake this verification exists to prevent.
+    """
+    for field in ("total", "size", "available"):
+        value = position.get(field)
+        if value in (None, ""):
+            continue
+        try:
+            return abs(float(value))
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _deep_get(payload: dict | None, *keys: str):
@@ -986,16 +1018,18 @@ class ExecutionService:
                             reason="entry_protection_failed",
                         )
 
-                        self._verify_no_live_position_after_fail_safe(
+                        flatness = self._verify_no_live_position_after_fail_safe(
                             symbol=plan.symbol,
                             direction=plan.direction,
                             reason="entry_protection_failed",
                         )
 
-                        if entry_client_oid:
-                            self.entry_submitter.mark_closed_out(
-                                entry_client_oid, reason="entry_protection_failed"
-                            )
+                        self._close_out_entry_intent_if_flat(
+                            client_oid=entry_client_oid,
+                            flatness=flatness,
+                            symbol=plan.symbol,
+                            reason="entry_protection_failed",
+                        )
 
                         reports.append(
                             self._report(
@@ -1189,15 +1223,17 @@ class ExecutionService:
                             direction=plan.direction,
                             reason="entry_protection_failed",
                         )
-                        self._verify_no_live_position_after_fail_safe(
+                        flatness = self._verify_no_live_position_after_fail_safe(
                             symbol=plan.symbol,
                             direction=plan.direction,
                             reason="entry_protection_failed_exception",
                         )
-                        if entry_client_oid:
-                            self.entry_submitter.mark_closed_out(
-                                entry_client_oid, reason="entry_protection_failed_exception"
-                            )
+                        self._close_out_entry_intent_if_flat(
+                            client_oid=entry_client_oid,
+                            flatness=flatness,
+                            symbol=plan.symbol,
+                            reason="entry_protection_failed_exception",
+                        )
                         reports.append(
                             self._report(
                                 plan=plan,
@@ -1665,51 +1701,115 @@ class ExecutionService:
         symbol: str,
         direction: str,
         reason: str,
-    ) -> None:
+    ) -> FailSafeFlatness:
+        """Ask the exchange, fresh, whether the position is really gone.
+
+        Returns a verdict rather than logging one. `FLAT` is a claim that the
+        exchange answered, the answer parsed, and no position for this symbol
+        carries size. Everything else — transport failure, a payload that is not
+        the documented shape, a row whose size cannot be read — is `UNKNOWN`,
+        because "we could not tell" and "there is nothing there" are different
+        facts and only one of them may retire an intent.
+
+        The old version returned None in all four branches and answered every
+        one of them by writing a log line, so the caller closed the intent out
+        whatever happened.
+        """
+        symbol_upper = symbol.upper()
         try:
             payload = self.client.get_all_positions()
-            positions = payload.get("data") or []
-            symbol_upper = symbol.upper()
-            live_matches = []
-
-            for position in positions:
-                if str(position.get("symbol") or "").upper() != symbol_upper:
-                    continue
-
-                size = _safe_float(
-                    position.get("total")
-                    or position.get("size")
-                    or position.get("available")
-                    or 0.0,
-                    0.0,
-                )
-
-                if size > 0:
-                    live_matches.append(position)
-
-            if live_matches:
-                self.log.critical(
-                    "FAIL_SAFE_POSITION_STILL_OPEN | %s | direction=%s | reason=%s | manual_intervention_required=True | positions=%s",
-                    symbol_upper,
-                    direction,
-                    reason,
-                    live_matches,
-                )
-            else:
-                self.log.critical(
-                    "FAIL_SAFE_POSITION_CLOSED_CONFIRMED | %s | direction=%s | reason=%s",
-                    symbol_upper,
-                    direction,
-                    reason,
-                )
         except Exception as exc:
             self.log.critical(
-                "FAIL_SAFE_POSITION_VERIFY_FAILED | %s | direction=%s | reason=%s | manual_intervention_required=True | error=%s",
-                symbol,
-                direction,
-                reason,
-                exc,
+                "FAIL_SAFE_POSITION_VERIFY_FAILED | %s | direction=%s | reason=%s | "
+                "flatness=UNKNOWN | manual_intervention_required=True | error=%s",
+                symbol, direction, reason, exc,
             )
+            return FailSafeFlatness.UNKNOWN
+
+        # An absent or non-list `data` is not an empty position book. Reading it
+        # as one is how a malformed response used to prove the position closed.
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            self.log.critical(
+                "FAIL_SAFE_POSITION_VERIFY_MALFORMED | %s | direction=%s | reason=%s | "
+                "flatness=UNKNOWN | manual_intervention_required=True | payload_type=%s",
+                symbol_upper, direction, reason, type(payload).__name__,
+            )
+            return FailSafeFlatness.UNKNOWN
+
+        live_matches = []
+        for position in payload["data"]:
+            if not isinstance(position, dict):
+                self.log.critical(
+                    "FAIL_SAFE_POSITION_VERIFY_MALFORMED | %s | direction=%s | reason=%s | "
+                    "flatness=UNKNOWN | manual_intervention_required=True | row_type=%s",
+                    symbol_upper, direction, reason, type(position).__name__,
+                )
+                return FailSafeFlatness.UNKNOWN
+            if str(position.get("symbol") or "").upper() != symbol_upper:
+                continue
+
+            size = _fail_safe_position_size(position)
+            if size is None:
+                # A row for our symbol whose size will not parse cannot be
+                # rounded down to zero: that is exactly the position we are
+                # trying to prove gone.
+                self.log.critical(
+                    "FAIL_SAFE_POSITION_VERIFY_UNPARSEABLE_SIZE | %s | direction=%s | "
+                    "reason=%s | flatness=UNKNOWN | manual_intervention_required=True",
+                    symbol_upper, direction, reason,
+                )
+                return FailSafeFlatness.UNKNOWN
+            if size > 0:
+                live_matches.append(position)
+
+        if live_matches:
+            self.log.critical(
+                "FAIL_SAFE_POSITION_STILL_OPEN | %s | direction=%s | reason=%s | "
+                "flatness=REMAINS | manual_intervention_required=True | positions=%s",
+                symbol_upper, direction, reason, live_matches,
+            )
+            return FailSafeFlatness.REMAINS
+
+        self.log.critical(
+            "FAIL_SAFE_POSITION_CLOSED_CONFIRMED | %s | direction=%s | reason=%s | flatness=FLAT",
+            symbol_upper, direction, reason,
+        )
+        return FailSafeFlatness.FLAT
+
+    def _close_out_entry_intent_if_flat(
+        self,
+        *,
+        client_oid: str,
+        flatness: FailSafeFlatness,
+        symbol: str,
+        reason: str,
+    ) -> bool:
+        """Retire the entry intent only against a proven-flat exchange.
+
+        CLOSED_OUT moves the intent to STATE_ABANDONED, which is terminal: it
+        leaves `recoverable()` and `_prune` may drop it. Claiming it while the
+        position may still be live would delete the one record that startup
+        recovery uses to find an orphaned, unprotected position. So anything
+        short of FLAT leaves the intent at FILLED — recoverable on purpose.
+        """
+        if not client_oid:
+            return False
+        intents = getattr(self.entry_submitter, "intents", None)
+        existing = intents.get(client_oid) if intents is not None else None
+        if isinstance(existing, dict) and existing.get("protection_state") == "CLOSED_OUT":
+            # Already retired. A second transition would add another ABANDONED
+            # entry to the intent history for one lifecycle.
+            return False
+        if flatness is not FailSafeFlatness.FLAT:
+            self.log.critical(
+                "FAIL_SAFE_CLOSE_OUT_REFUSED | %s | client_oid=%s | reason=%s | "
+                "flatness=%s | intent stays FILLED and recoverable | "
+                "manual_intervention_required=True",
+                str(symbol).upper(), client_oid, reason, flatness.value,
+            )
+            return False
+        self.entry_submitter.mark_closed_out(client_oid, reason=reason)
+        return True
 
     def _report(
         self,
