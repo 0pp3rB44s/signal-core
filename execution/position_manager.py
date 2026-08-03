@@ -835,6 +835,9 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                                 "remaining_pct": current_remaining_pct,
                             },
                         )
+                        self.reconcile_closed_lifecycle(
+                            position, residual_close_result, position["closed_reason"]
+                        )
                         self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
                     else:
                         position["remaining_size_pct"] = 0.0
@@ -1227,6 +1230,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "tp3_close_all_remainder", "live_size_before_close": live_size},
                         )
+                        self.reconcile_closed_lifecycle(position, close_all_result, "tp3")
                         self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
                 else:
                     position["remaining_size_pct"] = max(
@@ -1434,6 +1438,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             exit_price=current_price,
                             margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "dead_trade_timeout", "age_minutes": round(position_age_minutes, 1)},
+                        )
+                        # The row above carries no exchange money yet. Ask Bitget
+                        # what this lifecycle was worth; on failure it stays
+                        # provisional and the recovery sweep retries later.
+                        self.reconcile_closed_lifecycle(
+                            position, dead_close_result, "dead_trade_timeout"
                         )
                         self._register_symbol_cooldown(symbol, "dead_trade_timeout", margin_roi_pct_value)
                     else:
