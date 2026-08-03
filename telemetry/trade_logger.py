@@ -1,4 +1,5 @@
 import csv
+import logging
 import math
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1194,8 +1195,20 @@ class TradeDatasetV2Logger:
         # rows use the repository-wide identity matcher, including rotations,
         # open-time and size tolerances.
         if not provisional:
-            from execution.close_dedup import economic_close_exists
-            if economic_close_exists(self.path, trade):
+            from execution.close_dedup import DedupOutcome, economic_close_status
+            dedup = economic_close_status(self.path, trade)
+            if dedup is DedupOutcome.BLOCKED_UNREADABLE:
+                # This is the writer. An unreadable segment means a prior
+                # economic row for this lifecycle may already exist, so writing
+                # here could double-count the trade in the freeze meter.
+                logging.getLogger("trade_dataset").critical(
+                    "CLOSE_WRITE_REFUSED_DEDUP_UNCERTAIN | %s | lifecycle=%s | "
+                    "dataset unreadable | no economic CLOSE appended",
+                    str(trade.get("symbol") or "UNKNOWN"),
+                    trade.get("position_lifecycle_id") or "UNKNOWN",
+                )
+                return
+            if dedup is DedupOutcome.FOUND:
                 return
         self._append_row({
             "event_type": PROVISIONAL_CLOSE_EVENT_TYPE if provisional else "CLOSE",

@@ -32,7 +32,7 @@ import csv
 from datetime import datetime
 from typing import Any, Callable
 
-from execution.close_dedup import economic_close_exists, segment_paths
+from execution.close_dedup import DedupOutcome, economic_close_status, segment_paths
 from execution.close_reconciler import (
     AmbiguousLifecycle,
     CloseReconciliationUnavailable,
@@ -84,6 +84,9 @@ def record_closed_lifecycle(
       ``ALREADY``       an economic CLOSE for this lifecycle already exists
       ``RECONCILED``    exchange economics written, provisional retired
       ``PROVISIONAL``   exchange has not published yet; row stays non-economic
+      ``BLOCKED_UNREADABLE``  the dataset could not be read, so whether an
+                        economic CLOSE already exists is unknown; nothing
+                        written, and the row stays provisional for a later sweep
     """
     symbol = str(position.get("symbol") or "").upper()
     lifecycle = str(position.get("position_lifecycle_id") or "")
@@ -97,7 +100,18 @@ def record_closed_lifecycle(
         )
         return "NOT_FLAT"
 
-    if economic_close_exists(dataset_path, position):
+    dedup = economic_close_status(dataset_path, position)
+    if dedup is DedupOutcome.BLOCKED_UNREADABLE:
+        # Storage could not be read, so we cannot tell a first write from a
+        # second one. Refuse both: the provisional row survives and the recovery
+        # sweep retries once the segment is readable again.
+        log.critical(
+            "CLOSE_DEDUP_UNCERTAIN | %s | lifecycle=%s | no economic close recorded | "
+            "row stays PROVISIONAL",
+            symbol, lifecycle or "UNKNOWN",
+        )
+        return "BLOCKED_UNREADABLE"
+    if dedup is DedupOutcome.FOUND:
         log.info(
             "CLOSE_ALREADY_RECONCILED | %s | lifecycle=%s | second write refused",
             symbol, lifecycle or "UNKNOWN",
@@ -201,7 +215,20 @@ def recover_provisional_closes(
     }
     unresolved: list[dict] = []
     for row in sorted(provisional_rows, key=_oldest_key):
-        if economic_close_exists(dataset_path, row):
+        dedup = economic_close_status(dataset_path, row)
+        if dedup is DedupOutcome.BLOCKED_UNREADABLE:
+            # One unreadable segment invalidates the sweep, not just this row:
+            # every remaining candidate would be deduped against the same
+            # unknown dataset. Abort before anything is written.
+            stats["blocked"] = True
+            log.critical(
+                "CLOSE_RECOVERY_ABORTED_DEDUP_UNCERTAIN | symbol=%s | lifecycle=%s | "
+                "0 economic writes | sweep retries when storage is readable",
+                row.get("symbol") or "UNKNOWN",
+                row.get("position_lifecycle_id") or "UNKNOWN",
+            )
+            return stats
+        if dedup is DedupOutcome.FOUND:
             stats["skipped"] += 1
         else:
             unresolved.append(row)

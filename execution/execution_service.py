@@ -1589,7 +1589,11 @@ class ExecutionService:
         exception inside the entry flow.
         """
         try:
-            from execution.close_dedup import economic_close_exists, provisional_close_exists
+            from execution.close_dedup import (
+                DedupOutcome,
+                economic_close_status,
+                provisional_close_status,
+            )
             from execution.closed_lifecycle_recorder import (
                 exchange_confirmed_flat,
                 reconcile_fail_safe_close,
@@ -1597,11 +1601,14 @@ class ExecutionService:
             from telemetry.trade_logger import TradeDatasetV2Logger
 
             dataset_path = "logs/trade_dataset_v2.csv"
+            # NOT_FOUND is the only outcome that permits a marker: FOUND means
+            # one already exists, BLOCKED_UNREADABLE means we cannot tell and a
+            # duplicate provisional row would later drive a duplicate recovery.
             if (
                 lifecycle_identity
                 and exchange_confirmed_flat(close_result)
-                and not economic_close_exists(dataset_path, lifecycle_identity)
-                and not provisional_close_exists(dataset_path, lifecycle_identity)
+                and economic_close_status(dataset_path, lifecycle_identity) is DedupOutcome.NOT_FOUND
+                and provisional_close_status(dataset_path, lifecycle_identity) is DedupOutcome.NOT_FOUND
             ):
                 provisional = dict(lifecycle_identity)
                 provisional.update({
