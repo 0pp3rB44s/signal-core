@@ -23,6 +23,28 @@ CLOSE_RECOVERY_CURSOR_PATH = "state/close_recovery_cursor.json"
 CLOSE_HISTORY_PAGE_LIMIT = 100
 CLOSE_HISTORY_MAX_PAGES = 5
 
+#: Carrying either of these makes `TradeDatasetV2Logger.append_close` write an
+#: economic ``CLOSE`` instead of a ``CLOSE_PROVISIONAL``. On a provisional row
+#: that is the worst of both worlds: ``sync_source`` is ``position_manager``, so
+#: `is_economic_close` stays False and no risk meter counts it, while
+#: ``event_type`` is no longer ``CLOSE_PROVISIONAL``, so `load_provisional_rows`
+#: never offers it to recovery. The close is then unreachable forever.
+PROVISIONAL_PROMOTING_MONEY_FIELDS = frozenset({
+    "exchange_truth_net_profit",
+    "exchange_truth_pnl",
+})
+
+#: Read only inside those two economic branches. Dropped together with the
+#: promoting fields so a provisional row cannot keep half of an exchange-truth
+#: contract it is no longer entitled to present.
+PROVISIONAL_STRIPPED_MONEY_FIELDS = PROVISIONAL_PROMOTING_MONEY_FIELDS | frozenset({
+    "exchange_truth_gross_pnl",
+    "exchange_truth_open_fee",
+    "exchange_truth_close_fee",
+    "exchange_truth_funding",
+    "exchange_truth_fee",
+})
+
 
 def _within_close_tolerance(left: str, right: str) -> bool:
     """True when two close timestamps describe the same moment.
@@ -632,11 +654,34 @@ class ClosedTradeWriterMixin:
         margin_roi_pct: float,
         extra: dict | None = None,
     ) -> None:
-        """Persist lifecycle visibility while leaving every money field unknown."""
+        """Persist lifecycle visibility while leaving every money field unknown.
+
+        The position object routinely carries exchange-truth money by the time a
+        close path reaches here — the disappearance route sets
+        ``exchange_truth_pnl`` from the order-history fallback before deciding
+        there are no full economics. Copying it through turned a row that is
+        supposed to be recoverable into one that counts nowhere and is found by
+        nobody, so the money is dropped here rather than at each call site.
+
+        Dropping is safe: recovery refetches economics from the exchange. Keeping
+        it is not.
+        """
         from telemetry.trade_logger import TradeDatasetV2Logger
 
         payload = dict(position)
         payload.update(extra or {})
+        stripped = sorted(
+            name for name in PROVISIONAL_STRIPPED_MONEY_FIELDS
+            if payload.get(name) not in (None, "")
+        )
+        for name in PROVISIONAL_STRIPPED_MONEY_FIELDS:
+            payload.pop(name, None)
+        if stripped:
+            self.log.warning(
+                "PROVISIONAL_CLOSE_MONEY_STRIPPED | %s | reason=%s | fields=%s | "
+                "row stays recoverable; recovery refetches economics from the exchange",
+                str(payload.get("symbol") or "UNKNOWN"), close_reason, ",".join(stripped),
+            )
         payload.update({
             "exit": exit_price,
             "closed_reason": close_reason,
