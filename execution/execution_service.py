@@ -166,12 +166,33 @@ class ExecutionService:
                         sorted(local_open_symbols),
                         sorted(bitget_open_symbols),
                     )
-                for row in existing:
-                    symbol = row.get("symbol")
-                    if row.get("status") == "OPEN" and symbol and symbol not in bitget_open_symbols:
-                        row["status"] = "CLOSED_SYNCED"
-                        row["closed_at"] = datetime.now(timezone.utc).isoformat()
-                        row["sync_reason"] = "closed on Bitget; local state synced"
+                # Detect, never retire. This used to set CLOSED_SYNCED and save
+                # it, which finished a close without economics, without dedup,
+                # without a provisional row and without any recovery hook -- and
+                # because both services share `state/executed_trades.json`, it
+                # took the position away from `PositionManager.sync` before the
+                # one path that *is* wired to the shared recorder could see it.
+                # Whichever ran first won, so a close's economics could be lost
+                # for good.
+                #
+                # Capacity does not depend on this: `open_symbols` is taken from
+                # exchange truth on the next line, and the per-strategy count is
+                # already filtered by `symbol in open_symbols`. Leaving the row
+                # OPEN costs nothing here and lets the recorder decide its fate.
+                stale_local_opens = sorted({
+                    str(row.get("symbol"))
+                    for row in existing
+                    if row.get("status") == "OPEN"
+                    and row.get("symbol")
+                    and row.get("symbol") not in bitget_open_symbols
+                })
+                if stale_local_opens:
+                    self.log.warning(
+                        "LOCAL_OPEN_NOT_ON_EXCHANGE_DEFERRED | symbols=%s | "
+                        "close-out left to PositionManager so economics, dedup and "
+                        "recovery all run",
+                        stale_local_opens,
+                    )
                 open_symbols = set(bitget_open_symbols)
             else:
                 open_symbols = local_open_symbols.union(bitget_open_symbols)
