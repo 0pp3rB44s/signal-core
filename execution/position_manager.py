@@ -61,12 +61,44 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         self.failed_continuation_sl_buffer_pct = 0.06
         self.failed_continuation_min_unrealized_pct = -0.35
 
+    def emergency_flatten_all(self) -> dict:
+        """Production orchestrator that consumes every emergency lifecycle identity."""
+        from execution.closed_lifecycle_recorder import exchange_confirmed_flat
+
+        result = self.client.emergency_flatten_all()
+        outcomes: list[dict] = []
+        for item in result.get("closed", []):
+            identity = dict(item.get("lifecycle_identity") or {})
+            close_result = item.get("result")
+            symbol = str(identity.get("symbol") or item.get("symbol") or "").upper()
+            if not identity or not exchange_confirmed_flat(close_result):
+                outcomes.append({"symbol": symbol, "recording": "NOT_FLAT_OR_NO_IDENTITY"})
+                continue
+            identity["closed_at"] = datetime.now(timezone.utc).isoformat()
+            identity["closed_reason"] = "emergency_flatten_all"
+            self._append_provisional_close_dataset_row(
+                position=identity,
+                close_reason="emergency_flatten_all",
+                exit_price=float(identity.get("exchange_avg_entry") or 0.0),
+                margin_roi_pct=0.0,
+                extra={"close_source": "emergency_flatten_all"},
+            )
+            recording = self.reconcile_closed_lifecycle(
+                identity, close_result, "emergency_flatten_all"
+            )
+            outcomes.append({"symbol": symbol, "recording": recording})
+        result["recording_outcomes"] = outcomes
+        return result
+
     def sync(
         self,
         snapshots: list[MarketSnapshot],
         *,
         use_snapshot_context: bool = True,
     ) -> list[PositionUpdate]:
+        recovery_stats = self.recover_provisional_close_rows()
+        if recovery_stats.get("blocked"):
+            self.log.critical("PERIODIC_CLOSE_RECOVERY_BLOCKED | %s", recovery_stats)
         positions = self.store.load(default=[])
         for position in positions:
             if isinstance(position, dict):
@@ -365,22 +397,63 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 position["exchange_truth_size"] = exchange_close_truth.get("size", "")
                 position["exchange_truth_pnl"] = exchange_close_truth.get("pnl", "")
                 position["exchange_truth_fee"] = exchange_close_truth.get("fee", "")
-                self._append_closed_trade_dataset_row(
-                    position=position,
-                    close_reason=position["closed_reason"],
-                    exit_price=closed_price,
-                    margin_roi_pct=margin_roi_pct_value,
-                    extra={
-                        "close_source": position.get("close_source"),
-                        "data_confidence": position.get("data_confidence"),
-                        "process_verdict": position.get("process_verdict"),
-                        "exchange_truth_order_id": position.get("exchange_truth_order_id", ""),
-                        "exchange_truth_exit_price": position.get("exchange_truth_exit_price", closed_price),
-                        "exchange_truth_size": position.get("exchange_truth_size", ""),
-                        "exchange_truth_pnl": position.get("exchange_truth_pnl", ""),
-                        "exchange_truth_fee": position.get("exchange_truth_fee", ""),
-                    },
-                )
+                economics = exchange_close_truth.get("economics")
+                if economics is None:
+                    self._append_provisional_close_dataset_row(
+                        position=position,
+                        close_reason=position["closed_reason"],
+                        exit_price=closed_price,
+                        margin_roi_pct=margin_roi_pct_value,
+                        extra={"close_source": position.get("close_source")},
+                    )
+                else:
+                    from execution.closed_lifecycle_recorder import (
+                        record_known_economics_close,
+                    )
+                    from telemetry.trade_logger import append_exchange_truth_close
+
+                    dataset_path = "logs/trade_dataset_v2.csv"
+                    economics_outcome = record_known_economics_close(
+                        position=position,
+                        economics=economics,
+                        dataset_path=dataset_path,
+                        write_economic_close=lambda pos, econ: append_exchange_truth_close(
+                            position=pos,
+                            economics=econ,
+                            close_reason=position["closed_reason"],
+                            dataset_path=dataset_path,
+                        ),
+                        log_=self.log,
+                    )
+                    position["close_economics_outcome"] = economics_outcome
+                    if economics_outcome not in {"RECORDED", "ALREADY"}:
+                        # Nothing economic reached the dataset, and this position
+                        # is about to be retired as CLOSED_SYNCED. Leave the
+                        # provisional marker so the recovery sweep can still find
+                        # the trade; a redundant provisional row counts in no risk
+                        # decision, whereas losing the close counts nowhere at all.
+                        self.log.critical(
+                            "EXCHANGE_CLOSE_ECONOMICS_NOT_RECORDED | %s | outcome=%s | "
+                            "falling back to provisional row",
+                            symbol, economics_outcome,
+                        )
+                        self._append_provisional_close_dataset_row(
+                            position=position,
+                            close_reason=position["closed_reason"],
+                            exit_price=closed_price,
+                            margin_roi_pct=margin_roi_pct_value,
+                            extra={
+                                "close_source": position.get("close_source"),
+                                # The money is known but could not be proven
+                                # unique, and `append_close` would promote a row
+                                # carrying it to an economic CLOSE. Blank it so
+                                # this stays a marker; the recovery sweep refetches
+                                # the economics from the exchange.
+                                "exchange_truth_pnl": "",
+                                "exchange_truth_fee": "",
+                                "exchange_truth_net_profit": "",
+                            },
+                        )
                 self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
 
                 self.log.warning(
@@ -824,7 +897,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             current_remaining_pct,
                         )
                         self._sync_journal_close(symbol, position["closed_reason"], margin_roi_pct_value)
-                        self._append_closed_trade_dataset_row(
+                        self._append_provisional_close_dataset_row(
                             position=position,
                             close_reason=position["closed_reason"],
                             exit_price=current_price,
@@ -834,6 +907,9 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                                 "attempted_live_size": live_size,
                                 "remaining_pct": current_remaining_pct,
                             },
+                        )
+                        self.reconcile_closed_lifecycle(
+                            position, residual_close_result, position["closed_reason"]
                         )
                         self._register_symbol_cooldown(symbol, position["closed_reason"], margin_roi_pct_value)
                     else:
@@ -851,12 +927,15 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             residual_close_result,
                         )
                         self._sync_journal_close(symbol, "residual_position_cleanup", margin_roi_pct_value)
-                        self._append_closed_trade_dataset_row(
+                        self._append_provisional_close_dataset_row(
                             position=position,
                             close_reason="residual_position_cleanup",
                             exit_price=current_price,
                             margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "residual_position_cleanup", "live_size": live_size},
+                        )
+                        self.reconcile_closed_lifecycle(
+                            position, residual_close_result, "residual_position_cleanup"
                         )
                         self._register_symbol_cooldown(symbol, "residual_position_cleanup", margin_roi_pct_value)
                 except Exception as exc:
@@ -977,7 +1056,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         position["remaining_size_pct"] = 0.0
                         position["protection_integrity"] = "FAILED_CLOSED"
                         self._sync_journal_close(symbol, "protection_repair_failed", margin_roi_pct_value)
-                        self._append_closed_trade_dataset_row(
+                        self._append_provisional_close_dataset_row(
                             position=position,
                             close_reason="protection_repair_failed",
                             exit_price=current_price,
@@ -987,6 +1066,11 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                                 "failure_type": "PROTECTION_FAILURE",
                                 "process_verdict": "EXECUTION_FAILURE",
                             },
+                        )
+                        self.reconcile_closed_lifecycle(
+                            position,
+                            position.get("unprotected_close_result") or {},
+                            "protection_repair_failed",
                         )
                         self._register_symbol_cooldown(symbol, "protection_repair_failed", margin_roi_pct_value)
                         position["failure_type"] = "PROTECTION_FAILURE"
@@ -1220,13 +1304,14 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         # Economics are booked only on a confirmed-flat close,
                         # so an unclosed remainder never produces a CLOSE record.
                         self._sync_journal_close(symbol, "tp3", margin_roi_pct_value)
-                        self._append_closed_trade_dataset_row(
+                        self._append_provisional_close_dataset_row(
                             position=position,
                             close_reason="tp3",
                             exit_price=current_price,
                             margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "tp3_close_all_remainder", "live_size_before_close": live_size},
                         )
+                        self.reconcile_closed_lifecycle(position, close_all_result, "tp3")
                         self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
                 else:
                     position["remaining_size_pct"] = max(
@@ -1236,17 +1321,35 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     position["break_even_active"] = True
                     position["tp1_locked_stop_active"] = True
                     if float(position.get("remaining_size_pct", 0.0)) <= 0.0:
+                        readback = self.client.read_position_state(
+                            symbol,
+                            hold_side="long" if direction == "LONG" else "short",
+                        )
+                        if str(readback.state.value) != "FLAT":
+                            position["status"] = "OPEN"
+                            position["remaining_size_pct"] = current_remaining_pct
+                            note_parts.append("TP3_CONFIGURED_REMAINDER_NOT_PROVEN_FLAT")
+                            self.log.critical(
+                                "TP3_CONFIGURED_REMAINDER_NOT_PROVEN_FLAT | %s | state=%s | size=%s",
+                                symbol, readback.state.value, readback.size,
+                            )
+                            continue
                         position["status"] = "CLOSED"
                         position["closed_reason"] = "tp3"
                         position["closed_at"] = datetime.now(timezone.utc).isoformat()
                         note_parts.append("TP3 hit; position closed by configured pct remainder")
                         self._sync_journal_close(symbol, "tp3", margin_roi_pct_value)
-                        self._append_closed_trade_dataset_row(
+                        self._append_provisional_close_dataset_row(
                             position=position,
                             close_reason="tp3",
                             exit_price=current_price,
                             margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "tp3_configured_pct_remainder"},
+                        )
+                        self.reconcile_closed_lifecycle(
+                            position,
+                            {"status": "CLOSED", "flatness": "FLAT", "remaining_size": 0.0},
+                            "tp3",
                         )
                         self._register_symbol_cooldown(symbol, "tp3", margin_roi_pct_value)
                     else:
@@ -1428,12 +1531,18 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             dead_timeout_minutes,
                         )
                         self._sync_journal_close(symbol, "dead_trade_timeout", margin_roi_pct_value)
-                        self._append_closed_trade_dataset_row(
+                        self._append_provisional_close_dataset_row(
                             position=position,
                             close_reason="dead_trade_timeout",
                             exit_price=current_price,
                             margin_roi_pct=margin_roi_pct_value,
                             extra={"close_source": "dead_trade_timeout", "age_minutes": round(position_age_minutes, 1)},
+                        )
+                        # The row above carries no exchange money yet. Ask Bitget
+                        # what this lifecycle was worth; on failure it stays
+                        # provisional and the recovery sweep retries later.
+                        self.reconcile_closed_lifecycle(
+                            position, dead_close_result, "dead_trade_timeout"
                         )
                         self._register_symbol_cooldown(symbol, "dead_trade_timeout", margin_roi_pct_value)
                     else:
@@ -1531,7 +1640,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                     )
                     stop_hit = False
 
-            elif position.get("status") == "OPEN" and stop_hit:
+            elif (
+                position.get("status") == "OPEN"
+                and stop_hit
+                and bitget_sync_ok
+                and symbol not in bitget_open_symbols
+            ):
                 closed_reason = "break_even_stop" if position.get("break_even_active") else "stop_loss"
                 position["remaining_size_pct"] = 0.0
                 position["status"] = "CLOSED"

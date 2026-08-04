@@ -57,7 +57,9 @@ def _client(open_positions: list[dict] | None = None) -> MagicMock:
     client.get_position_history.return_value = {"data": []}
     client.get_order_history.return_value = {"data": []}
     client.cancel_all_futures_tpsl_orders.return_value = {"status": "ok"}
-    client.close_futures_position_full.return_value = {"status": "CLOSED"}
+    client.close_futures_position_full.return_value = {
+        "status": "CLOSED", "flatness": "FLAT", "remaining_size": 0.0,
+    }
     client.move_futures_stop_loss.return_value = {"data": {"orderId": "sl-1"}}
     client.verify_active_stop_loss.return_value = {"verified": True}
     client._contract_price_scale.return_value = 2
@@ -165,6 +167,17 @@ def _v2_close_rows() -> list[dict]:
         return [r for r in csv.DictReader(handle) if (r.get("event_type") or "").upper() in ("CLOSE", "POSITION_CLOSED")]
 
 
+def _v2_provisional_rows() -> list[dict]:
+    path = Path("logs/trade_dataset_v2.csv")
+    if not path.exists():
+        return []
+    with path.open() as handle:
+        return [
+            row for row in csv.DictReader(handle)
+            if (row.get("event_type") or "").upper() == "CLOSE_PROVISIONAL"
+        ]
+
+
 # --- 1. TP1 hit -> SL exact naar fee-adjusted break-even ---
 
 def test_tp1_hit_moves_sl_to_exact_fee_adjusted_break_even():
@@ -218,7 +231,8 @@ def test_tp3_hit_closes_all_and_marks_closed():
     assert saved["closed_reason"] == "tp3"
     assert saved["remaining_size_pct"] == 0.0
     manager.client.close_futures_position_full.assert_called_once()
-    assert len(_v2_close_rows()) == 1
+    assert len(_v2_close_rows()) == 0
+    assert len(_v2_provisional_rows()) == 1
 
 
 # --- 4/5. Exchange zegt closed, local open -> recovery + geen ghost ---
@@ -232,7 +246,8 @@ def test_exchange_closed_local_open_reconciles_and_cleans_tpsl():
     saved = manager.store.load(default=[])[0]
     assert saved["status"] == "CLOSED_SYNCED"
     manager.client.cancel_all_futures_tpsl_orders.assert_called_once()
-    assert len(_v2_close_rows()) == 1
+    assert len(_v2_close_rows()) == 0
+    assert len(_v2_provisional_rows()) == 1
     # geen nieuwe orders/closes richting exchange
     manager.client.close_futures_position_full.assert_not_called()
     manager.client.move_futures_stop_loss.assert_not_called()
@@ -260,6 +275,21 @@ def test_exchange_open_local_missing_recovers_and_never_leaves_unprotected_open(
     assert any(e.get("status") == "STATE_RECOVERED" for e in events)
 
 
+def test_unprotected_close_unknown_flatness_keeps_local_position_open():
+    manager = _manager([_live_payload(size=1.0, with_tpsl=False)])
+    manager._ensure_exchange_protection_with_retries = lambda position: False
+    manager.client.close_futures_position_full.return_value = {
+        "status": "CLOSED", "flatness": "UNKNOWN", "remaining_size": None,
+    }
+    manager.store.save([_position(protection_verified=False)])
+
+    manager.sync([_snapshot(price=100.0)])
+
+    saved = manager.store.load(default=[])[0]
+    assert saved["status"] == "OPEN"
+    assert saved.get("closed_reason") != "protection_repair_failed"
+
+
 # --- 7. Dubbele monitor-cycle: geen dubbele close/order/dataset-row ---
 
 def test_double_cycle_is_idempotent_for_tp3_close():
@@ -274,7 +304,8 @@ def test_double_cycle_is_idempotent_for_tp3_close():
     manager.sync([snapshot])
 
     assert manager.client.close_futures_position_full.call_count == 1
-    assert len(_v2_close_rows()) == 1
+    assert len(_v2_close_rows()) == 0
+    assert len(_v2_provisional_rows()) == 1
 
 
 def test_double_cycle_is_idempotent_for_exchange_closed_sync():
@@ -285,7 +316,8 @@ def test_double_cycle_is_idempotent_for_exchange_closed_sync():
     manager.sync([_snapshot(price=100.0)])
 
     assert manager.client.cancel_all_futures_tpsl_orders.call_count == 1
-    assert len(_v2_close_rows()) == 1
+    assert len(_v2_close_rows()) == 0
+    assert len(_v2_provisional_rows()) == 1
 
 
 # --- 8. Stale TPSL alleen cancellen bij betrouwbare exchange-state ---

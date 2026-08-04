@@ -1098,7 +1098,7 @@ class TpSlLifecycleMixin:
         direction = str(position.get("direction") or "")
         size = self._position_size(position)
 
-        closer = getattr(self.client, "close_futures_position", None)
+        closer = getattr(self.client, "close_futures_position_full", None)
         if not symbol or not direction or size <= 0 or not callable(closer):
             self.log.error(
                 "Cannot close unprotected position symbol=%s direction=%s size=%s reason=%s",
@@ -1110,17 +1110,24 @@ class TpSlLifecycleMixin:
             return False
 
         try:
-            closer(symbol=symbol, direction=direction, size=size, reason=reason)
+            from execution.closed_lifecycle_recorder import exchange_confirmed_flat
+
+            result = closer(
+                symbol=symbol,
+                direction=direction,
+                size=size,
+                reason=reason,
+                cleanup_tpsl=True,
+            )
+            position["unprotected_close_result"] = result
+            if not exchange_confirmed_flat(result):
+                self.log.critical(
+                    "UNPROTECTED_CLOSE_NOT_FLAT | %s | reason=%s | result=%s",
+                    symbol, reason, result,
+                )
+                return False
             self.log.error("Closed unprotected position %s reason=%s", symbol, reason)
             return True
-        except TypeError:
-            try:
-                closer(symbol=symbol, direction=direction, size=size)
-                self.log.error("Closed unprotected position %s reason=%s", symbol, reason)
-                return True
-            except Exception as exc:
-                self.log.error("Close unprotected position failed for %s reason=%s error=%s", symbol, reason, exc)
-                return False
         except Exception as exc:
             self.log.error("Close unprotected position failed for %s reason=%s error=%s", symbol, reason, exc)
             return False

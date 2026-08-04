@@ -15,6 +15,36 @@ from pathlib import Path
 #: fill time. Mirrors ``TradeDatasetV2Logger.CLOSE_TIME_TOLERANCE_SECONDS``.
 CLOSE_TIME_TOLERANCE_SECONDS = 1
 
+#: Where the recovery rotation cursor lives, so fairness survives a restart.
+CLOSE_RECOVERY_CURSOR_PATH = "state/close_recovery_cursor.json"
+
+#: Position-history paging. Bounded so a non-advancing cursor cannot spin, and
+#: deep enough that a lifecycle older than one page is still reachable.
+CLOSE_HISTORY_PAGE_LIMIT = 100
+CLOSE_HISTORY_MAX_PAGES = 5
+
+#: Carrying either of these makes `TradeDatasetV2Logger.append_close` write an
+#: economic ``CLOSE`` instead of a ``CLOSE_PROVISIONAL``. On a provisional row
+#: that is the worst of both worlds: ``sync_source`` is ``position_manager``, so
+#: `is_economic_close` stays False and no risk meter counts it, while
+#: ``event_type`` is no longer ``CLOSE_PROVISIONAL``, so `load_provisional_rows`
+#: never offers it to recovery. The close is then unreachable forever.
+PROVISIONAL_PROMOTING_MONEY_FIELDS = frozenset({
+    "exchange_truth_net_profit",
+    "exchange_truth_pnl",
+})
+
+#: Read only inside those two economic branches. Dropped together with the
+#: promoting fields so a provisional row cannot keep half of an exchange-truth
+#: contract it is no longer entitled to present.
+PROVISIONAL_STRIPPED_MONEY_FIELDS = PROVISIONAL_PROMOTING_MONEY_FIELDS | frozenset({
+    "exchange_truth_gross_pnl",
+    "exchange_truth_open_fee",
+    "exchange_truth_close_fee",
+    "exchange_truth_funding",
+    "exchange_truth_fee",
+})
+
 
 def _within_close_tolerance(left: str, right: str) -> bool:
     """True when two close timestamps describe the same moment.
@@ -529,6 +559,195 @@ class ClosedTradeWriterMixin:
         if not symbol or not opened_at:
             return ""
         return f"{symbol}|{opened_at[:19]}"
+
+    def reconcile_closed_lifecycle(self, position: dict, close_result: dict, reason: str) -> str:
+        """Give a confirmed close its exchange economics. Returns the outcome.
+
+        Called from every bot-initiated close path *after* the client has proven
+        remaining size is 0. `record_closed_lifecycle` re-checks that itself, so
+        a caller that passes a non-flat result cannot slip through.
+
+        Nothing here can lose money: a failed reconciliation leaves the
+        provisional row untouched and non-economic, and the periodic recovery
+        sweep picks it up later.
+        """
+        from execution.closed_lifecycle_recorder import record_closed_lifecycle
+
+        def _write(pos: dict, econ: dict) -> None:
+            from telemetry.trade_logger import append_exchange_truth_close
+            append_exchange_truth_close(
+                position=pos,
+                economics=econ,
+                close_reason=reason,
+                dataset_path="logs/trade_dataset_v2.csv",
+            )
+
+        try:
+            return record_closed_lifecycle(
+                position=position,
+                close_result=close_result,
+                dataset_path="logs/trade_dataset_v2.csv",
+                fetch_history=self._fetch_closed_position_history,
+                write_economic_close=_write,
+            )
+        except Exception as exc:  # never let bookkeeping break a close
+            self.log.critical(
+                "CLOSE_ECONOMICS_WIRING_FAILED | %s | lifecycle=%s | error=%s",
+                position.get("symbol"),
+                position.get("position_lifecycle_id") or "UNKNOWN",
+                exc,
+            )
+            return "ERROR"
+
+    def recover_provisional_close_rows(self, limit: int = 20) -> dict:
+        """Run one bounded, fair, resumable exchange recovery sweep.
+
+        The rotation cursor is persisted so fairness survives a restart. It is
+        saved after the sweep, never before: a crash in between repeats one
+        window, and dedup skips whatever that window already recorded.
+        """
+        from execution.closed_lifecycle_recorder import (
+            load_provisional_rows,
+            recover_provisional_closes,
+        )
+        from execution.state_store import JsonStateStore
+        from telemetry.trade_logger import append_exchange_truth_close
+
+        dataset_path = "logs/trade_dataset_v2.csv"
+        load = load_provisional_rows(dataset_path)
+        if load.blocked:
+            self.log.critical(
+                "CLOSE_RECOVERY_LOAD_BLOCKED | segments=%s | errors=%s | "
+                "pending closes UNKNOWN | new entries stay blocked",
+                ",".join(load.unreadable_segments), ",".join(load.error_types),
+            )
+
+        def _write(position: dict, economics) -> None:
+            append_exchange_truth_close(
+                position=position,
+                economics=economics,
+                close_reason=str(position.get("close_reason") or position.get("result") or "recovered_close"),
+                dataset_path=dataset_path,
+            )
+
+        cursor_store = JsonStateStore(CLOSE_RECOVERY_CURSOR_PATH)
+        saved = cursor_store.load(default={})
+        cursor = saved.get("cursor") if isinstance(saved, dict) else None
+
+        stats = recover_provisional_closes(
+            provisional_rows=load.rows,
+            dataset_path=dataset_path,
+            fetch_history=self._fetch_closed_position_history,
+            write_economic_close=_write,
+            limit=limit,
+            cursor=cursor,
+            load_blocked=load.blocked,
+        )
+
+        try:
+            cursor_store.save({"cursor": stats.get("next_cursor")})
+        except Exception as exc:
+            # Losing the cursor costs one pass of fairness, never a row, so this
+            # must not turn a completed sweep into a failed one.
+            self.log.warning("CLOSE_RECOVERY_CURSOR_SAVE_FAILED | error=%s", exc)
+        return stats
+
+    def _append_provisional_close_dataset_row(
+        self,
+        *,
+        position: dict,
+        close_reason: str,
+        exit_price: float,
+        margin_roi_pct: float,
+        extra: dict | None = None,
+    ) -> None:
+        """Persist lifecycle visibility while leaving every money field unknown.
+
+        The position object routinely carries exchange-truth money by the time a
+        close path reaches here — the disappearance route sets
+        ``exchange_truth_pnl`` from the order-history fallback before deciding
+        there are no full economics. Copying it through turned a row that is
+        supposed to be recoverable into one that counts nowhere and is found by
+        nobody, so the money is dropped here rather than at each call site.
+
+        Dropping is safe: recovery refetches economics from the exchange. Keeping
+        it is not.
+        """
+        from telemetry.trade_logger import TradeDatasetV2Logger
+
+        payload = dict(position)
+        payload.update(extra or {})
+        stripped = sorted(
+            name for name in PROVISIONAL_STRIPPED_MONEY_FIELDS
+            if payload.get(name) not in (None, "")
+        )
+        for name in PROVISIONAL_STRIPPED_MONEY_FIELDS:
+            payload.pop(name, None)
+        if stripped:
+            self.log.warning(
+                "PROVISIONAL_CLOSE_MONEY_STRIPPED | %s | reason=%s | fields=%s | "
+                "row stays recoverable; recovery refetches economics from the exchange",
+                str(payload.get("symbol") or "UNKNOWN"), close_reason, ",".join(stripped),
+            )
+        payload.update({
+            "exit": exit_price,
+            "closed_reason": close_reason,
+            "close_reason": close_reason,
+            "margin_roi_pct": margin_roi_pct,
+            "sync_source": "position_manager",
+        })
+        TradeDatasetV2Logger("logs/trade_dataset_v2.csv").append_close(
+            trade=payload,
+            result=close_reason,
+            pnl=None,
+            quality={},
+            margin_roi_pct=margin_roi_pct,
+        )
+
+    def _fetch_closed_position_history(self) -> list:
+        """Closed lifecycles from Bitget, paged. Read-only.
+
+        One page of 50 was the other half of recovery starvation: a lifecycle
+        older than the newest 50 could never be matched, so its provisional row
+        stayed unresolved forever. Paging walks further back with `idLessThan`,
+        bounded by `CLOSE_HISTORY_MAX_PAGES` so a stuck cursor cannot spin.
+        """
+        rows: list = []
+        seen_ids: set[str] = set()
+        cursor: str | None = None
+
+        for _ in range(CLOSE_HISTORY_MAX_PAGES):
+            params = {
+                "productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
+                "limit": str(CLOSE_HISTORY_PAGE_LIMIT),
+            }
+            if cursor:
+                params["idLessThan"] = str(cursor)
+            payload = self.client._request(
+                "GET", "/api/v2/mix/position/history-position", params, private=True,
+            )
+            page = (payload.get("data") or {}).get("list") or []
+            if not page:
+                break
+
+            # A page that repeats what we already hold means the endpoint is not
+            # advancing; stop rather than request the same rows again.
+            fresh = [r for r in page if str(r.get("positionId") or "") not in seen_ids]
+            if not fresh:
+                break
+            for row in fresh:
+                position_id = str(row.get("positionId") or "")
+                if position_id:
+                    seen_ids.add(position_id)
+                rows.append(row)
+
+            if len(page) < CLOSE_HISTORY_PAGE_LIMIT:
+                break
+            cursor = str(page[-1].get("positionId") or "")
+            if not cursor:
+                break
+
+        return rows
 
     def _append_closed_trade_dataset_row(
         self,

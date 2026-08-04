@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from clients.bitget_account_client import PositionReadback, PositionReadbackState
+
 
 #: Bitget business codes / messages that definitively mean "no such order".
 #: Anything outside this set leaves the exchange state UNKNOWN, which must never
@@ -665,15 +667,18 @@ class BitgetOrderClientMixin:
     ) -> dict[str, Any]:
         """Close the full live remaining position and optionally cleanup stale TP/SL orders."""
         symbol = symbol.upper()
-        direction_upper = direction.upper()
+        direction_upper = str(direction or "").upper()
+        if direction_upper not in {"LONG", "SHORT"}:
+            raise ValueError(f"Unsupported direction for close: {direction!r}; expected LONG or SHORT")
         hold_side = "long" if direction_upper == "LONG" else "short"
         close_reason = reason or "close_all"
-        provided_size = float(size or 0.0)
-        live_size = self._live_position_size_for_symbol(symbol, hold_side=hold_side)
-        if live_size <= 0 and provided_size > 0:
+        provided_size = float(size) if size not in (None, "") else 0.0
+        initial = self._close_position_readback(symbol, hold_side)
+        live_size = float(initial.size or 0.0)
+        if initial.state is PositionReadbackState.UNKNOWN and provided_size > 0:
             live_size = provided_size
             self.log.critical(
-                "CLOSE_FULL_USING_PROVIDED_SIZE_FALLBACK | %s | hold_side=%s | provided_size=%s | reason=%s",
+                "CLOSE_FULL_INITIAL_READBACK_UNKNOWN_USING_CONFIRMED_SIZE | %s | hold_side=%s | provided_size=%s | reason=%s",
                 symbol,
                 hold_side,
                 provided_size,
@@ -691,6 +696,8 @@ class BitgetOrderClientMixin:
             "cleanup_before": None,
             "close": None,
             "cleanup_after": None,
+            "flatness": initial.state.value,
+            "readback_detail": initial.detail,
         }
 
         # Protection is deliberately NOT cancelled up front. Bitget closes a
@@ -700,8 +707,12 @@ class BitgetOrderClientMixin:
         # nothing left to protect.
         results["cleanup_before"] = {"status": "SKIPPED_PROTECTION_HELD_UNTIL_CLOSE_CONFIRMED"}
 
-        if live_size <= 0:
+        if initial.state is PositionReadbackState.UNKNOWN and provided_size <= 0:
+            results["status"] = "READBACK_UNKNOWN"
+            return results
+        if initial.state is PositionReadbackState.FLAT:
             results["status"] = "NO_POSITION"
+            results["remaining_size"] = 0.0
             self.log.warning(
                 "CLOSE_FULL_NO_POSITION | %s | direction=%s | hold_side=%s | reason=%s | cleanup_tpsl=%s",
                 symbol,
@@ -724,11 +735,13 @@ class BitgetOrderClientMixin:
             # Re-read rather than assume: the only question that matters is
             # whether the position is still there, and the error text cannot
             # answer it on its own.
-            remaining = self._live_position_size_for_symbol(symbol, hold_side=hold_side)
-            results["remaining_size"] = remaining
+            readback = self._close_position_readback(symbol, hold_side)
+            results["flatness"] = readback.state.value
+            results["remaining_size"] = readback.size
+            results["readback_detail"] = readback.detail
             results["error"] = str(exc)
 
-            if is_no_position_to_close_error(exc) and remaining <= 0:
+            if is_no_position_to_close_error(exc) and readback.state is PositionReadbackState.FLAT:
                 # Already flat -- somebody else (a triggered TP/SL) got there
                 # first. Nothing failed, and retrying would only repeat this.
                 results["status"] = "NO_POSITION"
@@ -747,16 +760,29 @@ class BitgetOrderClientMixin:
                 symbol,
                 hold_side,
                 close_reason,
-                remaining,
+                readback.size,
                 exc,
             )
+            if readback.state is PositionReadbackState.UNKNOWN:
+                results["status"] = "READBACK_UNKNOWN"
+                return results
             raise
 
         # An accepted order is not a closed position. Ask the exchange.
-        remaining = self._live_position_size_for_symbol(symbol, hold_side=hold_side)
-        results["remaining_size"] = remaining
+        readback = self._close_position_readback(symbol, hold_side)
+        results["flatness"] = readback.state.value
+        results["remaining_size"] = readback.size
+        results["readback_detail"] = readback.detail
 
-        if remaining > 0:
+        if readback.state is PositionReadbackState.UNKNOWN:
+            results["status"] = "READBACK_UNKNOWN"
+            self.log.critical(
+                "CLOSE_FULL_POST_READBACK_UNKNOWN | %s | protection_untouched=True | reason=%s | detail=%s",
+                symbol, close_reason, readback.detail,
+            )
+            return results
+        remaining = float(readback.size or 0.0)
+        if readback.state is PositionReadbackState.REMAINS:
             # Partial fill or an accepted order that did not reduce anything.
             # Either way the position still exists, still needs its stop, and
             # must not be recorded as closed.
@@ -804,3 +830,12 @@ class BitgetOrderClientMixin:
         )
 
         return results
+
+    def _close_position_readback(self, symbol: str, hold_side: str) -> PositionReadback:
+        """Typed production readback with compatibility for legacy injected tests."""
+        injected = getattr(self, "__dict__", {}).get("_live_position_size_for_symbol")
+        if injected is not None:
+            size = float(injected(symbol, hold_side=hold_side))
+            state = PositionReadbackState.FLAT if size == 0.0 else PositionReadbackState.REMAINS
+            return PositionReadback(state=state, size=size)
+        return self.read_position_state(symbol, hold_side=hold_side)

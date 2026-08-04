@@ -73,7 +73,11 @@ def test_three_symbols_remain_isolated_across_three_sequential_lifecycles(monkey
     second_rows = service.store.load(default=[])
     old_sol = next(row for row in second_rows if row["symbol"] == "SOLUSDT")
     btc_state = next(row for row in second_rows if row["symbol"] == "BTCUSDT")
-    assert old_sol["status"] == "CLOSED_SYNCED"
+    # ExecutionService no longer retires a position that vanished from the
+    # exchange: doing so finished a close with no economics and took it away
+    # from the one path wired to the shared recorder. The row is left OPEN for
+    # PositionManager. Isolation -- what this test is about -- is unaffected.
+    assert old_sol["status"] == "OPEN"
     assert old_sol["position_lifecycle_id"] == sol_state["position_lifecycle_id"]
     assert btc_state["status"] == "OPEN"
     assert btc_state["position_lifecycle_id"] != sol_state["position_lifecycle_id"]
@@ -93,8 +97,13 @@ def test_three_symbols_remain_isolated_across_three_sequential_lifecycles(monkey
     final_rows = service.store.load(default=[])
     sol_rows = [row for row in final_rows if row["symbol"] == "SOLUSDT"]
     assert len(sol_rows) == 2
-    new_sol = next(row for row in sol_rows if row["status"] == "OPEN")
+    # Both SOL rows are OPEN now that ExecutionService no longer retires the
+    # vanished one, so pick the new lifecycle by its own entry order rather than
+    # by status. The point stands: re-entry creates a distinct row and a
+    # distinct lifecycle, it never adopts the stale one.
+    new_sol = next(row for row in sol_rows if row["exchange_entry_order_id"] == "sol-order-new")
     assert new_sol["position_lifecycle_id"] != sol_state["position_lifecycle_id"]
+    assert len({row["position_lifecycle_id"] for row in sol_rows}) == 2
     assert new_sol["exchange_entry_order_id"] == "sol-order-new"
     assert new_sol["confirmed_opening_fee_usdt"] == 0.03
     assert new_sol["confirmed_position_size"] == 0.5
@@ -192,7 +201,8 @@ def test_late_legality_failure_never_falls_through_to_runner_up(monkeypatch):
     assert [report.symbol for report in reports] == ["SOLUSDT"]
     assert reports[0].status == "ERROR"
     assert service.client.place_futures_market_order.call_count == 1
-    service.client.close_futures_position.assert_called_once()
+    service.client.close_futures_position.assert_not_called()
+    service.client.close_futures_position_full.assert_called_once()
     assert service.intent_store.get(service.entry_submitter.client_oid_for(btc)) is None
 
 

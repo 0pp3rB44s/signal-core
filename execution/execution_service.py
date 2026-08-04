@@ -4,6 +4,7 @@ import logging
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 
 from app.config import Settings
 from app.equity import resolve_account_equity
@@ -37,6 +38,37 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+class FailSafeFlatness(str, Enum):
+    """What a post-fail-safe readback actually established.
+
+    `FLAT` is the only verdict that may retire an entry intent, and it means the
+    exchange answered and the answer said there is no position. `REMAINS` and
+    `UNKNOWN` are both refusals: the first knows the position is alive, the
+    second knows nothing at all, and neither is grounds for CLOSED_OUT.
+    """
+
+    FLAT = "FLAT"
+    REMAINS = "REMAINS"
+    UNKNOWN = "UNKNOWN"
+
+
+def _fail_safe_position_size(position: dict) -> float | None:
+    """Size of one position row, or None when it cannot be read.
+
+    Deliberately not `_safe_float`, whose 0.0 default turns an unreadable size
+    into a flat position — the one mistake this verification exists to prevent.
+    """
+    for field in ("total", "size", "available"):
+        value = position.get(field)
+        if value in (None, ""):
+            continue
+        try:
+            return abs(float(value))
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _deep_get(payload: dict | None, *keys: str):
@@ -134,12 +166,33 @@ class ExecutionService:
                         sorted(local_open_symbols),
                         sorted(bitget_open_symbols),
                     )
-                for row in existing:
-                    symbol = row.get("symbol")
-                    if row.get("status") == "OPEN" and symbol and symbol not in bitget_open_symbols:
-                        row["status"] = "CLOSED_SYNCED"
-                        row["closed_at"] = datetime.now(timezone.utc).isoformat()
-                        row["sync_reason"] = "closed on Bitget; local state synced"
+                # Detect, never retire. This used to set CLOSED_SYNCED and save
+                # it, which finished a close without economics, without dedup,
+                # without a provisional row and without any recovery hook -- and
+                # because both services share `state/executed_trades.json`, it
+                # took the position away from `PositionManager.sync` before the
+                # one path that *is* wired to the shared recorder could see it.
+                # Whichever ran first won, so a close's economics could be lost
+                # for good.
+                #
+                # Capacity does not depend on this: `open_symbols` is taken from
+                # exchange truth on the next line, and the per-strategy count is
+                # already filtered by `symbol in open_symbols`. Leaving the row
+                # OPEN costs nothing here and lets the recorder decide its fate.
+                stale_local_opens = sorted({
+                    str(row.get("symbol"))
+                    for row in existing
+                    if row.get("status") == "OPEN"
+                    and row.get("symbol")
+                    and row.get("symbol") not in bitget_open_symbols
+                })
+                if stale_local_opens:
+                    self.log.warning(
+                        "LOCAL_OPEN_NOT_ON_EXCHANGE_DEFERRED | symbols=%s | "
+                        "close-out left to PositionManager so economics, dedup and "
+                        "recovery all run",
+                        stale_local_opens,
+                    )
                 open_symbols = set(bitget_open_symbols)
             else:
                 open_symbols = local_open_symbols.union(bitget_open_symbols)
@@ -718,6 +771,8 @@ class ExecutionService:
                     verification_payload = self.client.get_all_positions()
                     verification_positions = verification_payload.get("data") or []
 
+                    exchange_position_identity = None
+
                     exchange_position_found = False
                     live_fill_entry = 0.0
                     live_mark_price = 0.0
@@ -772,6 +827,23 @@ class ExecutionService:
                                 or 0.0,
                                 0.0,
                             )
+                            # The one moment the exchange tells us when this
+                            # position opened. Captured here because a fail-safe
+                            # close later in this flow has no other identity.
+                            try:
+                                _opened_ms = int(position.get("cTime") or 0) or None
+                            except (TypeError, ValueError):
+                                _opened_ms = None
+                            exchange_position_identity = {
+                                "symbol": str(plan.symbol).upper(),
+                                "direction": str(plan.direction).upper(),
+                                "hold_side": live_hold_side,
+                                "opened_at_ms": _opened_ms,
+                                "confirmed_position_size": live_size,
+                                "exchange_avg_entry": live_fill_entry,
+                                "exchange_position_id": str(position.get("positionId") or ""),
+                                "entry_order_id": live_order_id,
+                            }
                             break
 
                     if not exchange_position_found:
@@ -960,22 +1032,25 @@ class ExecutionService:
 
                         self._fail_safe_close(
                             symbol=plan.symbol,
+                            lifecycle_identity=exchange_position_identity,
                             size=live_size,
                             close_side=close_side,
                             direction=plan.direction,
                             reason="entry_protection_failed",
                         )
 
-                        self._verify_no_live_position_after_fail_safe(
+                        flatness = self._verify_no_live_position_after_fail_safe(
                             symbol=plan.symbol,
                             direction=plan.direction,
                             reason="entry_protection_failed",
                         )
 
-                        if entry_client_oid:
-                            self.entry_submitter.mark_closed_out(
-                                entry_client_oid, reason="entry_protection_failed"
-                            )
+                        self._close_out_entry_intent_if_flat(
+                            client_oid=entry_client_oid,
+                            flatness=flatness,
+                            symbol=plan.symbol,
+                            reason="entry_protection_failed",
+                        )
 
                         reports.append(
                             self._report(
@@ -1163,20 +1238,23 @@ class ExecutionService:
                         )
                         self._fail_safe_close(
                             symbol=plan.symbol,
+                            lifecycle_identity=exchange_position_identity,
                             size=order_size,
                             close_side=close_side,
                             direction=plan.direction,
                             reason="entry_protection_failed",
                         )
-                        self._verify_no_live_position_after_fail_safe(
+                        flatness = self._verify_no_live_position_after_fail_safe(
                             symbol=plan.symbol,
                             direction=plan.direction,
                             reason="entry_protection_failed_exception",
                         )
-                        if entry_client_oid:
-                            self.entry_submitter.mark_closed_out(
-                                entry_client_oid, reason="entry_protection_failed_exception"
-                            )
+                        self._close_out_entry_intent_if_flat(
+                            client_oid=entry_client_oid,
+                            flatness=flatness,
+                            symbol=plan.symbol,
+                            reason="entry_protection_failed_exception",
+                        )
                         reports.append(
                             self._report(
                                 plan=plan,
@@ -1494,40 +1572,23 @@ class ExecutionService:
         close_side: str,
         direction: str = "",
         reason: str = "fail_safe_close",
+        lifecycle_identity: dict | None = None,
     ) -> None:
+        """Close a position this flow opened but could not protect.
+
+        ``lifecycle_identity`` holds what the exchange told us at
+        EXCHANGE_POSITION_CONFIRMED -- above all ``opened_at_ms`` from cTime.
+        This close happens inside the entry flow, before PositionManager has
+        ever seen the position, so there is no lifecycle id yet. Without the
+        captured open time a later reconciliation could only match on symbol and
+        side, which is a guess: two lifecycles on one symbol and side can close
+        in the same second.
+
+        When it is None -- the position was never confirmed -- the close still
+        runs, but no economics are claimed for it.
+        """
         close_errors: list[str] = []
         hold_side = "long" if str(direction).upper() == "LONG" else "short"
-
-        try:
-            # Must be the reduce-only close path. place_futures_market_order()
-            # hardcodes tradeSide=open and drops trade_side, so routing the
-            # fail-safe through it opened an opposite position instead of
-            # closing the unprotected one.
-            response = self.client.close_futures_position(
-                symbol=symbol,
-                hold_side=hold_side,
-                size=size,
-                margin_mode="isolated",
-            )
-            self.log.critical(
-                "FAIL_SAFE_CLOSE_DIRECT_SENT | %s | close_side=%s | size=%s | reason=%s | response=%s",
-                symbol,
-                close_side,
-                size,
-                reason,
-                response,
-            )
-            return
-        except Exception as exc:
-            close_errors.append(f"direct_close={exc}")
-            self.log.critical(
-                "FAIL_SAFE_CLOSE_DIRECT_FAILED | %s | close_side=%s | size=%s | reason=%s | error=%s",
-                symbol,
-                close_side,
-                size,
-                reason,
-                exc,
-            )
 
         try:
             if hasattr(self.client, "close_futures_position_full"):
@@ -1545,6 +1606,12 @@ class ExecutionService:
                     reason,
                     response,
                 )
+                # The client only reports CLOSED after re-reading the position
+                # and finding remaining size 0; `reconcile_fail_safe_close`
+                # re-checks that itself, so a non-flat response records nothing.
+                # Orchestration only: the reconciliation and dataset rules live
+                # in the shared recorder, not here.
+                self._record_fail_safe_close_economics(response, lifecycle_identity)
                 return
         except Exception as exc:
             close_errors.append(f"close_full={exc}")
@@ -1567,57 +1634,203 @@ class ExecutionService:
             " | ".join(close_errors),
         )
 
+    def _record_fail_safe_close_economics(self, close_result, lifecycle_identity) -> str:
+        """Hand a completed fail-safe close to the shared close-economics recorder.
+
+        Orchestration only. Every rule about what counts as flat, how a
+        lifecycle is matched, and what a provisional row looks like lives in
+        `execution.closed_lifecycle_recorder`, shared with the three
+        PositionManager close paths — nothing about it is re-implemented here.
+
+        Never raises: bookkeeping must not turn a completed close into an
+        exception inside the entry flow.
+        """
+        try:
+            from execution.close_dedup import (
+                DedupOutcome,
+                economic_close_status,
+                provisional_close_status,
+            )
+            from execution.closed_lifecycle_recorder import (
+                exchange_confirmed_flat,
+                reconcile_fail_safe_close,
+            )
+            from telemetry.trade_logger import TradeDatasetV2Logger
+
+            dataset_path = "logs/trade_dataset_v2.csv"
+            # NOT_FOUND is the only outcome that permits a marker: FOUND means
+            # one already exists, BLOCKED_UNREADABLE means we cannot tell and a
+            # duplicate provisional row would later drive a duplicate recovery.
+            if (
+                lifecycle_identity
+                and exchange_confirmed_flat(close_result)
+                and economic_close_status(dataset_path, lifecycle_identity) is DedupOutcome.NOT_FOUND
+                and provisional_close_status(dataset_path, lifecycle_identity) is DedupOutcome.NOT_FOUND
+            ):
+                provisional = dict(lifecycle_identity)
+                provisional.update({
+                    "closed_reason": "fail_safe_close",
+                    "close_reason": "fail_safe_close",
+                    "sync_source": "execution_service",
+                })
+                TradeDatasetV2Logger(dataset_path).append_close(
+                    trade=provisional,
+                    result="fail_safe_close",
+                    pnl=None,
+                    quality={},
+                )
+
+            def _write(identity: dict, econ: dict) -> None:
+                from telemetry.trade_logger import append_exchange_truth_close
+                append_exchange_truth_close(
+                    position=identity,
+                    economics=econ,
+                    close_reason="fail_safe_close",
+                    dataset_path="logs/trade_dataset_v2.csv",
+                )
+
+            return reconcile_fail_safe_close(
+                lifecycle_identity=lifecycle_identity,
+                close_result=close_result,
+                dataset_path=dataset_path,
+                fetch_history=self._fetch_closed_position_history,
+                write_economic_close=_write,
+                log_=self.log,
+            )
+        except Exception as exc:
+            self.log.critical(
+                "FAIL_SAFE_CLOSE_ECONOMICS_FAILED | %s | error=%s",
+                (lifecycle_identity or {}).get("symbol"),
+                exc,
+            )
+            return "ERROR"
+
+    def _fetch_closed_position_history(self) -> list:
+        """Recent closed lifecycles from Bitget. Read-only."""
+        payload = self.client._request(
+            "GET",
+            "/api/v2/mix/position/history-position",
+            {"productType": getattr(self.settings, "bitget_product_type", "USDT-FUTURES"),
+             "limit": "50"},
+            private=True,
+        )
+        return (payload.get("data") or {}).get("list") or []
+
     def _verify_no_live_position_after_fail_safe(
         self,
         *,
         symbol: str,
         direction: str,
         reason: str,
-    ) -> None:
+    ) -> FailSafeFlatness:
+        """Ask the exchange, fresh, whether the position is really gone.
+
+        Returns a verdict rather than logging one. `FLAT` is a claim that the
+        exchange answered, the answer parsed, and no position for this symbol
+        carries size. Everything else — transport failure, a payload that is not
+        the documented shape, a row whose size cannot be read — is `UNKNOWN`,
+        because "we could not tell" and "there is nothing there" are different
+        facts and only one of them may retire an intent.
+
+        The old version returned None in all four branches and answered every
+        one of them by writing a log line, so the caller closed the intent out
+        whatever happened.
+        """
+        symbol_upper = symbol.upper()
         try:
             payload = self.client.get_all_positions()
-            positions = payload.get("data") or []
-            symbol_upper = symbol.upper()
-            live_matches = []
-
-            for position in positions:
-                if str(position.get("symbol") or "").upper() != symbol_upper:
-                    continue
-
-                size = _safe_float(
-                    position.get("total")
-                    or position.get("size")
-                    or position.get("available")
-                    or 0.0,
-                    0.0,
-                )
-
-                if size > 0:
-                    live_matches.append(position)
-
-            if live_matches:
-                self.log.critical(
-                    "FAIL_SAFE_POSITION_STILL_OPEN | %s | direction=%s | reason=%s | manual_intervention_required=True | positions=%s",
-                    symbol_upper,
-                    direction,
-                    reason,
-                    live_matches,
-                )
-            else:
-                self.log.critical(
-                    "FAIL_SAFE_POSITION_CLOSED_CONFIRMED | %s | direction=%s | reason=%s",
-                    symbol_upper,
-                    direction,
-                    reason,
-                )
         except Exception as exc:
             self.log.critical(
-                "FAIL_SAFE_POSITION_VERIFY_FAILED | %s | direction=%s | reason=%s | manual_intervention_required=True | error=%s",
-                symbol,
-                direction,
-                reason,
-                exc,
+                "FAIL_SAFE_POSITION_VERIFY_FAILED | %s | direction=%s | reason=%s | "
+                "flatness=UNKNOWN | manual_intervention_required=True | error=%s",
+                symbol, direction, reason, exc,
             )
+            return FailSafeFlatness.UNKNOWN
+
+        # An absent or non-list `data` is not an empty position book. Reading it
+        # as one is how a malformed response used to prove the position closed.
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            self.log.critical(
+                "FAIL_SAFE_POSITION_VERIFY_MALFORMED | %s | direction=%s | reason=%s | "
+                "flatness=UNKNOWN | manual_intervention_required=True | payload_type=%s",
+                symbol_upper, direction, reason, type(payload).__name__,
+            )
+            return FailSafeFlatness.UNKNOWN
+
+        live_matches = []
+        for position in payload["data"]:
+            if not isinstance(position, dict):
+                self.log.critical(
+                    "FAIL_SAFE_POSITION_VERIFY_MALFORMED | %s | direction=%s | reason=%s | "
+                    "flatness=UNKNOWN | manual_intervention_required=True | row_type=%s",
+                    symbol_upper, direction, reason, type(position).__name__,
+                )
+                return FailSafeFlatness.UNKNOWN
+            if str(position.get("symbol") or "").upper() != symbol_upper:
+                continue
+
+            size = _fail_safe_position_size(position)
+            if size is None:
+                # A row for our symbol whose size will not parse cannot be
+                # rounded down to zero: that is exactly the position we are
+                # trying to prove gone.
+                self.log.critical(
+                    "FAIL_SAFE_POSITION_VERIFY_UNPARSEABLE_SIZE | %s | direction=%s | "
+                    "reason=%s | flatness=UNKNOWN | manual_intervention_required=True",
+                    symbol_upper, direction, reason,
+                )
+                return FailSafeFlatness.UNKNOWN
+            if size > 0:
+                live_matches.append(position)
+
+        if live_matches:
+            self.log.critical(
+                "FAIL_SAFE_POSITION_STILL_OPEN | %s | direction=%s | reason=%s | "
+                "flatness=REMAINS | manual_intervention_required=True | positions=%s",
+                symbol_upper, direction, reason, live_matches,
+            )
+            return FailSafeFlatness.REMAINS
+
+        self.log.critical(
+            "FAIL_SAFE_POSITION_CLOSED_CONFIRMED | %s | direction=%s | reason=%s | flatness=FLAT",
+            symbol_upper, direction, reason,
+        )
+        return FailSafeFlatness.FLAT
+
+    def _close_out_entry_intent_if_flat(
+        self,
+        *,
+        client_oid: str,
+        flatness: FailSafeFlatness,
+        symbol: str,
+        reason: str,
+    ) -> bool:
+        """Retire the entry intent only against a proven-flat exchange.
+
+        CLOSED_OUT moves the intent to STATE_ABANDONED, which is terminal: it
+        leaves `recoverable()` and `_prune` may drop it. Claiming it while the
+        position may still be live would delete the one record that startup
+        recovery uses to find an orphaned, unprotected position. So anything
+        short of FLAT leaves the intent at FILLED — recoverable on purpose.
+        """
+        if not client_oid:
+            return False
+        intents = getattr(self.entry_submitter, "intents", None)
+        existing = intents.get(client_oid) if intents is not None else None
+        if isinstance(existing, dict) and existing.get("protection_state") == "CLOSED_OUT":
+            # Already retired. A second transition would add another ABANDONED
+            # entry to the intent history for one lifecycle.
+            return False
+        if flatness is not FailSafeFlatness.FLAT:
+            self.log.critical(
+                "FAIL_SAFE_CLOSE_OUT_REFUSED | %s | client_oid=%s | reason=%s | "
+                "flatness=%s | intent stays FILLED and recoverable | "
+                "manual_intervention_required=True",
+                str(symbol).upper(), client_oid, reason, flatness.value,
+            )
+            return False
+        self.entry_submitter.mark_closed_out(client_oid, reason=reason)
+        return True
 
     def _report(
         self,

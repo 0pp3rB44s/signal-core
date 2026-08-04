@@ -57,6 +57,22 @@ from telemetry.funnel import (
 )
 
 
+#: Keys a recovery sweep must report before its result can be trusted. A result
+#: missing any of them is an unknown state, not a clean one.
+STARTUP_RECOVERY_REQUIRED_STATS = frozenset(
+    {"blocked", "still_pending", "ambiguous", "unresolved_total", "recovered"}
+)
+
+
+def _stat_int(stats: dict, key: str) -> int:
+    """Read one counter, treating anything unreadable as "not zero"."""
+    value = stats.get(key)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
+
+
 class ScanCycleProducedNoMarketData(RuntimeError):
     """A scan cycle requested symbols but could not build a single snapshot.
 
@@ -345,6 +361,77 @@ class StartupRunner:
         self._position_sync_lock = threading.Lock()
         self._position_monitor_wakeup = threading.Event()
         self._position_monitor_thread: threading.Thread | None = None
+        self._startup_close_recovery_complete = bool(settings.forward_paper_only)
+
+    def _startup_recovery_verdict(self, stats) -> tuple[bool, str]:
+        """Decide whether a recovery sweep leaves anything unaccounted for.
+
+        The gate used to ask one question — `stats["blocked"]` — and a sweep sets
+        that flag only when it aborts. A lifecycle the exchange could not resolve,
+        or one that several history rows fit, raises inside the per-row loop, is
+        counted into `still_pending`, and the sweep returns normally. So a startup
+        with unresolved economics reported "complete" and let the bot open new
+        positions while an earlier close counted nowhere.
+
+        Every state other than a fully accounted sweep is refused.
+        """
+        if not isinstance(stats, dict):
+            return False, f"UNKNOWN: recovery returned {type(stats).__name__}, not a dict"
+        missing = sorted(STARTUP_RECOVERY_REQUIRED_STATS.difference(stats))
+        if missing:
+            return False, f"UNKNOWN: recovery result is missing {missing}"
+        if stats.get("blocked"):
+            return False, "BLOCKED: recovery aborted"
+        if _stat_int(stats, "ambiguous"):
+            return False, f"AMBIGUOUS: {_stat_int(stats, 'ambiguous')} lifecycle(s) match more than one history row"
+        if _stat_int(stats, "still_pending"):
+            return False, f"PENDING: {_stat_int(stats, 'still_pending')} lifecycle(s) have no exchange economics yet"
+        # The sweep is bounded, so "nothing pending" is not "nothing left": rows
+        # past the limit were never attempted. Require that everything unresolved
+        # was actually recovered before calling the phase complete.
+        unresolved = _stat_int(stats, "unresolved_total")
+        recovered = _stat_int(stats, "recovered")
+        if unresolved != recovered:
+            return False, f"INCOMPLETE: {unresolved - recovered} unresolved row(s) not attempted this sweep"
+        return True, "COMPLETE"
+
+    def _ensure_startup_close_recovery(self) -> bool:
+        """Gate every new execution behind one fully accounted exchange-truth sweep."""
+        if self._startup_close_recovery_complete:
+            return True
+        if self.position_manager is None:
+            self.log.critical("STARTUP_CLOSE_RECOVERY_BLOCKED | reason=no position manager")
+            return False
+        try:
+            stats = self.position_manager.recover_provisional_close_rows()
+        except Exception as exc:
+            self.log.critical("STARTUP_CLOSE_RECOVERY_BLOCKED | reason=UNKNOWN | error=%s", exc)
+            return False
+
+        complete, verdict = self._startup_recovery_verdict(stats)
+        if not complete:
+            self.log.critical(
+                "STARTUP_CLOSE_RECOVERY_BLOCKED | verdict=%s | stats=%s | new_entries_blocked=True",
+                verdict, stats,
+            )
+            return False
+
+        self._startup_close_recovery_complete = True
+        self.log.warning("STARTUP_CLOSE_RECOVERY_COMPLETE | %s", stats)
+        return True
+
+    def _execute_selected_plans(self, selected_plans: list) -> list:
+        """The only scanner entry to ExecutionService, recovery-gated."""
+        if self.execution_service is None:
+            return []
+        if not self._ensure_startup_close_recovery():
+            self.log.critical(
+                "EXECUTION_BLOCKED_BY_STARTUP_CLOSE_RECOVERY | selected_plans=%s",
+                len(selected_plans),
+            )
+            return []
+        with trading_state_lock():
+            return self.execution_service.execute(selected_plans)
 
     def _maybe_refresh_learning_reports(self) -> None:
         """Regenerate the daily learning/expectancy reports when they go stale.
@@ -1521,12 +1608,7 @@ class StartupRunner:
                     len(selection.ranked),
                     len(selection.rejected),
                 )
-            with trading_state_lock():
-                exec_reports = (
-                    self.execution_service.execute(selected_plans)
-                    if self.execution_service is not None
-                    else []
-                )
+            exec_reports = self._execute_selected_plans(selected_plans)
             if exec_reports:
                 self._emit_execution_summary(exec_reports)
                 self.execution_logger.append_rows(exec_reports)

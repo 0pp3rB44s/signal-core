@@ -365,6 +365,11 @@ class PositionReconcilerMixin:
 
     def _exchange_close_truth_from_position_history(self, position: dict) -> dict:
         """Fetch realized close truth from Bitget position history."""
+        from execution.close_reconciler import (
+            CloseReconciliationUnavailable,
+            economics_from_history,
+            match_lifecycle,
+        )
         symbol = str(position.get("symbol") or "").upper()
         direction = str(position.get("direction") or "").upper()
         if not symbol:
@@ -390,80 +395,61 @@ class PositionReconcilerMixin:
         if not rows:
             return {"close_source": "bitget_position_history_empty"}
 
-        def row_time(row: dict) -> int:
-            for key in ("utime", "ctime", "updatedTime", "createdTime", "closeTime"):
-                try:
-                    value = int(float(row.get(key) or 0))
-                except (TypeError, ValueError):
-                    value = 0
-                if value > 0:
-                    return value
-            return 0
-
-        candidates = []
-        for row in rows:
-            row_symbol = str(row.get("symbol") or row.get("instId") or "").upper()
-            row_hold_side = str(row.get("holdSide") or row.get("posSide") or row.get("side") or "").lower()
-            if row_symbol and row_symbol != symbol:
-                continue
-            if hold_side and row_hold_side and row_hold_side != hold_side:
-                continue
-            candidates.append(row)
-
-        if not candidates:
-            return {"close_source": "bitget_position_history_no_match"}
-
-        selected = sorted(candidates, key=row_time, reverse=True)[0]
-
-        def pick_float(row: dict, keys: tuple[str, ...], default: float = 0.0) -> float:
-            for key in keys:
-                value = row.get(key)
-                if value not in (None, ""):
-                    return self._safe_float(value, default)
-            return default
-
-        net_profit = pick_float(selected, ("netProfit", "net_profit", "realizedPnl", "realizedPNL", "realizedPnlAfterFee", "achievedProfits", "totalProfits", "profit"), 0.0)
-        pnl = pick_float(selected, ("pnl", "positionPnl", "positionPNL", "grossPnl", "grossPNL", "realizedPnl", "realizedPNL"), net_profit)
-        open_fee = abs(pick_float(selected, ("openFee", "open_fee", "openingFee", "entryFee"), 0.0))
-        close_fee = abs(pick_float(selected, ("closeFee", "close_fee", "closingFee", "exitFee"), 0.0))
-        total_fee = open_fee + close_fee
-        exit_price = self._safe_float(
-            selected.get("closeAvgPrice")
-            or selected.get("closePrice")
-            or selected.get("averageClosePrice")
-            or selected.get("avgClosePrice"),
-            0.0,
-        )
-        size = self._safe_float(
-            selected.get("closeTotalPos")
-            or selected.get("closeSize")
-            or selected.get("total")
-            or selected.get("size"),
-            0.0,
-        )
+        opened_at_ms = position.get("opened_at_ms") or position.get("exchange_open_time")
+        if opened_at_ms in (None, "") and position.get("opened_at"):
+            try:
+                opened_at_ms = int(datetime.fromisoformat(
+                    str(position["opened_at"]).replace("Z", "+00:00")
+                ).timestamp() * 1000)
+            except (TypeError, ValueError):
+                opened_at_ms = None
+        try:
+            size = float(position.get("confirmed_position_size") or position.get("position_size"))
+        except (TypeError, ValueError):
+            size = None
+        try:
+            selected = match_lifecycle(
+                rows,
+                symbol=symbol,
+                direction=hold_side,
+                opened_at_ms=int(opened_at_ms) if opened_at_ms not in (None, "") else None,
+                size=size,
+                exchange_position_id=position.get("exchange_position_id"),
+            )
+            if selected is None:
+                raise CloseReconciliationUnavailable("no unambiguous position-history lifecycle")
+            economics = economics_from_history(selected)
+        except CloseReconciliationUnavailable as exc:
+            self.log.critical(
+                "EXCHANGE_CLOSE_TRUTH_POSITION_HISTORY_UNAVAILABLE | %s | error=%s",
+                symbol, exc,
+            )
+            return {"close_source": "bitget_position_history_unavailable"}
 
         self.log.warning(
             "EXCHANGE_CLOSE_TRUTH_SELECTED | %s | source=bitget_position_history | exit=%s | size=%s | net_profit=%s | pnl=%s | fee=%s | raw_time=%s | keys=%s",
             symbol,
-            exit_price,
-            size,
-            net_profit,
-            pnl,
-            total_fee,
-            row_time(selected),
+            economics.close_price,
+            economics.size,
+            economics.net_profit,
+            economics.gross_pnl,
+            economics.fees,
+            economics.close_time,
             sorted(selected.keys()),
         )
 
         return {
             "close_source": "bitget_position_history",
             "order_id": selected.get("orderId") or selected.get("id") or "",
-            "exit_price": exit_price,
-            "size": size,
-            "pnl": net_profit,
-            "gross_pnl": pnl,
-            "fee": total_fee,
-            "open_fee": open_fee,
-            "close_fee": close_fee,
+            "exit_price": economics.close_price,
+            "size": economics.size,
+            "pnl": economics.net_profit,
+            "gross_pnl": economics.gross_pnl,
+            "fee": economics.fees,
+            "open_fee": economics.open_fee,
+            "close_fee": economics.close_fee,
+            "funding": economics.funding,
+            "economics": economics,
             "raw": selected,
         }
 
