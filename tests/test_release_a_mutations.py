@@ -258,7 +258,7 @@ def test_m10_and_m11_resolved_filtering_precedes_limit_and_rotated_is_loaded(tmp
     write_csv(active, resolved_rows)
     old = {"event_type": "CLOSE_PROVISIONAL", **identity(position_lifecycle_id="old")}
     write_csv(rotated, [old])
-    provisionals = load_provisional_rows(str(active))
+    provisionals = load_provisional_rows(str(active)).rows
     written: list[dict] = []
     stats = recover_provisional_closes(
         provisional_rows=provisionals,

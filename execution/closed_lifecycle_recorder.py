@@ -28,12 +28,18 @@ those up later, bounded and idempotent.
 from __future__ import annotations
 
 import logging
-import csv
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-from execution.close_dedup import DedupOutcome, economic_close_status, segment_paths
+from execution.close_dedup import (
+    DedupOutcome,
+    SegmentUnreadable,
+    economic_close_status,
+    read_segment,
+    segment_paths,
+)
 from execution.close_reconciler import (
     AmbiguousLifecycle,
     CloseReconciliationUnavailable,
@@ -321,6 +327,7 @@ def recover_provisional_closes(
     reconcile: Callable[..., dict] = reconcile_close,
     limit: int = MAX_RECOVERY_PER_SWEEP,
     cursor: Any = None,
+    load_blocked: bool = False,
 ) -> dict:
     """Fill in economics for closes that were provisional at the time.
 
@@ -346,6 +353,20 @@ def recover_provisional_closes(
         "ambiguous": 0, "blocked": False, "unresolved_total": 0,
         "next_cursor": _serialize_cursor(_parse_cursor(cursor)),
     }
+
+    if load_blocked:
+        # The row list is known to be incomplete, so nothing here can be trusted:
+        # not the dedup verdicts, not "unresolved_total", and certainly not a
+        # cursor advance past rows we never saw. Refuse the whole sweep and let
+        # the startup gate keep new entries out until storage is readable.
+        stats["blocked"] = True
+        log.critical(
+            "CLOSE_RECOVERY_ABORTED_LOAD_UNREADABLE | visible_rows=%s | "
+            "0 economic writes | 0 retires | cursor unchanged",
+            len(provisional_rows),
+        )
+        return stats
+
     unresolved: list[dict] = []
     for row in sorted(provisional_rows, key=_oldest_key):
         dedup = economic_close_status(dataset_path, row)
@@ -418,20 +439,75 @@ def recover_provisional_closes(
     return stats
 
 
-def load_provisional_rows(dataset_path: str) -> list[dict]:
-    """Read provisional rows from the active dataset and every numeric rotation."""
+@dataclass(frozen=True)
+class ProvisionalLoad:
+    """What the loader could actually establish about the dataset.
+
+    ``blocked`` is the whole point. A segment that exists but cannot be read
+    used to be logged and skipped, so its pending rows simply vanished from the
+    result. The sweep then reported ``unresolved_total=0``, the startup verdict
+    read COMPLETE, and the bot opened new positions while closes it had never
+    seen were sitting in an unreadable file. An incomplete list must announce
+    that it is incomplete.
+    """
+
+    rows: list[dict]
+    blocked: bool
+    unreadable_segments: tuple[str, ...] = ()
+    error_types: tuple[str, ...] = ()
+    segment_paths: tuple[str, ...] = ()
+
+
+def load_provisional_rows(dataset_path: str) -> ProvisionalLoad:
+    """Read provisional rows from the active dataset and every numeric rotation.
+
+    Uses the same strict reader as close-dedup, so both agree on what corruption
+    means: permission and I/O errors, decode failures, malformed CSV, a missing
+    or invalid header, absent required columns and truncated rows are all
+    unreadable. An absent optional rotation is not — its emptiness is provable.
+    """
+    try:
+        paths = segment_paths(dataset_path)
+    except OSError as exc:
+        log.critical(
+            "CLOSE_RECOVERY_SEGMENT_DISCOVERY_FAILED | dataset=%s | error=%s | "
+            "provisional rows UNKNOWN | recovery blocked",
+            dataset_path, type(exc).__name__,
+        )
+        return ProvisionalLoad(
+            rows=[], blocked=True,
+            unreadable_segments=(str(dataset_path),),
+            error_types=(type(exc).__name__,),
+        )
+
     rows: list[dict] = []
-    for path in segment_paths(dataset_path):
+    unreadable: list[str] = []
+    error_types: list[str] = []
+    for path in paths:
         try:
-            with path.open("r", newline="", encoding="utf-8", errors="replace") as handle:
-                for index, row in enumerate(csv.DictReader(handle), start=2):
-                    if is_provisional(row):
-                        row["_recovery_segment"] = str(path)
-                        row["_recovery_line"] = index
-                        rows.append(row)
-        except OSError as exc:
-            log.warning("CLOSE_RECOVERY_SEGMENT_READ_FAILED | path=%s | error=%s", path, exc)
-    return rows
+            segment = read_segment(path)
+        except SegmentUnreadable as exc:
+            unreadable.append(exc.path)
+            error_types.append(exc.reason)
+            log.critical(
+                "CLOSE_RECOVERY_SEGMENT_UNREADABLE | path=%s | reason=%s | "
+                "pending rows in this segment are UNKNOWN | recovery blocked",
+                exc.path, exc.reason,
+            )
+            continue
+        for index, row in enumerate(segment, start=2):
+            if is_provisional(row):
+                row["_recovery_segment"] = str(path)
+                row["_recovery_line"] = index
+                rows.append(row)
+
+    return ProvisionalLoad(
+        rows=rows,
+        blocked=bool(unreadable),
+        unreadable_segments=tuple(unreadable),
+        error_types=tuple(error_types),
+        segment_paths=tuple(str(p) for p in paths),
+    )
 
 
 def _opened_at_ms(row: dict) -> int | None:
@@ -475,6 +551,7 @@ __all__ = [
     "MAX_RECOVERY_PER_SWEEP",
     "exchange_confirmed_flat",
     "recover_provisional_closes",
+    "ProvisionalLoad",
     "load_provisional_rows",
     "record_closed_lifecycle",
 ]

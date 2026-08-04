@@ -41,7 +41,13 @@ def _history(client: BitgetRestClient) -> list[dict]:
 
 
 def audit(*, dataset: str, history: list[dict], apply: bool = False) -> dict:
-    rows = load_provisional_rows(dataset)
+    load = load_provisional_rows(dataset)
+    if load.blocked:
+        raise SystemExit(
+            "refusing to audit: unreadable segments "
+            + ", ".join(load.unreadable_segments)
+        )
+    rows = load.rows
     summary = {"safe": 0, "ambiguous_or_missing": 0, "existing": 0, "applied": 0}
     before = Decimal("0")
     for path in segment_paths(dataset):

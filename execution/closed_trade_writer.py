@@ -614,7 +614,13 @@ class ClosedTradeWriterMixin:
         from telemetry.trade_logger import append_exchange_truth_close
 
         dataset_path = "logs/trade_dataset_v2.csv"
-        rows = load_provisional_rows(dataset_path)
+        load = load_provisional_rows(dataset_path)
+        if load.blocked:
+            self.log.critical(
+                "CLOSE_RECOVERY_LOAD_BLOCKED | segments=%s | errors=%s | "
+                "pending closes UNKNOWN | new entries stay blocked",
+                ",".join(load.unreadable_segments), ",".join(load.error_types),
+            )
 
         def _write(position: dict, economics) -> None:
             append_exchange_truth_close(
@@ -629,12 +635,13 @@ class ClosedTradeWriterMixin:
         cursor = saved.get("cursor") if isinstance(saved, dict) else None
 
         stats = recover_provisional_closes(
-            provisional_rows=rows,
+            provisional_rows=load.rows,
             dataset_path=dataset_path,
             fetch_history=self._fetch_closed_position_history,
             write_economic_close=_write,
             limit=limit,
             cursor=cursor,
+            load_blocked=load.blocked,
         )
 
         try:

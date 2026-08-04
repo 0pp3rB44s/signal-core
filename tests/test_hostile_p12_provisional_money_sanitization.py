@@ -114,7 +114,8 @@ def test_hp12_1_exchange_truth_pnl_stays_provisional_and_recoverable():
     assert_is_a_real_provisional(row)
 
     found = load_provisional_rows(DATASET)
-    assert [r["position_lifecycle_id"] for r in found] == ["LC-1"], (
+    assert found.blocked is False
+    assert [r["position_lifecycle_id"] for r in found.rows] == ["LC-1"], (
         "the recovery loader must be able to find this row again"
     )
 
@@ -168,7 +169,7 @@ def test_hp12_3_every_callsite_produces_a_recoverable_row():
     for line in sites:
         write(position(f"LC-site-{line}", **ALL_EXCHANGE_TRUTH_MONEY))
         assert_is_a_real_provisional(last())
-    assert len(load_provisional_rows(DATASET)) == len(sites)
+    assert len(load_provisional_rows(DATASET).rows) == len(sites)
 
 
 # ── H-P12-4: the real order-history fallback shape ──────────────────────────
@@ -202,7 +203,7 @@ def run_recovery() -> dict:
     from telemetry.trade_logger import append_exchange_truth_close
 
     return recover_provisional_closes(
-        provisional_rows=load_provisional_rows(DATASET),
+        provisional_rows=load_provisional_rows(DATASET).rows,
         dataset_path=DATASET,
         fetch_history=lambda: [history_row()],
         write_economic_close=lambda row, econ: append_exchange_truth_close(
