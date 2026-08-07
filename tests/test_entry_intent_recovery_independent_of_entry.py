@@ -173,6 +173,60 @@ def test_7b_blocking_verdict_is_delivered_once(monkeypatch):
     assert "unreconciled order intent" not in second
 
 
+# ── CASE E: housekeeping success must not suppress a later valid entry ──────
+
+def test_e_clean_recovery_on_empty_cycle_leaves_next_entry_allowed(monkeypatch):
+    """The property that makes this patch safe rather than merely earlier.
+
+    Recovery runs on a cycle with nothing to trade. The next cycle has a real
+    winner, and must be allowed through: a successful housekeeping pass may not
+    leave anything behind that blocks trading.
+    """
+    service = service_with_recorder(monkeypatch)
+    service.execute([])                                   # housekeeping only
+    assert service.entry_submitter.calls == 1
+    assert service._entry_recovery_block_reason == ""
+
+    monkeypatch.setattr(service, "_exchange_pending_entry_guard_reason", lambda: "")
+    assert service._entry_guard_reason() == "", (
+        "a clean recovery left a residue that would block the next entry"
+    )
+    assert service.entry_submitter.calls == 1, "recovery must not repeat"
+
+
+def test_e_consumed_block_reason_does_not_leak_into_later_cycles(monkeypatch):
+    """A verdict is delivered once, then the persistent gates take over."""
+    service = service_with_recorder(monkeypatch, result={
+        "blocked": True, "reasons": ["unreconciled order intent"], "recovered": [],
+    })
+    service.execute([])
+    assert "unreconciled" in service._entry_guard_reason()      # cycle N: blocked
+
+    monkeypatch.setattr(service, "_exchange_pending_entry_guard_reason", lambda: "")
+    for _ in range(3):                                          # cycle N+1..N+3
+        assert service._entry_guard_reason() == "", (
+            "a consumed verdict kept blocking; only intent_store.blocking() may persist"
+        )
+    assert service.entry_submitter.calls == 1
+
+
+def test_e_unknown_intent_keeps_blocking_after_the_verdict_is_consumed(monkeypatch):
+    """Fail-closed must come from durable state, not from the cached string."""
+    service = service_with_recorder(monkeypatch, result={
+        "blocked": True, "reasons": ["intent coid-x is in UNKNOWN state"], "recovered": [],
+    })
+    service.execute([])
+    service._entry_guard_reason()                               # consume the verdict
+
+    monkeypatch.setattr(
+        service.intent_store, "blocking",
+        lambda: [{"symbol": "BTCUSDT", "client_oid": "coid-x"}],
+    )
+    assert "UNKNOWN state" in service._entry_guard_reason(), (
+        "an UNKNOWN intent stopped blocking once the cached reason was consumed"
+    )
+
+
 # ── TEST 8 / 9: recovery cannot touch the exchange ──────────────────────────
 
 def test_8_recovery_only_cycle_submits_no_order(monkeypatch):
