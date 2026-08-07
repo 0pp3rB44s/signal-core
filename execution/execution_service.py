@@ -110,10 +110,53 @@ class ExecutionService:
             log=self.log,
         )
         self._entry_recovery_done = False
+        #: Set by `_ensure_entry_intent_recovery`, consumed once by
+        #: `_entry_guard_reason`. Recovery may now run on a cycle that never
+        #: reaches the guard, so its verdict has to wait somewhere.
+        self._entry_recovery_block_reason = ""
+
+    def _ensure_entry_intent_recovery(self) -> None:
+        """Reconcile persisted order intents once per process. Housekeeping only.
+
+        This used to live inside `_entry_guard_reason`, which `execute` reaches
+        only *after* it has a portfolio winner. With no winner — a weekly freeze,
+        a quiet market, every plan risk-blocked — `execute` returns early and the
+        reconciliation never ran at all. Unfilled maker legs then accumulated as
+        SUBMITTED forever: 64 of them by the time the exchange attestation caught
+        it. The one job that cleans up after a bot that could not trade was gated
+        behind the bot trading.
+
+        It creates no order, cancels nothing, and cannot lift a risk gate. A
+        blocking verdict is stored rather than returned, so the entry guard still
+        sees it on the first cycle that asks — exactly as before.
+        """
+        if self.settings.execution_mode.upper() != "LIVE":
+            return
+        if self._entry_recovery_done:
+            return
+        try:
+            recovery = self.entry_submitter.recover_pending_intents()
+        except Exception as exc:
+            # Deliberately not latched: a failed reconciliation must be retried,
+            # and until it succeeds no new entry may be created.
+            self.log.critical(
+                "STARTUP_RECOVERY_FAILED | new_entries_blocked=True | error=%s", exc
+            )
+            self._entry_recovery_block_reason = f"order-intent recovery failed: {exc}"
+            return
+        self._entry_recovery_done = True
+        if recovery.get("blocked"):
+            self._entry_recovery_block_reason = "; ".join(
+                recovery.get("reasons") or ["unreconciled order intent"]
+            )
 
     def execute(self, plans: list[TradePlan]) -> list[ExecutionReport]:
         if not self.settings.execution_enabled:
             return []
+
+        # Housekeeping before selection. Everything below this line can return
+        # early; reconciliation must not depend on whether this cycle trades.
+        self._ensure_entry_intent_recovery()
 
         selection = select_execution_winner(
             plans,
@@ -1444,24 +1487,20 @@ class ExecutionService:
     def _entry_guard_reason(self) -> str:
         """Return a non-empty reason when no new live entry may be created.
 
-        On the first LIVE cycle of a process this reconciles every persisted
-        order intent against Bitget, so a bot that died mid-submission adopts
-        the order it may have created instead of placing a second one.
+        The reconciliation itself runs in `_ensure_entry_intent_recovery`, which
+        `execute` calls before it decides whether it has anything to trade. This
+        still runs it, for the case where the guard is reached first, and then
+        consumes its verdict once — the same single delivery the inline version
+        produced on the cycle it reconciled.
         """
         if self.settings.execution_mode.upper() != "LIVE":
             return ""
 
-        if not self._entry_recovery_done:
-            try:
-                recovery = self.entry_submitter.recover_pending_intents()
-            except Exception as exc:
-                self.log.critical(
-                    "STARTUP_RECOVERY_FAILED | new_entries_blocked=True | error=%s", exc
-                )
-                return f"order-intent recovery failed: {exc}"
-            self._entry_recovery_done = True
-            if recovery.get("blocked"):
-                return "; ".join(recovery.get("reasons") or ["unreconciled order intent"])
+        self._ensure_entry_intent_recovery()
+        recovery_reason = self._entry_recovery_block_reason
+        self._entry_recovery_block_reason = ""
+        if recovery_reason:
+            return recovery_reason
 
         blocking = self.intent_store.blocking()
         if blocking:
