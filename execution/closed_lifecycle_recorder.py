@@ -74,6 +74,37 @@ def exchange_confirmed_flat(close_result: Any) -> bool:
     return status in {EXCHANGE_FLAT_STATUS, "NO_POSITION"} and flatness == "FLAT" and remaining == 0.0
 
 
+def _emit_outcome_telemetry(
+    position: dict,
+    economics: Any,
+    *,
+    source: str,
+    log_: logging.Logger | None = None,
+) -> None:
+    """Research telemetry, fired after the economic close is already on disk.
+
+    Placed after ``write_economic_close`` on purpose. It inherits that call's
+    dedup -- a duplicate close is refused before reaching here, and a
+    provisional close never gets this far -- so one lifecycle yields exactly one
+    outcome row, written at the moment its economics became authoritative.
+
+    Nothing it does may reach the caller. The close is already recorded; a
+    research row failing to write is not a reason to change what happens next,
+    and the import is local so a broken telemetry module cannot stop this file
+    from loading in a close path.
+    """
+    logger = log_ or log
+    try:
+        from execution.entry_outcome import emit_close_outcome
+
+        emit_close_outcome(position, economics, source=source, log=logger)
+    except Exception as exc:  # noqa: BLE001 - telemetry is never load-bearing
+        logger.warning(
+            "ENTRY_OUTCOME_TELEMETRY_SKIPPED | %s | source=%s | error=%s",
+            str(position.get("symbol") or "UNKNOWN"), source, exc,
+        )
+
+
 def record_closed_lifecycle(
     *,
     position: dict,
@@ -144,6 +175,7 @@ def record_closed_lifecycle(
         return "PROVISIONAL"
 
     write_economic_close(position, econ)
+    _emit_outcome_telemetry(position, econ, source="reconciled")
     if retire_provisional is not None:
         retire_provisional(position)
     log.warning(
@@ -220,6 +252,7 @@ def record_known_economics_close(
         return "ALREADY"
 
     write_economic_close(position, economics)
+    _emit_outcome_telemetry(position, economics, source="known_economics", log_=logger)
     logger.warning(
         "CLOSE_ECONOMICS_RECORDED | %s | lifecycle=%s | position_id=%s | source=known_economics",
         symbol or "UNKNOWN", lifecycle or "UNKNOWN", position_id or "UNKNOWN",
