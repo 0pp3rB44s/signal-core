@@ -44,7 +44,42 @@ log = logging.getLogger("close_reconciler")
 POLL_DELAYS_S: tuple[float, ...] = (2.0, 4.0, 8.0, 8.0, 12.0)
 
 #: `opened_at` may differ between our clock and Bitget's by a small amount.
+#: Retained as the *forward* half of the observation window below, and still
+#: exported because callers and tests refer to it by name.
 OPENED_AT_TOLERANCE_MS = 5_000
+
+#: EXCHANGE EVENT TIME vs LOCAL OBSERVATION TIME.
+#:
+#: A history row's `ctime`/`utime` are the moments Bitget opened and closed the
+#: position — exchange event time. Our `opened_at`/`closed_at` are the moments
+#: *we* confirmed those facts — local observation time. Observation necessarily
+#: trails the event: we cannot see a position before it exists. The lag is the
+#: maker wait (`MAKER_ENTRY_WAIT_SECONDS`) plus fill-confirmation polling, and
+#: production measurements on 2026-08-08 put it at 0.7-2.7 s for 43 of 45
+#: lifecycles, 5.678 s for one and 20.828 s for another — both maker entries.
+#: The old symmetric ±5 s window refused exactly those two, leaving real money
+#: unreconciled and the startup gate blocking new entries.
+#:
+#: So the window is deliberately ASYMMETRIC:
+#:
+#:   backward (exchange event before our observation) -- the physically expected
+#:   direction, and legitimately slow. Bounded at two minutes: 5.8x the worst
+#:   lag ever measured, while the nearest WRONG candidate in the same production
+#:   data sat 244,103,578 ms (2.8 days) away. Roughly three orders of magnitude
+#:   of headroom on both sides.
+#:
+#:   forward (exchange event AFTER our observation) -- physically impossible for
+#:   a genuine observation, so it is only ever host clock skew. Kept at the
+#:   original 5 s: wide enough to absorb ordinary drift, tight enough that a
+#:   badly skewed clock cannot silently drop the true candidate and promote a
+#:   wrong one to "unique".
+#:
+#: Widening the backward bound does NOT weaken the guarantee. The guarantee is
+#: uniqueness, not proximity: two survivors still raise `AmbiguousLifecycle`.
+#: A wider window can only turn a refusal into an ambiguity — never a refusal
+#: into a wrong match.
+OPEN_OBSERVATION_MAX_MS = 120_000
+CLOSE_OBSERVATION_MAX_MS = 120_000
 
 #: Size is compared relatively; Bitget rounds to contract precision.
 SIZE_TOLERANCE_REL = 0.01
@@ -129,6 +164,25 @@ def _f(value: Any) -> float | None:
         return None
 
 
+def _observation_lag_ok(event_ms: Any, observed_ms: int, backward_max: int) -> bool:
+    """True when `observed_ms` can be an observation of the event at `event_ms`.
+
+    `lag = observed - event`. Positive means we saw it after it happened, which
+    is the only physically possible order and may be slow (see
+    `OPEN_OBSERVATION_MAX_MS`). Negative means the exchange stamped the event
+    after we claim to have seen it, which can only be clock skew and is allowed
+    just `OPENED_AT_TOLERANCE_MS`.
+    """
+    try:
+        event = int(event_ms or 0)
+    except (TypeError, ValueError):
+        return False
+    if event <= 0:
+        return False
+    lag = observed_ms - event
+    return -OPENED_AT_TOLERANCE_MS <= lag <= backward_max
+
+
 def match_lifecycle(
     rows: list[dict],
     *,
@@ -137,6 +191,7 @@ def match_lifecycle(
     opened_at_ms: int | None,
     size: float | None,
     exchange_position_id: str | None = None,
+    closed_at_ms: int | None = None,
 ) -> dict | None:
     """Pick the one history row that is this lifecycle.
 
@@ -150,6 +205,13 @@ def match_lifecycle(
     ours within tolerance, because two lifecycles on the same symbol and side can
     close within the same second (a scale-out, or two cycles in a row), and a
     looser match would silently merge them into one.
+
+    The composite route filters, in order: symbol, side, a positive size within
+    `SIZE_TOLERANCE_REL`, the open observation window, and — when the caller
+    supplies `closed_at_ms` — the close observation window. Exactly one survivor
+    matches; none returns ``None``; more than one raises `AmbiguousLifecycle`.
+    Every filter can only shrink the candidate set, so each added axis is
+    strictly safer than omitting it.
     """
     want_sym = str(symbol or "").upper()
     want_side = str(direction or "").lower()
@@ -185,13 +247,28 @@ def match_lifecycle(
         return None
     cands = sized
 
+    # Open axis: exchange `ctime` (event) against our `opened_at` (observation).
     within = [
         r for r in cands
-        if abs(int(r.get("ctime") or 0) - opened_at_ms) <= OPENED_AT_TOLERANCE_MS
+        if _observation_lag_ok(r.get("ctime"), opened_at_ms, OPEN_OBSERVATION_MAX_MS)
     ]
     if not within:
         return None
     cands = within
+
+    # Close axis: exchange `utime` against our `closed_at`. A second, independent
+    # time axis, applied only when the caller has an observed close — recovery
+    # reads it off the provisional row. It can only ever REMOVE candidates, so a
+    # caller without it is exactly as safe as before, just less discriminating.
+    if closed_at_ms is not None:
+        closed_within = [
+            r for r in cands
+            if _observation_lag_ok(r.get("utime"), closed_at_ms, CLOSE_OBSERVATION_MAX_MS)
+        ]
+        if not closed_within:
+            return None
+        cands = closed_within
+
     if len(cands) > 1:
         # Distance inside the tolerance window is NOT a tie-breaker. Two rows
         # that both satisfy symbol, side, size and open-time tolerance are
@@ -284,6 +361,7 @@ def reconcile_close(
     opened_at_ms: int | None,
     size: float | None,
     exchange_position_id: str | None = None,
+    closed_at_ms: int | None = None,
     fetch_history: Callable[[], list[dict]],
     sleep: Callable[[float], None] = time.sleep,
     delays: tuple[float, ...] = POLL_DELAYS_S,
@@ -310,6 +388,7 @@ def reconcile_close(
                 rows, symbol=symbol, direction=direction,
                 opened_at_ms=opened_at_ms, size=size,
                 exchange_position_id=exchange_position_id,
+                closed_at_ms=closed_at_ms,
             )
             if hit is not None:
                 econ = economics_from_history(hit)
@@ -341,7 +420,9 @@ __all__ = [
     "CloseReconciliationUnavailable",
     "AmbiguousLifecycle",
     "ExchangeCloseEconomics",
+    "CLOSE_OBSERVATION_MAX_MS",
     "OPENED_AT_TOLERANCE_MS",
+    "OPEN_OBSERVATION_MAX_MS",
     "POLL_DELAYS_S",
     "RECONCILED_SOURCE",
     "SIZE_TOLERANCE_REL",

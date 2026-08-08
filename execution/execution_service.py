@@ -1475,6 +1475,26 @@ class ExecutionService:
                 "exchange_entry_order_id": str(live_order_id or ""),
                 "exchange_entry_client_oid": entry_client_oid,
                 "position_lifecycle_id": lifecycle_id,
+                # Exchange-side identity, captured at EXCHANGE_POSITION_CONFIRMED
+                # above and now carried for the whole life of the position.
+                #
+                # It previously lived only in `exchange_position_identity`, which
+                # the emergency-flatten path reads and nothing else. Every close
+                # route therefore wrote its CLOSE_PROVISIONAL row with no
+                # positionId and no exchange open time, so startup recovery had no
+                # strong identity and fell through to the composite fallback —
+                # where it compares Bitget's `ctime` against our *observation*
+                # clock and refused two real lifecycles whose maker entries
+                # confirmed 5.7 s and 20.8 s after the exchange opened them.
+                #
+                # Both values are exchange truth copied verbatim (`positionId`,
+                # `cTime`) or empty. `position_lifecycle_id` above is our own id
+                # and is deliberately never reused as an exchange identifier.
+                "exchange_position_id": str(
+                    (exchange_position_identity or {}).get("exchange_position_id") or ""
+                ),
+                "exchange_open_time": (exchange_position_identity or {}).get("opened_at_ms") or "",
+                "opened_at_ms": (exchange_position_identity or {}).get("opened_at_ms") or "",
                 "confirmed_fill_quantity": confirmed_fill_quantity or None,
                 "confirmed_position_size": confirmed_fill_quantity or None,
                 "confirmed_remaining_size": confirmed_fill_quantity or None,
