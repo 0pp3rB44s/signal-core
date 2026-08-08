@@ -18,15 +18,144 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from execution.entry_routing import position_return_bps, utc_now_iso_ms
+from execution.entry_routing import execution_drag_bps, position_return_bps, utc_now_iso_ms
+
+#: Where close-linked outcomes land. Separate file from entry_routing.jsonl on
+#: purpose: a pre-entry consumer reading that one cannot reach these fields.
+CLOSE_OUTCOME_PATH = "logs/entry_outcomes.jsonl"
+
+#: Read straight from the authoritative economics dict; never recomputed here.
+_ECONOMIC_FIELDS = ("gross_pnl", "fees", "funding", "net_pnl", "open_fee", "close_fee")
 
 #: Horizons in seconds. 60 is the longest, so a lifecycle retires after that.
 RETURN_HORIZONS_S = (10, 30, 60)
 MAX_HORIZON_S = max(RETURN_HORIZONS_S)
+
+
+def _value(source: Any, key: str) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key)
+    return getattr(source, key, None)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def build_close_outcome(position: Mapping, economics: Any, source: str) -> dict[str, Any]:
+    """One research row per economically closed lifecycle.
+
+    Every money field is copied from ``economics`` -- the same dict the dataset
+    writer receives -- and never recalculated. A second arithmetic path for the
+    same numbers is how two sources of truth get born, and this one has no right
+    to be one.
+
+    Non-money fields come from the position record, which is authoritative for
+    telemetry it collected during the trade (MFE, MAE, duration, route).
+    """
+    lifecycle_id = str(position.get("position_lifecycle_id") or "")
+    planned = _float_or_none(position.get("planned_avg_entry"))
+    filled = _float_or_none(position.get("exchange_avg_entry"))
+    direction = str(position.get("direction") or "")
+    drag = execution_drag_bps(direction, planned, filled)
+
+    row: dict[str, Any] = {
+        "schema_version": 1,
+        "record_type": "entry_outcome",
+        "outcome_source": source,
+        "written_at": utc_now_iso_ms(),
+        "lifecycle_id": lifecycle_id,
+        "plan_id": str(position.get("plan_id") or ""),
+        "candidate_id": str(position.get("candidate_id") or ""),
+        "symbol": str(position.get("symbol") or "").upper(),
+        "direction": direction,
+        # --- authoritative economics, copied verbatim ---
+        **{field: _float_or_none(_value(economics, field)) for field in _ECONOMIC_FIELDS},
+        "close_timestamp": _value(economics, "close_time") or position.get("closed_at"),
+        # --- trade telemetry from the position record ---
+        "mfe_pct": _float_or_none(position.get("max_favorable_excursion_pct")),
+        "mae_pct": _float_or_none(position.get("max_adverse_excursion_pct")),
+        "hold_duration_seconds": _float_or_none(position.get("trade_duration_seconds")),
+        "exit_reason": position.get("closed_reason"),
+        "actual_fill_route": position.get("entry_via"),
+        # --- execution, adverse-positive, same convention as entry_routing ---
+        "actual_plan_to_fill_bps": drag,
+        "actual_execution_drag_bps": drag,
+        "planned_avg_entry": planned,
+        "exchange_avg_entry": filled,
+    }
+    return row
+
+
+def emit_close_outcome(
+    position: Mapping,
+    economics: Any,
+    *,
+    source: str,
+    path: str = CLOSE_OUTCOME_PATH,
+    log: Any = None,
+) -> bool:
+    """Append one outcome row. Returns False on any failure; never raises.
+
+    Called immediately after the authoritative economic close is written, so it
+    inherits that path's dedup: a duplicate close is refused upstream before it
+    reaches here, and a provisional close never gets this far. The lifecycle id
+    is therefore the record id and the dedup key at the same time.
+
+    Every failure mode ends in ``return False``. A close that the exchange has
+    confirmed must complete whatever this function thinks.
+    """
+    try:
+        row = build_close_outcome(position, economics, source)
+    except Exception as exc:  # noqa: BLE001 - telemetry must not raise
+        if log is not None:
+            log.warning("ENTRY_OUTCOME_BUILD_FAILED | source=%s | error=%s", source, exc)
+        return False
+
+    if not row.get("lifecycle_id"):
+        # Without an id the row cannot be joined to its pre-entry snapshot, and
+        # an unjoinable research row is noise that looks like data.
+        if log is not None:
+            log.warning(
+                "ENTRY_OUTCOME_NO_LIFECYCLE_ID | %s | source=%s | not written",
+                row.get("symbol"), source,
+            )
+        return False
+
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        line = json.dumps(row, default=str, sort_keys=True)
+        with EntryOutcomeTracker._write_lock:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+    except Exception as exc:  # noqa: BLE001
+        if log is not None:
+            log.warning(
+                "ENTRY_OUTCOME_WRITE_FAILED | %s | lifecycle=%s | error=%s",
+                row.get("symbol"), row.get("lifecycle_id"), exc,
+            )
+        return False
+
+    if log is not None:
+        log.info(
+            "ENTRY_OUTCOME_RECORDED | %s | lifecycle=%s | source=%s | net=%s | drag_bps=%s",
+            row.get("symbol"), row.get("lifecycle_id"), source,
+            row.get("net_pnl"), row.get("actual_execution_drag_bps"),
+        )
+    return True
 
 
 @dataclass
