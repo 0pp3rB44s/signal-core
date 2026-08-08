@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 from clients.schemas import TradePlan
+# The sufficient-state token comes from the module that defines it, so the two
+# sides of this contract cannot drift to different spellings.
+from risk.symbol_expectancy import SUFFICIENT_NEGATIVE, SUFFICIENT_OK
+
+#: Statuses the producer reaches only once the sample clears MIN_SAMPLE. Both
+#: are evidence; the difference between them is the sign of the mean, not its
+#: admissibility.
+_SUFFICIENT_STATUSES = frozenset({SUFFICIENT_OK, SUFFICIENT_NEGATIVE})
 
 
 _FLOAT = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
@@ -25,6 +33,12 @@ _DIRECTIONAL_EXPECTANCY_REASON = re.compile(
 )
 _EXPECTANCY_TOKEN = re.compile(
     r"(?:^|,)\s*exp\s*=\s*(?P<value>[^,\s)]*)",
+    flags=re.IGNORECASE,
+)
+#: Read from the same captured body as ``exp``, so a status from one evidence
+#: line can never be paired with a value from another.
+_STATUS_TOKEN = re.compile(
+    r"(?:^|,)\s*status\s*=\s*(?P<value>[^,\s)]*)",
     flags=re.IGNORECASE,
 )
 
@@ -91,12 +105,35 @@ def _metric(plan: TradePlan, marker: str, default: float) -> float:
 
 
 def _expectancy(plan: TradePlan) -> float:
-    """Return only the plan's directional symbol expectancy.
+    """Return the plan's directional symbol expectancy, if it is admissible.
 
     Strategy-level reasons can also contain ``exp=``.  They must never become
     the portfolio symbol tiebreaker when the directional value is unavailable.
     Missing, malformed, non-finite, or ambiguous directional evidence is
     therefore neutral and fails closed to ``0.0``.
+
+    Insufficient evidence now fails closed the same way. ``symbol_expectancy``
+    computes a sample size, decides below ``MIN_SAMPLE`` that the sample cannot
+    gate anything, and records that as ``status``. It then prints the mean
+    regardless, on a line its own docstring calls "evidence, not a decision".
+    This function used to read the mean and ignore the verdict beside it.
+
+    In the frozen Release-A window every one of the 64 selected trades carried
+    ``INSUFFICIENT_LIVE_DATA``, with a median sample of two closes and a maximum
+    of nine; 53 still carried a number. Ranking by the average of two trades is
+    ranking by the last trade on that pair. Requiring ``SUFFICIENT_OK`` restores
+    the threshold the producer already computes.
+
+    ``SUFFICIENT_NEGATIVE`` is admitted, and that is deliberate. It looks like a
+    kill-switch verdict, but ``symbol_expectancy.evaluate`` only blocks on it
+    while the evidence is ``FRESH`` or ``AGING``; beyond fourteen days it
+    returns ``(False, None)`` so a pause can be re-earned rather than becoming
+    permanent. ``RiskManager`` then finds no hard reason -- the provenance line
+    is in ``SOFT_PREFIXES`` and never blocks on its own -- and the candidate
+    proceeds. A stale, sufficiently-sampled, losing pair therefore reaches this
+    function legitimately, carrying a negative mean over at least ten closes.
+    Neutralising that would discard real evidence; ranking it below a better
+    pair is exactly what the sort key is for.
     """
     scoped: list[str] = []
     for value in [
@@ -114,6 +151,13 @@ def _expectancy(plan: TradePlan) -> float:
 
     if len(scoped) != 1:
         return 0.0
+
+    statuses = list(_STATUS_TOKEN.finditer(scoped[0]))
+    if len(statuses) != 1:
+        return 0.0
+    if statuses[0].group("value").strip().upper() not in _SUFFICIENT_STATUSES:
+        return 0.0
+
     tokens = list(_EXPECTANCY_TOKEN.finditer(scoped[0]))
     if len(tokens) != 1:
         return 0.0

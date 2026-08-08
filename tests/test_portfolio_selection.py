@@ -59,8 +59,8 @@ def test_exact_tie_uses_alphabetical_symbol_as_final_market_tiebreak():
 
 def test_directional_expectancy_then_setup_quality_then_spread_break_ties():
     btc, sol = _plan("BTCUSDT"), _plan("SOLUSDT")
-    btc.reasons = ["symbol expectancy source=live (BTCUSDT LONG, n=8, exp=0.10)"]
-    sol.reasons = ["symbol expectancy source=live (SOLUSDT LONG, n=8, exp=0.20)"]
+    btc.reasons = ["symbol expectancy source=live (BTCUSDT LONG, n=25, exp=0.10, status=SUFFICIENT_OK)"]
+    sol.reasons = ["symbol expectancy source=live (SOLUSDT LONG, n=25, exp=0.20, status=SUFFICIENT_OK)"]
     assert select_execution_winner([btc, sol]).winner is sol
 
     btc.reasons = sol.reasons = []
@@ -76,11 +76,11 @@ def test_directional_expectancy_then_setup_quality_then_spread_break_ties():
 def test_directional_expectancy_does_not_fall_through_to_strategy_expectancy():
     btc, sol = _plan("BTCUSDT"), _plan("SOLUSDT")
     btc.reasons = [
-        "symbol expectancy source=live (BTCUSDT LONG, n=8, exp=n/a)",
+        "symbol expectancy source=live (BTCUSDT LONG, n=25, exp=n/a, status=SUFFICIENT_OK)",
         "strategy weighting source=clean_strategy_expectancy (low_vol_reclaim, trades=20, exp=-0.90)",
     ]
     sol.reasons = [
-        "symbol expectancy source=live (SOLUSDT LONG, n=8, exp=n/a)",
+        "symbol expectancy source=live (SOLUSDT LONG, n=25, exp=n/a, status=SUFFICIENT_OK)",
         "strategy weighting source=clean_strategy_expectancy (low_vol_reclaim, trades=20, exp=0.90)",
     ]
 
@@ -95,11 +95,11 @@ def test_directional_expectancy_is_scoped_to_symbol_and_long_short_direction():
     short_plan = _plan("BTCUSDT", direction="SHORT")
     long_plan.reasons = [
         "symbol expectancy source=live (SOLUSDT SHORT, n=8, exp=9.0)",
-        "symbol expectancy source=live (SOLUSDT LONG, n=8, exp=0.20)",
+        "symbol expectancy source=live (SOLUSDT LONG, n=25, exp=0.20, status=SUFFICIENT_OK)",
     ]
     short_plan.reasons = [
         "symbol expectancy source=live (BTCUSDT LONG, n=8, exp=9.0)",
-        "symbol expectancy source=live (BTCUSDT SHORT, n=8, exp=0.10)",
+        "symbol expectancy source=live (BTCUSDT SHORT, n=25, exp=0.10, status=SUFFICIENT_OK)",
     ]
 
     selection = select_execution_winner([short_plan, long_plan])
