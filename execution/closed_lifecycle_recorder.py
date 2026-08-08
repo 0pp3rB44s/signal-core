@@ -37,6 +37,7 @@ from execution.close_dedup import (
     DedupOutcome,
     SegmentUnreadable,
     economic_close_status,
+    matches_same_lifecycle,
     read_segment,
     segment_paths,
 )
@@ -384,6 +385,7 @@ def recover_provisional_closes(
     stats = {
         "seen": 0, "skipped": 0, "recovered": 0, "still_pending": 0,
         "ambiguous": 0, "blocked": False, "unresolved_total": 0,
+        "merged_duplicates": 0,
         "next_cursor": _serialize_cursor(_parse_cursor(cursor)),
     }
 
@@ -419,6 +421,8 @@ def recover_provisional_closes(
             stats["skipped"] += 1
         else:
             unresolved.append(row)
+    unresolved, merged = _collapse_duplicate_obligations(unresolved)
+    stats["merged_duplicates"] = merged
     stats["unresolved_total"] = len(unresolved)
     selected, next_cursor = _select_fair_window(
         unresolved, limit=max(0, limit), cursor=_parse_cursor(cursor),
@@ -446,6 +450,7 @@ def recover_provisional_closes(
                 opened_at_ms=_opened_at_ms(row),
                 size=_f(row.get("confirmed_position_size") or row.get("position_size")),
                 exchange_position_id=row.get("exchange_position_id"),
+                closed_at_ms=_closed_at_ms(row),
             )
             if hit is None:
                 raise CloseReconciliationUnavailable("no unambiguous lifecycle match")
@@ -552,6 +557,119 @@ def _opened_at_ms(row: dict) -> int | None:
             except (TypeError, ValueError):
                 return None
     value = row.get("opened_at")
+    if value:
+        try:
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _obligation_richness(row: dict) -> tuple:
+    """How much identity a row carries. Higher sorts first.
+
+    One lifecycle can leave two provisional rows: a thin one written the moment
+    the close is detected, and an enriched one written once exchange truth
+    arrives. Only the enriched row can ever match, so when two rows are proven
+    to be the same lifecycle the richer one must be the representative — keeping
+    the thin one would resolve nothing.
+    """
+    return (
+        1 if str(row.get("exchange_position_id") or "").strip() else 0,
+        1 if _opened_at_ms(row) is not None else 0,
+        1 if _f(row.get("confirmed_position_size") or row.get("position_size")) else 0,
+        1 if str(row.get("position_lifecycle_id") or "").strip() else 0,
+    )
+
+
+#: Identifiers that are unique per lifecycle. If two rows both carry one of
+#: these and the values differ, they are different lifecycles — full stop.
+_STRONG_IDENTITY_FIELDS = (
+    "exchange_position_id",
+    "position_lifecycle_id",
+    "exchange_entry_order_id",
+    "exchange_order_id",
+)
+
+
+def _contradicts(left: dict, right: dict) -> bool:
+    """True when two rows carry the same identifier field with different values.
+
+    `matches_same_lifecycle` is a disjunction: any one satisfied route says
+    "same". That is right for asking "does the dataset already know this
+    lifecycle", where the candidate is compared against rows that may legitimately
+    be sparser. It is not sufficient for collapsing two obligations, because the
+    composite route (symbol + side + open second + size) can be satisfied by two
+    rows whose lifecycle ids explicitly disagree — fifty synthetic rows sharing a
+    timestamp is the pinned case, but a scale-out re-entry at the same second and
+    size is the real one.
+
+    So agreement on a weak route never outranks disagreement on a strong one.
+    """
+    for field in _STRONG_IDENTITY_FIELDS:
+        a = str(left.get(field) or "").strip()
+        b = str(right.get(field) or "").strip()
+        if a and b and a != b:
+            return True
+    return False
+
+
+def _collapse_duplicate_obligations(rows: list[dict]) -> tuple[list[dict], int]:
+    """Collapse provisional rows that provably describe one lifecycle.
+
+    A single close can be written twice — thin first, enriched once exchange
+    truth lands — and recovery counted both as independent economic obligations.
+    Four `still_pending` for two real lifecycles is not just noisy: it is wrong,
+    and it kept the startup gate closed on obligations that do not exist.
+
+    This is a WORK-SET collapse, not a delete. Every original row stays in the
+    dataset; the dataset remains immutable and auditable. Only the number of
+    obligations recovery believes it owes changes.
+
+    Identity comes from `matches_same_lifecycle`, the comparator already used by
+    `provisional_close_status` — exchange positionId, our lifecycle id, entry
+    order id, or the strict composite (symbol + side + open second + size).
+    Anything weaker than that is left alone: two rows that merely share a symbol
+    and a side are two obligations until proven otherwise. Fail closed on doubt
+    means keeping rows separate, never merging them.
+
+    On top of that, `_contradicts` vetoes any pair whose strong identifiers
+    disagree, so agreement on the composite route can never overrule an explicit
+    difference in lifecycle id or positionId.
+    """
+    kept: list[dict] = []
+    merged = 0
+    for row in sorted(rows, key=_obligation_richness, reverse=True):
+        compatible = [k for k in kept if not _contradicts(k, row)]
+        if compatible and matches_same_lifecycle(compatible, row):
+            merged += 1
+            log.info(
+                "CLOSE_RECOVERY_DUPLICATE_OBLIGATION_MERGED | symbol=%s | opened_at=%s | "
+                "lifecycle=%s | row kept in dataset, counted once",
+                row.get("symbol") or "UNKNOWN",
+                row.get("opened_at") or "UNKNOWN",
+                row.get("position_lifecycle_id") or "UNKNOWN",
+            )
+            continue
+        kept.append(row)
+    return sorted(kept, key=_oldest_key), merged
+
+
+def _closed_at_ms(row: dict) -> int | None:
+    """Local OBSERVATION time of the close, in ms, or None.
+
+    Mirrors `_opened_at_ms`: exchange-stamped fields first, our own `closed_at`
+    only as a fallback. Used as a second, independent time axis in the composite
+    match, so a wrong lifecycle has to survive both windows to be a candidate.
+    """
+    for name in ("exchange_close_time", "closed_at_ms", "close_time"):
+        value = row.get(name)
+        if value not in (None, ""):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return None
+    value = row.get("closed_at")
     if value:
         try:
             return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
