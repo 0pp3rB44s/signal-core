@@ -16,6 +16,25 @@ from execution.entry_submitter import (
     RESULT_ADOPTED,
     RESULT_BLOCKED_UNKNOWN,
 )
+from execution.entry_routing import (
+    STAGE_FALLBACK_ACK,
+    STAGE_FALLBACK_FILL,
+    STAGE_FALLBACK_SUBMIT,
+    STAGE_MAKER_END,
+    STAGE_MAKER_FILL,
+    STAGE_MAKER_SUBMIT,
+    STAGE_PLAN,
+    STAGE_POSITION_CONFIRMED,
+    EntryRoutingRecorder,
+    Quote,
+    capture_quote,
+)
+from execution.entry_snapshot import (
+    VOLATILITY_RANK_LEGACY_SEMANTICS,
+    atr_bps_from_percent,
+    economic_hurdle_observability,
+    missingness,
+)
 from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
 from execution.order_intent_store import OrderIntentStore, new_session_id
 from execution.position_model import (
@@ -634,9 +653,43 @@ class ExecutionService:
                     live_order_payload = None
                     live_order_id = None
                     entry_via = "market"
+
+                    # Observability only. Records what the routing did; changes
+                    # no price, size, timeout or order. Quote capture is opt-in
+                    # because two GETs before a submit would move the fill.
+                    routing = EntryRoutingRecorder(
+                        lifecycle_id=f"entry-{plan.plan_id}",
+                        plan_id=str(plan.plan_id or ""),
+                        candidate_id=str(getattr(plan, "candidate_id", "") or ""),
+                        symbol=plan.symbol,
+                        direction=plan.direction,
+                        planned_entry=planned_avg_entry,
+                        intended_route=(
+                            "maker_then_market_fallback"
+                            if bool(getattr(self.settings, "maker_entry_enabled", False))
+                            else "market"
+                        ),
+                        size_requested=order_size,
+                        log=self.log,
+                    )
+                    routing.safe_set_pre_entry_features(self._pre_entry_features(plan))
+                    routing.record(
+                        STAGE_PLAN,
+                        quote=self._routing_quote(plan.symbol),
+                        order_price=planned_avg_entry,
+                        size_requested=order_size,
+                    )
+
                     if bool(getattr(self.settings, "maker_entry_enabled", False)):
                         from execution.maker_entry import attempt_maker_entry
                         maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_avg_entry
+                        routing.record(
+                            STAGE_MAKER_SUBMIT,
+                            quote=self._routing_quote(plan.symbol),
+                            order_price=maker_anchor,
+                            size_requested=order_size,
+                        )
+                        maker_started_at = time.monotonic()
                         maker_result = attempt_maker_entry(
                             client=self.client, settings=self.settings, symbol=plan.symbol,
                             direction=plan.direction, size=order_size, anchor_price=maker_anchor,
@@ -648,6 +701,35 @@ class ExecutionService:
                                 )
                             ),
                         )
+                        maker_wait_ms = round((time.monotonic() - maker_started_at) * 1000, 1)
+                        maker_qty = _safe_float(maker_result.get("filled_qty"), 0.0)
+                        if maker_qty > 0:
+                            routing.record(
+                                STAGE_MAKER_FILL,
+                                order_id=str(maker_result.get("order_id") or ""),
+                                client_oid=str(maker_result.get("client_oid") or ""),
+                                fill_price=_safe_float(maker_result.get("fill_entry"), 0.0) or None,
+                                size_filled=maker_qty,
+                                maker_wait_elapsed_ms=maker_wait_ms,
+                                exchange_order_status=str(maker_result.get("status") or ""),
+                                reason=(
+                                    "filled_during_cancel"
+                                    if "FILLED_DURING_CANCEL" in str(maker_result.get("message") or "").upper()
+                                    else None
+                                ),
+                            )
+                        routing.record(
+                            STAGE_MAKER_END,
+                            quote=self._routing_quote(plan.symbol),
+                            order_id=str(maker_result.get("order_id") or ""),
+                            client_oid=str(maker_result.get("client_oid") or ""),
+                            size_filled=maker_qty or None,
+                            remaining_size=max(order_size - maker_qty, 0.0),
+                            maker_wait_elapsed_ms=maker_wait_ms,
+                            exchange_order_status=str(maker_result.get("status") or ""),
+                            reason=str(maker_result.get("message") or "") or None,
+                        )
+
                         if maker_result["status"] == "BLOCKED_UNKNOWN":
                             # Maker leg left the exchange state unknown: entering
                             # again (market fallback) could duplicate the position.
@@ -704,6 +786,13 @@ class ExecutionService:
                                 reference_price=_ref,
                             )
 
+                        routing.record(
+                            STAGE_FALLBACK_SUBMIT,
+                            quote=self._routing_quote(plan.symbol),
+                            order_price=planned_avg_entry,
+                            size_requested=order_size,
+                            reason="maker_unfilled" if entry_via != "market" else "market_only_route",
+                        )
                         submission = self.entry_submitter.submit_entry(
                             plan=plan,
                             size=order_size,
@@ -714,6 +803,13 @@ class ExecutionService:
                             notional_usdt=live_notional,
                         )
                         entry_client_oid = submission.client_oid
+                        routing.record(
+                            STAGE_FALLBACK_ACK,
+                            order_id=str(submission.order_id or ""),
+                            client_oid=str(submission.client_oid or ""),
+                            exchange_order_status=str(submission.status or ""),
+                            reason=str(submission.classification or "") or None,
+                        )
 
                         if submission.status == RESULT_BLOCKED_UNKNOWN:
                             entry_block_reason = submission.message
@@ -1183,6 +1279,27 @@ class ExecutionService:
                             slippage_pct = round(((actual_entry - expected_entry) / expected_entry) * 100, 5)
                         else:
                             slippage_pct = round(((expected_entry - actual_entry) / expected_entry) * 100, 5)
+
+                    # Routing record is closed here, where the fill price is
+                    # finally known. Failure to write is logged and swallowed:
+                    # observability must never abort an entry that already
+                    # exists on the exchange.
+                    if routing.stage(STAGE_MAKER_FILL) is None:
+                        routing.record(
+                            STAGE_FALLBACK_FILL,
+                            order_id=str(exchange_order_id or ""),
+                            client_oid=str(entry_client_oid or ""),
+                            fill_price=actual_entry or None,
+                            size_filled=_safe_float(fill_metrics.get("filled_qty"), 0.0) or order_size,
+                            exchange_order_status=str(fill_metrics.get("state") or "") or None,
+                        )
+                    routing.record(
+                        STAGE_POSITION_CONFIRMED,
+                        order_id=str(exchange_order_id or ""),
+                        fill_price=actual_entry or None,
+                        exchange_order_status=exchange_avg_entry_source,
+                    )
+                    routing.write()
 
                     if extracted_actual_entry <= 0:
                         self.log.warning(
@@ -1831,6 +1948,77 @@ class ExecutionService:
             return False
         self.entry_submitter.mark_closed_out(client_oid, reason=reason)
         return True
+
+    def _routing_quote(self, symbol: str) -> Quote:
+        """Market snapshot for the routing record, or an explicit absence.
+
+        Off by default, and that default is load-bearing. Capturing a quote
+        means two GETs of roughly 300ms each; placed before a submit that would
+        move the fill, which is the exact quantity being measured. Enabling
+        ENTRY_ROUTING_QUOTE_CAPTURE buys mid-referenced metrics at the price of
+        a slower entry, so it is a measurement decision, not a default.
+        """
+        if not bool(getattr(self.settings, "entry_routing_quote_capture", False)):
+            return Quote.unavailable("quote_capture_disabled")
+        return capture_quote(self.client, symbol, self.log)
+
+    @staticmethod
+    def _pre_entry_features(plan: TradePlan) -> dict[str, object]:
+        """Everything the planner knew, as it knew it. Absent stays absent.
+
+        Values are parsed out of the plan's own notes and reasons rather than
+        recomputed, so this records what the decision actually saw. A feature
+        that was not present is omitted, never defaulted to zero: zero is a
+        legitimate score and would be indistinguishable from silence.
+        """
+        features: dict[str, object] = {
+            "strategy": getattr(plan, "strategy", None),
+            "direction": getattr(plan, "direction", None),
+            "symbol": getattr(plan, "symbol", None),
+            "score": getattr(plan, "score", None),
+            "risk_reward_ratio": getattr(plan, "risk_reward_ratio", None),
+        }
+        for raw in [
+            *(getattr(plan, "notes", None) or []),
+            *(getattr(plan, "reasons", None) or []),
+        ]:
+            for part in str(raw).split("|"):
+                token = part.strip()
+                if "=" not in token:
+                    continue
+                key, _, value = token.partition("=")
+                key = key.strip()
+                if not key or len(key) > 60 or key in features:
+                    continue
+                text = value.strip()
+                try:
+                    features[key] = float(text)
+                except ValueError:
+                    features[key] = text or None
+
+        # Research annotations. Wrapped because this runs inside the entry path:
+        # a malformed note must degrade the snapshot, never the trade.
+        try:
+            features.update(ExecutionService._research_annotations(features))
+        except Exception as exc:  # noqa: BLE001 - observability must not raise
+            features["research_annotation_error"] = str(exc)
+        return features
+
+    @staticmethod
+    def _research_annotations(features: dict[str, object]) -> dict[str, object]:
+        annotations: dict[str, object] = {}
+        atr_percent = features.get("atr_percent")
+        annotations["atr_percent_raw"] = atr_percent if isinstance(atr_percent, float) else None
+        annotations["atr_bps"] = atr_bps_from_percent(atr_percent)
+        annotations["volatility_rank_legacy"] = (
+            features.get("volatility_rank")
+            if isinstance(features.get("volatility_rank"), float) else None
+        )
+        annotations["volatility_rank_legacy_semantics"] = VOLATILITY_RANK_LEGACY_SEMANTICS
+        annotations.update(economic_hurdle_observability(features))
+        annotations["field_availability_version"] = 1
+        annotations["missingness"] = missingness({**features, **annotations})
+        return annotations
 
     def _report(
         self,

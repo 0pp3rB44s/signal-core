@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     # limit-entry i.p.v. market -> maker-fee i.p.v. taker. STANDAARD UIT tot
     # gevalideerd in een bewaakt venster. Vult de limit niet binnen het
     # wachtvenster -> annuleren en trade skippen (geen taker-fallback).
+    #: Capture bid/ask/mark at each entry routing stage. Off by default: the
+    #: two GETs sit on the path between plan and submit and would shift the
+    #: fill price this observability exists to measure.
+    entry_routing_quote_capture: bool = Field(
+        default=False, alias="ENTRY_ROUTING_QUOTE_CAPTURE"
+    )
+
     maker_entry_enabled: bool = Field(default=False, alias="MAKER_ENTRY_ENABLED")
     # Hybride: vult de maker-limit niet, dan alsnog een market-order (taker)
     # i.p.v. de trade skippen. True = nooit een trade missen + fee besparen waar
