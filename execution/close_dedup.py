@@ -351,6 +351,19 @@ def _matches_provisional(rows: list[dict], candidate: dict) -> bool:
     return any(_composite_matches(row, candidate) for row in rows)
 
 
+def matches_same_lifecycle(rows: list[dict], candidate: dict) -> bool:
+    """True when `candidate` is provably the same lifecycle as one of `rows`.
+
+    The public view of the layered identity comparator, for callers holding rows
+    in memory rather than on disk — recovery collapses duplicate provisional
+    obligations with it. Same fail-closed contract as everywhere else: only the
+    exchange positionId, our lifecycle id, an entry order id or the strict
+    composite (symbol + side + open second + size) count as proof. Anything
+    weaker answers False, so the rows stay separate.
+    """
+    return _matches_provisional(rows, candidate)
+
+
 def provisional_close_status(dataset: Path | str, candidate: dict) -> DedupOutcome:
     """Whether this lifecycle already has a durable provisional marker."""
     rows, unreadable = read_all_segments(dataset)
@@ -384,6 +397,7 @@ __all__ = [
     "SegmentUnreadable",
     "economic_close_exists",
     "economic_close_status",
+    "matches_same_lifecycle",
     "provisional_close_exists",
     "provisional_close_status",
     "lifecycle_keys",
