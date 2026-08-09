@@ -17,6 +17,7 @@ deduplicator must recognise the provisional and exchange rows as one trade.
 from __future__ import annotations
 
 import csv
+import datetime as _datetime
 import importlib
 import inspect
 from decimal import Decimal
@@ -380,6 +381,63 @@ def _migration():
     return importlib.import_module("deployment.quarantine_percentage_closes")
 
 
+# --------------------------------------------------------------------------
+# The weekly meter is a *rolling* 7-day window anchored on the wall clock, so
+# the reconstruction tests below only mean anything while the incident rows
+# above are still inside it. They are not: the fixture is the real 2026-08-01
+# dataset and it aged out on 2026-08-08, after which both tests reconstructed
+# 0.0 and looked like an accounting defect. The rolling window is correct
+# production behaviour, so the clock is what gets pinned, not the cutoff.
+# --------------------------------------------------------------------------
+
+# Just after the last fixture close (19:15Z) in `_live_like_dataset`, which puts
+# all six LIVE_PAIRS inside a 7-day lookback. Move the fixture dates and this
+# must move with them.
+FROZEN_NOW = _datetime.datetime(2026, 8, 1, 20, 0, 0, tzinfo=_datetime.timezone.utc)
+
+
+class _FrozenDateTime(_datetime.datetime):
+    """`datetime` with `now()` pinned; everything else is the real class."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return FROZEN_NOW if tz is not None else FROZEN_NOW.replace(tzinfo=None)
+
+    @classmethod
+    def utcnow(cls):
+        return FROZEN_NOW.replace(tzinfo=None)
+
+
+class _FrozenDatetimeModule:
+    """Stand-in for the `datetime` *module*, for modules that import it whole.
+
+    Only the `datetime` class is replaced; `timedelta`, `timezone` and the rest
+    forward to the real module, so patching cannot silently starve a caller.
+    """
+
+    datetime = _FrozenDateTime
+
+    def __getattr__(self, name):
+        return getattr(_datetime, name)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Pin `now()` in exactly the two modules that compute the rolling cutoff.
+
+    Patched per-module, never on the stdlib, so nothing else in the run is
+    affected and the production cutoff code is untouched.
+    """
+    mig = _migration()
+    rm = importlib.import_module("risk.risk_manager")
+
+    # `import datetime` -> module attribute.
+    monkeypatch.setattr(mig, "datetime", _FrozenDatetimeModule())
+    # `from datetime import datetime` -> class attribute.
+    monkeypatch.setattr(rm, "datetime", _FrozenDateTime)
+    return FROZEN_NOW
+
+
 def test_migration_dry_run_changes_nothing(tmp_path):
     path = tmp_path / "trade_dataset_v2.csv"
     _live_like_dataset(path)
@@ -430,7 +488,7 @@ def test_migration_takes_a_mode_600_backup(tmp_path):
     assert oct(backups[0].stat().st_mode)[-3:] == "600"
 
 
-def test_six_live_trades_reconstruct_to_the_exchange_total(tmp_path):
+def test_six_live_trades_reconstruct_to_the_exchange_total(tmp_path, frozen_clock):
     """The headline number: +0.406644 USDT, not +4.64."""
     path = tmp_path / "trade_dataset_v2.csv"
     _live_like_dataset(path)
@@ -450,7 +508,7 @@ def test_six_live_trades_reconstruct_to_the_exchange_total(tmp_path):
 # 19-20. The kill-switch and expectancy read only exchange truth.
 # --------------------------------------------------------------------------
 
-def test_weekly_freeze_meter_ignores_percentage_rows(tmp_path, monkeypatch):
+def test_weekly_freeze_meter_ignores_percentage_rows(tmp_path, monkeypatch, frozen_clock):
     """End-to-end through RiskManager, on the unmigrated dataset."""
     import risk.risk_manager as rm
 
