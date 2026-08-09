@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 import json
 import fcntl
+import math
 import os
 import subprocess
 import sys
@@ -98,16 +99,127 @@ def _extract_note_float(notes: list[str], marker: str, default: float = 0.0) -> 
         return default
 
 
-def _execution_aware_score(snapshot: MarketSnapshot) -> float:
+def _direction_entry_quality(
+    snapshot: MarketSnapshot, direction: str, default: float = 100.0
+) -> float:
+    """Return the entry quality the producer computed for ``direction``.
+
+    ``market_features.engine`` runs ``EntryQualityAnalyzer`` once per direction
+    and publishes the result twice: structurally under
+    ``snapshot.context["entry_quality"][direction]``, and as text in the notes.
+    The structured value is the same object the analyzer returned, so it is
+    read first; the notes are a rendering of it and are only parsed when the
+    context is missing or malformed.
+
+    The note fallback reads ``entry_quality_long=`` / ``entry_quality_short=``,
+    which the producer emits as standalone notes. The combined
+    ``entry_quality long=100 short=70`` line is not used: no marker beginning
+    ``entry_quality short=`` ever appears in it, so matching against that form
+    silently returned ``default`` for every short.
+    """
+    key = str(direction or "").upper()
+    if key not in {"LONG", "SHORT"}:
+        return default
+
+    context = getattr(snapshot, "context", None)
+    if isinstance(context, dict):
+        bucket = (context.get("entry_quality") or {})
+        if isinstance(bucket, dict):
+            payload = bucket.get(key)
+            if isinstance(payload, dict):
+                try:
+                    value = float(payload.get("entry_quality_score"))
+                except (TypeError, ValueError):
+                    value = None
+                if value is not None and math.isfinite(value):
+                    return value
+
+    return _extract_note_float(
+        snapshot.notes or [],
+        "entry_quality_long=" if key == "LONG" else "entry_quality_short=",
+        default,
+    )
+
+
+#: A symbol whose rankable plans disagree on side. Distinct from "no plan", so
+#: the caller can log the collision instead of silently scoring one side.
+_DIRECTION_AMBIGUOUS = "AMBIGUOUS"
+
+
+def _rankable_plan_directions(plans) -> dict[str, str]:
+    """Map each symbol to the side that will actually be ranked.
+
+    ``select_execution_winner`` keys execution scores by symbol, but an
+    execution score is only correct once the side is known: a snapshot that is
+    a clean long is usually a late short. The side therefore comes from the
+    plans that will be ranked, and only ``EXECUTABLE`` plans are ranked.
+
+    A symbol carrying both sides as ``EXECUTABLE`` in one scan would make a
+    symbol key ambiguous. That did not occur once in 590 production scans, but
+    it is not structurally impossible, so it is reported as ambiguous rather
+    than resolved by picking a side.
+    """
+    sides: dict[str, set[str]] = {}
+    for plan in plans or []:
+        if str(getattr(plan, "verdict", "") or "").upper() != "EXECUTABLE":
+            continue
+        symbol = str(getattr(plan, "symbol", "") or "").upper()
+        side = str(getattr(plan, "direction", "") or "").upper()
+        if symbol and side in {"LONG", "SHORT"}:
+            sides.setdefault(symbol, set()).add(side)
+    return {
+        symbol: (next(iter(found)) if len(found) == 1 else _DIRECTION_AMBIGUOUS)
+        for symbol, found in sides.items()
+    }
+
+
+def _execution_scores_by_symbol(snapshots, plans, log=None) -> dict[str, float]:
+    """Build the symbol-keyed execution scores ``select_execution_winner`` reads.
+
+    The selector's key stays the symbol; what changes is that the value is the
+    score of the side actually being ranked, rather than the more favourable of
+    the two sides.
+    """
+    directions = _rankable_plan_directions(plans)
+    scores: dict[str, float] = {}
+    for snapshot in snapshots or []:
+        symbol = snapshot.symbol.upper()
+        direction = directions.get(symbol)
+        if direction == _DIRECTION_AMBIGUOUS:
+            if log is not None:
+                log.warning(
+                    "EXECUTION_SCORE_DIRECTION_AMBIGUOUS | symbol=%s "
+                    "| falling back to direction-agnostic score",
+                    symbol,
+                )
+            direction = None
+        scores[symbol] = _execution_aware_score(snapshot, direction)
+    return scores
+
+
+def _execution_aware_score(
+    snapshot: MarketSnapshot, direction: str | None = None
+) -> float:
+    """Score a snapshot for execution quality.
+
+    ``direction`` selects which side's entry quality is charged against the
+    score. It is optional because several callers rank or log snapshots before
+    any direction exists; without it the previous direction-agnostic
+    ``max(long, short)`` is kept, which is the most permissive of the two and
+    therefore never penalises a snapshot a caller cannot yet attribute.
+    """
     notes = snapshot.notes or []
     note_text = " ".join(str(note).lower() for note in notes)
 
     score = float(snapshot.score_hint or 0.0)
     close_pos = _extract_note_float(notes, "close_pos=", 0.5)
 
-    long_score = _extract_note_float(notes, "entry_quality long=", 100.0)
-    short_score = _extract_note_float(notes, "short=", 100.0)
-    entry_quality = max(long_score, short_score)
+    if direction is None:
+        long_score = _direction_entry_quality(snapshot, "LONG")
+        short_score = _direction_entry_quality(snapshot, "SHORT")
+        entry_quality = max(long_score, short_score)
+    else:
+        entry_quality = _direction_entry_quality(snapshot, direction)
 
     if entry_quality < 50:
         score -= 18
@@ -199,11 +311,7 @@ def _build_fallback_candidate(snapshot: MarketSnapshot, settings: Settings) -> S
     breakout_ready = "breakout_ready=true" in note_text
 
     close_pos = _extract_note_float(snapshot.notes or [], "close_pos=", 0.50)
-    direction_entry_quality = _extract_note_float(
-        snapshot.notes or [],
-        "entry_quality long=" if direction == "LONG" else "entry_quality short=",
-        100.0,
-    )
+    direction_entry_quality = _direction_entry_quality(snapshot, direction)
 
     if direction_entry_quality < 75.0:
         logging.getLogger("fallback_candidate_bridge").info(
@@ -1579,10 +1687,7 @@ class StartupRunner:
                 # execution safety. Corruption fails the paper writer closed.
                 self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
 
-            execution_scores = {
-                snapshot.symbol.upper(): _execution_aware_score(snapshot)
-                for snapshot in snapshots
-            }
+            execution_scores = _execution_scores_by_symbol(snapshots, plans, self.log)
             selection = select_execution_winner(
                 plans,
                 allowed_symbols=(
