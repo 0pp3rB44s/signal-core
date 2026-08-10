@@ -24,6 +24,7 @@ from data.watchlist import get_watchlist
 from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
+from execution.dynamic_grid_service import DynamicGridService
 from execution.position_manager import PositionManager
 from execution.portfolio_selector import select_execution_winner
 from telemetry.ranked_plans import RankedPlanLogger
@@ -440,6 +441,12 @@ class StartupRunner:
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
         self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
+        self.dynamic_grid = DynamicGridService(
+            settings=settings, client=self.client, cache=self.multi_tf_cache,
+            entry_submitter=(
+                self.execution_service.entry_submitter if self.execution_service is not None else None
+            ),
+        )
         self.forward_paper = ForwardPaperService(
             settings=settings,
             events_path=settings.forward_paper_events_path,
@@ -542,6 +549,22 @@ class StartupRunner:
             return []
         with trading_state_lock():
             return self.execution_service.execute(selected_plans)
+
+    def _run_dynamic_grid(self, equity_usdt: float, risk_stop_reason: str = "") -> None:
+        if not self.settings.dynamic_grid_enabled:
+            return
+        if self.settings.dynamic_grid_mode.strip().upper() == "LIVE":
+            if not self._ensure_startup_close_recovery():
+                self.log.critical("DYNAMIC_GRID_BLOCKED_BY_STARTUP_CLOSE_RECOVERY")
+                return
+            with trading_state_lock():
+                self.dynamic_grid.cycle(
+                    equity_usdt=equity_usdt, risk_stop_reason=risk_stop_reason
+                )
+            return
+        self.dynamic_grid.cycle(
+            equity_usdt=equity_usdt, risk_stop_reason=risk_stop_reason
+        )
 
     def _maybe_refresh_learning_reports(self) -> None:
         """Regenerate the daily learning/expectancy reports when they go stale.
@@ -815,6 +838,9 @@ class StartupRunner:
                 self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
                 return
 
+            live_equity = float(self.settings.account_equity_usdt)
+            grid_risk_stop_reason = ""
+
             # Liveness telemetry is mode-independent. It used to be emitted only
             # in forward-paper mode, which left LIVE with no heartbeat at all --
             # a 3 h host suspension on 2026-07-29 went undetected as a result.
@@ -851,6 +877,8 @@ class StartupRunner:
 
             try:
                 day_mode = self.risk_manager.day_mode()
+                if day_mode.get("mode") == "RED":
+                    grid_risk_stop_reason = "daily_or_weekly_drawdown_gate_red"
                 self.log.info(
                     "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s | weekly_pnl=%.2f | weekly_loss_pct=%.2f | equity=%.2f (%s)",
                     day_mode["mode"],
@@ -918,6 +946,13 @@ class StartupRunner:
                     )
                     time.sleep(60)
                     return
+
+            try:
+                self._run_dynamic_grid(live_equity, grid_risk_stop_reason)
+            except Exception as exc:
+                # The grid is isolated: fail it closed without interrupting
+                # position management for pre-cutover strategies.
+                self.log.exception("DYNAMIC_GRID_FAILED_CLOSED | error=%s", exc)
 
             self.log.info(
                 "Scanning watchlist | symbols=%s | primary=%s | confirm=%s",
@@ -1705,6 +1740,14 @@ class StartupRunner:
                 scan_id, datetime.now(timezone.utc).isoformat(), selection
             )
             selected_plans = [selection.winner] if selection.winner is not None else []
+            if not self.settings.old_strategies_new_entries_enabled:
+                if selected_plans:
+                    self.log.warning(
+                        "OLD_STRATEGY_NEW_ENTRY_BLOCKED | plan_id=%s | strategy=%s",
+                        selected_plans[0].plan_id,
+                        selected_plans[0].strategy,
+                    )
+                selected_plans = []
             if selection.winner_metrics is not None:
                 metrics = selection.winner_metrics
                 self.log.info(

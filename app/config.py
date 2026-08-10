@@ -71,6 +71,32 @@ class Settings(BaseSettings):
     enabled_strategies: str = Field(default="", alias="ENABLED_STRATEGIES")
     disabled_strategies: str = Field(default="", alias="DISABLED_STRATEGIES")
 
+    # dynamic_grid_v1 is an isolated, fail-closed pilot. OFF and SHADOW can
+    # never place grid orders; LIVE additionally requires the global LIVE gate.
+    dynamic_grid_enabled: bool = Field(default=False, alias="DYNAMIC_GRID_ENABLED")
+    dynamic_grid_mode: str = Field(default="OFF", alias="DYNAMIC_GRID_MODE")
+    dynamic_grid_symbols: str = Field(default="BTCUSDT,SOLUSDT", alias="DYNAMIC_GRID_SYMBOLS")
+    dynamic_grid_max_active_grids: int = Field(default=1, alias="DYNAMIC_GRID_MAX_ACTIVE_GRIDS")
+    dynamic_grid_levels: int = Field(default=3, alias="DYNAMIC_GRID_LEVELS")
+    dynamic_grid_leverage: float = Field(default=1.0, alias="DYNAMIC_GRID_LEVERAGE")
+    dynamic_grid_max_notional_usdt: float = Field(default=30.0, alias="DYNAMIC_GRID_MAX_NOTIONAL_USDT")
+    dynamic_grid_max_equity_pct: float = Field(default=3.0, alias="DYNAMIC_GRID_MAX_EQUITY_PCT")
+    dynamic_grid_min_level_notional_usdt: float = Field(default=5.0, alias="DYNAMIC_GRID_MIN_LEVEL_NOTIONAL_USDT")
+    dynamic_grid_min_score: float = Field(default=70.0, alias="DYNAMIC_GRID_MIN_SCORE")
+    dynamic_grid_min_atr_bps: float = Field(default=8.0, alias="DYNAMIC_GRID_MIN_ATR_BPS")
+    dynamic_grid_max_atr_bps: float = Field(default=120.0, alias="DYNAMIC_GRID_MAX_ATR_BPS")
+    dynamic_grid_max_spread_bps: float = Field(default=5.0, alias="DYNAMIC_GRID_MAX_SPREAD_BPS")
+    dynamic_grid_max_trend_bps: float = Field(default=45.0, alias="DYNAMIC_GRID_MAX_TREND_BPS")
+    dynamic_grid_min_depth_usdt: float = Field(default=100_000.0, alias="DYNAMIC_GRID_MIN_DEPTH_USDT")
+    dynamic_grid_drag_bps: float = Field(default=1.0, alias="DYNAMIC_GRID_DRAG_BPS")
+    dynamic_grid_edge_margin_bps: float = Field(default=2.0, alias="DYNAMIC_GRID_EDGE_MARGIN_BPS")
+    dynamic_grid_reset_atr: float = Field(default=0.75, alias="DYNAMIC_GRID_RESET_ATR")
+    dynamic_grid_reset_cooldown_minutes: int = Field(default=30, alias="DYNAMIC_GRID_RESET_COOLDOWN_MINUTES")
+    dynamic_grid_hard_invalidation_atr: float = Field(default=3.0, alias="DYNAMIC_GRID_HARD_INVALIDATION_ATR")
+    dynamic_grid_state_path: str = Field(default="state/dynamic_grid_v1.json", alias="DYNAMIC_GRID_STATE_PATH")
+    dynamic_grid_events_path: str = Field(default="data_store/dynamic_grid_v1_events.jsonl", alias="DYNAMIC_GRID_EVENTS_PATH")
+    old_strategies_new_entries_enabled: bool = Field(default=True, alias="OLD_STRATEGIES_NEW_ENTRIES_ENABLED")
+
     scan_on_start: bool = Field(default=True, alias="SCAN_ON_START")
     scan_loop_enabled: bool = Field(default=True, alias="SCAN_LOOP_ENABLED")
     scan_interval_sec: int = Field(default=60, alias="SCAN_INTERVAL_SEC")
@@ -248,6 +274,34 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def enforce_forward_paper_only(self) -> "Settings":
+        grid_mode = self.dynamic_grid_mode.strip().upper()
+        if grid_mode not in {"OFF", "SHADOW", "LIVE"}:
+            raise ValueError("DYNAMIC_GRID_MODE must be OFF, SHADOW, or LIVE")
+        if not self.dynamic_grid_enabled and grid_mode != "OFF":
+            raise ValueError("DYNAMIC_GRID_MODE requires DYNAMIC_GRID_ENABLED=true")
+        if self.dynamic_grid_enabled:
+            symbols = tuple(
+                symbol.strip().upper()
+                for symbol in self.dynamic_grid_symbols.split(",")
+                if symbol.strip()
+            )
+            if symbols != ("BTCUSDT", "SOLUSDT"):
+                raise ValueError("dynamic_grid_v1 symbols are frozen to BTCUSDT,SOLUSDT")
+            if self.dynamic_grid_levels != 3:
+                raise ValueError("dynamic_grid_v1 requires exactly 3 levels")
+            if self.dynamic_grid_max_active_grids != 1:
+                raise ValueError("dynamic_grid_v1 requires max active grids=1")
+            if self.dynamic_grid_leverage != 1.0:
+                raise ValueError("dynamic_grid_v1 requires 1x leverage")
+            if self.dynamic_grid_max_notional_usdt <= 0 or self.dynamic_grid_max_equity_pct <= 0:
+                raise ValueError("dynamic_grid_v1 exposure caps must be positive")
+        if grid_mode == "LIVE":
+            if not self.is_live_execution:
+                raise ValueError("dynamic_grid_v1 LIVE requires the global LIVE execution gate")
+            if self.old_strategies_new_entries_enabled:
+                raise ValueError("dynamic_grid_v1 LIVE requires old strategy entries disabled")
+            if self.maker_entry_fallback_market:
+                raise ValueError("dynamic_grid_v1 LIVE forbids maker-to-market entry fallback")
         if self.forward_paper_only:
             self.execution_enabled = False
             self.execution_mode = "DRY_RUN"
@@ -361,6 +415,14 @@ class Settings(BaseSettings):
         if self.is_live_execution:
             return set(self.production_symbols)
         return {s.strip().upper() for s in self.execution_confirm_symbols.split(",") if s.strip()}
+
+    @property
+    def dynamic_grid_symbol_set(self) -> frozenset[str]:
+        return frozenset(
+            symbol.strip().upper()
+            for symbol in self.dynamic_grid_symbols.split(",")
+            if symbol.strip()
+        )
 
 
 @lru_cache(maxsize=1)

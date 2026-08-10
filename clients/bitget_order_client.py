@@ -469,6 +469,56 @@ class BitgetOrderClientMixin:
             client_oid=client_oid or "",
         )
 
+    def place_futures_limit_close_order(
+        self,
+        symbol: str,
+        hold_side: str,
+        size: float,
+        price: float,
+        margin_mode: str = "isolated",
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+        client_oid: str | None = None,
+        post_only: bool = True,
+    ) -> dict[str, Any]:
+        """Place a post-only hedge-mode close, preserving reduce-only intent."""
+        hold_side_lower = str(hold_side or "").lower()
+        side = close_side_for_hold_side(hold_side_lower)
+        self._assert_order_transport_allowed()
+        formatted_price = self._format_trigger_price(symbol, float(price))
+        formatted_size = self._format_size(symbol, float(size))
+        if formatted_price <= 0 or formatted_size <= 0:
+            raise ValueError(f"Invalid limit close for {symbol}: size={formatted_size} price={formatted_price}")
+        body: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "marginCoin": margin_coin.upper(),
+            "marginMode": margin_mode,
+            "size": str(formatted_size),
+            "price": str(formatted_price),
+            "side": side,
+            "tradeSide": "close",
+            "orderType": "limit",
+            "force": "post_only" if post_only else "gtc",
+            "holdSide": hold_side_lower,
+            "reduceOnly": "YES",
+        }
+        if client_oid:
+            body["clientOid"] = str(client_oid)
+        self._validate_futures_order_flags(body)
+        self.log.warning(
+            "BITGET_PLACE_LIMIT_CLOSE | %s | hold_side=%s | size=%s | price=%s | post_only=%s | client_oid=%s",
+            symbol.upper(), hold_side_lower, formatted_size, formatted_price, post_only, client_oid or "-",
+        )
+        return self._request(
+            method="POST",
+            path="/api/v2/mix/order/place-order",
+            body=body,
+            private=True,
+            allow_blind_retry=False,
+            client_oid=client_oid or "",
+        )
+
     def cancel_futures_order(
         self,
         symbol: str,

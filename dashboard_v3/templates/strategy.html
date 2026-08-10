@@ -7,8 +7,34 @@
 {% set fn = st.funnel %}
 {% set ec = st.economics %}
 {% set rk = st.ranking %}
+{% set dg = st.dynamic_grid %}
 
 {% block content %}
+
+<div class="card" style="margin-bottom:14px">
+  <header><h3>dynamic_grid_v1 · lifecycle &amp; lineage</h3><span class="spacer"></span><span class="badge">{{ dg.mode }}</span></header>
+  <div class="body">
+    {% if not dg.available %}
+    <p class="muted">Nog geen grid-events of actieve grid-state.</p>
+    {% else %}
+    <table class="tbl" style="margin-bottom:12px">
+      <thead><tr><th>Symbool</th><th>Regime</th><th class="r">Score</th><th class="r">Center</th><th class="r">ATR</th><th class="r">Net capture</th></tr></thead>
+      <tbody>{% for r in dg.decisions %}<tr>
+        <td>{{ r.symbol }}</td><td><code>{{ r.regime }}</code></td><td class="r">{{ num(r.score, 2) }}</td>
+        <td class="r">{{ num(r.center, 6) }}</td><td class="r">{{ num(r.atr, 6) }}</td>
+        <td class="r">{{ num(r.economics.expected_net_capture_bps, 2) }} bps</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+    {% if dg.active %}
+    <p><b>Actieve lineage:</b> {{ dg.active.symbol }} · center {{ num(dg.active.center, 6) }} · aangemaakt {{ dg.active.created_at }}</p>
+    <table class="tbl"><thead><tr><th>Level</th><th>Entry clientOid</th><th>TP clientOid</th><th class="r">Notional</th><th>Resolved</th><th>TP geplaatst</th></tr></thead>
+      <tbody>{% for l in dg.levels %}<tr><td>{{ l.index }}</td><td><code>{{ l.entry_client_oid }}</code></td><td><code>{{ l.tp_client_oid }}</code></td><td class="r">{{ num(l.notional_usdt, 2) }}</td><td>{{ l.entry_resolved }}</td><td>{{ l.tp_submitted }}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+    <small class="muted">bronnen {{ dg.source.file }} · {{ dg.state_source.file }}</small>
+  </div>
+</div>
 
 <div class="grid g4" style="margin-bottom:14px">
   <div class="card"><div class="body">{{ ui.metric('Netto (LIVE)', num(ec.totals.net, 4) ~ ' USDT', ec.window_days ~ 'd venster', 'pos' if ec.totals.net > 0 else ('neg' if ec.totals.net < 0 else '')) }}</div></div>
