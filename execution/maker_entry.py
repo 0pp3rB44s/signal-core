@@ -16,6 +16,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from execution.entry_submitter import RESULT_ACCEPTED, RESULT_ADOPTED
+from execution.order_identity import ENTRY_LEG_MAKER
+
 
 def compute_limit_price(direction: str, anchor_price: float, offset_bps: float) -> float:
     """Post-only limit net binnen de markt.
@@ -170,4 +173,30 @@ def attempt_maker_entry(
         log.warning("MAKER_ENTRY_POSTCANCEL_VERIFY_FAILED | %s | error=%s", symbol, exc)
 
     result["status"] = "UNFILLED_CANCELLED"
+    return result
+# Long-lived maker grids use the same write-ahead/idempotent submitter as every
+# other production entry. This helper lives here so the raw transport call
+# remains confined to the repository's audited maker-entry boundary.
+def submit_persistent_maker_entry(*, submitter, client, plan, size, price, notional_usdt):
+    result = submitter.submit_entry(
+        plan=plan,
+        size=size,
+        side="buy",
+        order_type="limit",
+        leg=ENTRY_LEG_MAKER,
+        place=lambda client_oid: client.place_futures_limit_order(
+            symbol=plan.symbol,
+            direction="LONG",
+            size=size,
+            price=price,
+            margin_mode="isolated",
+            post_only=True,
+            client_oid=client_oid,
+        ),
+        notional_usdt=notional_usdt,
+    )
+    if result.status not in {RESULT_ACCEPTED, RESULT_ADOPTED}:
+        raise RuntimeError(
+            f"maker entry blocked: status={result.status} classification={result.classification}"
+        )
     return result

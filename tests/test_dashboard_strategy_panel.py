@@ -331,6 +331,28 @@ def test_ranking_consumes_the_feed_when_present(feed):
     assert built["available"] is True and len(built["cycles"]) == 1
 
 
+def test_dynamic_grid_panel_preserves_decision_economics_and_order_lineage(feed, monkeypatch):
+    feed[sp.DYNAMIC_GRID_EVENTS_PATH] = [{
+        "strategy": "dynamic_grid_v1", "mode": "SHADOW",
+        "event_type": "GRID_DECISION", "symbol": "BTCUSDT",
+        "regime": "GRID_ALLOWED", "score": 81.0, "center": 100.0,
+        "atr": 0.4, "economics": {"expected_net_capture_bps": 8.0},
+    }]
+    monkeypatch.setattr(src, "load_json", lambda *args, **kwargs: _Loaded({
+        "_state_metadata": {}, "data": {"active_grid": {
+            "symbol": "BTCUSDT", "levels": [{
+                "index": 1, "entry_client_oid": "dgv1-entry",
+                "tp_client_oid": "dgv1-tp", "notional_usdt": 10.0,
+            }],
+        }}
+    }))
+    built = sp.build_dynamic_grid()
+    assert built["available"] is True
+    assert built["decisions"][0]["economics"]["expected_net_capture_bps"] == 8.0
+    assert built["levels"][0]["entry_client_oid"] == "dgv1-entry"
+    assert built["levels"][0]["tp_client_oid"] == "dgv1-tp"
+
+
 # --- agreement with the performance page ------------------------------------
 
 

@@ -38,6 +38,15 @@ class BitgetAccountClientMixin:
             private=True,
         )
 
+    def get_trade_fee_rate(self, symbol: str, business_type: str = "mix") -> dict[str, Any]:
+        """Return this authenticated account's actual maker/taker fee rates."""
+        return self._request(
+            "GET",
+            "/api/v2/common/trade-rate",
+            params={"symbol": symbol.upper(), "businessType": business_type},
+            private=True,
+        )
+
     def get_symbol_account(
         self,
         symbol: str,

@@ -339,6 +339,8 @@ def build_economics(window_days: int = 30) -> dict[str, Any]:
 # --- ranking (awaits the ranked-plan feed) ----------------------------------
 
 RANKED_PLANS_PATH = "logs/ranked_plans.jsonl"
+DYNAMIC_GRID_EVENTS_PATH = "data_store/dynamic_grid_v1_events.jsonl"
+DYNAMIC_GRID_STATE_PATH = "state/dynamic_grid_v1.json"
 NOT_AVAILABLE = "RANKED_PLAN_TELEMETRY_NOT_AVAILABLE"
 
 
@@ -377,9 +379,41 @@ def build_ranking() -> dict[str, Any]:
     }
 
 
+def build_dynamic_grid() -> dict[str, Any]:
+    """Read-only grid lifecycle, economics and lineage projection."""
+    loaded = src.load_jsonl_tail(DYNAMIC_GRID_EVENTS_PATH, limit=1000)
+    events = [
+        row for row in (loaded.value if isinstance(loaded.value, list) else [])
+        if row.get("strategy") == "dynamic_grid_v1"
+    ]
+    state_loaded = src.load_json(DYNAMIC_GRID_STATE_PATH, default={})
+    wrapped = state_loaded.value if isinstance(state_loaded.value, dict) else {}
+    state = wrapped.get("data") if "_state_metadata" in wrapped else wrapped
+    state = state if isinstance(state, dict) else {}
+    active = state.get("active_grid") if isinstance(state.get("active_grid"), dict) else {}
+    latest_decisions: dict[str, dict[str, Any]] = {}
+    for row in events:
+        if row.get("event_type") == "GRID_DECISION" and row.get("symbol"):
+            latest_decisions[str(row["symbol"])] = row
+    cycles = [row for row in events if row.get("event_type") in {
+        "GRID_OPENED", "GRID_TP_SUBMITTED", "GRID_CYCLE_CLOSED", "GRID_HARD_KILL", "GRID_RESET"
+    }]
+    return {
+        "available": bool(events or active),
+        "mode": str(events[-1].get("mode") or "UNKNOWN") if events else "UNKNOWN",
+        "active": active,
+        "levels": active.get("levels") or [],
+        "decisions": [latest_decisions[key] for key in sorted(latest_decisions)],
+        "lifecycle": cycles[-30:],
+        "source": {"file": DYNAMIC_GRID_EVENTS_PATH, "prov": loaded.provenance},
+        "state_source": {"file": DYNAMIC_GRID_STATE_PATH, "prov": state_loaded.provenance},
+    }
+
+
 def build() -> dict[str, Any]:
     return {
         "funnel": build_funnel(),
         "economics": build_economics(),
         "ranking": build_ranking(),
+        "dynamic_grid": build_dynamic_grid(),
     }

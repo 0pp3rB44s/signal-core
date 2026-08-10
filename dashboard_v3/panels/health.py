@@ -23,6 +23,8 @@ TRACKED = [
     ("logs/trade_dataset_v2.csv", "Closed-trade dataset", True),
     ("logs/trade_plans.csv", "Plan scores", True),
     ("data_store/funnel_events.jsonl", "Decision funnel", True),
+    ("data_store/dynamic_grid_v1_events.jsonl", "dynamic_grid_v1 decisions", False),
+    ("state/dynamic_grid_v1.json", "dynamic_grid_v1 lifecycle", False),
     ("logs/live.out", "Engine stdout", True),
     ("logs/alerts.log", "Alert history", False),
 ]
