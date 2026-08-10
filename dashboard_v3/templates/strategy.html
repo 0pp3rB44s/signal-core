@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Strategies{% endblock %}
+{% block heading %}Strategieën · funnel &amp; economics{% endblock %}
+
+{% set st = d.panels.strategy %}
+{% set fn = st.funnel %}
+{% set ec = st.economics %}
+{% set rk = st.ranking %}
+
+{% block content %}
+
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Netto (LIVE)', num(ec.totals.net, 4) ~ ' USDT', ec.window_days ~ 'd venster', 'pos' if ec.totals.net > 0 else ('neg' if ec.totals.net < 0 else '')) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Fees', num(ec.totals.fees, 4) ~ ' USDT', (ec.totals.fees_pct_of_abs_gross ~ '% van |bruto|') if ec.totals.fees_pct_of_abs_gross is not none else ((ec.totals.fees_multiple_of_abs_gross ~ '× het bruto resultaat') if ec.totals.fees_multiple_of_abs_gross is not none else 'bruto te klein voor ratio')) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Gesloten trades', ec.totals.n, ec.totals.evidence) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Strategieën met trades', ec.rows|selectattr('n','greaterthan',0)|list|length, 'van ' ~ ec.rows|length ~ ' bekend') }}</div></div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <header><h3>Funnel per strategie</h3><span class="spacer"></span>{{ ui.badge(fn.status) }}</header>
+  <div class="body">
+    <p class="muted" style="margin-top:0">▲ <b>INCOMPLETE_LINEAGE</b> — {{ fn.lineage_note }}</p>
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>Strategie</th><th class="r">Kandidaten</th><th class="r">Plannen</th>
+          <th class="r">Executable</th><th class="r">plan→exec</th>
+          <th class="r">Geopend</th><th class="r">Gesloten</th><th class="r">open→dicht</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in fn.rows %}
+        <tr>
+          <td>{{ r.strategy }}{% if r.dormant %} <small class="muted">dormant · disabled</small>{% endif %}</td>
+          <td class="r">{{ r.candidates }}</td>
+          <td class="r">{{ r.plans }}</td>
+          <td class="r">{{ r.executable }}</td>
+          <td class="r">{{ (r.plan_to_executable_pct ~ '%') if r.plan_to_executable_pct is not none else 'UNKNOWN' }}</td>
+          <td class="r">{{ r.opened }}</td>
+          <td class="r">{{ r.closed }}</td>
+          <td class="r">{{ (r.opened_to_closed_pct ~ '%') if r.opened_to_closed_pct is not none else 'UNKNOWN' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted"><small>
+      Er staat bewust géén <code>executable → geopend</code> percentage: die stadia
+      delen geen sleutel en “selected” wordt nergens vastgelegd. Een percentage zou
+      hier verzonnen zijn.
+    </small></p>
+    {% for s in fn.sources %}
+      <small class="muted">bron {{ s.file }} · {{ s.prov.age_label if s.prov else 'unknown' }} oud</small>{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <header><h3>Blokkades per strategie</h3></header>
+  <div class="body">
+    {% for r in fn.rows if r.top_reasons %}
+    <h4 style="margin-bottom:4px">{{ r.strategy }} <small class="muted">{{ r.blocked }} geblokkeerd</small></h4>
+    <table class="tbl" style="margin-bottom:12px">
+      <thead><tr><th>Reden</th><th class="r">Aantal</th><th class="r">% van geblokkeerd</th></tr></thead>
+      <tbody>
+        {% for x in r.top_reasons %}
+        <tr><td><code>{{ x.reason }}</code></td><td class="r">{{ x.count }}</td><td class="r">{{ x.pct }}%</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Geen geblokkeerde plannen in het venster.</p>
+    {% endfor %}
+    <p class="muted"><small>
+      Meerdere redenen op één plan betekent dat het door méér dan één onafhankelijke
+      poort werd geweigerd. Eén poort openen laat die trade dus niet door.
+    </small></p>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <header><h3>Economics per strategie</h3><span class="spacer"></span>{{ ui.badge(ec.status) }}</header>
+  <div class="body">
+    <p class="muted" style="margin-top:0">▲ <b>COHORT-SCHEIDING</b> — {{ ec.cohort_note }}</p>
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>Strategie</th><th class="r">n</th><th>Bewijs</th>
+          <th class="r">Bruto</th><th class="r">Fees</th><th class="r">Funding</th><th class="r">Netto</th>
+          <th class="r">Fees vs |bruto|</th>
+          <th class="r">Exp/trade</th><th class="r">WR</th><th class="r">PF</th><th class="r">Payoff</th><th class="r">TP1</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in ec.rows %}
+        <tr>
+          <td>{{ r.strategy }}</td>
+          <td class="r">{{ r.n }}</td>
+          <td><small>{{ r.evidence }}</small></td>
+          <td class="r">{{ num(r.gross, 4) }}</td>
+          <td class="r">{{ num(r.fees, 4) }}</td>
+          <td class="r">{{ num(r.funding, 4) }}</td>
+          <td class="r {{ 'pos' if r.net > 0 else ('neg' if r.net < 0 else '') }}">{{ num(r.net, 4) }}</td>
+          <td class="r">{% if r.fees_pct_of_abs_gross is not none %}{{ r.fees_pct_of_abs_gross }}%{% elif r.fees_multiple_of_abs_gross is not none %}{{ r.fees_multiple_of_abs_gross }}× bruto{% else %}—{% endif %}</td>
+          <td class="r">{{ num(r.expectancy, 5) if r.expectancy is not none else 'UNKNOWN' }}</td>
+          <td class="r">{{ (r.winrate ~ '%') if r.winrate is not none else 'UNKNOWN' }}</td>
+          <td class="r">{{ r.profit_factor if r.profit_factor is not none else 'UNKNOWN' }}</td>
+          <td class="r">{{ r.payoff if r.payoff is not none else 'UNKNOWN' }}</td>
+          <td class="r">{{ r.tp1_hits }}/{{ r.tp1_measured }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td><b>TOTAAL (LIVE)</b></td>
+          <td class="r"><b>{{ ec.totals.n }}</b></td>
+          <td><small>{{ ec.totals.evidence }}</small></td>
+          <td class="r">{{ num(ec.totals.gross, 4) }}</td>
+          <td class="r">{{ num(ec.totals.fees, 4) }}</td>
+          <td class="r">{{ num(ec.totals.funding, 4) }}</td>
+          <td class="r"><b>{{ num(ec.totals.net, 4) }}</b></td>
+          <td class="r">{% if ec.totals.fees_pct_of_abs_gross is not none %}{{ ec.totals.fees_pct_of_abs_gross }}%{% elif ec.totals.fees_multiple_of_abs_gross is not none %}{{ ec.totals.fees_multiple_of_abs_gross }}× bruto{% else %}—{% endif %}</td>
+          <td class="r" colspan="5"></td>
+        </tr>
+      </tfoot>
+    </table>
+    <p class="muted"><small>
+      Bewijslabels zijn vaste banden: NO_DATA (0) · TINY_SAMPLE (1-9) ·
+      DESCRIPTIVE (10-29) · REASONABLE_SAMPLE (30+). Geen enkel label betekent
+      “winstgevend”.
+      {% if ec.excluded %} Uitgesloten rijen: {{ ec.excluded }}.{% endif %}
+    </small></p>
+    <small class="muted">
+      bron {{ ec.source.file }} · {{ ec.source.prov.age_label if ec.source.prov else 'unknown' }} oud
+      {% if ec.window.first %} · venster {{ ec.window.first[:16] }} → {{ ec.window.last[:16] }}{% endif %}
+    </small>
+  </div>
+</div>
+
+<div class="card">
+  <header><h3>Ranking / plannen</h3><span class="spacer"></span>{{ ui.badge(rk.status) }}</header>
+  <div class="body">
+    {% if not rk.available %}
+    <p><b>{{ rk.state }}</b></p>
+    <p class="muted">{{ rk.detail }}</p>
+    {% else %}
+    <p class="muted">{{ rk.detail }}</p>
+    {% endif %}
+    <small class="muted">bron {{ rk.source.file }}</small>
+  </div>
+</div>
+
+{% endblock %}

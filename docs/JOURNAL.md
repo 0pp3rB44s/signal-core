@@ -400,3 +400,40 @@ Metadata only: no order type, price, size, protection, SL/TP, risk decision or
 exchange call changes. 15 tests, four mutations killed, full suite 1364 passed.
 
 This unlocks nothing today — the columns fill from the next deployment onward.
+# 2026-08-10 — Dashboard: per-strategy funnel and live economics
+
+`/strategy` answers, in one screen: which strategy produces volume, where it
+dies, which ones open trades, which earns or loses net, how much of that is
+fees, and how large the sample is.
+
+The design constraint was lineage, not layout. Three stages join and three do
+not: `strategy_candidates.csv` and `trade_plans.csv` share `candidate_id`
+(615/615 in the 2026-08-10 snapshot), and OPEN/CLOSE join on
+`position_lifecycle_id` — but `trade_dataset_v2.csv` carries **no `plan_id` or
+`candidate_id`**, and "selected" is never written down at all. So
+`executable → selected → opened` is not a cohort, and the page shows those
+stages side by side under an explicit `INCOMPLETE_LINEAGE` marker rather than
+dividing one by the other. Conversion rates appear only where numerator and
+denominator are genuinely the same set.
+
+Economics use `is_displayable_close` — imported from
+`telemetry/close_record_sources.py`, not reimplemented — so `/strategy` and
+`/performance` cannot drift apart; a test pins their LIVE totals equal.
+Provisional closes, recovery rows and low-confidence rows are excluded and
+counted separately, and a lifecycle can only be counted once.
+
+Gross, fees, funding and net are shown as four separate columns. On the live
+snapshot the point lands immediately: `low_vol_reclaim` has a gross of
+−0.06 USDT and fees of 1.13, so the cost structure is **18.3× the entire gross
+result**. Above 100% the share is rendered as a multiple rather than a
+percentage, because "1833.8%" reads like a bug when it is in fact the finding.
+
+Sample size carries a fixed evidence band — NO_DATA / TINY_SAMPLE /
+DESCRIPTIVE / REASONABLE_SAMPLE — and no label ever says "profitable".
+
+A ranking section exists as a boundary only. Until the ranked-plan feed is
+merged it reports `RANKED_PLAN_TELEMETRY_NOT_AVAILABLE` and reconstructs
+nothing: rebuilding the ranking offline is exactly what has already produced
+two wrong answers.
+
+Read-only throughout; no trading behaviour touched.

@@ -205,3 +205,13 @@ Volledige risicolijst: docs/RISK_REGISTER.md · Beperkingen: docs/KNOWN_LIMITATI
       (vereist ook de ranked-plan feed voor `selected`).
 - [ ] Overweeg `order_intent_id` zodra intents een stabiele eigen identiteit
       dragen; nu bestaat die niet als apart veld.
+## Dashboard profitability (2026-08-10)
+
+- [x] Per-strategie funnel met expliciete `INCOMPLETE_LINEAGE` waar stadia geen
+      cohort delen.
+- [x] Economics per strategie uit authoritative LIVE closes, met
+      gross/fees/funding/net apart en vaste bewijsbanden.
+- [x] Ranking-sectie als grens; toont `RANKED_PLAN_TELEMETRY_NOT_AVAILABLE`.
+- [ ] Ranking vullen zodra de ranked-plan feed in production zit.
+- [ ] `plan_id` of `candidate_id` meeschrijven op positierijen, zodat
+      `executable → geopend` een echt cohort wordt.
