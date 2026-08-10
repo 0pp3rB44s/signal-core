@@ -398,6 +398,31 @@ def build_dynamic_grid() -> dict[str, Any]:
     cycles = [row for row in events if row.get("event_type") in {
         "GRID_OPENED", "GRID_TP_SUBMITTED", "GRID_CYCLE_CLOSED", "GRID_HARD_KILL", "GRID_RESET"
     }]
+    closed = [row for row in events if row.get("event_type") == "GRID_CYCLE_CLOSED"]
+    level_closes = [row for row in events if row.get("event_type") == "GRID_LEVEL_CLOSED"]
+    net_values = [_f(row.get("net_capture_usdt")) for row in closed]
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for value in net_values:
+        cumulative += value
+        peak = max(peak, cumulative)
+        max_drawdown = max(max_drawdown, peak - cumulative)
+    gross_total = sum(_f(row.get("gross_capture_usdt")) for row in closed)
+    fees_total = sum(_f(row.get("fees_usdt")) for row in closed)
+    gains = sum(value for value in net_values if value > 0)
+    losses = abs(sum(value for value in net_values if value < 0))
+    rolling = {
+        "cycles": len(closed),
+        "win_rate_pct": round(sum(value > 0 for value in net_values) / len(net_values) * 100.0, 2) if net_values else None,
+        "gross_expectancy_bps": round(sum(_f(row.get("gross_capture_bps")) for row in closed) / len(closed), 4) if closed else None,
+        "net_expectancy_bps": round(sum(_f(row.get("net_capture_bps")) for row in closed) / len(closed), 4) if closed else None,
+        "profit_factor": round(gains / losses, 4) if losses > 0 else (None if not gains else float("inf")),
+        "max_drawdown_usdt": round(max_drawdown, 6),
+        "fee_burden_pct": round(fees_total / abs(gross_total) * 100.0, 2) if gross_total else None,
+        "average_captured_range_bps": round(sum(_f(row.get("gross_capture_bps")) for row in closed) / len(closed), 4) if closed else None,
+        "average_inventory_duration_minutes": round(sum(_f(row.get("duration_minutes")) for row in closed) / len(closed), 2) if closed else None,
+    }
     return {
         "available": bool(events or active),
         "mode": str(events[-1].get("mode") or "UNKNOWN") if events else "UNKNOWN",
@@ -405,6 +430,8 @@ def build_dynamic_grid() -> dict[str, Any]:
         "levels": active.get("levels") or [],
         "decisions": [latest_decisions[key] for key in sorted(latest_decisions)],
         "lifecycle": cycles[-30:],
+        "level_closes": level_closes[-30:],
+        "rolling": rolling,
         "source": {"file": DYNAMIC_GRID_EVENTS_PATH, "prov": loaded.provenance},
         "state_source": {"file": DYNAMIC_GRID_STATE_PATH, "prov": state_loaded.provenance},
     }

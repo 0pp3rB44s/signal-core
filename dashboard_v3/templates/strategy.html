@@ -31,6 +31,10 @@
       <tbody>{% for l in dg.levels %}<tr><td>{{ l.index }}</td><td><code>{{ l.entry_client_oid }}</code></td><td><code>{{ l.tp_client_oid }}</code></td><td class="r">{{ num(l.notional_usdt, 2) }}</td><td>{{ l.entry_resolved }}</td><td>{{ l.tp_submitted }}</td></tr>{% endfor %}</tbody>
     </table>
     {% endif %}
+    <h4>Rolling LIVE economics</h4>
+    <table class="tbl"><thead><tr><th>Cycles</th><th class="r">WR</th><th class="r">Gross exp.</th><th class="r">Net exp.</th><th class="r">PF</th><th class="r">Max DD</th><th class="r">Fee burden</th><th class="r">Captured range</th><th class="r">Inventoryduur</th></tr></thead>
+      <tbody><tr><td>{{ dg.rolling.cycles }}</td><td class="r">{{ (dg.rolling.win_rate_pct ~ '%') if dg.rolling.win_rate_pct is not none else 'UNKNOWN' }}</td><td class="r">{{ (dg.rolling.gross_expectancy_bps ~ ' bps') if dg.rolling.gross_expectancy_bps is not none else 'UNKNOWN' }}</td><td class="r">{{ (dg.rolling.net_expectancy_bps ~ ' bps') if dg.rolling.net_expectancy_bps is not none else 'UNKNOWN' }}</td><td class="r">{{ dg.rolling.profit_factor if dg.rolling.profit_factor is not none else 'UNKNOWN' }}</td><td class="r">{{ num(dg.rolling.max_drawdown_usdt, 4) }} USDT</td><td class="r">{{ (dg.rolling.fee_burden_pct ~ '%') if dg.rolling.fee_burden_pct is not none else 'UNKNOWN' }}</td><td class="r">{{ (dg.rolling.average_captured_range_bps ~ ' bps') if dg.rolling.average_captured_range_bps is not none else 'UNKNOWN' }}</td><td class="r">{{ (dg.rolling.average_inventory_duration_minutes ~ ' min') if dg.rolling.average_inventory_duration_minutes is not none else 'UNKNOWN' }}</td></tr></tbody>
+    </table>
     {% endif %}
     <small class="muted">bronnen {{ dg.source.file }} · {{ dg.state_source.file }}</small>
   </div>

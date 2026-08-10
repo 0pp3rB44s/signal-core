@@ -37,6 +37,7 @@ STALE_POLICY: dict[str, tuple[float, float | None]] = {
     "data_store/funnel_events.jsonl": (900, 7200),
     "data_store/dynamic_grid_v1_events.jsonl": (900, 7200),
     "state/dynamic_grid_v1.json": (900, 7200),
+    "state/dynamic_grid_v1_shadow.json": (900, 7200),
     "logs/live.out": (900, 7200),
     "logs/trade_plans.csv": (3600, None),
     "reports/backtests/strategy_expectancy.json": (86400 * 2, None),

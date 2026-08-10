@@ -353,6 +353,33 @@ def test_dynamic_grid_panel_preserves_decision_economics_and_order_lineage(feed,
     assert built["levels"][0]["tp_client_oid"] == "dgv1-tp"
 
 
+def test_dynamic_grid_panel_calculates_rolling_live_cycle_metrics(feed, monkeypatch):
+    feed[sp.DYNAMIC_GRID_EVENTS_PATH] = [
+        {
+            "strategy": "dynamic_grid_v1", "mode": "LIVE",
+            "event_type": "GRID_CYCLE_CLOSED", "net_capture_usdt": 1.0,
+            "gross_capture_usdt": 1.2, "fees_usdt": 0.2,
+            "gross_capture_bps": 12.0, "net_capture_bps": 10.0,
+            "duration_minutes": 30.0,
+        },
+        {
+            "strategy": "dynamic_grid_v1", "mode": "LIVE",
+            "event_type": "GRID_CYCLE_CLOSED", "net_capture_usdt": -0.5,
+            "gross_capture_usdt": -0.3, "fees_usdt": 0.2,
+            "gross_capture_bps": -3.0, "net_capture_bps": -5.0,
+            "duration_minutes": 60.0,
+        },
+    ]
+    monkeypatch.setattr(src, "load_json", lambda *args, **kwargs: _Loaded({}))
+    rolling = sp.build_dynamic_grid()["rolling"]
+    assert rolling["cycles"] == 2
+    assert rolling["win_rate_pct"] == 50.0
+    assert rolling["net_expectancy_bps"] == 2.5
+    assert rolling["profit_factor"] == 2.0
+    assert rolling["max_drawdown_usdt"] == 0.5
+    assert rolling["average_inventory_duration_minutes"] == 45.0
+
+
 # --- agreement with the performance page ------------------------------------
 
 

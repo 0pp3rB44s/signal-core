@@ -196,9 +196,20 @@ def build_grid_decision(
     if maker_fee_bps <= 0 or economics.expected_net_capture_bps <= 0:
         regime, reason = GridRegime.PAUSED_SPREAD, "authenticated_fee_hurdle_failed"
 
+    hard_invalidation = center - (
+        atr_value * float(settings.dynamic_grid_hard_invalidation_atr)
+    )
+    invalidation_fraction = max((center - hard_invalidation) / center, 1e-9)
+    risk_capped_notional = (
+        float(equity_usdt)
+        * float(settings.dynamic_grid_max_equity_risk_pct) / 100.0
+        / invalidation_fraction
+    )
     total_notional = min(
         float(settings.dynamic_grid_max_notional_usdt),
         float(equity_usdt) * float(settings.dynamic_grid_max_equity_pct) / 100.0,
+        float(settings.dynamic_grid_max_level_notional_usdt) * 3.0,
+        risk_capped_notional,
     )
     per_level = total_notional / 3.0
     if per_level < float(settings.dynamic_grid_min_level_notional_usdt):
@@ -221,7 +232,7 @@ def build_grid_decision(
         strategy="dynamic_grid_v1", symbol=symbol.upper(), candle_timestamp_ms=candle_timestamp_ms,
         score=score, regime=regime, reason=reason, center=center, atr=atr_value,
         atr_bps=atr_bps, trend_bps=trend_bps,
-        hard_invalidation=center - (atr_value * float(settings.dynamic_grid_hard_invalidation_atr)),
+        hard_invalidation=hard_invalidation,
         levels=levels, economics=economics,
     )
 

@@ -25,6 +25,8 @@ def evaluate(path: Path, *, min_cycles: int = 48, min_hours: float = 4.0) -> dic
     selections = [row for row in rows if row.get("event_type") == "GRID_SELECTION"]
     decisions = [row for row in rows if row.get("event_type") == "GRID_DECISION"]
     fees = [row for row in rows if row.get("event_type") == "FEE_RATE_AUTHENTICATED"]
+    hypothetical_fills = [row for row in rows if row.get("event_type") == "SHADOW_LEVEL_FILLED"]
+    hypothetical_tps = [row for row in rows if row.get("event_type") == "SHADOW_TP_HIT"]
     errors = [
         row for row in rows
         if row.get("event_type") in {"GRID_STOP", "GRID_ORDER_ERROR"}
@@ -59,6 +61,13 @@ def evaluate(path: Path, *, min_cycles: int = 48, min_hours: float = 4.0) -> dic
         ),
         "no_runtime_errors": not errors,
         "well_formed": malformed == 0 and not invalid_decisions,
+        "hypothetical_fill_mapping_well_formed": all(
+            row.get("level") in {1, 2, 3}
+            and float(row.get("entry_price") or 0.0) > 0
+            and float(row.get("target_price") or 0.0) > float(row.get("entry_price") or 0.0)
+            and float(row.get("expected_net_capture_bps") or 0.0) > 0
+            for row in hypothetical_fills
+        ),
     }
     return {
         "verdict": "PASS" if all(checks.values()) else "FAIL",
@@ -70,6 +79,8 @@ def evaluate(path: Path, *, min_cycles: int = 48, min_hours: float = 4.0) -> dic
         "error_count": len(errors),
         "malformed_count": malformed,
         "invalid_decision_count": len(invalid_decisions),
+        "hypothetical_fill_count": len(hypothetical_fills),
+        "hypothetical_tp_count": len(hypothetical_tps),
     }
 
 

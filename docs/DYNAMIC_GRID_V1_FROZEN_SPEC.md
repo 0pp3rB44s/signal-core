@@ -10,6 +10,11 @@ during a pilot.
 - At most one active grid across both symbols.
 - Long-only, isolated margin, exactly 1x leverage.
 - Exactly three equal-notional entry levels. No martingale.
+- Total grid notional: min(30 USDT, 3% of account equity, 10 USDT per level,
+  and the notional implied by a 0.25% equity loss at hard invalidation);
+  minimum practical size is 5 USDT per level.
+- Strategy drawdown stop: 0.5% of current account equity.
+- Repeated-order-error stop: three recorded order-path errors.
 - Management timeframe: 5m. Context: 15m and 1h.
 - Existing non-grid positions remain under the existing PositionManager. A grid
   never overlays any existing exchange position. In LIVE,
@@ -64,6 +69,15 @@ LIVE is prohibited until all of the following hold for the exact integrated SHA:
 Completed-cycle events carry actual gross capture, exchange-reported fees, net
 capture, duration, per-level fills, maker hit rate, unfilled-level opportunity
 cost, reset count, and whether emergency behavior occurred.
+
+SHADOW maintains a separate persisted lifecycle and emits hypothetical level
+fills, mapped TPs, regime kill-switches, hard kills, resolved cycles, deferred
+resets, and material flat-state resets. This state has no exchange transport.
+
+Funding is queried from Bitget position history after exchange-confirmed
+flatness and included only when the existing lifecycle matcher identifies one
+unambiguous position-history row. Ambiguous funding is logged as incomplete and
+is never fabricated or silently attributed.
 
 Run `python scripts/evaluate_dynamic_grid_shadow.py <events.jsonl>` to produce the
 machine-readable gate verdict. A failing gate means no LIVE orders.

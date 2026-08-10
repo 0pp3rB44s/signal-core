@@ -17,6 +17,7 @@ from typing import Any
 
 from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 from execution.maker_entry import submit_persistent_maker_entry
+from execution.dynamic_grid_shadow import DynamicGridShadow
 from execution.order_identity import ENTRY_LEG_MAKER
 from execution.state_store import JsonStateStore
 from strategies.dynamic_grid_v1 import GridDecision, GridRegime, build_grid_decision, reset_allowed
@@ -35,6 +36,11 @@ class DynamicGridService:
         self.entry_submitter = entry_submitter
         self.log = logging.getLogger("dynamic_grid_v1")
         self.store = JsonStateStore(settings.dynamic_grid_state_path)
+        self.shadow = DynamicGridShadow(
+            settings=settings,
+            store=JsonStateStore(settings.dynamic_grid_shadow_state_path),
+            emit=self._event,
+        )
         self.events_path = Path(settings.dynamic_grid_events_path)
         self._fee_rates: dict[str, float] = {}
 
@@ -91,6 +97,37 @@ class DynamicGridService:
     def cycle(self, *, equity_usdt: float, risk_stop_reason: str = "") -> list[GridDecision]:
         if not self.settings.dynamic_grid_enabled or self.mode == "OFF":
             return []
+        grid_state = self.store.load({})
+        risk_bucket = (
+            grid_state.get("active_grid")
+            if isinstance(grid_state.get("active_grid"), dict)
+            else grid_state
+        )
+        strategy_drawdown_usdt = float((risk_bucket or {}).get("max_drawdown_usdt") or 0.0)
+        strategy_drawdown_pct = (
+            strategy_drawdown_usdt / equity_usdt * 100.0 if equity_usdt > 0 else float("inf")
+        )
+        if strategy_drawdown_pct >= float(self.settings.dynamic_grid_max_drawdown_pct):
+            risk_stop_reason = risk_stop_reason or "dynamic_grid_max_drawdown_reached"
+            self._event(
+                "GRID_STOP", reason="dynamic_grid_max_drawdown_reached",
+                drawdown_usdt=strategy_drawdown_usdt,
+                drawdown_pct=strategy_drawdown_pct,
+            )
+        if int((risk_bucket or {}).get("order_error_count") or 0) >= int(
+            self.settings.dynamic_grid_max_order_errors
+        ):
+            risk_stop_reason = risk_stop_reason or "dynamic_grid_repeated_order_errors"
+            self._event(
+                "GRID_STOP", reason="dynamic_grid_repeated_order_errors",
+                order_error_count=(risk_bucket or {}).get("order_error_count"),
+            )
+        if bool((risk_bucket or {}).get("pilot_halted")):
+            risk_stop_reason = risk_stop_reason or "dynamic_grid_pilot_halted"
+            self._event(
+                "GRID_STOP", reason="dynamic_grid_pilot_halted",
+                halt_reason=(risk_bucket or {}).get("pilot_halt_reason"),
+            )
         decisions: list[GridDecision] = []
         for symbol in sorted(self.settings.dynamic_grid_symbol_set):
             try:
@@ -122,20 +159,106 @@ class DynamicGridService:
             candidates=[{"symbol": item.symbol, "score": item.score, "regime": item.regime.value} for item in decisions],
             risk_stop_reason=risk_stop_reason,
         )
+        if self.mode == "SHADOW":
+            self.shadow.process(
+                decisions=decisions,
+                selected=selected,
+                candles_by_symbol={
+                    item.symbol: self.cache.get(item.symbol, "5m") for item in decisions
+                },
+            )
         if self.mode == "LIVE":
             state = self.store.load({})
             active_symbol = str((state.get("active_grid") or {}).get("symbol") or "")
             active_decision = next((item for item in decisions if item.symbol == active_symbol), None)
             if active_decision is not None:
-                self._live_cycle(active_decision, risk_stop_reason=risk_stop_reason)
+                try:
+                    self._live_cycle(active_decision, risk_stop_reason=risk_stop_reason)
+                except Exception as exc:
+                    self._record_uncaught_order_error(exc)
+                    raise
             elif selected is not None:
-                self._live_cycle(selected, risk_stop_reason=risk_stop_reason)
+                try:
+                    self._live_cycle(selected, risk_stop_reason=risk_stop_reason)
+                except Exception as exc:
+                    self._record_uncaught_order_error(exc)
+                    raise
         return decisions
+
+    def _record_uncaught_order_error(self, exc: Exception) -> None:
+        state = self.store.load({})
+        active = state.get("active_grid") if isinstance(state, dict) else None
+        if not isinstance(active, dict):
+            return
+        active["order_error_count"] = int(active.get("order_error_count") or 0) + 1
+        self.store.save({"active_grid": active})
+        self._event(
+            "GRID_ORDER_ERROR", symbol=active.get("symbol"),
+            action="uncaught_live_cycle_error", error=str(exc),
+            order_error_count=active["order_error_count"],
+        )
 
     def _order_state(self, symbol: str, client_oid: str) -> tuple[str, dict[str, Any] | None]:
         result = self.client.find_order_by_client_oid(symbol=symbol, client_oid=client_oid)
         status = str(result.get("status") or "UNKNOWN").upper()
         return status, result.get("order") if status == "FOUND" else None
+
+    def _cycle_close_truth(
+        self, *, active: dict[str, Any], symbol: str, confirmed_size: float
+    ) -> dict[str, float] | None:
+        """Return exchange economics only for one unambiguous lifecycle."""
+        from execution.close_reconciler import (
+            CloseReconciliationUnavailable,
+            economics_from_history,
+            match_lifecycle,
+        )
+
+        try:
+            payload = self.client.get_position_history(symbol=symbol, limit=20)
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, dict):
+                rows = data.get("list") or data.get("positions") or data.get("data") or []
+            else:
+                rows = data if isinstance(data, list) else []
+            opened_at_ms = int(
+                datetime.fromisoformat(
+                    str(active["created_at"]).replace("Z", "+00:00")
+                ).timestamp() * 1000
+            )
+            selected = match_lifecycle(
+                rows,
+                symbol=symbol,
+                direction="long",
+                opened_at_ms=opened_at_ms,
+                size=confirmed_size,
+                exchange_position_id=None,
+            )
+            if selected is None:
+                raise CloseReconciliationUnavailable("no unambiguous grid lifecycle")
+            economics = economics_from_history(selected)
+            return {
+                "gross_pnl": float(economics.gross_pnl),
+                "fees": float(economics.fees),
+                "funding": float(economics.funding),
+                "net_profit": float(economics.net_profit),
+            }
+        except Exception as exc:
+            self._event(
+                "GRID_ECONOMICS_INCOMPLETE", symbol=symbol,
+                reason="funding_not_unambiguously_attributed", error=str(exc),
+            )
+            return None
+
+    def _cycle_funding_truth(
+        self, *, active: dict[str, Any], symbol: str, confirmed_size: float
+    ) -> tuple[float | None, str]:
+        truth = self._cycle_close_truth(
+            active=active, symbol=symbol, confirmed_size=confirmed_size
+        )
+        return (
+            (truth["funding"], "bitget_position_history")
+            if truth is not None else (None, "unavailable_or_ambiguous")
+        )
 
     @staticmethod
     def _entry_plan(decision: GridDecision, level: Any) -> Any:
@@ -249,7 +372,8 @@ class DynamicGridService:
                     "GRID_RESET", symbol=decision.symbol,
                     old_center=state.get("last_center"), new_center=decision.center,
                     reason="previous_cycle_exchange_confirmed_flat_and_cooldown_elapsed",
-                    atr=decision.atr, regime=decision.regime.value,
+                    atr=decision.atr, volatility=decision.atr,
+                    regime=decision.regime.value,
                 )
             self.client.set_futures_leverage(
                 symbol=decision.symbol, leverage=1, hold_side="long", margin_mode="isolated"
@@ -277,6 +401,10 @@ class DynamicGridService:
                 "reset_count": int(state.get("reset_count") or 0) + (
                     1 if state.get("last_cycle_closed_at") else 0
                 ),
+                "cumulative_net_usdt": float(state.get("cumulative_net_usdt") or 0.0),
+                "peak_cumulative_net_usdt": float(state.get("peak_cumulative_net_usdt") or 0.0),
+                "max_drawdown_usdt": float(state.get("max_drawdown_usdt") or 0.0),
+                "order_error_count": int(state.get("order_error_count") or 0),
             }
             # Persist intent before the first POST. A crash between submissions
             # is recoverable by deterministic clientOid lookup on the next cycle.
@@ -292,6 +420,26 @@ class DynamicGridService:
 
         position = position_by_symbol.get(decision.symbol)
         mark = float((position or {}).get("markPrice") or (position or {}).get("marketPrice") or decision.center)
+        latest_candles = self.cache.get(decision.symbol, "5m")
+        latest_candle = latest_candles[-1] if latest_candles else {}
+        observed_low = float(latest_candle.get("low") or mark)
+        observed_high = float(latest_candle.get("high") or mark)
+        metrics_changed = False
+        for level in active.get("levels") or []:
+            if not level.get("tp_submitted"):
+                continue
+            entry_price = float(level.get("actual_entry_price") or level.get("entry_price") or 0.0)
+            if entry_price <= 0:
+                continue
+            level["mae_bps"] = min(
+                float(level.get("mae_bps") or 0.0),
+                (observed_low - entry_price) / entry_price * 10_000.0,
+            )
+            level["mfe_bps"] = max(
+                float(level.get("mfe_bps") or 0.0),
+                (observed_high - entry_price) / entry_price * 10_000.0,
+            )
+            metrics_changed = True
         if position and mark <= float(active.get("hard_invalidation") or 0.0):
             for level in active.get("levels") or []:
                 for oid_key in ("entry_client_oid", "tp_client_oid"):
@@ -300,6 +448,7 @@ class DynamicGridService:
                             symbol=decision.symbol, client_oid=level.get(oid_key)
                         )
                     except Exception as exc:
+                        active["order_error_count"] = int(active.get("order_error_count") or 0) + 1
                         self._event(
                             "GRID_ORDER_ERROR", symbol=decision.symbol,
                             action=f"hard_kill_cancel_{oid_key}", error=str(exc),
@@ -322,6 +471,29 @@ class DynamicGridService:
                     self.entry_submitter.mark_closed_out(
                         level.get("entry_client_oid"), reason="dynamic_grid_hard_invalidation"
                     )
+            confirmed_size = float(position.get("total") or position.get("size") or 0.0)
+            close_truth = self._cycle_close_truth(
+                active=active, symbol=decision.symbol, confirmed_size=confirmed_size
+            )
+            maker_entry_fees = sum(
+                abs(float(level.get("entry_fee_usdt") or 0.0))
+                for level in active.get("levels") or []
+            )
+            total_fees = abs(float((close_truth or {}).get("fees") or 0.0))
+            emergency_taker_fees = max(total_fees - maker_entry_fees, 0.0)
+            cycle_net = (
+                float(close_truth["net_profit"]) if close_truth is not None else None
+            )
+            cumulative_net = float(active.get("cumulative_net_usdt") or 0.0) + (
+                cycle_net or 0.0
+            )
+            peak_cumulative = max(
+                float(active.get("peak_cumulative_net_usdt") or 0.0), cumulative_net
+            )
+            max_drawdown = max(
+                float(active.get("max_drawdown_usdt") or 0.0),
+                peak_cumulative - cumulative_net,
+            )
             self.store.save({
                 "last_cycle_closed_at": datetime.now(timezone.utc).isoformat(),
                 "last_center": active.get("center"),
@@ -331,13 +503,35 @@ class DynamicGridService:
                     level.get(key) for level in active.get("levels") or []
                     for key in ("entry_client_oid", "tp_client_oid") if level.get(key)
                 ],
+                "cumulative_net_usdt": cumulative_net,
+                "peak_cumulative_net_usdt": peak_cumulative,
+                "max_drawdown_usdt": max_drawdown,
+                "order_error_count": int(active.get("order_error_count") or 0),
+                "pilot_halted": close_truth is None,
+                "pilot_halt_reason": (
+                    "hard_kill_economics_ambiguous" if close_truth is None else ""
+                ),
             })
             created_at = datetime.fromisoformat(str(active["created_at"]).replace("Z", "+00:00"))
             self._event(
                 "GRID_HARD_KILL", symbol=decision.symbol, mark=mark,
                 reason="hard_invalidation", emergency_behavior=True,
+                regime=decision.regime.value,
                 duration_minutes=(datetime.now(timezone.utc) - created_at).total_seconds() / 60.0,
                 reset_count=int(active.get("reset_count") or 0),
+                gross_capture_usdt=(close_truth or {}).get("gross_pnl"),
+                maker_fees_usdt=maker_entry_fees,
+                taker_fees_usdt=(
+                    emergency_taker_fees if close_truth is not None else None
+                ),
+                funding_usdt=(close_truth or {}).get("funding"),
+                net_capture_usdt=cycle_net,
+                inventory_before=confirmed_size, inventory_after=0.0,
+                economics_source=(
+                    "bitget_position_history" if close_truth is not None
+                    else "unavailable_or_ambiguous"
+                ),
+                strategy_max_drawdown_usdt=max_drawdown,
             )
             return
 
@@ -357,6 +551,7 @@ class DynamicGridService:
                         symbol=decision.symbol, client_oid=level.get("entry_client_oid")
                     )
                 except Exception as exc:
+                    active["order_error_count"] = int(active.get("order_error_count") or 0) + 1
                     self._event("GRID_ORDER_ERROR", symbol=decision.symbol, action="trend_pause_cancel", error=str(exc))
                     continue
                 level["entry_cancel_requested"] = True
@@ -369,7 +564,7 @@ class DynamicGridService:
             # can race a partial fill; only the subsequent order read may call
             # the level resolved or submit a TP for confirmed inventory.
 
-        changed = False
+        changed = metrics_changed
         for level in active.get("levels") or []:
             if level.get("entry_resolved") and not level.get("tp_submitted"):
                 continue
@@ -434,6 +629,18 @@ class DynamicGridService:
                         level["entry_client_oid"], filled_qty=filled_quantity,
                         avg_price=float(metrics.get("avg_price") or level["entry_price"]),
                     )
+                raw_metrics = metrics.get("raw") if isinstance(metrics.get("raw"), dict) else {}
+                level["filled_quantity"] = filled_quantity
+                level["actual_entry_price"] = float(
+                    metrics.get("avg_price") or level["entry_price"]
+                )
+                level["entry_fee_usdt"] = abs(float(metrics.get("fee") or 0.0))
+                level["filled_at_ms"] = int(
+                    raw_metrics.get("uTime") or raw_metrics.get("cTime")
+                    or decision.candle_timestamp_ms
+                )
+                level.setdefault("mae_bps", 0.0)
+                level.setdefault("mfe_bps", 0.0)
                 self.client.place_futures_limit_close_order(
                     symbol=decision.symbol, hold_side="long", size=filled_quantity,
                     price=level["tp_price"], margin_mode="isolated", post_only=True,
@@ -463,6 +670,8 @@ class DynamicGridService:
                 gross_capture = 0.0
                 fees = 0.0
                 fills_per_level = []
+                total_entry_notional = 0.0
+                level_economics = []
                 for level, tp_row in zip(tp_levels, states):
                     _, entry_row = self._order_state(decision.symbol, level["entry_client_oid"])
                     entry_metrics = self.client.extract_fill_metrics({"data": entry_row or {}})
@@ -473,17 +682,86 @@ class DynamicGridService:
                     )
                     entry_price = float(entry_metrics.get("avg_price") or level["entry_price"])
                     tp_price = float(tp_metrics.get("avg_price") or level["tp_price"])
-                    gross_capture += max(tp_price - entry_price, 0.0) * quantity
-                    fees += abs(float(entry_metrics.get("fee") or 0.0))
-                    fees += abs(float(tp_metrics.get("fee") or 0.0))
+                    gross_usdt = (tp_price - entry_price) * quantity
+                    entry_fee = abs(float(entry_metrics.get("fee") or level.get("entry_fee_usdt") or 0.0))
+                    exit_fee = abs(float(tp_metrics.get("fee") or 0.0))
+                    level_fees = entry_fee + exit_fee
+                    notional = entry_price * quantity
+                    gross_bps = gross_usdt / notional * 10_000.0 if notional > 0 else 0.0
+                    execution_drag_bps = (
+                        abs(entry_price - float(level["entry_price"])) / float(level["entry_price"]) * 10_000.0
+                        + abs(tp_price - float(level["tp_price"])) / float(level["tp_price"]) * 10_000.0
+                    )
+                    tp_raw = tp_metrics.get("raw") if isinstance(tp_metrics.get("raw"), dict) else {}
+                    exit_at_ms = int(
+                        tp_raw.get("uTime") or tp_raw.get("cTime")
+                        or int(datetime.now(timezone.utc).timestamp() * 1000)
+                    )
+                    filled_at_ms = int(level.get("filled_at_ms") or active.get("opened_timestamp_ms") or exit_at_ms)
+                    gross_capture += gross_usdt
+                    fees += level_fees
+                    total_entry_notional += notional
                     fills_per_level.append({
                         "level": level["index"], "quantity": quantity,
                         "entry_price": entry_price, "exit_price": tp_price,
                     })
+                    level_economics.append({
+                        "symbol": decision.symbol, "level": level["index"],
+                        "entry": entry_price, "exit": tp_price,
+                        "gross_bps": gross_bps, "maker_fees_usdt": level_fees,
+                        "taker_fees_usdt": 0.0,
+                        "execution_drag_bps": execution_drag_bps,
+                        "gross_usdt": gross_usdt, "notional_usdt": notional,
+                        "level_fees_usdt": level_fees,
+                        "hold_time_minutes": max((exit_at_ms - filled_at_ms) / 60_000.0, 0.0),
+                        "mae_bps": float(level.get("mae_bps") or 0.0),
+                        "mfe_bps": float(level.get("mfe_bps") or 0.0),
+                        "quantity": quantity,
+                        "exit_at_ms": exit_at_ms,
+                    })
+                inventory = sum(item["quantity"] for item in level_economics)
+                funding, funding_source = self._cycle_funding_truth(
+                    active=active, symbol=decision.symbol, confirmed_size=inventory
+                )
+                for item in sorted(level_economics, key=lambda row: row["exit_at_ms"]):
+                    before = inventory
+                    inventory = max(inventory - item["quantity"], 0.0)
+                    item["inventory_before"] = before
+                    item["inventory_after"] = inventory
+                    funding_share = (
+                        float(funding) * item["notional_usdt"] / total_entry_notional
+                        if funding is not None and total_entry_notional > 0 else None
+                    )
+                    net_usdt = (
+                        item["gross_usdt"] - item["level_fees_usdt"]
+                        + (funding_share or 0.0)
+                    )
+                    item["funding_usdt"] = funding_share
+                    item["funding_source"] = funding_source
+                    item["net_bps"] = (
+                        net_usdt / item["notional_usdt"] * 10_000.0
+                        if item["notional_usdt"] > 0 else 0.0
+                    )
+                    item.pop("quantity", None)
+                    item.pop("exit_at_ms", None)
+                    item.pop("gross_usdt", None)
+                    item.pop("notional_usdt", None)
+                    item.pop("level_fees_usdt", None)
+                    self._event("GRID_LEVEL_CLOSED", **item)
                 created_at = datetime.fromisoformat(str(active["created_at"]).replace("Z", "+00:00"))
                 duration_minutes = (
                     datetime.now(timezone.utc) - created_at
                 ).total_seconds() / 60.0
+                cycle_net_usdt = gross_capture - fees + (funding or 0.0)
+                cumulative_net = float(active.get("cumulative_net_usdt") or 0.0) + cycle_net_usdt
+                peak_cumulative = max(
+                    float(active.get("peak_cumulative_net_usdt") or 0.0),
+                    cumulative_net,
+                )
+                max_drawdown = max(
+                    float(active.get("max_drawdown_usdt") or 0.0),
+                    peak_cumulative - cumulative_net,
+                )
                 self.store.save({
                     "last_cycle_closed_at": datetime.now(timezone.utc).isoformat(),
                     "last_center": active.get("center"),
@@ -492,16 +770,34 @@ class DynamicGridService:
                         level.get(key) for level in active.get("levels") or []
                         for key in ("entry_client_oid", "tp_client_oid") if level.get(key)
                     ],
+                    "cumulative_net_usdt": cumulative_net,
+                    "peak_cumulative_net_usdt": peak_cumulative,
+                    "max_drawdown_usdt": max_drawdown,
+                    "order_error_count": int(active.get("order_error_count") or 0),
                 })
                 self._event(
                     "GRID_CYCLE_CLOSED", symbol=decision.symbol,
                     state="exchange_confirmed_flat", gross_capture_usdt=gross_capture,
-                    fees_usdt=fees, net_capture_usdt=gross_capture - fees,
+                    fees_usdt=fees, net_capture_usdt=cycle_net_usdt,
+                    gross_capture_bps=(
+                        gross_capture / total_entry_notional * 10_000.0
+                        if total_entry_notional > 0 else 0.0
+                    ),
+                    net_capture_bps=(
+                        (gross_capture - fees + (funding or 0.0))
+                        / total_entry_notional * 10_000.0
+                        if total_entry_notional > 0 else 0.0
+                    ),
+                    maker_fees_usdt=fees, taker_fees_usdt=0.0,
+                    funding_usdt=funding,
+                    funding_source=funding_source,
                     duration_minutes=duration_minutes, fills_per_level=fills_per_level,
                     maker_hit_rate=len(tp_levels) / 3.0,
                     opportunity_cost_unfilled_levels=3 - len(tp_levels),
                     reset_count=int(active.get("reset_count") or 0),
                     emergency_behavior=False,
+                    strategy_cumulative_net_usdt=cumulative_net,
+                    strategy_max_drawdown_usdt=max_drawdown,
                 )
 
 

@@ -81,7 +81,11 @@ class Settings(BaseSettings):
     dynamic_grid_leverage: float = Field(default=1.0, alias="DYNAMIC_GRID_LEVERAGE")
     dynamic_grid_max_notional_usdt: float = Field(default=30.0, alias="DYNAMIC_GRID_MAX_NOTIONAL_USDT")
     dynamic_grid_max_equity_pct: float = Field(default=3.0, alias="DYNAMIC_GRID_MAX_EQUITY_PCT")
+    dynamic_grid_max_equity_risk_pct: float = Field(default=0.25, alias="DYNAMIC_GRID_MAX_EQUITY_RISK_PCT")
+    dynamic_grid_max_drawdown_pct: float = Field(default=0.5, alias="DYNAMIC_GRID_MAX_DRAWDOWN_PCT")
+    dynamic_grid_max_order_errors: int = Field(default=3, alias="DYNAMIC_GRID_MAX_ORDER_ERRORS")
     dynamic_grid_min_level_notional_usdt: float = Field(default=5.0, alias="DYNAMIC_GRID_MIN_LEVEL_NOTIONAL_USDT")
+    dynamic_grid_max_level_notional_usdt: float = Field(default=10.0, alias="DYNAMIC_GRID_MAX_LEVEL_NOTIONAL_USDT")
     dynamic_grid_min_score: float = Field(default=70.0, alias="DYNAMIC_GRID_MIN_SCORE")
     dynamic_grid_min_atr_bps: float = Field(default=8.0, alias="DYNAMIC_GRID_MIN_ATR_BPS")
     dynamic_grid_max_atr_bps: float = Field(default=120.0, alias="DYNAMIC_GRID_MAX_ATR_BPS")
@@ -94,6 +98,7 @@ class Settings(BaseSettings):
     dynamic_grid_reset_cooldown_minutes: int = Field(default=30, alias="DYNAMIC_GRID_RESET_COOLDOWN_MINUTES")
     dynamic_grid_hard_invalidation_atr: float = Field(default=3.0, alias="DYNAMIC_GRID_HARD_INVALIDATION_ATR")
     dynamic_grid_state_path: str = Field(default="state/dynamic_grid_v1.json", alias="DYNAMIC_GRID_STATE_PATH")
+    dynamic_grid_shadow_state_path: str = Field(default="state/dynamic_grid_v1_shadow.json", alias="DYNAMIC_GRID_SHADOW_STATE_PATH")
     dynamic_grid_events_path: str = Field(default="data_store/dynamic_grid_v1_events.jsonl", alias="DYNAMIC_GRID_EVENTS_PATH")
     old_strategies_new_entries_enabled: bool = Field(default=True, alias="OLD_STRATEGIES_NEW_ENTRIES_ENABLED")
 
@@ -293,7 +298,14 @@ class Settings(BaseSettings):
                 raise ValueError("dynamic_grid_v1 requires max active grids=1")
             if self.dynamic_grid_leverage != 1.0:
                 raise ValueError("dynamic_grid_v1 requires 1x leverage")
-            if self.dynamic_grid_max_notional_usdt <= 0 or self.dynamic_grid_max_equity_pct <= 0:
+            if (
+                self.dynamic_grid_max_notional_usdt <= 0
+                or self.dynamic_grid_max_equity_pct <= 0
+                or self.dynamic_grid_max_equity_risk_pct <= 0
+                or self.dynamic_grid_max_drawdown_pct <= 0
+                or self.dynamic_grid_max_order_errors <= 0
+                or self.dynamic_grid_max_level_notional_usdt <= 0
+            ):
                 raise ValueError("dynamic_grid_v1 exposure caps must be positive")
         if grid_mode == "LIVE":
             if not self.is_live_execution:
