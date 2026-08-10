@@ -1,6 +1,6 @@
 # PROJECT STATUS — signal-core
 
-**Peildatum: 2026-07-18** · Dit is het autoritatieve statusdocument.
+**Peildatum: 2026-08-10** · Dit is het autoritatieve statusdocument.
 Koers en Path-to-Live: [MASTER_PLAN.md](MASTER_PLAN.md). Historie:
 [docs/JOURNAL.md](docs/JOURNAL.md) (verhalend), [CHANGELOG.md](CHANGELOG.md)
 (per release/PR), [docs/RESEARCH_JOURNAL.md](docs/RESEARCH_JOURNAL.md)
@@ -8,15 +8,69 @@ Koers en Path-to-Live: [MASTER_PLAN.md](MASTER_PLAN.md). Historie:
 
 ## Kernstand in één alinea
 
-Er bestaat op dit moment **geen statistisch bewezen edge** (fases 2-4D:
-alle hypothesefamilies verworpen na pre-geregistreerde toetsing). De bot
-staat sinds 2026-07-13 op **observe-only** (eigenaar-besluit) en draait op
-dit moment niet; de laatste run eindigde 2026-07-15 07:51 UTC met een nette
-SIGTERM (bewuste stop, geen crash — `state/last_shutdown.json`). De **microstructuur-archiver draait
-24/7** vanaf gemergede main (orderbook/funding/liquidations) en bouwt de
-dataset die de geblokkeerde onderzoeksfamilies over 4-8 weken toetsbaar
-maakt. De focus tot die tijd: datakwaliteit, forward-paper-validatie en
-runner-deployment — géén live trading.
+De bot **handelt LIVE met echt geld** op
+`5a28980d4bc8f1364cb50fbad3a40a41414e947d`, sinds 2026-08-09T18:46:09Z:
+8 symbolen, maximaal 2 gelijktijdige posities, 35 USDT notional-cap,
+leverage 3. Er is nog steeds **geen statistisch bewezen edge** — de eerste
+12 gesloten trades na de direction-score-fix leveren netto −0,4923 USDT,
+0 TP1-hits, en een mediane MFE van 14,1 bps tegen een round-trip fee van
+12,0 bps. Het handelsvolume komt vrijwel volledig van één strategie
+(`low_vol_reclaim`: 68% van de plannen, en in 134 van 153 cycles het énige
+executable plan). De architectuurbeslissing van 2026-08-10 is daarom
+**OBSERVABILITY_FIRST**: eerst meetbaar maken, dan pas tunen.
+
+## Huidige strategie-stand
+
+| strategy | rol | bewijs |
+|---|---|---|
+| `low_vol_reclaim` | **control** — niet verder optimaliseren omdat hij toevallig veel handelt | 43 closes, netto negatief |
+| `momentum_breakout` | **active research** | 522 kandidaten, 18 executable, 4 opens; beste historische WR (47,9% over 48 trades, PRE_DIRECTION_FIX) |
+| `trend_continuation` | nog niet bewezen | 38 kandidaten, 86,8% executable, 2 opens |
+| `momentum_breakdown` | nog niet bewezen | 69 kandidaten, 3 executable, **0 opens** |
+| `liquidity_sweep_reversal` | nog niet bewezen | 30 kandidaten, **0 executable ooit** |
+| `adaptive_momentum_continuation` | bewust uit (env) | geen |
+
+## Lopende release — observability
+
+`feat/observability-ranked-plans` voegt twee meetvoorzieningen toe en
+**verandert geen handelsgedrag**:
+
+- **ranked-plan telemetrie** (`logs/ranked_plans.jsonl`): per selectiecyclus
+  alle gerankte plannen in de volgorde van de selector, met de vier
+  ranking-sleutels overgenomen uit de selector zelf. Tot nu toe werd alleen
+  de winnaar gelogd, waardoor elke ranker-vraag offline gereconstrueerd moest
+  worden — twee keer met een fout die achteraf gevonden werd.
+- **`participation_score` propagatie**: de kolom was leeg in 9301/9301 rijen
+  terwijl 3422 rijen de waarde in `raw_notes` droegen; de parser las alleen
+  de verouderde spatie-vorm. Bestaande producerwaarde, geen nieuwe semantiek.
+
+Niet gewijzigd: kandidaatgeneratie, strategy gates, ranking-volgorde,
+executie, TP/SL, risk, leverage, position sizing.
+
+## Volgende evidence gate
+
+Eerst **verse post-deploy telemetrie verzamelen**. Geen nieuwe strategy-tuning
+en geen threshold-wijzigingen voordat er ≥ 30 POST_DIRECTION_FIX closes zijn
+met ≥ 10 LONG en ≥ 3 vertegenwoordigde strategieën. Zie [ROADMAP.md](ROADMAP.md).
+
+---
+
+### Historie — kernstand 2026-07-18 (SUPERSEDED)
+
+> Onderstaande alinea beschreef de toestand vóór de live-promotie en is
+> bewaard als context. Zij is **niet meer geldig**: de bot staat niet langer
+> op observe-only.
+>
+> Er bestaat op dit moment **geen statistisch bewezen edge** (fases 2-4D:
+> alle hypothesefamilies verworpen na pre-geregistreerde toetsing). De bot
+> staat sinds 2026-07-13 op **observe-only** (eigenaar-besluit) en draait op
+> dit moment niet; de laatste run eindigde 2026-07-15 07:51 UTC met een nette
+> SIGTERM (bewuste stop, geen crash — `state/last_shutdown.json`). De
+> microstructuur-archiver draait 24/7 vanaf gemergede main
+> (orderbook/funding/liquidations) en bouwt de dataset die de geblokkeerde
+> onderzoeksfamilies over 4-8 weken toetsbaar maakt. De focus tot die tijd:
+> datakwaliteit, forward-paper-validatie en runner-deployment — géén live
+> trading.
 
 ## Fase-overzicht
 

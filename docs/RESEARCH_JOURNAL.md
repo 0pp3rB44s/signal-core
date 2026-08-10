@@ -184,3 +184,21 @@ kunnen bestaan — her-toetsbaar zodra de archivering meer regimes dekt.
 - **Faal**: anders → verwerpen; geen post-hoc venster-shopping.
 - **Bias-bronnen**: seizoenaliteit van het sample; DST-verschuivingen (UTC
   gebruiken, equity-open venster ruim nemen); autocorrelatie (dag-clusters).
+
+### Meetinfrastructuur — 2026-08-10
+
+Twee blokkades zijn opgeheven, geen hypothese getoetst.
+
+- **Gerankte plannen** (`logs/ranked_plans.jsonl`): per cyclus alle plannen in
+  de volgorde van de selector, met de vier ranking-sleutels **overgenomen uit
+  de selector** en apart gehouden van diagnostische echo's. Hiermee is de
+  alfabetische tiebreak (13 echte ties in 177 cycles) voortaan direct meetbaar
+  in plaats van reconstrueerbaar.
+- **`participation_score`**: kolom was leeg in 9301/9301 rijen terwijl 3422
+  rijen de waarde in `raw_notes` droegen. Parser las alleen de spatie-vorm.
+  Bestaande producerwaarde, geen nieuwe semantiek, geen drempel.
+
+Consequentie voor het grootboek: de hypotheses *directionele participatie* en
+*momentum entry-capaciteit* blijven ONBESLIST, maar zijn vanaf de volgende
+deployment toetsbaar. De regel blijft: niet hertesten vóór de drempel in de
+kolom "niet hertesten vóór" gehaald is.

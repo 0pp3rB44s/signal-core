@@ -173,3 +173,16 @@ VOLGENDE VALIDATIERONDE VEREIST (voorwaarden, geen implementatie in RC1)
   een vuile boom, wat elke automatische herstart stil breekt.
 
 Volledige risicolijst: docs/RISK_REGISTER.md · Beperkingen: docs/KNOWN_LIMITATIONS.md
+
+## Profitability-roadmap (vanaf 2026-08-10) — OBSERVABILITY_FIRST
+
+- [x] **Stap 1 — observability.** Gerankte-plannen-feed + `participation_score`
+      propagatie. *Exit: beide velden gevuld in een verse snapshot.*
+- [ ] **Stap 2 — datacollectie.** Tot ≥ 30 POST_DIRECTION_FIX closes met ≥ 10
+      LONG en ≥ 3 strategieën. Geen wijzigingen. *Exit: drempel gehaald, of 14
+      dagen verstreken zonder haalbaarheid.*
+- [ ] **Stap 3 — toets twee openstaande hypotheses** (directionele participatie,
+      momentum entry-capaciteit) met random control en leave-one-symbol-out.
+      *Exit: één overleeft, of beide vallen af.*
+- [ ] **Stap 4 — profitability-verdict** in `PROJECT_STATUS.md`. Bij overleving
+      replay + behavioural diff + patch; anders expliciet besluit over koers.
