@@ -49,6 +49,7 @@ SAFE_SETTINGS = (
 NAV = [
     ("command", "Command", "/"),
     ("funnel", "Funnel", "/funnel"),
+    ("strategy", "Strategies", "/strategy"),
     ("positions", "Positions", "/positions"),
     ("performance", "Performance", "/performance"),
     ("risk", "Risk & Expectancy", "/risk"),
@@ -193,6 +194,12 @@ def positions():
 @login_required
 def performance():
     return _page("performance.html", "performance")
+
+
+@app.route("/strategy")
+@login_required
+def strategy():
+    return _page("strategy.html", "strategy")
 
 
 @app.route("/risk")
