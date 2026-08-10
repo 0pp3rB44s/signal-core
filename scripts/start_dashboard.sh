@@ -47,7 +47,6 @@ pkill -f "python3 -m dashboard_v2.app" >/dev/null 2>&1 || true
 pkill -f "dashboard_v2.app" >/dev/null 2>&1 || true
 pkill -f "dashboard_v2/app.py" >/dev/null 2>&1 || true
 pkill -f "dashboard_v3.app" >/dev/null 2>&1 || true
-pkill -f "app.dashboard" >/dev/null 2>&1 || true
 
 sleep 1
 

@@ -186,3 +186,14 @@ Volledige risicolijst: docs/RISK_REGISTER.md · Beperkingen: docs/KNOWN_LIMITATI
       *Exit: één overleeft, of beide vallen af.*
 - [ ] **Stap 4 — profitability-verdict** in `PROJECT_STATUS.md`. Bij overleving
       replay + behavioural diff + patch; anders expliciet besluit over koers.
+## Dashboard (vanaf 2026-08-10)
+
+- [x] **P0 — veiligheid.** `app/dashboard.py` verwijderd: `.env`-mutatie en
+      engine-start buiten de vier autorisatielagen van `launch_live.sh`.
+      Regressietests toegevoegd.
+- [ ] **P1 — profitability.** RANKING/PLANS-pagina op de ranked-plan feed
+      (PR #34), fees/funding als aparte posten op `/performance`, per-strategie
+      funnel-uitsplitsing.
+- [ ] **P2.** Instelbare data-root zodat het dashboard tegen een immutable
+      snapshot kan draaien; `data_store/funnel_events.jsonl` en de `state/`
+      health-bestanden aan de sync-allowlist; `dashboard_v2/` opruimen.
