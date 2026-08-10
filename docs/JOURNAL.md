@@ -333,3 +333,35 @@ telemetry that reorders on its own.
 **Next evidence gate:** 30 POST_DIRECTION_FIX closes with ≥ 10 LONG and ≥ 3
 strategies represented, before the participation and momentum-capacity
 hypotheses are retested.
+# 2026-08-10 — Removed the legacy dashboard control surface
+
+A dashboard audit found three generations coexisting. `scripts/start_dashboard.sh`
+starts `dashboard_v3` and kills the other two, so only one is authoritative —
+but `app/dashboard.py` was still present, importable and one command away from
+being run.
+
+It exposed `POST /api/control/{start_bot,stop_all,restart_bot,execution_off,
+execution_on_dryrun}` and rewrote `.env` in place, `EXECUTION_ENABLED` and
+`EXECUTION_MODE` included. `start_bot` shelled out to `scripts/start_bot.sh`,
+which bypasses all four authorisation layers in `launch_live.sh`. One HTTP POST
+could have begun real-money trading; `stop_all` could have killed an engine
+holding an open position. It had no authentication boundary and, alone among
+the three generations, no tests.
+
+Removed. The only code reference was one `pkill` line, which went with it.
+`dashboard_v2` keeps the canonical rationale for why bot control does not belong
+in a dashboard — it retired the same capability earlier for the same reason —
+and `dashboard_v3` never had it.
+
+Four regression tests now pin the boundary: the file stays removed, `/login` is
+the only route accepting a mutating method, no `/control` namespace may exist,
+and `dashboard_v3` may not reference the launcher scripts or write files.
+
+Worth recording about the audit itself: `dashboard_v3` produced **zero** truth
+mismatches. It refuses to show a local snapshot as if it were live, refuses to
+sum cohorts that measure different things, and stamps every source with
+provenance and a freshness budget. Of everything in this project, it is the
+component most careful about not overclaiming — the opposite of `PROJECT_STATUS.md`,
+which until today still described the bot as observe-only and not running.
+
+No trading behaviour changed.
