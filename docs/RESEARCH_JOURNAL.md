@@ -202,3 +202,15 @@ Consequentie voor het grootboek: de hypotheses *directionele participatie* en
 *momentum entry-capaciteit* blijven ONBESLIST, maar zijn vanaf de volgende
 deployment toetsbaar. De regel blijft: niet hertesten vóór de drempel in de
 kolom "niet hertesten vóór" gehaald is.
+### Lineage — 2026-08-10
+
+`trade_dataset_v2.csv` draagt vanaf de volgende deployment `plan_id` en
+`candidate_id` op OPEN- en CLOSE-rijen. Daarmee wordt de keten
+kandidaat → plan → positie → close voor het eerst volledig joinbaar op
+identiteit in plaats van op heuristiek.
+
+Consequentie voor onderzoek: conversie `executable → geopend` per strategie is
+straks meetbaar. Tot die data bestaat blijft die stap `INCOMPLETE_LINEAGE`;
+oude lifecycles krijgen met terugwerkende kracht **niets** — een
+reconstructie op symbool/tijd/prijs zou de verkeerde plannen crediteren en is
+daarom bewust niet gedaan.

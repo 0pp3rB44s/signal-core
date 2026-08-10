@@ -197,3 +197,11 @@ Volledige risicolijst: docs/RISK_REGISTER.md · Beperkingen: docs/KNOWN_LIMITATI
 - [ ] **P2.** Instelbare data-root zodat het dashboard tegen een immutable
       snapshot kan draaien; `data_store/funnel_events.jsonl` en de `state/`
       health-bestanden aan de sync-allowlist; `dashboard_v2/` opruimen.
+## End-to-end lineage (2026-08-10)
+
+- [x] `plan_id` en `candidate_id` op OPEN/CLOSE in `trade_dataset_v2`
+      (metadata-only, backward compatible).
+- [ ] Na deployment: dashboard `executable → geopend` per strategie invullen
+      (vereist ook de ranked-plan feed voor `selected`).
+- [ ] Overweeg `order_intent_id` zodra intents een stabiele eigen identiteit
+      dragen; nu bestaat die niet als apart veld.
