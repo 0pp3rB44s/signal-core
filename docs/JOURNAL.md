@@ -365,3 +365,38 @@ component most careful about not overclaiming — the opposite of `PROJECT_STATU
 which until today still described the bot as observe-only and not running.
 
 No trading behaviour changed.
+# 2026-08-10 — END_TO_END_LINEAGE: a position now names its plan
+
+The dashboard audit could not measure `executable → opened` for any strategy,
+and the honest response was to show the stages side by side under
+`INCOMPLETE_LINEAGE` rather than divide one by the other. This closes that gap
+at the source.
+
+The identity was never missing. `ExecutionReport` already carries `plan_id`,
+`candidate_id`, `strategy` and `position_lifecycle_id`, and the stored trade
+record in `executed_trades.json` carries all four as well — 49/49 populated in
+the 2026-08-10 snapshot. They simply never reached `trade_dataset_v2.csv`,
+whose schema had `position_lifecycle_id` and the exchange ids but no plan or
+candidate. One CSV schema and two row builders were the entire loss point.
+
+So no new identifier was invented, and nothing is reconstructed from timestamp,
+symbol, entry price or nearest plan. Those are research heuristics; crediting a
+position to the plan that happened to be closest is exactly how the wrong plan
+gets the outcome. OPEN takes the fields from the report of the plan that
+actually executed; CLOSE inherits them from the stored position record rather
+than re-matching, because a second attribution attempt could disagree with the
+first.
+
+Backward compatible in both directions: the columns are appended, never
+inserted — `_rotate_on_schema_change` already rotates the file on a header
+change, and the 2026-07-07 incident where a changed schema shifted `trade_grade`
+into `close_reason` is why that matters. Positions opened before this change
+close with blank lineage and unchanged economics; recovered positions are not
+rejected; provisional rows still carry their lineage; and deduplication is
+untouched, with a test proving that two closes differing only in metadata do not
+become two rows.
+
+Metadata only: no order type, price, size, protection, SL/TP, risk decision or
+exchange call changes. 15 tests, four mutations killed, full suite 1364 passed.
+
+This unlocks nothing today — the columns fill from the next deployment onward.

@@ -1034,6 +1034,18 @@ class TradeDatasetV2Logger:
             "snapshot_link_key",
             "position_size",
             "message",
+            # --- lineage (2026-08-10) -------------------------------------
+            # Appended, never inserted: _rotate_on_schema_change rotates the
+            # file when the header changes, and a new column at the end keeps
+            # every existing reader's positional assumptions intact.
+            #
+            # These are not new identities. ExecutionReport and the stored
+            # trade record already carry both; they simply never reached the
+            # CSV, which is why a plan could not be traced to the position it
+            # became. Nothing here is reconstructed from timestamp, symbol or
+            # price -- those are research heuristics, not identity.
+            "plan_id",
+            "candidate_id",
         ]
 
     def append_open(self, report: ExecutionReport) -> None:
@@ -1054,6 +1066,12 @@ class TradeDatasetV2Logger:
             "position_lifecycle_id": getattr(report, "position_lifecycle_id", ""),
             "exchange_entry_order_id": getattr(report, "exchange_entry_order_id", ""),
             "exchange_entry_client_oid": getattr(report, "exchange_entry_client_oid", ""),
+            # From the report of the plan that actually executed. Not the
+            # latest candidate, not a same-symbol match, not a nearest
+            # timestamp -- attribution by proximity is how the wrong plan gets
+            # credited for a position.
+            "plan_id": getattr(report, "plan_id", ""),
+            "candidate_id": getattr(report, "candidate_id", ""),
             "confirmed_position_size": getattr(report, "confirmed_position_size", ""),
             "confirmed_opening_fee_usdt": getattr(report, "confirmed_opening_fee_usdt", ""),
             "expected_entry": getattr(report, "expected_entry", _report_planned_entry(report)),
@@ -1225,6 +1243,12 @@ class TradeDatasetV2Logger:
             "exchange_avg_entry": trade.get("exchange_avg_entry", ""),
             "exchange_avg_entry_source": trade.get("exchange_avg_entry_source", ""),
             "position_lifecycle_id": trade.get("position_lifecycle_id", ""),
+            # Carried from the stored position record, so a close inherits the
+            # lineage the open established. No re-matching happens here: a
+            # second attribution attempt at close time could disagree with the
+            # first, and legacy positions simply carry blanks.
+            "plan_id": trade.get("plan_id", ""),
+            "candidate_id": trade.get("candidate_id", ""),
             "exchange_entry_order_id": trade.get("exchange_entry_order_id", ""),
             "exchange_entry_client_oid": trade.get("exchange_entry_client_oid", ""),
             "confirmed_position_size": trade.get(
