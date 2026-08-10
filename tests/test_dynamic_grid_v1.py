@@ -7,6 +7,8 @@ import pytest
 
 from app.config import Settings
 from execution.dynamic_grid_service import DynamicGridService
+from execution.dynamic_grid_shadow import DynamicGridShadow
+from execution.state_store import JsonStateStore
 from strategies.dynamic_grid_v1 import GridRegime, build_grid_decision, reset_allowed
 
 
@@ -22,7 +24,9 @@ def _settings(**overrides):
         dynamic_grid_edge_margin_bps=2.0,
         dynamic_grid_max_notional_usdt=30.0,
         dynamic_grid_max_equity_pct=3.0,
+        dynamic_grid_max_equity_risk_pct=0.25,
         dynamic_grid_min_level_notional_usdt=5.0,
+        dynamic_grid_max_level_notional_usdt=10.0,
         dynamic_grid_hard_invalidation_atr=3.0,
         dynamic_grid_reset_atr=0.75,
         dynamic_grid_reset_cooldown_minutes=30,
@@ -143,6 +147,7 @@ def test_shadow_queries_account_fees_but_makes_no_order_calls_and_emits_dashboar
         DYNAMIC_GRID_MODE="SHADOW",
         DYNAMIC_GRID_MIN_SCORE=60,
         DYNAMIC_GRID_STATE_PATH=str(tmp_path / "state.json"),
+        DYNAMIC_GRID_SHADOW_STATE_PATH=str(tmp_path / "shadow.json"),
         DYNAMIC_GRID_EVENTS_PATH=str(tmp_path / "events.jsonl"),
     )
     service = DynamicGridService(settings=settings, client=client, cache=_Cache())
@@ -157,6 +162,71 @@ def test_shadow_queries_account_fees_but_makes_no_order_calls_and_emits_dashboar
     assert all(row["strategy"] == "dynamic_grid_v1" for row in decisions_rows)
     assert all(len(row["levels"]) == 3 for row in decisions_rows)
     assert all("expected_net_capture_bps" in row["economics"] for row in decisions_rows)
+    assert {row["event_type"] for row in rows} & {
+        "SHADOW_GRID_OPENED", "SHADOW_LEVEL_FILLED"
+    }
+
+
+def test_shadow_maps_fill_to_tp_then_resolves_without_an_order_client(tmp_path):
+    events = []
+    settings = _settings(dynamic_grid_reset_cooldown_minutes=0)
+    shadow = DynamicGridShadow(
+        settings=settings,
+        store=JsonStateStore(str(tmp_path / "shadow.json")),
+        emit=lambda event_type, **details: events.append({"event_type": event_type, **details}),
+    )
+    decision = _decision()
+    first = dict(_candles()[-1])
+    first["low"] = decision.levels[0].entry_price - 0.01
+    first["high"] = decision.levels[0].entry_price
+    shadow.process(
+        decisions=[decision], selected=decision,
+        candles_by_symbol={"BTCUSDT": [first]},
+    )
+    assert any(row["event_type"] == "SHADOW_LEVEL_FILLED" for row in events)
+
+    second = dict(first)
+    second["timestamp"] += 300_000
+    second["low"] = decision.levels[0].entry_price
+    second["high"] = decision.levels[0].take_profit_price + 0.01
+    shadow.process(
+        decisions=[decision], selected=decision,
+        candles_by_symbol={"BTCUSDT": [second]},
+    )
+    tp = next(row for row in events if row["event_type"] == "SHADOW_TP_HIT")
+    assert tp["level"] == 1
+    assert tp["entry_price"] == decision.levels[0].entry_price
+    assert tp["exit_price"] == decision.levels[0].take_profit_price
+    assert tp["inventory_after"] < tp["inventory_before"]
+
+
+def test_shadow_emits_trend_pause_and_hard_kill_events(tmp_path):
+    events = []
+    settings = _settings(dynamic_grid_reset_cooldown_minutes=0)
+    shadow = DynamicGridShadow(
+        settings=settings,
+        store=JsonStateStore(str(tmp_path / "shadow.json")),
+        emit=lambda event_type, **details: events.append({"event_type": event_type, **details}),
+    )
+    allowed = _decision()
+    fill_candle = dict(_candles()[-1])
+    fill_candle["low"] = allowed.levels[0].entry_price - 0.01
+    fill_candle["high"] = allowed.levels[0].entry_price
+    shadow.process(
+        decisions=[allowed], selected=allowed,
+        candles_by_symbol={"BTCUSDT": [fill_candle]},
+    )
+    paused = _decision(candles_1h=_candles(step=0.20, swing=0.0))
+    kill_candle = dict(fill_candle)
+    kill_candle["timestamp"] += 300_000
+    kill_candle["low"] = allowed.hard_invalidation - 0.01
+    shadow.process(
+        decisions=[paused], selected=None,
+        candles_by_symbol={"BTCUSDT": [kill_candle]},
+    )
+    kinds = {row["event_type"] for row in events}
+    assert "SHADOW_KILL_SWITCH" in kinds
+    assert "SHADOW_HARD_KILL" in kinds
 
 
 def test_live_config_is_frozen_and_fails_closed_on_unsafe_variants():
@@ -165,6 +235,34 @@ def test_live_config_is_frozen_and_fails_closed_on_unsafe_variants():
             _env_file=None, DYNAMIC_GRID_ENABLED=True, DYNAMIC_GRID_MODE="SHADOW",
             DYNAMIC_GRID_LEVELS=4,
         )
+
+
+@pytest.mark.parametrize(
+    "state,reason",
+    [
+        ({"max_drawdown_usdt": 6.0}, "dynamic_grid_max_drawdown_reached"),
+        ({"order_error_count": 3}, "dynamic_grid_repeated_order_errors"),
+    ],
+)
+def test_strategy_drawdown_and_repeated_order_errors_stop_shadow_selection(
+    tmp_path, state, reason
+):
+    client = _ShadowClient()
+    settings = Settings(
+        _env_file=None, DYNAMIC_GRID_ENABLED=True, DYNAMIC_GRID_MODE="SHADOW",
+        DYNAMIC_GRID_MIN_SCORE=60,
+        DYNAMIC_GRID_STATE_PATH=str(tmp_path / "state.json"),
+        DYNAMIC_GRID_SHADOW_STATE_PATH=str(tmp_path / "shadow.json"),
+        DYNAMIC_GRID_EVENTS_PATH=str(tmp_path / "events.jsonl"),
+    )
+    service = DynamicGridService(settings=settings, client=client, cache=_Cache())
+    service.store.save(state)
+    service.cycle(equity_usdt=1_000.0)
+    rows = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert any(row.get("reason") == reason for row in rows)
+    selection = next(row for row in rows if row["event_type"] == "GRID_SELECTION")
+    assert selection["selected_symbol"] == ""
+    assert client.order_calls == 0
     with pytest.raises(ValueError, match="global LIVE execution gate"):
         Settings(
             _env_file=None, DYNAMIC_GRID_ENABLED=True, DYNAMIC_GRID_MODE="LIVE",
@@ -225,6 +323,16 @@ class _LiveClient(_ShadowClient):
     def close_futures_position_full(self, **kwargs):
         self.closes.append(kwargs)
         return {"status": "CLOSED", "data": {"orderId": "emergency-close"}}
+
+    def extract_fill_metrics(self, payload):
+        row = payload.get("data") or {}
+        return {
+            "filled_qty": float(row.get("baseVolume") or 0.0),
+            "avg_price": float(row.get("avgPrice") or 0.0),
+            "fee": float(row.get("fee") or 0.0),
+            "state": str(row.get("state") or ""),
+            "raw": row,
+        }
 
 
 class _LiveSubmitter:
@@ -295,3 +403,88 @@ def test_hard_invalidation_cancels_known_orders_then_uses_emergency_market_close
     assert len(client.closes) == 1
     assert client.closes[0]["direction"] == "LONG"
     assert len(submitter.closed) == 3
+
+
+def test_completed_live_cycle_emits_requested_per_level_and_rolling_economics(tmp_path):
+    client = _LiveClient()
+    submitter = _LiveSubmitter()
+    settings = Settings(
+        _env_file=None, DYNAMIC_GRID_ENABLED=True, DYNAMIC_GRID_MODE="SHADOW",
+        DYNAMIC_GRID_STATE_PATH=str(tmp_path / "state.json"),
+        DYNAMIC_GRID_SHADOW_STATE_PATH=str(tmp_path / "shadow.json"),
+        DYNAMIC_GRID_EVENTS_PATH=str(tmp_path / "events.jsonl"),
+    )
+    service = DynamicGridService(
+        settings=settings, client=client, cache=_Cache(), entry_submitter=submitter
+    )
+    decision = _decision()
+    levels = []
+    order_rows = {}
+    for level in decision.levels:
+        entry_oid = f"entry-{level.index}"
+        tp_oid = f"tp-{level.index}"
+        levels.append({
+            "index": level.index, "entry_client_oid": entry_oid,
+            "tp_client_oid": tp_oid, "entry_order_id": entry_oid,
+            "entry_price": level.entry_price, "tp_price": level.take_profit_price,
+            "quantity": level.quantity, "notional_usdt": level.notional_usdt,
+            "entry_submitted": True, "entry_resolved": True, "tp_submitted": True,
+            "filled_at_ms": decision.candle_timestamp_ms - 600_000,
+            "mae_bps": -5.0, "mfe_bps": 20.0,
+        })
+        order_rows[entry_oid] = {
+            "clientOid": entry_oid, "state": "filled", "baseVolume": level.quantity,
+            "avgPrice": level.entry_price, "fee": "0.002", "uTime": decision.candle_timestamp_ms - 600_000,
+        }
+        order_rows[tp_oid] = {
+            "clientOid": tp_oid, "state": "filled", "baseVolume": level.quantity,
+            "avgPrice": level.take_profit_price, "fee": "0.002", "uTime": decision.candle_timestamp_ms,
+        }
+    client.find_order_by_client_oid = lambda symbol, client_oid: {
+        "status": "FOUND", "order": order_rows[client_oid]
+    }
+    service.store.save({"active_grid": {
+        "strategy": "dynamic_grid_v1", "symbol": "BTCUSDT",
+        "center": decision.center, "hard_invalidation": decision.hard_invalidation,
+        "created_at": "2026-08-10T00:00:00+00:00", "levels": levels,
+        "reset_count": 0,
+    }})
+    service._live_cycle(decision)
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    closes = [row for row in events if row["event_type"] == "GRID_LEVEL_CLOSED"]
+    assert len(closes) == 3
+    required = {
+        "symbol", "level", "entry", "exit", "gross_bps", "maker_fees_usdt",
+        "taker_fees_usdt", "execution_drag_bps", "funding_usdt", "net_bps",
+        "hold_time_minutes", "mae_bps", "mfe_bps", "inventory_before",
+        "inventory_after",
+    }
+    assert all(required <= row.keys() for row in closes)
+    cycle = next(row for row in events if row["event_type"] == "GRID_CYCLE_CLOSED")
+    assert cycle["gross_capture_bps"] > cycle["net_capture_bps"]
+    assert cycle["maker_fees_usdt"] > 0
+
+
+def test_cycle_funding_uses_unambiguous_position_history_match(tmp_path, monkeypatch):
+    client = _LiveClient()
+    client.get_position_history = lambda **kwargs: {"data": {"list": [{"id": "p1"}]}}
+    settings = Settings(
+        _env_file=None, DYNAMIC_GRID_ENABLED=True, DYNAMIC_GRID_MODE="SHADOW",
+        DYNAMIC_GRID_STATE_PATH=str(tmp_path / "state.json"),
+        DYNAMIC_GRID_SHADOW_STATE_PATH=str(tmp_path / "shadow.json"),
+        DYNAMIC_GRID_EVENTS_PATH=str(tmp_path / "events.jsonl"),
+    )
+    service = DynamicGridService(settings=settings, client=client, cache=_Cache())
+    monkeypatch.setattr("execution.close_reconciler.match_lifecycle", lambda rows, **kwargs: rows[0])
+    monkeypatch.setattr(
+        "execution.close_reconciler.economics_from_history",
+        lambda row: SimpleNamespace(
+            funding=-0.0123, gross_pnl=0.1, fees=0.01, net_profit=0.0777
+        ),
+    )
+    funding, source = service._cycle_funding_truth(
+        active={"created_at": "2026-08-10T00:00:00+00:00"},
+        symbol="BTCUSDT", confirmed_size=0.001,
+    )
+    assert funding == pytest.approx(-0.0123)
+    assert source == "bitget_position_history"

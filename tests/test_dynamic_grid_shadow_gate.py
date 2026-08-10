@@ -45,3 +45,20 @@ def test_shadow_gate_fails_on_runtime_stop(tmp_path):
     result = evaluate(path)
     assert result["verdict"] == "FAIL"
     assert not result["checks"]["no_runtime_errors"]
+
+
+def test_shadow_gate_rejects_malformed_hypothetical_fill_mapping(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _write_gate_log(path, cycles=50)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "timestamp": "2026-08-10T05:00:00+00:00",
+            "event_type": "SHADOW_LEVEL_FILLED",
+            "strategy": "dynamic_grid_v1", "mode": "SHADOW",
+            "symbol": "BTCUSDT", "level": 1,
+            "entry_price": 100.0, "target_price": 99.0,
+            "expected_net_capture_bps": -1.0,
+        }) + "\n")
+    result = evaluate(path)
+    assert result["verdict"] == "FAIL"
+    assert not result["checks"]["hypothetical_fill_mapping_well_formed"]

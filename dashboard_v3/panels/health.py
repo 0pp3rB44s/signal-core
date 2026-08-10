@@ -25,6 +25,7 @@ TRACKED = [
     ("data_store/funnel_events.jsonl", "Decision funnel", True),
     ("data_store/dynamic_grid_v1_events.jsonl", "dynamic_grid_v1 decisions", False),
     ("state/dynamic_grid_v1.json", "dynamic_grid_v1 lifecycle", False),
+    ("state/dynamic_grid_v1_shadow.json", "dynamic_grid_v1 shadow lifecycle", False),
     ("logs/live.out", "Engine stdout", True),
     ("logs/alerts.log", "Alert history", False),
 ]
