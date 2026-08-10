@@ -26,6 +26,7 @@ from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
 from execution.position_manager import PositionManager
 from execution.portfolio_selector import select_execution_winner
+from telemetry.ranked_plans import RankedPlanLogger
 from execution.runtime_lock import trading_state_lock
 from forward_paper.service import ForwardPaperService
 from execution.state_store import JsonStateStore
@@ -427,6 +428,7 @@ class StartupRunner:
         self.market_context_logger = MarketContextLogger()
         self.candidate_logger = StrategyCandidateCsvLogger()
         self.trade_plan_logger = TradePlanCsvLogger()
+        self.ranked_plan_logger = RankedPlanLogger(log=self.log)
         self.strategy_performance_logger = StrategyPerformanceLogger()
         self.execution_logger = ExecutionCsvLogger()
         self.position_logger = PositionUpdateCsvLogger()
@@ -1696,6 +1698,11 @@ class StartupRunner:
                     else None
                 ),
                 execution_scores=execution_scores,
+            )
+            # Records the ranking the selector just produced. Pure output:
+            # `selection` is not read back, mutated or re-sorted here.
+            self.ranked_plan_logger.append(
+                scan_id, datetime.now(timezone.utc).isoformat(), selection
             )
             selected_plans = [selection.winner] if selection.winner is not None else []
             if selection.winner_metrics is not None:

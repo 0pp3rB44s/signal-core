@@ -253,6 +253,14 @@ class MarketContextLogger:
             elif lower.startswith("directional_pressure_ok"):
                 parsed["directional_pressure_ok"] = text.split("directional_pressure_ok", 1)[1].strip()
 
+            # Producers emit ``participation_score=15.0``; _extract_first_float
+            # only reads the legacy space-separated form and returned "" for
+            # every one of them, so the column was empty in all 9301 rows of the
+            # 2026-08-10 snapshot while 3422 carried the value in raw_notes.
+            # Same two-branch shape as spread_bps and orderbook_imbalance above.
+            elif lower.startswith("participation_score="):
+                parsed["participation_score"] = self._safe_float(text.split("=", 1)[1])
+
             elif lower.startswith("participation_score"):
                 parsed["participation_score"] = self._extract_first_float(text)
 

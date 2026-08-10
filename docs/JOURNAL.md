@@ -289,3 +289,47 @@ VOLGENDE FASE
   monitor itself died silently 22.7 h before the end and nothing noticed: absence of
   alerts is not evidence of health. Evidence frozen in
   `validation_72h/archive/RC1_forward_paper_validation.tar.gz`.
+
+# 2026-08-10 — OBSERVABILITY_FIRST: ranked-plan telemetry
+
+Research stopped being limited by ideas and started being limited by
+measurement. Twelve hypotheses were tested in the preceding week; four were
+decided on sufficient data, and the rest ended in "directional, n too small" or
+"the field is empty". Two of those dead ends had the same shape:
+
+- **The ranker could not be measured, only reconstructed.** Production logs the
+  winner and nothing else, so every ranking question required rebuilding the
+  order offline. That reconstruction was wrong twice — once from an incomplete
+  execution-score map, once because Runner logs are local time and the CSVs are
+  UTC. Both were caught, but only because someone looked.
+- **`participation_score` was empty in all 9301 rows** of the 2026-08-10
+  snapshot, while 3422 of those rows carried the value in `raw_notes`. It is
+  the central field of the strongest surviving setup hypothesis.
+
+This release fixes the measurement, not the trading.
+
+`logs/ranked_plans.jsonl` now carries one row per selection cycle with every
+ranked plan in the selector's own order, the four ranking keys **taken from the
+`RankedPlan` objects rather than recomputed**, and a clearly separated
+`diagnostic` block. A second implementation of the same arithmetic is how
+telemetry starts disagreeing with runtime, so there isn't one.
+
+The `participation_score` fix is one line and no new semantics:
+`_extract_first_float` reads the legacy space-separated note form and returned
+`""` for the `key=value` form the producers actually emit. The repo already had
+the two-branch pattern for `spread_bps` and `orderbook_imbalance`; this field
+never got it. It is the only column in the schema that was empty while its
+value was demonstrably present.
+
+Cost: 0.13–0.34 ms per cycle, ~0.01 s/day, 62–205 KiB/day. No extra exchange
+calls, no fsync in the scan loop.
+
+**What this does not change:** no strategy, threshold, gate, ranker behaviour,
+TP/SL, execution, risk or sizing. A behavioural-invariance test pins that the
+selection fingerprint — winner, order, all four keys, rejections — is identical
+with and without telemetry attached, and a mutation proves the suite catches
+telemetry that reorders on its own.
+
+**Next evidence gate:** 30 POST_DIRECTION_FIX closes with ≥ 10 LONG and ≥ 3
+strategies represented, before the participation and momentum-capacity
+hypotheses are retested.
