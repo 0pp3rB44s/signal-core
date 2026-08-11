@@ -59,6 +59,35 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def is_low_vol_reclaim_v2(strategy: object) -> bool:
+    return str(strategy or "").strip().lower() == "low_vol_reclaim_v2"
+
+
+def normal_entry_policy(settings: object, strategy: object) -> tuple[bool, bool]:
+    """Return (maker_enabled, market_fallback_enabled) for a normal entry."""
+    if is_low_vol_reclaim_v2(strategy):
+        return True, False
+    return (
+        bool(getattr(settings, "maker_entry_enabled", False)),
+        bool(getattr(settings, "maker_entry_fallback_market", True)),
+    )
+
+
+def fee_feasibility(
+    *, planned_gross_move_bps: float, maker_fee_rate: float,
+    normal_exit_fee_rate: float, net_edge_buffer_bps: float,
+) -> dict[str, float | bool]:
+    """Cost-only gate; rates are decimal account rates from the exchange."""
+    expected_fee_bps = (max(maker_fee_rate, 0.0) + max(normal_exit_fee_rate, 0.0)) * 10_000.0
+    minimum_required = expected_fee_bps + max(net_edge_buffer_bps, 0.0)
+    return {
+        "planned_gross_move_bps": round(planned_gross_move_bps, 4),
+        "expected_fee_bps": round(expected_fee_bps, 4),
+        "minimum_required_price_movement_bps": round(minimum_required, 4),
+        "fee_gate_pass": planned_gross_move_bps >= minimum_required,
+    }
+
+
 class FailSafeFlatness(str, Enum):
     """What a post-fail-safe readback actually established.
 
@@ -129,10 +158,45 @@ class ExecutionService:
             log=self.log,
         )
         self._entry_recovery_done = False
+        self._account_fee_rates: dict[str, tuple[float, float]] = {}
         #: Set by `_ensure_entry_intent_recovery`, consumed once by
         #: `_entry_guard_reason`. Recovery may now run on a cycle that never
         #: reaches the guard, so its verdict has to wait somewhere.
         self._entry_recovery_block_reason = ""
+
+    def _v2_fee_gate(self, plan: TradePlan, planned_entry: float) -> dict[str, float | bool]:
+        """Load actual account fees and evaluate the frozen v2 cost hurdle."""
+        symbol = str(plan.symbol).upper()
+        rates = self._account_fee_rates.get(symbol)
+        if rates is None:
+            getter = getattr(self.client, "get_trade_fee_rate", None)
+            if getter is None:
+                raise RuntimeError("authenticated fee endpoint unavailable")
+            payload = getter(symbol=symbol, business_type="mix")
+            data = payload.get("data") or {}
+            maker_rate = float(data.get("makerFeeRate"))
+            taker_rate = float(data.get("takerFeeRate"))
+            if maker_rate < 0 or taker_rate <= 0:
+                raise RuntimeError("invalid authenticated account fee rates")
+            rates = (maker_rate, taker_rate)
+            self._account_fee_rates[symbol] = rates
+
+        target = _safe_float((plan.take_profits or [0.0])[0], 0.0)
+        anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_entry
+        if anchor <= 0 or target <= 0:
+            raise RuntimeError("planned movement unavailable")
+        planned_move = abs(target - anchor) / anchor * 10_000.0
+        result = fee_feasibility(
+            planned_gross_move_bps=planned_move,
+            maker_fee_rate=rates[0],
+            normal_exit_fee_rate=rates[1],
+            net_edge_buffer_bps=float(
+                getattr(self.settings, "planner_minimum_net_edge_buffer_bps", 4.0) or 0.0
+            ),
+        )
+        result["maker_fee_rate"] = rates[0]
+        result["normal_exit_fee_rate"] = rates[1]
+        return result
 
     def _ensure_entry_intent_recovery(self) -> None:
         """Reconcile persisted order intents once per process. Housekeeping only.
@@ -668,6 +732,61 @@ class ExecutionService:
                     )
                     continue
 
+                if is_low_vol_reclaim_v2(plan.strategy):
+                    try:
+                        fee_gate = self._v2_fee_gate(plan, planned_avg_entry)
+                    except Exception as exc:
+                        self.log.error(
+                            "LOW_VOL_RECLAIM_V2_FEE_GATE | %s | strategy_id=low_vol_reclaim_v2 | "
+                            "planned_gross_move_bps=unknown | expected_fee_bps=unknown | "
+                            "fee_gate_pass=False | error=%s",
+                            plan.symbol,
+                            exc,
+                        )
+                        reports.append(
+                            self._report(
+                                plan=plan,
+                                status="SKIPPED",
+                                message=f"v2 fee gate blocked: {exc}",
+                                planned_avg_entry=planned_avg_entry,
+                                notional=live_notional,
+                                leverage=effective_leverage,
+                            )
+                        )
+                        continue
+                    plan.notes.extend(
+                        [
+                            f"planned_gross_move_bps={fee_gate['planned_gross_move_bps']}",
+                            f"expected_fee_bps={fee_gate['expected_fee_bps']}",
+                            f"minimum_required_price_movement_bps={fee_gate['minimum_required_price_movement_bps']}",
+                            f"fee_gate_pass={str(fee_gate['fee_gate_pass']).lower()}",
+                            f"maker_fee_rate={fee_gate['maker_fee_rate']}",
+                            f"normal_exit_fee_rate={fee_gate['normal_exit_fee_rate']}",
+                        ]
+                    )
+                    self.log.info(
+                        "LOW_VOL_RECLAIM_V2_FEE_GATE | %s | strategy_id=low_vol_reclaim_v2 | "
+                        "planned_gross_move_bps=%.4f | expected_fee_bps=%.4f | "
+                        "minimum_required_price_movement_bps=%.4f | fee_gate_pass=%s",
+                        plan.symbol,
+                        fee_gate["planned_gross_move_bps"],
+                        fee_gate["expected_fee_bps"],
+                        fee_gate["minimum_required_price_movement_bps"],
+                        fee_gate["fee_gate_pass"],
+                    )
+                    if not bool(fee_gate["fee_gate_pass"]):
+                        reports.append(
+                            self._report(
+                                plan=plan,
+                                status="SKIPPED",
+                                message="v2 fee gate blocked: planned movement does not clear actual fees",
+                                planned_avg_entry=planned_avg_entry,
+                                notional=live_notional,
+                                leverage=effective_leverage,
+                            )
+                        )
+                        continue
+
                 try:
                     leverage_payload = self.client.set_futures_leverage(
                         symbol=plan.symbol,
@@ -689,13 +808,14 @@ class ExecutionService:
                         len(plan.take_profits or []),
                     )
 
-                    # Hybride maker-entry: probeer eerst een post-only limit
-                    # (maker-fee). Vult hij niet binnen het venster, dan alsnog
-                    # een market-order (taker) tenzij fallback uitstaat. Zo
-                    # missen we nooit een trade en besparen we fee waar het kan.
+                    # v2 normal entries are maker-only. Other strategies retain
+                    # their configured routing policy.
                     live_order_payload = None
                     live_order_id = None
                     entry_via = "market"
+                    maker_enabled, market_fallback_enabled = normal_entry_policy(
+                        self.settings, plan.strategy
+                    )
 
                     # Observability only. Records what the routing did; changes
                     # no price, size, timeout or order. Quote capture is opt-in
@@ -708,14 +828,25 @@ class ExecutionService:
                         direction=plan.direction,
                         planned_entry=planned_avg_entry,
                         intended_route=(
-                            "maker_then_market_fallback"
-                            if bool(getattr(self.settings, "maker_entry_enabled", False))
+                            "maker_only"
+                            if is_low_vol_reclaim_v2(plan.strategy)
+                            else "maker_then_market_fallback"
+                            if maker_enabled
                             else "market"
                         ),
                         size_requested=order_size,
                         log=self.log,
                     )
-                    routing.safe_set_pre_entry_features(self._pre_entry_features(plan))
+                    pre_entry_features = self._pre_entry_features(plan)
+                    if is_low_vol_reclaim_v2(plan.strategy):
+                        pre_entry_features.update(
+                            strategy_id="low_vol_reclaim_v2",
+                            maker_order_submitted=False,
+                            maker_filled=False,
+                            maker_timeout=False,
+                            trade_skipped_no_fill=False,
+                        )
+                    routing.safe_set_pre_entry_features(pre_entry_features)
                     routing.record(
                         STAGE_PLAN,
                         quote=self._routing_quote(plan.symbol),
@@ -723,7 +854,9 @@ class ExecutionService:
                         size_requested=order_size,
                     )
 
-                    if bool(getattr(self.settings, "maker_entry_enabled", False)):
+                    if maker_enabled:
+                        if is_low_vol_reclaim_v2(plan.strategy):
+                            routing.pre_entry_features["maker_order_submitted"] = True
                         from execution.maker_entry import attempt_maker_entry
                         maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_avg_entry
                         routing.record(
@@ -781,6 +914,8 @@ class ExecutionService:
                                 "LIVE_ENTRY_BLOCKED_MAKER_STATE_UNKNOWN | %s | plan_id=%s | reason=%s",
                                 plan.symbol, plan.plan_id, entry_block_reason,
                             )
+                            if is_low_vol_reclaim_v2(plan.strategy):
+                                routing.write()
                             reports.append(
                                 self._report(
                                     plan=plan,
@@ -797,8 +932,16 @@ class ExecutionService:
                             live_order_id = maker_result["order_id"]
                             entry_client_oid = maker_result.get("client_oid") or ""
                             entry_via = "maker"
-                        elif not bool(getattr(self.settings, "maker_entry_fallback_market", True)):
+                            if is_low_vol_reclaim_v2(plan.strategy):
+                                routing.pre_entry_features["maker_filled"] = True
+                        elif not market_fallback_enabled:
                             # Pure maker-modus: niet gevuld -> skippen, geen taker.
+                            if is_low_vol_reclaim_v2(plan.strategy):
+                                routing.pre_entry_features["maker_timeout"] = (
+                                    maker_result["status"] == "UNFILLED_CANCELLED"
+                                )
+                                routing.pre_entry_features["trade_skipped_no_fill"] = True
+                                routing.write()
                             reports.append(
                                 self._report(
                                     plan=plan,
@@ -1363,7 +1506,11 @@ class ExecutionService:
                         )
 
                     execution_status = "EXECUTED"
-                    execution_message = f"live market order placed | size={order_size} | order_id={live_order_id}"
+                    execution_message = (
+                        f"live maker order filled | size={order_size} | order_id={live_order_id}"
+                        if entry_via == "maker"
+                        else f"live market order placed | size={order_size} | order_id={live_order_id}"
+                    )
 
                 except Exception as exc:
                     # --- Balance guard block for insufficient margin errors (Bitget 40762) ---
