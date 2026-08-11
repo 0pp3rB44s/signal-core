@@ -65,6 +65,7 @@ from telemetry.funnel import (
 STARTUP_RECOVERY_REQUIRED_STATS = frozenset(
     {"blocked", "still_pending", "ambiguous", "unresolved_total", "recovered"}
 )
+LIVE_V2_STRATEGY_ID = "low_vol_reclaim_v2"
 
 
 def _stat_int(stats: dict, key: str) -> int:
@@ -74,6 +75,40 @@ def _stat_int(stats: dict, key: str) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 1
+
+
+def route_new_entry_plans(
+    plans: list,
+    *,
+    enabled_strategies: set[str],
+    legacy_new_entries_enabled: bool,
+    require_explicit_allowlist: bool,
+) -> tuple[list, list[tuple[object, str]]]:
+    """Apply entry eligibility after ranking without changing ranking order.
+
+    Detection and ranking may continue for observability. Only exact strategy
+    identifiers in the configured entry allowlist may cross into execution.
+    The legacy kill switch deliberately exempts v2 and nothing else.
+    """
+    enabled = {str(value).strip().lower() for value in enabled_strategies if str(value).strip()}
+    allowed: list = []
+    blocked: list[tuple[object, str]] = []
+    for plan in plans:
+        strategy_id = str(getattr(plan, "strategy", "") or "").strip().lower()
+        if not strategy_id:
+            blocked.append((plan, "missing_strategy_id"))
+            continue
+        if require_explicit_allowlist and not enabled:
+            blocked.append((plan, "live_entry_allowlist_missing"))
+            continue
+        if enabled and strategy_id not in enabled:
+            blocked.append((plan, "strategy_not_entry_allowlisted"))
+            continue
+        if not legacy_new_entries_enabled and strategy_id != LIVE_V2_STRATEGY_ID:
+            blocked.append((plan, "legacy_new_entries_disabled"))
+            continue
+        allowed.append(plan)
+    return allowed, blocked
 
 
 class ScanCycleProducedNoMarketData(RuntimeError):
@@ -1740,14 +1775,26 @@ class StartupRunner:
                 scan_id, datetime.now(timezone.utc).isoformat(), selection
             )
             selected_plans = [selection.winner] if selection.winner is not None else []
-            if not self.settings.old_strategies_new_entries_enabled:
-                if selected_plans:
-                    self.log.warning(
-                        "OLD_STRATEGY_NEW_ENTRY_BLOCKED | plan_id=%s | strategy=%s",
-                        selected_plans[0].plan_id,
-                        selected_plans[0].strategy,
-                    )
-                selected_plans = []
+            selected_plans, entry_routing_rejects = route_new_entry_plans(
+                selected_plans,
+                enabled_strategies=self.settings.enabled_strategy_set,
+                legacy_new_entries_enabled=self.settings.old_strategies_new_entries_enabled,
+                require_explicit_allowlist=self.settings.is_live_execution,
+            )
+            for blocked_plan, reason in entry_routing_rejects:
+                self.log.warning(
+                    "ENTRY_STRATEGY_ROUTING_BLOCKED | plan_id=%s | strategy_id=%s | reason=%s",
+                    getattr(blocked_plan, "plan_id", ""),
+                    getattr(blocked_plan, "strategy", ""),
+                    reason,
+                )
+            for allowed_plan in selected_plans:
+                self.log.info(
+                    "ENTRY_STRATEGY_ROUTING_PASS | plan_id=%s | strategy_id=%s | "
+                    "allowlist_exact_match=True | legacy_kill_switch_bypass=v2_only",
+                    getattr(allowed_plan, "plan_id", ""),
+                    getattr(allowed_plan, "strategy", ""),
+                )
             if selection.winner_metrics is not None:
                 metrics = selection.winner_metrics
                 self.log.info(
