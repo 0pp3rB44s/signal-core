@@ -8,6 +8,7 @@ no private order methods at all.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from enum import StrEnum
 import math
 from typing import Any, Iterable
@@ -87,6 +88,18 @@ def _values(candles: Iterable[dict[str, Any]], key: str) -> list[float]:
         if math.isfinite(value) and value > 0:
             result.append(value)
     return result
+
+
+def _ceil_increment(value: float, increment: float) -> float:
+    raw = Decimal(str(value))
+    step = Decimal(str(increment))
+    return float((raw / step).to_integral_value(rounding=ROUND_CEILING) * step)
+
+
+def _floor_increment(value: float, increment: float) -> float:
+    raw = Decimal(str(value))
+    step = Decimal(str(increment))
+    return float((raw / step).to_integral_value(rounding=ROUND_DOWN) * step)
 
 
 def ema(values: list[float], period: int) -> float:
@@ -236,16 +249,22 @@ def build_grid_decision(
     if minimum_quantity <= 0 or size_increment <= 0 or minimum_notional <= 0:
         raise ValueError("dynamic_grid_v1 exchange minimum metadata is invalid")
 
-    minimums: list[tuple[float, float]] = []
+    exchange_minimums: list[tuple[float, float]] = []
+    required_minimums: list[tuple[float, float]] = []
     strategy_minimum = float(settings.dynamic_grid_min_level_notional_usdt)
     for entry_price in entry_prices:
-        raw_minimum_quantity = max(minimum_quantity, minimum_notional / entry_price)
-        executable_quantity = math.ceil(raw_minimum_quantity / size_increment) * size_increment
-        exchange_minimum = executable_quantity * entry_price
-        minimums.append((executable_quantity, exchange_minimum))
+        exchange_quantity = _ceil_increment(
+            max(minimum_quantity, minimum_notional / entry_price), size_increment,
+        )
+        exchange_minimum = exchange_quantity * entry_price
+        required_quantity = _ceil_increment(
+            max(exchange_quantity, strategy_minimum / entry_price), size_increment,
+        )
+        exchange_minimums.append((exchange_quantity, exchange_minimum))
+        required_minimums.append((required_quantity, required_quantity * entry_price))
     effective_minimum = max(
         strategy_minimum,
-        *(exchange_minimum for _, exchange_minimum in minimums),
+        *(exchange_minimum for _, exchange_minimum in exchange_minimums),
     )
 
     loss_fractions = tuple(
@@ -263,10 +282,28 @@ def build_grid_decision(
         float(settings.dynamic_grid_max_level_notional_usdt),
         risk_capped_per_level,
     )
-    max_grid_loss_usdt = per_level * loss_fraction_sum
+    quantities = tuple(
+        _floor_increment(per_level / entry_price, size_increment)
+        for entry_price in entry_prices
+    )
+    notionals = tuple(
+        quantity * entry_price
+        for quantity, entry_price in zip(quantities, entry_prices)
+    )
+    max_grid_loss_usdt = sum(
+        quantity * max(entry_price - hard_invalidation, 0.0)
+        for quantity, entry_price in zip(quantities, entry_prices)
+    )
+    allocation_cap_usdt = (
+        float(equity_usdt) * float(settings.dynamic_grid_max_equity_pct) / 100.0
+    )
     sizing_gate_passed = bool(
         hard_invalidation < entry_prices[-1]
-        and per_level >= effective_minimum
+        and all(
+            quantity >= required_quantity
+            for quantity, (required_quantity, _) in zip(quantities, required_minimums)
+        )
+        and sum(notionals) <= allocation_cap_usdt + 1e-12
         and max_grid_loss_usdt <= risk_cap_usdt + 1e-12
     )
     if (
@@ -275,13 +312,16 @@ def build_grid_decision(
         and regime is GridRegime.ALLOWED
     ):
         regime, reason = GridRegime.PAUSED_SIZE, "three_level_minimum_exceeds_risk_caps"
-    min_equity_allocation = (
-        effective_minimum * 3.0
-        / (float(settings.dynamic_grid_max_equity_pct) / 100.0)
+    minimum_grid_notional = sum(notional for _, notional in required_minimums)
+    minimum_grid_loss = sum(
+        quantity * max(entry_price - hard_invalidation, 0.0)
+        for (quantity, _), entry_price in zip(required_minimums, entry_prices)
     )
-    min_equity_hard_risk = (
-        effective_minimum * loss_fraction_sum
-        / (float(settings.dynamic_grid_max_equity_risk_pct) / 100.0)
+    min_equity_allocation = minimum_grid_notional / (
+        float(settings.dynamic_grid_max_equity_pct) / 100.0
+    )
+    min_equity_hard_risk = max(minimum_grid_loss, 0.0) / (
+        float(settings.dynamic_grid_max_equity_risk_pct) / 100.0
     )
     candle_timestamp_ms = int(candles_5m[-1].get("timestamp") or 0)
     grid_identity = f"dgv1-{symbol.lower()}-{candle_timestamp_ms}"
@@ -290,11 +330,11 @@ def build_grid_decision(
             index=index,
             entry_price=entry_prices[index - 1],
             take_profit_price=entry_prices[index - 1] * (1.0 + gross_capture / 10_000.0),
-            notional_usdt=per_level,
-            quantity=per_level / entry_prices[index - 1],
-            exchange_min_notional_usdt=minimums[index - 1][1],
+            notional_usdt=notionals[index - 1],
+            quantity=quantities[index - 1],
+            exchange_min_notional_usdt=exchange_minimums[index - 1][1],
             strategy_min_notional_usdt=strategy_minimum,
-            minimum_executable_quantity=minimums[index - 1][0],
+            minimum_executable_quantity=required_minimums[index - 1][0],
             client_oid=f"{grid_identity}-l{index}-entry",
         )
         for index in range(1, 4)
