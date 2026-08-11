@@ -264,6 +264,11 @@ VOLGENDE FASE
 
 # 2026-07-16 — GitHub and Runner synchronization foundation
 
+> **Governance superseded 2026-08-11:** the owner designated
+> `origin/production/live-baseline-cd8671` as the authoritative Runner release
+> ref. The `main`-authority statements below record the historical contract and
+> are no longer operational guidance.
+
 - Audited the Work Mac repository, remote, worktrees, ignored operational data and local research history.
 - Defined reviewed `main` plus immutable annotated runner tags as deployment authority; research branches are never deployable.
 - Added Work Mac bootstrap, checkout verification, tracked-file hygiene and explicit Runner deploy/rollback contracts.

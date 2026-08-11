@@ -6,6 +6,13 @@ Koers en Path-to-Live: [MASTER_PLAN.md](MASTER_PLAN.md). Historie:
 (per release/PR), [docs/RESEARCH_JOURNAL.md](docs/RESEARCH_JOURNAL.md)
 (hypothese-grootboek). Checklists: [ROADMAP.md](ROADMAP.md).
 
+## Release governance
+
+GitHub is the code source of truth. The authoritative Runner production
+reference is `origin/production/live-baseline-cd8671`; `origin/main` is not
+Runner release authority. Runner deployments remain exact-SHA deployments to a
+detached checkout, and the target must be reachable from that production ref.
+
 ## Kernstand in één alinea
 
 De bot **handelt LIVE met echt geld** op

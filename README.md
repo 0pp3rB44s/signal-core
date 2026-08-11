@@ -52,7 +52,8 @@ scripts/start_bot.sh            # bot in strict forward-paper-only (geen orders)
 ```
 
 Runner-deployment gebeurt uitsluitend via geannoteerde `runner-v*`-tags of
-een commit op `origin/main` met `scripts/deploy_runner.sh` (preflight en
+een exacte commit die bereikbaar is vanaf de autoritatieve productiereferentie
+`origin/production/live-baseline-cd8671`, met `scripts/deploy_runner.sh` (preflight en
 rollback ingebouwd): [docs/RUNNER_MIGRATION.md](docs/RUNNER_MIGRATION.md).
 
 ## Repository-indeling (hoofdlijnen)

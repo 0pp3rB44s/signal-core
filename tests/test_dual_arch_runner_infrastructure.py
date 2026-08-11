@@ -82,6 +82,7 @@ def test_09_deploy_preflight_has_no_checkout_or_state_write_path(tmp_path: Path)
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
     target_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     subprocess.run(["git", "remote", "add", "origin", str(repo)], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "refs/heads/production/live-baseline-cd8671", target_commit], cwd=repo, check=True)
     prefix = tmp_path / "brew"; (prefix / "bin").mkdir(parents=True)
     brew = prefix / "bin/brew"; brew.write_text("#!/usr/bin/env bash\nexit 0\n"); brew.chmod(0o755)
     python = fake_python(tmp_path, "3.12")
@@ -143,7 +144,8 @@ def test_15_explicit_tag_or_commit_remains_required():
 
 def test_16_research_branches_are_undeployable():
     script = (ROOT / "scripts/deploy_runner.sh").read_text()
-    assert 'merge-base --is-ancestor "$commit" origin/main' in script
+    assert 'merge-base --is-ancestor "$commit" "$DEPLOY_ALLOWED_REF"' in script
+    assert 'DEPLOY_ALLOWED_REF="origin/production/live-baseline-cd8671"' in script
     assert "research/" not in script
 
 

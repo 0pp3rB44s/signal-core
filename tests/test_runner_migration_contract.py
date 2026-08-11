@@ -15,12 +15,14 @@ def test_deploy_requires_explicit_target_and_clean_tree():
     assert "dirty runner checkout" in script
 
 
-def test_deploy_accepts_only_annotated_tag_or_full_main_sha():
+def test_deploy_accepts_only_annotated_tag_or_full_production_sha():
     script = text("scripts/deploy_runner.sh")
     assert "runner-v[0-9]" in script
     assert 'cat-file -t "refs/tags/$target"' in script
     assert "^[0-9a-f]{40}$" in script
-    assert 'merge-base --is-ancestor "$commit" origin/main' in script
+    assert 'readonly DEPLOY_ALLOWED_REF="origin/production/live-baseline-cd8671"' in script
+    assert 'merge-base --is-ancestor "$commit" "$DEPLOY_ALLOWED_REF"' in script
+    assert "origin/main" not in script
 
 
 def test_deploy_preserves_backup_and_records_exact_sha():
