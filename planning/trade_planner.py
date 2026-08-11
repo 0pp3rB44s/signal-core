@@ -504,6 +504,8 @@ class TradePlanner:
         notes.append(f"spread_bps_for_edge={spread_bps:.2f}")
         notes.append(f"estimated_roundtrip_fee_bps={estimated_roundtrip_fee_bps:.2f}")
         notes.append(f"minimum_tp1_move_bps={minimum_tp1_move_bps:.2f}")
+        if strategy_name == "low_vol_reclaim_v2":
+            notes.append(f"planned_gross_move_bps={tp1_move_bps:.2f}")
         notes.append(f"strong_continuation_quality={strong_continuation_quality}")
         notes.append(f"planner_participation_score={participation_score:.2f}")
         notes.append(f"planner_followthrough_volume_ratio={followthrough_volume_ratio:.2f}")

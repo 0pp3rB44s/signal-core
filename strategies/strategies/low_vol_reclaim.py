@@ -1,4 +1,5 @@
 import logging
+from statistics import median
 
 from clients.schemas import MarketSnapshot, StrategyCandidate, SweepDetection
 from candidate_lifecycle import deterministic_candidate_id
@@ -8,7 +9,7 @@ logger = logging.getLogger("StartupRunner")
 
 
 class LowVolReclaimStrategy:
-    name = "low_vol_reclaim"
+    name = "low_vol_reclaim_v2"
     _last_reject_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _last_watch_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _reject_counts: dict[str, int] = {}
@@ -26,6 +27,39 @@ class LowVolReclaimStrategy:
     MTF_OVERRIDE_MIN_VOLUME_RATIO = 0.18
     MTF_OVERRIDE_MIN_PARTICIPATION_SCORE = 0.72
     MTF_OVERRIDE_MAX_VOL_RANK = 65.0
+    ATR_MEDIAN_LOOKBACK = 20
+
+    @staticmethod
+    def _atr_bps_at(candles: list, end_index: int) -> float:
+        """Return the strategy's existing 10-candle average-range ATR in bps."""
+        if end_index < 19:
+            raise ValueError("ATR observation requires 20 closed candles")
+        window = candles[end_index - 9:end_index + 1]
+        close = float(window[-1].close)
+        if close <= 0:
+            raise ValueError("ATR observation requires a positive close")
+        average_range = sum(float(c.high) - float(c.low) for c in window) / len(window)
+        return average_range / close * 10_000.0
+
+    @classmethod
+    def low_atr_gate(cls, candles: list) -> tuple[float, float, bool]:
+        """Causal gate: current ATR must be below prior ATR observations' median.
+
+        The current observation is deliberately excluded. Each historical ATR
+        uses only candles available at that historical close, so replay and LIVE
+        cannot see a future candle or a full-sample median.
+        """
+        required = 20 + cls.ATR_MEDIAN_LOOKBACK
+        if len(candles) < required:
+            raise ValueError(f"ATR median gate requires {required} closed candles")
+        current_index = len(candles) - 1
+        historical = [
+            cls._atr_bps_at(candles, index)
+            for index in range(current_index - cls.ATR_MEDIAN_LOOKBACK, current_index)
+        ]
+        current = cls._atr_bps_at(candles, current_index)
+        rolling_median = float(median(historical))
+        return current, rolling_median, current < rolling_median
 
     def _reject(self, market: MarketSnapshot, reason: str, **context: object) -> None:
         symbol = str(market.symbol).upper()
@@ -208,11 +242,50 @@ class LowVolReclaimStrategy:
             )
             return None
 
+        try:
+            atr_bps, rolling_atr_median, atr_gate_pass = self.low_atr_gate(primary_candles)
+        except ValueError as exc:
+            self._reject(
+                market,
+                "low_atr_history_unavailable",
+                strategy_id=self.name,
+                atr=None,
+                rolling_atr_median=None,
+                atr_gate_pass=False,
+                detail=str(exc),
+            )
+            return None
+
+        logger.info(
+            "LOW_VOL_RECLAIM_V2_ATR_GATE | %s | strategy_id=%s | atr=%.4f | "
+            "rolling_atr_median=%.4f | atr_gate_pass=%s | lookback=%s",
+            market.symbol,
+            self.name,
+            atr_bps,
+            rolling_atr_median,
+            atr_gate_pass,
+            self.ATR_MEDIAN_LOOKBACK,
+        )
+        if not atr_gate_pass:
+            self._reject(
+                market,
+                "atr_not_below_causal_rolling_median",
+                strategy_id=self.name,
+                atr=round(atr_bps, 4),
+                rolling_atr_median=round(rolling_atr_median, 4),
+                atr_gate_pass=False,
+            )
+            return None
+
         last = latest_closed_candle(market.primary)
         prev = previous_closed_candle(market.primary)
         prev2 = previous_closed_candle(market.primary, 2)
 
         notes: list[str] = ["low_vol_reclaim_mode"]
+        notes.append(f"strategy_id={self.name}")
+        notes.append(f"atr={atr_bps:.4f}")
+        notes.append(f"rolling_atr_median={rolling_atr_median:.4f}")
+        notes.append("atr_gate_pass=true")
         notes.append("defensive_reclaim_gate_v6=true")
         notes.append("reclaim_unlock_v5=true")
         market_context_notes = [str(note) for note in (getattr(market, "notes", []) or [])]
