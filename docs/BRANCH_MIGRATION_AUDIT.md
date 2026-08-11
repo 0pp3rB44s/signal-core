@@ -1,5 +1,10 @@
 # Work Mac branch migration audit — 2026-07-16
 
+> **Historical audit — release authority superseded 2026-08-11.** Branch and
+> SHA observations below remain historical facts, but `origin/main` is no
+> longer Runner release authority. The authoritative production reference is
+> `origin/production/live-baseline-cd8671`; see `docs/RUNNER_MIGRATION.md`.
+
 ## Canonical identity
 
 - Work repository: `/Users/bryonprivee/Desktop/bitget_ai_agent/bitget_ai_agent_phase7`

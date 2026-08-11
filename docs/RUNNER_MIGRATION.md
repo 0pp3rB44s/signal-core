@@ -2,10 +2,13 @@
 
 ## Identity and roles
 
-The canonical repository is `0pp3rB44s/signal-core`; `main` is the approved
-branch. The Work MacBook M4 owns development, research, tests, PRs and releases.
-The Runner executes only an explicit approved commit reachable from
-`origin/main`, preferably an annotated `runner-vYYYY.MM.DD.N` tag. A newer Work
+The canonical repository is `0pp3rB44s/signal-core`; GitHub remains the code
+source of truth. The authoritative production deployment reference is
+`origin/production/live-baseline-cd8671`; `origin/main` is not Runner release
+authority. The Work MacBook M4 owns development, research, tests, PRs and releases.
+The Runner executes only an explicit approved commit reachable from the
+authoritative production reference, preferably an annotated
+`runner-vYYYY.MM.DD.N` tag. A newer Work
 Mac research checkout is not runner drift.
 
 Runner audit baseline: macOS 14.8.7, Intel `x86_64`, system Python 3.9.6,
@@ -21,7 +24,9 @@ virtualenvs, caches, or downloaded candle payloads.
 
 ## Branch and PR model
 
-- `main`: reviewed and tested production history; no experiments.
+- `production/live-baseline-cd8671`: authoritative reviewed and tested Runner
+  release history; production changes arrive through PRs.
+- `main`: default development/integration history; not Runner release authority.
 - `research/*`: research and rejected hypotheses; never deployed.
 - `fix/*`: isolated correctness changes through review.
 - `infra/*`: CI, deployment and repository-operability changes.
@@ -63,10 +68,10 @@ wheel in the resolver. Python 3.11 is compatible but is not selected because
 
 ## Release, Runner audit and deployment
 
-After review and green CI on `main`:
+After review and green CI on `production/live-baseline-cd8671`:
 
 ```bash
-git tag -a runner-vYYYY.MM.DD.N <approved-main-sha> -m "Runner deployment YYYY-MM-DD N"
+git tag -a runner-vYYYY.MM.DD.N <approved-production-sha> -m "Runner deployment YYYY-MM-DD N"
 git push origin runner-vYYYY.MM.DD.N
 ```
 
@@ -108,7 +113,8 @@ scripts/deploy_runner.sh --preflight runner-vYYYY.MM.DD.N
 ```
 
 The script requires a clean tree, fetches, verifies an annotated tag or full
-main-reachable SHA, creates `refs/runner-backups/<UTC timestamp>`, validates
+SHA reachable from `origin/production/live-baseline-cd8671`, creates
+`refs/runner-backups/<UTC timestamp>`, validates
 Python/dependencies before checkout, deploys detached, compiles, runs no-order
 smoke tests and atomically records `state/deployed_commit.txt`. It never starts
 trading. Roll back with the exact command it prints:
@@ -175,7 +181,8 @@ and lock hash, runs smoke tests, and waits for approval before starting trading.
 Checklist:
 
 - Remote is `git@github.com:0pp3rB44s/signal-core.git`.
-- Tag is annotated and its commit is reachable from `origin/main`.
+- Tag is annotated and its commit is reachable from
+  `origin/production/live-baseline-cd8671`.
 - Both Macs can fetch that exact commit.
 - Runner deployment marker equals the tag SHA.
 - Python and `requirements.txt` hash match.
@@ -197,7 +204,7 @@ scripts/create_runner_env_template.sh
 cp .env.runner.template .env
 # Manually complete .env using a secure local method; never paste values into chat.
 scripts/verify_checkout.sh
-scripts/deploy_runner.sh --preflight <approved-full-main-sha-or-runner-tag>
+scripts/deploy_runner.sh --preflight <approved-full-production-sha-or-runner-tag>
 ```
 
 If `/usr/local/bin/brew` is absent, stop and install Homebrew manually from its

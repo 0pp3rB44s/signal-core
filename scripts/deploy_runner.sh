@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() { echo "usage: $0 <annotated-runner-tag-or-full-main-commit> | --preflight <target> | --rollback <backup-ref>" >&2; exit 2; }
+readonly DEPLOY_ALLOWED_REF="origin/production/live-baseline-cd8671"
+
+usage() { echo "usage: $0 <annotated-runner-tag-or-full-production-commit> | --preflight <target> | --rollback <backup-ref>" >&2; exit 2; }
 [[ $# -ge 1 ]] || usage
+
+require_production_ancestry() {
+  local commit="$1"
+  git rev-parse --verify "$DEPLOY_ALLOWED_REF^{commit}" >/dev/null 2>&1 || {
+    echo "ERROR: authoritative production ref is unavailable: $DEPLOY_ALLOWED_REF" >&2
+    exit 1
+  }
+  git merge-base --is-ancestor "$commit" "$DEPLOY_ALLOWED_REF" || {
+    echo "ERROR: target is not reachable from $DEPLOY_ALLOWED_REF" >&2
+    exit 1
+  }
+}
 
 repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
@@ -32,7 +46,6 @@ if [[ "$target" =~ ^runner-v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]]; then
 elif [[ "$target" =~ ^[0-9a-f]{40}$ ]]; then
   commit="$target"
   git cat-file -e "$commit^{commit}" 2>/dev/null || { echo "ERROR: unknown commit" >&2; exit 1; }
-  git merge-base --is-ancestor "$commit" origin/main || { echo "ERROR: commit is not reachable from origin/main" >&2; exit 1; }
 elif [[ "$target" == refs/runner-backups/* ]]; then
   commit="$(git rev-parse "$target^{commit}")"
 else
@@ -40,7 +53,7 @@ else
 fi
 
 if [[ "$rollback" == "no" ]]; then
-  git merge-base --is-ancestor "$commit" origin/main || { echo "ERROR: target is not reachable from origin/main" >&2; exit 1; }
+  require_production_ancestry "$commit"
 fi
 
 required="$(git show "$commit:.python-version" 2>/dev/null | tr -d '[:space:]')"

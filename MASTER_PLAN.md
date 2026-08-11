@@ -9,6 +9,11 @@ Live-poorten: [GO_LIVE_CHECKLIST.md](GO_LIVE_CHECKLIST.md) · Operatie:
 [docs/RESEARCH_JOURNAL.md](docs/RESEARCH_JOURNAL.md) · Bediening:
 [BEDIENING.md](BEDIENING.md) · Wijzigingen: [CHANGELOG.md](CHANGELOG.md)
 
+**Release-authoriteit:** GitHub is de code source of truth. Runner releases
+komen uitsluitend van exacte commits die bereikbaar zijn vanaf
+`origin/production/live-baseline-cd8671`; `origin/main` is niet de Runner
+release-authoriteit.
+
 ## Missie
 
 Een 24/7 autonome live tradingbot op Bitget Futures met **aantoonbare
