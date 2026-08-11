@@ -39,6 +39,14 @@ SAFE_KEYS = frozenset({
     "BREAK_EVEN_EXTRA_BUFFER_PCT",
     "BREAK_EVEN_FEE_BUFFER_PCT",
     "BREAK_EVEN_MARK_SAFETY_TICKS",
+    "EXECUTOR_ID",
+    "HOST_ID",
+    "STRATEGY_ISOLATION_ENABLED",
+    "ENABLED_STRATEGIES",
+    "OLD_STRATEGIES_NEW_ENTRIES_ENABLED",
+    "DYNAMIC_GRID_ENABLED",
+    "DYNAMIC_GRID_MODE",
+    "MAKER_ENTRY_FALLBACK_MARKET",
 })
 SECRET_MARKERS = (
     "KEY", "SECRET", "PASSWORD", "PASSPHRASE", "TOKEN", "WEBHOOK", "CREDENTIAL",
@@ -377,6 +385,14 @@ def attest_config_file(
         "btc_only_override_absent": _btc_override_absent(values),
         "auto_watchlist_refresh_disabled": auto_refresh is False,
         "execution_confirmation_required": confirmation is True,
+        "low_vol_v2_isolated": (
+            values.get("STRATEGY_ISOLATION_ENABLED", "").strip().lower() == "true"
+            and values.get("ENABLED_STRATEGIES", "").strip().lower() == "low_vol_reclaim_v2"
+            and values.get("OLD_STRATEGIES_NEW_ENTRIES_ENABLED", "").strip().lower() == "false"
+            and values.get("DYNAMIC_GRID_ENABLED", "").strip().lower() == "false"
+            and values.get("DYNAMIC_GRID_MODE", "").strip().upper() == "OFF"
+            and values.get("MAKER_ENTRY_FALLBACK_MARKET", "").strip().lower() == "false"
+        ),
         "break_even_open_fee_fallback_rate": (
             be_open_rate == float(expected.break_even_open_fee_fallback_rate)
         ),

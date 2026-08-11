@@ -76,6 +76,15 @@ def build_close_outcome(position: Mapping, economics: Any, source: str) -> dict[
         "lifecycle_id": lifecycle_id,
         "plan_id": str(position.get("plan_id") or ""),
         "candidate_id": str(position.get("candidate_id") or ""),
+        "strategy_id": str(position.get("strategy_id") or position.get("strategy") or ""),
+        **{
+            key: position.get(key)
+            for key in (
+                "executor_id", "host_id", "pid", "production_sha",
+                "credential_fingerprint", "client_id_namespace",
+                "original_entry", "original_sl", "original_tp1", "original_tp2", "original_rr",
+            )
+        },
         "symbol": str(position.get("symbol") or "").upper(),
         "direction": direction,
         # --- authoritative economics, copied verbatim ---
@@ -84,6 +93,18 @@ def build_close_outcome(position: Mapping, economics: Any, source: str) -> dict[
         # --- trade telemetry from the position record ---
         "mfe_pct": _float_or_none(position.get("max_favorable_excursion_pct")),
         "mae_pct": _float_or_none(position.get("max_adverse_excursion_pct")),
+        "mfe_bps": (
+            _float_or_none(position.get("max_favorable_excursion_pct")) * 100.0
+            if _float_or_none(position.get("max_favorable_excursion_pct")) is not None else None
+        ),
+        "mae_bps": (
+            _float_or_none(position.get("max_adverse_excursion_pct")) * 100.0
+            if _float_or_none(position.get("max_adverse_excursion_pct")) is not None else None
+        ),
+        "first_mfe_at": position.get("first_mfe_at"),
+        "max_mfe_at": position.get("max_mfe_at"),
+        "first_mae_at": position.get("first_mae_at"),
+        "max_mae_at": position.get("max_mae_at"),
         "hold_duration_seconds": _float_or_none(position.get("trade_duration_seconds")),
         "exit_reason": position.get("closed_reason"),
         "actual_fill_route": position.get("entry_via"),
@@ -93,6 +114,12 @@ def build_close_outcome(position: Mapping, economics: Any, source: str) -> dict[
         "planned_avg_entry": planned,
         "exchange_avg_entry": filled,
     }
+    open_fee = _float_or_none(_value(economics, "open_fee")) or 0.0
+    close_fee = _float_or_none(_value(economics, "close_fee")) or 0.0
+    entry_was_maker = str(position.get("entry_via") or "").lower() == "maker"
+    row["maker_fees"] = open_fee if entry_was_maker else 0.0
+    row["taker_fees"] = close_fee + (0.0 if entry_was_maker else open_fee)
+    row["total_fees"] = _float_or_none(_value(economics, "fees"))
     return row
 
 

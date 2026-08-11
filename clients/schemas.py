@@ -191,6 +191,18 @@ class ExecutionReport:
     fees_paid: float = 0.0
     realized_pnl: float = 0.0
     exchange_order_id: str = ""
+    strategy_id: str = ""
+    executor_id: str = ""
+    host_id: str = ""
+    pid: int = 0
+    production_sha: str = ""
+    credential_fingerprint: str = ""
+    client_id_namespace: str = ""
+    original_entry: float = 0.0
+    original_sl: float = 0.0
+    original_tp1: float = 0.0
+    original_tp2: float = 0.0
+    original_rr: float = 0.0
 
 
 @dataclass(slots=True)

@@ -308,6 +308,13 @@ class EntryRoutingRecorder:
         planned_entry: float | None,
         intended_route: str,
         size_requested: float | None,
+        strategy_id: str = "",
+        execution_identity: dict[str, Any] | None = None,
+        original_entry: float | None = None,
+        original_sl: float | None = None,
+        original_tp1: float | None = None,
+        original_tp2: float | None = None,
+        original_rr: float | None = None,
         log: Any = None,
         path: str = "logs/entry_routing.jsonl",
     ) -> None:
@@ -319,6 +326,15 @@ class EntryRoutingRecorder:
         self.planned_entry = _positive(planned_entry)
         self.intended_route = intended_route
         self.size_requested = size_requested
+        self.strategy_id = str(strategy_id or "")
+        self.execution_identity = dict(execution_identity or {})
+        self.original_geometry = {
+            "original_entry": _positive(original_entry),
+            "original_sl": _positive(original_sl),
+            "original_tp1": _positive(original_tp1),
+            "original_tp2": _positive(original_tp2),
+            "original_rr": _positive(original_rr),
+        }
         self.log = log
         self.path = path
         self.stages: list[RouteStage] = []
@@ -497,6 +513,8 @@ class EntryRoutingRecorder:
             "lifecycle_id": self.lifecycle_id,
             "plan_id": self.plan_id,
             "candidate_id": self.candidate_id,
+            "strategy_id": self.strategy_id,
+            **self.execution_identity,
             "symbol": self.symbol,
             "direction": self.direction,
             "planned_entry": self.planned_entry,
@@ -508,6 +526,7 @@ class EntryRoutingRecorder:
             "metrics": self.metrics(),
             "metric_provenance": self.metric_provenance(),
             "pre_entry_features": self.pre_entry_features,
+            **self.original_geometry,
         }
         leaked = sorted(self.FORBIDDEN_OUTCOME_KEYS.intersection(row))
         if leaked:

@@ -13,6 +13,8 @@ from telemetry.close_record_sources import (
 )
 from telemetry.csv_rotation import rotate_if_needed
 from telemetry.safe_io import locked_open
+from candidate_lifecycle import deterministic_plan_id
+from execution.executor_identity import ExecutionIdentity
 
 
 # --- Trade Quality/Grade helpers ---
@@ -381,14 +383,18 @@ def _rotate_on_schema_change(path: Path, expected_header: list[str]) -> None:
 
 class StrategyCandidateCsvLogger:
     HEADER = [
-        "timestamp","candidate_id","candidate_candle_open_timestamp_ms","symbol","strategy","direction","verdict","score","primary_tf","confirm_tf","alignment",
+        "timestamp","candidate_id","plan_id","strategy_id","executor_id","host_id","pid","production_sha","credential_fingerprint","candidate_candle_open_timestamp_ms","symbol","strategy","direction","verdict","score","primary_tf","confirm_tf","alignment",
         "entry_hint","reclaim_level","invalidation","bars_since_sweep","volume_ratio_on_sweep",
         "displacement_pct","notes","reasons"
     ]
 
-    def __init__(self, path: str = "logs/strategy_candidates.csv") -> None:
+    def __init__(self, path: str = "logs/strategy_candidates.csv", settings=None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.identity = (
+            ExecutionIdentity.from_settings(settings).as_dict()
+            if settings is not None and settings.is_live_execution else {}
+        )
 
     def append_rows(self, rows: list[tuple[StrategyCandidate, StrategyScore]]) -> None:
         if not rows:
@@ -403,7 +409,12 @@ class StrategyCandidateCsvLogger:
             for candidate, score in rows:
                 writer.writerow([
                     now,
-                    candidate.candidate_id, candidate.candidate_candle_open_timestamp_ms,
+                    candidate.candidate_id, deterministic_plan_id(candidate.candidate_id),
+                    candidate.strategy,
+                    self.identity.get("executor_id", ""), self.identity.get("host_id", ""),
+                    self.identity.get("pid", ""), self.identity.get("production_sha", ""),
+                    self.identity.get("credential_fingerprint", ""),
+                    candidate.candidate_candle_open_timestamp_ms,
                     candidate.symbol, candidate.strategy, candidate.direction, score.verdict, f"{score.total:.2f}",
                     candidate.primary_granularity, candidate.confirmation_granularity, candidate.market.alignment,
                     f"{candidate.detection.entry_hint:.8f}", f"{candidate.detection.reclaim_level:.8f}",
@@ -1044,6 +1055,11 @@ class TradeDatasetV2Logger:
             # CSV, which is why a plan could not be traced to the position it
             # became. Nothing here is reconstructed from timestamp, symbol or
             # price -- those are research heuristics, not identity.
+            "strategy_id", "executor_id", "host_id", "pid", "production_sha",
+            "credential_fingerprint", "client_id_namespace",
+            "original_entry", "original_sl", "original_tp1", "original_tp2", "original_rr",
+            "mfe_bps", "mae_bps", "first_mfe_at", "max_mfe_at", "first_mae_at", "max_mae_at",
+            "maker_fees", "taker_fees", "total_fees",
             "plan_id",
             "candidate_id",
         ]
@@ -1072,6 +1088,14 @@ class TradeDatasetV2Logger:
             # credited for a position.
             "plan_id": getattr(report, "plan_id", ""),
             "candidate_id": getattr(report, "candidate_id", ""),
+            **{
+                key: getattr(report, key, "")
+                for key in (
+                    "strategy_id", "executor_id", "host_id", "pid", "production_sha",
+                    "credential_fingerprint", "client_id_namespace", "original_entry",
+                    "original_sl", "original_tp1", "original_tp2", "original_rr",
+                )
+            },
             "confirmed_position_size": getattr(report, "confirmed_position_size", ""),
             "confirmed_opening_fee_usdt": getattr(report, "confirmed_opening_fee_usdt", ""),
             "expected_entry": getattr(report, "expected_entry", _report_planned_entry(report)),
@@ -1194,6 +1218,19 @@ class TradeDatasetV2Logger:
             pnl = None
             net_pnl = None
 
+        maker_fees: float | str = ""
+        taker_fees: float | str = ""
+        if not provisional:
+            open_fee = abs(_safe_float(
+                trade.get("exchange_truth_open_fee", trade.get("exchange_opening_fee_usdt", 0.0)),
+                0.0,
+            ))
+            close_fee = abs(_safe_float(trade.get("exchange_truth_close_fee", 0.0), 0.0))
+            entry_liquidity = str(trade.get("entry_liquidity") or "maker").lower()
+            maker_fees = open_fee if entry_liquidity == "maker" else 0.0
+            # V2 exits are exchange TP/SL or emergency market closes.
+            taker_fees = close_fee + (0.0 if entry_liquidity == "maker" else open_fee)
+
         strategy_label = _normalize_strategy_label(trade.get("strategy"), trade)
         closed_at = trade.get("closed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         opened_at = trade.get("opened_at", "")
@@ -1249,6 +1286,27 @@ class TradeDatasetV2Logger:
             # first, and legacy positions simply carry blanks.
             "plan_id": trade.get("plan_id", ""),
             "candidate_id": trade.get("candidate_id", ""),
+            **{
+                key: trade.get(key, "")
+                for key in (
+                    "strategy_id", "executor_id", "host_id", "pid", "production_sha",
+                    "credential_fingerprint", "client_id_namespace", "original_entry",
+                    "original_sl", "original_tp1", "original_tp2", "original_rr",
+                )
+            },
+            "mfe_bps": (
+                _safe_float(trade.get("max_favorable_excursion_pct"), 0.0) * 100.0
+            ),
+            "mae_bps": (
+                _safe_float(trade.get("max_adverse_excursion_pct"), 0.0) * 100.0
+            ),
+            "first_mfe_at": trade.get("first_mfe_at", ""),
+            "max_mfe_at": trade.get("max_mfe_at", ""),
+            "first_mae_at": trade.get("first_mae_at", ""),
+            "max_mae_at": trade.get("max_mae_at", ""),
+            "maker_fees": maker_fees,
+            "taker_fees": taker_fees,
+            "total_fees": "" if provisional else fees,
             "exchange_entry_order_id": trade.get("exchange_entry_order_id", ""),
             "exchange_entry_client_oid": trade.get("exchange_entry_client_oid", ""),
             "confirmed_position_size": trade.get(
