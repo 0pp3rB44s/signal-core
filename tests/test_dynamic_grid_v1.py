@@ -60,6 +60,9 @@ def _decision(**overrides):
         maker_fee_rate=0.0002,
         equity_usdt=1_000.0,
         settings=_settings(),
+        exchange_min_trade_quantity=0.001,
+        exchange_size_increment=0.001,
+        exchange_min_notional_usdt=5.0,
         stale=False,
     )
     params.update(overrides)
@@ -82,8 +85,40 @@ def test_fee_hurdle_uses_authenticated_maker_roundtrip_plus_drag_and_margin():
     assert economics.maker_fee_bps == pytest.approx(2.0)
     assert economics.roundtrip_fee_bps == pytest.approx(4.0)
     assert economics.hurdle_bps == pytest.approx(7.0)
-    assert economics.expected_net_capture_bps > 0
-    assert economics.gross_capture_bps > economics.hurdle_bps
+    assert economics.minimum_gross_capture_bps == pytest.approx(14.0)
+    assert economics.expected_net_capture_bps >= economics.hurdle_bps
+    assert economics.gross_capture_bps >= 2.0 * economics.hurdle_bps
+    assert economics.economic_gate_passed is True
+
+
+def test_positive_but_immaterial_edge_pauses_at_dynamic_two_x_cost_gate():
+    decision = _decision(
+        candles_5m=_candles(swing=0.0),
+        candles_15m=_candles(swing=0.0),
+        candles_1h=_candles(swing=0.0),
+    )
+    assert 0 < decision.economics.expected_net_capture_bps < decision.economics.hurdle_bps
+    assert decision.economics.minimum_gross_capture_bps == pytest.approx(
+        2.0 * decision.economics.hurdle_bps
+    )
+    assert decision.regime is GridRegime.PAUSED_ECONOMICS
+    assert decision.reason == "gross_capture_below_2x_expected_all_in_cost"
+
+
+def test_higher_authenticated_fee_raises_economic_hurdle_dynamically():
+    baseline = _decision(maker_fee_rate=0.0002)
+    expensive = _decision(maker_fee_rate=0.0004)
+    assert expensive.economics.minimum_gross_capture_bps > baseline.economics.minimum_gross_capture_bps
+    assert expensive.regime is GridRegime.PAUSED_ECONOMICS
+
+
+def test_spacing_floor_never_tightens_below_dynamic_economic_minimum():
+    decision = _decision()
+    spacing_bps = (
+        (decision.center - decision.levels[0].entry_price)
+        / decision.center * 10_000.0
+    )
+    assert spacing_bps >= decision.economics.minimum_gross_capture_bps
 
 
 @pytest.mark.parametrize(
@@ -100,8 +135,41 @@ def test_regime_kill_switches(updates, expected):
 
 def test_caps_can_make_exchange_minimum_impractical_and_pause():
     decision = _decision(equity_usdt=100.0, settings=_settings(dynamic_grid_min_level_notional_usdt=5.0))
-    assert decision.regime is GridRegime.PAUSED_VOLATILITY
-    assert decision.reason == "minimum_practical_size_exceeds_cap"
+    assert decision.regime is GridRegime.PAUSED_SIZE
+    assert decision.reason == "three_level_minimum_exceeds_risk_caps"
+    assert decision.sizing_gate_passed is False
+
+
+def test_runtime_exchange_minimum_is_stricter_than_strategy_floor():
+    decision = _decision(
+        exchange_min_trade_quantity=0.1,
+        exchange_size_increment=0.1,
+        exchange_min_notional_usdt=5.0,
+    )
+    assert decision.effective_min_level_notional_usdt > 5.0
+    assert all(
+        level.exchange_min_notional_usdt > level.strategy_min_notional_usdt
+        for level in decision.levels
+    )
+
+
+def test_exact_three_level_hard_invalidation_loss_respects_quarter_percent_cap():
+    decision = _decision(equity_usdt=1_000.0)
+    exact_loss = sum(
+        level.quantity * (level.entry_price - decision.hard_invalidation)
+        for level in decision.levels
+    )
+    assert decision.max_grid_loss_usdt == pytest.approx(exact_loss)
+    assert decision.risk_cap_usdt == pytest.approx(2.5)
+    assert decision.max_grid_loss_usdt <= decision.risk_cap_usdt
+    assert decision.min_equity_hard_risk_usdt == pytest.approx(
+        decision.effective_min_level_notional_usdt
+        * sum(
+            (level.entry_price - decision.hard_invalidation) / level.entry_price
+            for level in decision.levels
+        )
+        / 0.0025
+    )
 
 
 def test_reset_requires_flat_resolved_cooldown_and_material_center_move():
@@ -123,6 +191,13 @@ class _ShadowClient:
 
     def get_orderbook(self, symbol, limit):
         return {"spread_bps": 1.0, "total_depth_notional": 1_000_000.0}
+
+    def get_contract_spec(self, symbol):
+        return SimpleNamespace(
+            min_trade_num=0.001,
+            size_multiplier=0.001,
+            min_trade_usdt=5.0,
+        )
 
     def __getattr__(self, name):
         if name.startswith(("place_", "cancel_", "close_", "set_futures_leverage")):
@@ -162,9 +237,29 @@ def test_shadow_queries_account_fees_but_makes_no_order_calls_and_emits_dashboar
     assert all(row["strategy"] == "dynamic_grid_v1" for row in decisions_rows)
     assert all(len(row["levels"]) == 3 for row in decisions_rows)
     assert all("expected_net_capture_bps" in row["economics"] for row in decisions_rows)
+    assert all("minimum_gross_capture_bps" in row["economics"] for row in decisions_rows)
+    assert all("sizing_gate_passed" in row for row in decisions_rows)
     assert {row["event_type"] for row in rows} & {
         "SHADOW_GRID_OPENED", "SHADOW_LEVEL_FILLED"
     }
+
+
+def test_shadow_fails_closed_when_exchange_minimum_metadata_is_unavailable(tmp_path):
+    client = _ShadowClient()
+    client.get_contract_spec = lambda symbol: None
+    settings = Settings(
+        _env_file=None,
+        DYNAMIC_GRID_ENABLED=True,
+        DYNAMIC_GRID_MODE="SHADOW",
+        DYNAMIC_GRID_STATE_PATH=str(tmp_path / "state.json"),
+        DYNAMIC_GRID_SHADOW_STATE_PATH=str(tmp_path / "shadow.json"),
+        DYNAMIC_GRID_EVENTS_PATH=str(tmp_path / "events.jsonl"),
+    )
+    service = DynamicGridService(settings=settings, client=client, cache=_Cache())
+    assert service.cycle(equity_usdt=1_000.0) == []
+    rows = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert sum(row["event_type"] == "GRID_STOP" for row in rows) == 2
+    assert client.order_calls == 0
 
 
 def test_shadow_maps_fill_to_tp_then_resolves_without_an_order_client(tmp_path):

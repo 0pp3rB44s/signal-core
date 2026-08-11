@@ -82,6 +82,12 @@ class DynamicGridService:
 
     def _decision(self, symbol: str, equity_usdt: float) -> GridDecision:
         orderbook = self.client.get_orderbook(symbol=symbol, limit=20)
+        spec_getter = getattr(self.client, "get_contract_spec", None)
+        if spec_getter is None:
+            raise RuntimeError("exchange contract metadata endpoint unavailable")
+        spec = spec_getter(symbol)
+        if spec is None:
+            raise RuntimeError(f"exchange contract metadata unavailable for {symbol}")
         return build_grid_decision(
             symbol=symbol,
             candles_5m=self.cache.get(symbol, "5m"),
@@ -91,6 +97,9 @@ class DynamicGridService:
             maker_fee_rate=self._authenticated_maker_fee(symbol),
             equity_usdt=equity_usdt,
             settings=self.settings,
+            exchange_min_trade_quantity=float(spec.min_trade_num),
+            exchange_size_increment=float(spec.size_multiplier),
+            exchange_min_notional_usdt=float(spec.min_trade_usdt or 0.0),
             stale=any(self.cache.is_stale(symbol, tf) for tf in ("5m", "15m", "1h")),
         )
 
@@ -141,6 +150,12 @@ class DynamicGridService:
                 regime=decision.regime.value, reason=decision.reason,
                 center=decision.center, atr=decision.atr,
                 hard_invalidation=decision.hard_invalidation,
+                sizing_gate_passed=decision.sizing_gate_passed,
+                effective_min_level_notional_usdt=decision.effective_min_level_notional_usdt,
+                max_grid_loss_usdt=decision.max_grid_loss_usdt,
+                risk_cap_usdt=decision.risk_cap_usdt,
+                min_equity_allocation_usdt=decision.min_equity_allocation_usdt,
+                min_equity_hard_risk_usdt=decision.min_equity_hard_risk_usdt,
                 levels=[level.__dict__ if hasattr(level, "__dict__") else {
                     "index": level.index, "entry_price": level.entry_price,
                     "take_profit_price": level.take_profit_price,

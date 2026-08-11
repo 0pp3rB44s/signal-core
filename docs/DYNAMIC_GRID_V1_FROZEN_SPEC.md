@@ -1,6 +1,7 @@
-# dynamic_grid_v1 frozen pilot specification
+# dynamic_grid_v1.1 frozen pilot specification
 
-Status: frozen for shadow qualification. Parameter changes require a new code
+Status: v1.1 pre-LIVE economic correction, frozen for shadow qualification.
+Parameter changes require a new code
 revision, review, CI run, and deployment SHA; parameters must not be optimized
 during a pilot.
 
@@ -13,6 +14,10 @@ during a pilot.
 - Total grid notional: min(30 USDT, 3% of account equity, 10 USDT per level,
   and the notional implied by a 0.25% equity loss at hard invalidation);
   minimum practical size is 5 USDT per level.
+- Each level must also clear the current Bitget contract minimum. The effective
+  floor is `max(strategy minimum, exchange minimum executable notional)`, where
+  exchange quantity, increment and minimum-notional metadata are queried at
+  runtime. USD equivalents are never hardcoded.
 - Strategy drawdown stop: 0.5% of current account equity.
 - Repeated-order-error stop: three recorded order-path errors.
 - Management timeframe: 5m. Context: 15m and 1h.
@@ -34,13 +39,28 @@ orders exist.
 
 The runtime queries `/api/v2/common/trade-rate` with authenticated account
 credentials independently for BTCUSDT and SOLUSDT. Gross TP capture is the
-larger of `0.60 * ATR bps` and the fee hurdle plus 1 bp. The hurdle is actual
-maker entry + actual maker exit + configured execution drag + safety margin.
-Every decision logs gross capture, each cost component, and expected net capture.
+volatility-supported `0.60 * ATR bps`; it is not inflated to manufacture edge.
+Expected all-in cost is actual maker entry + actual maker exit + configured
+execution drag + safety margin. A candidate is economically eligible only when
+gross capture is at least twice that dynamic cost, equivalently expected net
+capture is at least the cost. Failure emits `GRID_PAUSED_ECONOMICS`. The spacing
+floor is never tighter than the same dynamic minimum-gross hurdle. Every
+decision logs gross capture, each cost component, the economic hurdle, and
+expected net capture.
+
+The allocation cap remains 3% of equity. The 0.25% hard-invalidation cap uses
+the exact three-level worst-case loss, summing
+`quantity × (entry − hard invalidation)` across all filled levels. If the equal
+three-level ladder cannot clear the effective exchange/strategy minimum within
+both caps, it emits `GRID_PAUSED_SIZE`. Leverage remains exactly 1x. One- and
+two-level variants are outside v1.1 because they change the ladder and inventory
+thesis.
 
 ## Regimes and safety
 
 - `GRID_ALLOWED`
+- `GRID_PAUSED_ECONOMICS`
+- `GRID_PAUSED_SIZE`
 - `GRID_PAUSED_TREND`
 - `GRID_PAUSED_VOLATILITY`
 - `GRID_PAUSED_SPREAD`
