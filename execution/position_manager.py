@@ -31,6 +31,7 @@ from execution.position_model import (
 )
 from execution.tp_sl_lifecycle import TpSlLifecycleMixin
 from telemetry.trade_logger import LiveTradeJournalLogger
+from telemetry.live_forensics import emit_forensic_event
 
 
 #: How often the dead-trade housekeeping close may be re-sent for one position
@@ -590,6 +591,29 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             previous_mae = float(position.get("max_adverse_excursion_pct") or 0.0)
             position["max_favorable_excursion_pct"] = round(max(previous_mfe, price_return_pct_value), 4)
             position["max_adverse_excursion_pct"] = round(min(previous_mae, price_return_pct_value), 4)
+            excursion_now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            if price_return_pct_value > 0 and not position.get("first_mfe_at"):
+                position["first_mfe_at"] = excursion_now
+            if price_return_pct_value < 0 and not position.get("first_mae_at"):
+                position["first_mae_at"] = excursion_now
+            if position["max_favorable_excursion_pct"] > previous_mfe:
+                position["max_mfe_at"] = excursion_now
+            if position["max_adverse_excursion_pct"] < previous_mae:
+                position["max_mae_at"] = excursion_now
+            if (
+                position["max_favorable_excursion_pct"] > previous_mfe
+                or position["max_adverse_excursion_pct"] < previous_mae
+            ):
+                emit_forensic_event(
+                    "EXCURSION",
+                    position,
+                    mfe_bps=round(position["max_favorable_excursion_pct"] * 100.0, 4),
+                    mae_bps=round(position["max_adverse_excursion_pct"] * 100.0, 4),
+                    first_mfe_at=position.get("first_mfe_at"),
+                    max_mfe_at=position.get("max_mfe_at"),
+                    first_mae_at=position.get("first_mae_at"),
+                    max_mae_at=position.get("max_mae_at"),
+                )
 
             # --- Telemetry: trade duration/timing fields ---
             now_iso = datetime.now(timezone.utc).isoformat()

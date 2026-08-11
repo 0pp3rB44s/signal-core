@@ -11,6 +11,7 @@ import csv
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from telemetry.live_forensics import emit_forensic_event
 
 from clients.schemas import MarketSnapshot
 from execution.position_model import (
@@ -1012,6 +1013,14 @@ class TpSlLifecycleMixin:
                 self._protection_reason_flags(position, reason)
                 position["active_stop_loss_order_ids"] = (
                     [new_order_id] if new_order_id else []
+                )
+                emit_forensic_event(
+                    "PROTECTION_CHANGE",
+                    position,
+                    old_stop=decimal_float(previous_confirmed),
+                    new_stop=decimal_float(target),
+                    reason=reason,
+                    exchange_order_id=new_order_id,
                 )
                 return True
             except Exception as exc:

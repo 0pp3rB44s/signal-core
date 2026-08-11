@@ -427,7 +427,7 @@ class StartupRunner:
         )
         self.scan_logger = MarketScanCsvLogger()
         self.market_context_logger = MarketContextLogger()
-        self.candidate_logger = StrategyCandidateCsvLogger()
+        self.candidate_logger = StrategyCandidateCsvLogger(settings=settings)
         self.trade_plan_logger = TradePlanCsvLogger()
         self.ranked_plan_logger = RankedPlanLogger(log=self.log)
         self.strategy_performance_logger = StrategyPerformanceLogger()

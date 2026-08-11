@@ -37,6 +37,11 @@ from execution.entry_snapshot import (
 )
 from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
 from execution.order_intent_store import OrderIntentStore, new_session_id
+from execution.executor_identity import (
+    ExecutionIdentity,
+    is_legacy_client_oid,
+    is_owned_client_oid,
+)
 from execution.position_model import (
     EXCHANGE_ACTUAL,
     decimal_value,
@@ -149,12 +154,22 @@ class ExecutionService:
         # Idempotent live-entry path: one deterministic clientOid per logical
         # entry, persisted before submit and reconciled after any ambiguity.
         self.session_id = new_session_id()
+        self.execution_identity = (
+            ExecutionIdentity.from_settings(settings)
+            if settings.is_live_execution and settings.is_production
+            else None
+        )
         self.intent_store = OrderIntentStore()
         self.entry_submitter = EntryOrderSubmitter(
             client=self.client,
             intent_store=self.intent_store,
             session_id=self.session_id,
             execution_mode=str(settings.execution_mode),
+            bot_identity=(
+                self.execution_identity.client_id_namespace
+                if self.execution_identity is not None
+                else "bgai"
+            ),
             log=self.log,
         )
         self._entry_recovery_done = False
@@ -163,6 +178,59 @@ class ExecutionService:
         #: `_entry_guard_reason`. Recovery may now run on a cycle that never
         #: reaches the guard, so its verdict has to wait somewhere.
         self._entry_recovery_block_reason = ""
+        self._ownership_audit_done = False
+
+    @staticmethod
+    def _exchange_rows(payload: dict | None) -> list[dict]:
+        data = (payload or {}).get("data")
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        if isinstance(data, dict):
+            for key in ("entrustedList", "orderList", "list", "orders", "planList"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [row for row in value if isinstance(row, dict)]
+        return []
+
+    def _audit_execution_ownership(self) -> None:
+        """Block entries when pending exchange state is not owned by this executor."""
+        if self._ownership_audit_done or self.execution_identity is None:
+            return
+        try:
+            normal = self._exchange_rows(self.client.get_pending_orders(limit=100))
+            positions = self._exchange_rows(self.client.get_all_positions())
+            plans: list[dict] = []
+            for plan_type in ("profit_loss", "normal_plan", "track_plan"):
+                plans.extend(self._exchange_rows(self.client.get_tpsl_orders(plan_type=plan_type)))
+        except Exception as exc:
+            self._entry_recovery_block_reason = f"execution ownership audit failed: {exc}"
+            return
+
+        foreign = []
+        for row in normal:
+            oid = row.get("clientOid") or row.get("client_oid")
+            if is_legacy_client_oid(oid) or not is_owned_client_oid(oid, self.execution_identity):
+                foreign.append(str(oid or row.get("orderId") or "UNKNOWN"))
+        if not positions and plans:
+            foreign.extend(str(row.get("orderId") or "ORPHAN_PLAN") for row in plans)
+        if foreign:
+            self._entry_recovery_block_reason = (
+                "foreign/legacy exchange orders detected: " + ",".join(foreign[:10])
+            )
+            self.log.critical(
+                "FOREIGN_LEGACY_ORDERS_BLOCKED | executor_id=%s | orders=%s",
+                self.execution_identity.executor_id,
+                foreign,
+            )
+            return
+        self._ownership_audit_done = True
+        self.log.critical(
+            "EXECUTION_OWNERSHIP_AUDIT_PASS | executor_id=%s | namespace=%s | "
+            "positions=%s | normal_orders=%s | plan_orders=%s",
+            self.execution_identity.executor_id,
+            self.execution_identity.client_id_namespace,
+            len(positions), len(normal), len(plans),
+        )
 
     def _v2_fee_gate(self, plan: TradePlan, planned_entry: float) -> dict[str, float | bool]:
         """Load actual account fees and evaluate the frozen v2 cost hurdle."""
@@ -216,6 +284,9 @@ class ExecutionService:
         if self.settings.execution_mode.upper() != "LIVE":
             return
         if self._entry_recovery_done:
+            return
+        self._audit_execution_ownership()
+        if self.execution_identity is not None and not self._ownership_audit_done:
             return
         try:
             recovery = self.entry_submitter.recover_pending_intents()
@@ -835,6 +906,18 @@ class ExecutionService:
                             else "market"
                         ),
                         size_requested=order_size,
+                        strategy_id=str(plan.strategy or ""),
+                        execution_identity=(
+                            self.execution_identity.as_dict()
+                            if self.execution_identity is not None
+                            else {}
+                        ),
+                        original_entry=planned_avg_entry,
+                        original_sl=plan.stop_loss,
+                        original_tp1=(plan.take_profits or [None])[0],
+                        original_tp2=(plan.take_profits or [None, None])[1]
+                        if len(plan.take_profits or []) > 1 else None,
+                        original_rr=plan.risk_reward_ratio,
                         log=self.log,
                     )
                     pre_entry_features = self._pre_entry_features(plan)
@@ -1485,6 +1568,12 @@ class ExecutionService:
                         fill_price=actual_entry or None,
                         exchange_order_status=exchange_avg_entry_source,
                     )
+                    routing.pre_entry_features.update(
+                        actual_fee=fees_paid if fees_paid > 0 else None,
+                        liquidity_classification=(
+                            "maker" if entry_via == "maker" else "taker"
+                        ),
+                    )
                     routing.write()
 
                     if extracted_actual_entry <= 0:
@@ -1657,6 +1746,17 @@ class ExecutionService:
                 "exchange_tick_size": exchange_tick_size or None,
                 "plan_id": plan.plan_id,
                 "candidate_id": plan.candidate_id,
+                **(
+                    self.execution_identity.as_dict()
+                    if self.execution_identity is not None
+                    else {}
+                ),
+                "strategy_id": str(plan.strategy or ""),
+                "original_entry": planned_avg_entry,
+                "original_sl": protect_stop_loss,
+                "original_tp1": protect_take_profits[0] if protect_take_profits else None,
+                "original_tp2": protect_take_profits[1] if len(protect_take_profits) > 1 else None,
+                "original_rr": plan.risk_reward_ratio,
                 "slippage_pct": slippage_pct,
                 "fees_paid": fees_paid,
                 "entry_prices": plan.entry_prices,
@@ -2250,6 +2350,7 @@ class ExecutionService:
         stop_loss: float | None = None,
         take_profits: list[float] | None = None,
     ) -> ExecutionReport:
+        identity = self.execution_identity.as_dict() if self.execution_identity else {}
         return ExecutionReport(
             candidate_id=plan.candidate_id,
             plan_id=plan.plan_id,
@@ -2278,4 +2379,17 @@ class ExecutionService:
             fees_paid=fees_paid,
             realized_pnl=realized_pnl,
             exchange_order_id=exchange_order_id,
+            strategy_id=str(plan.strategy or ""),
+            executor_id=str(identity.get("executor_id") or ""),
+            host_id=str(identity.get("host_id") or ""),
+            pid=int(identity.get("pid") or 0),
+            production_sha=str(identity.get("production_sha") or ""),
+            credential_fingerprint=str(identity.get("credential_fingerprint") or ""),
+            client_id_namespace=str(identity.get("client_id_namespace") or ""),
+            original_entry=planned_avg_entry,
+            original_sl=plan.stop_loss if stop_loss is None else stop_loss,
+            original_tp1=(plan.take_profits or [0.0])[0],
+            original_tp2=(plan.take_profits or [0.0, 0.0])[1]
+            if len(plan.take_profits or []) > 1 else 0.0,
+            original_rr=plan.risk_reward_ratio,
         )
