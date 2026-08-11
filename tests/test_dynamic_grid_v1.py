@@ -74,7 +74,11 @@ def test_grid_has_exactly_three_descending_equal_notional_levels_and_one_x_geome
     assert decision.regime is GridRegime.ALLOWED
     assert len(decision.levels) == 3
     assert decision.center > decision.levels[0].entry_price > decision.levels[1].entry_price > decision.levels[2].entry_price
-    assert {round(level.notional_usdt, 8) for level in decision.levels} == {10.0}
+    assert all(0 < level.notional_usdt <= 10.0 for level in decision.levels)
+    assert max(level.notional_usdt for level in decision.levels) - min(
+        level.notional_usdt for level in decision.levels
+    ) < 0.11
+    assert all(level.quantity / 0.001 == pytest.approx(round(level.quantity / 0.001)) for level in decision.levels)
     assert all(level.take_profit_price > level.entry_price for level in decision.levels)
     assert decision.hard_invalidation < decision.levels[-1].entry_price
 
@@ -156,20 +160,37 @@ def test_runtime_exchange_minimum_is_stricter_than_strategy_floor():
 def test_exact_three_level_hard_invalidation_loss_respects_quarter_percent_cap():
     decision = _decision(equity_usdt=1_000.0)
     exact_loss = sum(
-        level.quantity * (level.entry_price - decision.hard_invalidation)
+        level.quantity * max(level.entry_price - decision.hard_invalidation, 0.0)
         for level in decision.levels
     )
     assert decision.max_grid_loss_usdt == pytest.approx(exact_loss)
     assert decision.risk_cap_usdt == pytest.approx(2.5)
     assert decision.max_grid_loss_usdt <= decision.risk_cap_usdt
-    assert decision.min_equity_hard_risk_usdt == pytest.approx(
-        decision.effective_min_level_notional_usdt
-        * sum(
-            (level.entry_price - decision.hard_invalidation) / level.entry_price
-            for level in decision.levels
-        )
-        / 0.0025
+    exact_minimum_loss = sum(
+        level.minimum_executable_quantity
+        * max(level.entry_price - decision.hard_invalidation, 0.0)
+        for level in decision.levels
     )
+    assert decision.min_equity_hard_risk_usdt == pytest.approx(exact_minimum_loss / 0.0025)
+
+
+def test_minimum_equity_reports_use_exact_per_level_executable_quantities():
+    decision = _decision(
+        exchange_min_trade_quantity=0.1,
+        exchange_size_increment=0.1,
+        exchange_min_notional_usdt=5.0,
+    )
+    exact_minimum_notional = sum(
+        level.minimum_executable_quantity * level.entry_price
+        for level in decision.levels
+    )
+    exact_minimum_loss = sum(
+        level.minimum_executable_quantity
+        * max(level.entry_price - decision.hard_invalidation, 0.0)
+        for level in decision.levels
+    )
+    assert decision.min_equity_allocation_usdt == pytest.approx(exact_minimum_notional / 0.03)
+    assert decision.min_equity_hard_risk_usdt == pytest.approx(exact_minimum_loss / 0.0025)
 
 
 def test_reset_requires_flat_resolved_cooldown_and_material_center_move():

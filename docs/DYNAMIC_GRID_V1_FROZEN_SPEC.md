@@ -10,7 +10,9 @@ during a pilot.
 - Symbols: `BTCUSDT`, `SOLUSDT`.
 - At most one active grid across both symbols.
 - Long-only, isolated margin, exactly 1x leverage.
-- Exactly three equal-notional entry levels. No martingale.
+- Exactly three equal-target-notional entry levels. Executable quantities are
+  rounded down to the live contract increment, so actual notionals may differ
+  slightly. No martingale.
 - Total grid notional: min(30 USDT, 3% of account equity, 10 USDT per level,
   and the notional implied by a 0.25% equity loss at hard invalidation);
   minimum practical size is 5 USDT per level.
@@ -50,11 +52,19 @@ expected net capture.
 
 The allocation cap remains 3% of equity. The 0.25% hard-invalidation cap uses
 the exact three-level worst-case loss, summing
-`quantity × (entry − hard invalidation)` across all filled levels. If the equal
+`quantity × max(entry − hard invalidation, 0)` across all filled levels. (For
+an eligible ladder, hard invalidation is below all three entries and this is
+identical to `quantity × (entry − hard invalidation)`.) If the equal
 three-level ladder cannot clear the effective exchange/strategy minimum within
 both caps, it emits `GRID_PAUSED_SIZE`. Leverage remains exactly 1x. One- and
 two-level variants are outside v1.1 because they change the ladder and inventory
 thesis.
+
+Both reported minimum-equity thresholds use the exchange-rounded minimum
+quantity separately at each frozen entry. Allocation uses the sum of the three
+actual minimum notionals divided by 3%; hard risk uses the exact summed loss at
+hard invalidation divided by 0.25%. These are runtime calculations, never
+hardcoded USD equivalents.
 
 ## Regimes and safety
 
