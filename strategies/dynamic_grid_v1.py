@@ -15,6 +15,8 @@ from typing import Any, Iterable
 
 class GridRegime(StrEnum):
     ALLOWED = "GRID_ALLOWED"
+    PAUSED_ECONOMICS = "GRID_PAUSED_ECONOMICS"
+    PAUSED_SIZE = "GRID_PAUSED_SIZE"
     PAUSED_TREND = "GRID_PAUSED_TREND"
     PAUSED_VOLATILITY = "GRID_PAUSED_VOLATILITY"
     PAUSED_SPREAD = "GRID_PAUSED_SPREAD"
@@ -28,8 +30,10 @@ class GridEconomics:
     drag_bps: float
     margin_bps: float
     hurdle_bps: float
+    minimum_gross_capture_bps: float
     gross_capture_bps: float
     expected_net_capture_bps: float
+    economic_gate_passed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +43,9 @@ class GridLevel:
     take_profit_price: float
     notional_usdt: float
     quantity: float
+    exchange_min_notional_usdt: float
+    strategy_min_notional_usdt: float
+    minimum_executable_quantity: float
     client_oid: str
 
 
@@ -55,6 +62,12 @@ class GridDecision:
     atr_bps: float
     trend_bps: float
     hard_invalidation: float
+    sizing_gate_passed: bool
+    effective_min_level_notional_usdt: float
+    max_grid_loss_usdt: float
+    risk_cap_usdt: float
+    min_equity_allocation_usdt: float
+    min_equity_hard_risk_usdt: float
     levels: tuple[GridLevel, ...]
     economics: GridEconomics
 
@@ -135,7 +148,9 @@ def deterministic_score(
 def build_grid_decision(
     *, symbol: str, candles_5m: list[dict[str, Any]], candles_15m: list[dict[str, Any]],
     candles_1h: list[dict[str, Any]], orderbook: dict[str, Any], maker_fee_rate: float,
-    equity_usdt: float, settings: Any, stale: bool = False,
+    equity_usdt: float, settings: Any, exchange_min_trade_quantity: float,
+    exchange_size_increment: float, exchange_min_notional_usdt: float,
+    stale: bool = False,
 ) -> GridDecision:
     if len(candles_5m) < 30 or len(candles_15m) < 30 or len(candles_1h) < 30:
         raise ValueError("dynamic_grid_v1 requires at least 30 candles on 5m, 15m, and 1h")
@@ -180,6 +195,7 @@ def build_grid_decision(
     maker_fee_bps = abs(float(maker_fee_rate)) * 10_000.0
     roundtrip_bps = maker_fee_bps * 2.0
     hurdle = roundtrip_bps + float(settings.dynamic_grid_drag_bps) + float(settings.dynamic_grid_edge_margin_bps)
+    minimum_gross_capture = hurdle * 2.0
     # ATR is the excursion budget; a target may not manufacture edge by being
     # pushed beyond the excursion the regime model actually expects.
     gross_capture = atr_bps * 0.60
@@ -190,40 +206,95 @@ def build_grid_decision(
         drag_bps=float(settings.dynamic_grid_drag_bps),
         margin_bps=float(settings.dynamic_grid_edge_margin_bps),
         hurdle_bps=hurdle,
+        minimum_gross_capture_bps=minimum_gross_capture,
         gross_capture_bps=gross_capture,
         expected_net_capture_bps=gross_capture - hurdle,
+        economic_gate_passed=bool(
+            maker_fee_bps > 0 and gross_capture >= minimum_gross_capture
+        ),
     )
-    if maker_fee_bps <= 0 or economics.expected_net_capture_bps <= 0:
-        regime, reason = GridRegime.PAUSED_SPREAD, "authenticated_fee_hurdle_failed"
+    if not economics.economic_gate_passed:
+        regime, reason = (
+            GridRegime.PAUSED_ECONOMICS,
+            "gross_capture_below_2x_expected_all_in_cost",
+        )
 
     hard_invalidation = center - (
         atr_value * float(settings.dynamic_grid_hard_invalidation_atr)
     )
-    invalidation_fraction = max((center - hard_invalidation) / center, 1e-9)
-    risk_capped_notional = (
-        float(equity_usdt)
-        * float(settings.dynamic_grid_max_equity_risk_pct) / 100.0
-        / invalidation_fraction
+    spacing = max(
+        atr_value * 0.50,
+        center * 0.0005,
+        center * minimum_gross_capture / 10_000.0,
     )
-    total_notional = min(
-        float(settings.dynamic_grid_max_notional_usdt),
-        float(equity_usdt) * float(settings.dynamic_grid_max_equity_pct) / 100.0,
-        float(settings.dynamic_grid_max_level_notional_usdt) * 3.0,
-        risk_capped_notional,
+    entry_prices = tuple(center - spacing * index for index in range(1, 4))
+    if any(price <= 0 for price in entry_prices):
+        raise ValueError("dynamic_grid_v1 produced a non-positive entry price")
+    minimum_quantity = float(exchange_min_trade_quantity)
+    size_increment = float(exchange_size_increment)
+    minimum_notional = float(exchange_min_notional_usdt)
+    if minimum_quantity <= 0 or size_increment <= 0 or minimum_notional <= 0:
+        raise ValueError("dynamic_grid_v1 exchange minimum metadata is invalid")
+
+    minimums: list[tuple[float, float]] = []
+    strategy_minimum = float(settings.dynamic_grid_min_level_notional_usdt)
+    for entry_price in entry_prices:
+        raw_minimum_quantity = max(minimum_quantity, minimum_notional / entry_price)
+        executable_quantity = math.ceil(raw_minimum_quantity / size_increment) * size_increment
+        exchange_minimum = executable_quantity * entry_price
+        minimums.append((executable_quantity, exchange_minimum))
+    effective_minimum = max(
+        strategy_minimum,
+        *(exchange_minimum for _, exchange_minimum in minimums),
     )
-    per_level = total_notional / 3.0
-    if per_level < float(settings.dynamic_grid_min_level_notional_usdt):
-        regime, reason = GridRegime.PAUSED_VOLATILITY, "minimum_practical_size_exceeds_cap"
-    spacing = max(atr_value * 0.50, center * 0.0005)
+
+    loss_fractions = tuple(
+        max((entry_price - hard_invalidation) / entry_price, 0.0)
+        for entry_price in entry_prices
+    )
+    loss_fraction_sum = sum(loss_fractions)
+    risk_cap_usdt = float(equity_usdt) * float(settings.dynamic_grid_max_equity_risk_pct) / 100.0
+    risk_capped_per_level = (
+        risk_cap_usdt / loss_fraction_sum if loss_fraction_sum > 0 else 0.0
+    )
+    per_level = min(
+        float(settings.dynamic_grid_max_notional_usdt) / 3.0,
+        float(equity_usdt) * float(settings.dynamic_grid_max_equity_pct) / 100.0 / 3.0,
+        float(settings.dynamic_grid_max_level_notional_usdt),
+        risk_capped_per_level,
+    )
+    max_grid_loss_usdt = per_level * loss_fraction_sum
+    sizing_gate_passed = bool(
+        hard_invalidation < entry_prices[-1]
+        and per_level >= effective_minimum
+        and max_grid_loss_usdt <= risk_cap_usdt + 1e-12
+    )
+    if (
+        not sizing_gate_passed
+        and economics.economic_gate_passed
+        and regime is GridRegime.ALLOWED
+    ):
+        regime, reason = GridRegime.PAUSED_SIZE, "three_level_minimum_exceeds_risk_caps"
+    min_equity_allocation = (
+        effective_minimum * 3.0
+        / (float(settings.dynamic_grid_max_equity_pct) / 100.0)
+    )
+    min_equity_hard_risk = (
+        effective_minimum * loss_fraction_sum
+        / (float(settings.dynamic_grid_max_equity_risk_pct) / 100.0)
+    )
     candle_timestamp_ms = int(candles_5m[-1].get("timestamp") or 0)
     grid_identity = f"dgv1-{symbol.lower()}-{candle_timestamp_ms}"
     levels = tuple(
         GridLevel(
             index=index,
-            entry_price=center - spacing * index,
-            take_profit_price=(center - spacing * index) * (1.0 + gross_capture / 10_000.0),
+            entry_price=entry_prices[index - 1],
+            take_profit_price=entry_prices[index - 1] * (1.0 + gross_capture / 10_000.0),
             notional_usdt=per_level,
-            quantity=per_level / (center - spacing * index),
+            quantity=per_level / entry_prices[index - 1],
+            exchange_min_notional_usdt=minimums[index - 1][1],
+            strategy_min_notional_usdt=strategy_minimum,
+            minimum_executable_quantity=minimums[index - 1][0],
             client_oid=f"{grid_identity}-l{index}-entry",
         )
         for index in range(1, 4)
@@ -233,6 +304,12 @@ def build_grid_decision(
         score=score, regime=regime, reason=reason, center=center, atr=atr_value,
         atr_bps=atr_bps, trend_bps=trend_bps,
         hard_invalidation=hard_invalidation,
+        sizing_gate_passed=sizing_gate_passed,
+        effective_min_level_notional_usdt=effective_minimum,
+        max_grid_loss_usdt=max_grid_loss_usdt,
+        risk_cap_usdt=risk_cap_usdt,
+        min_equity_allocation_usdt=min_equity_allocation,
+        min_equity_hard_risk_usdt=min_equity_hard_risk,
         levels=levels, economics=economics,
     )
 

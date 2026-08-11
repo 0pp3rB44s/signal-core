@@ -297,6 +297,10 @@ class BitgetPrecisionMixin:
 
     # --- minimums ---------------------------------------------------------
 
+    def get_contract_spec(self, symbol: str) -> ContractSpec | None:
+        """Return exchange-validated contract constraints for read-only sizing."""
+        return self._contract_spec(symbol)
+
     def min_size_or_reason(self, symbol: str) -> tuple[Decimal | None, str | None]:
         """(minimum, None) on success, (None, reason) when it cannot be known.
 
