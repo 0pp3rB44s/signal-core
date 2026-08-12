@@ -207,5 +207,27 @@ scripts/verify_checkout.sh
 scripts/deploy_runner.sh --preflight <approved-full-production-sha-or-runner-tag>
 ```
 
+## Controlled authoritative `.env.live` management
+
+`.env*` files remain private, machine-local and forbidden by default. The sole
+operational exception is the authoritative repository-root `.env.live` on
+`MacBook-Air-van-Bryon.local` at
+`/Users/bryonkolkman/cgc/bitget_ai_agent_phase7/.env.live`, and only for a task
+that explicitly authorizes that exact operation. See `AGENTS.md` for the full
+policy boundary.
+
+Authorized agents use `scripts/manage_runner_env_live.py` locally on the Runner;
+they do not improvise `cat`, `grep`, `sed`, `scp`, `rsync` or shell rewrites.
+The tool requires `CGC_OWNER_AUTHORIZED_ENV_LIVE=true`, binds host, checkout and
+target path, accepts only reviewed non-secret keys, refuses credential changes,
+backs up before writes, writes atomically and emits only credential presence and
+redacted non-secret changes. Its timestamped backups remain mode 0600 under the
+ignored Runner-local `backups/env-live/` directory.
+
+This authorization never permits secret disclosure, transport, commit, upload
+or credential rotation. Rotation needs separate explicit owner authorization
+and a purpose-built secret-safe procedure. Generic `.env` and every other
+`.env.*` remain outside this exception.
+
 If `/usr/local/bin/brew` is absent, stop and install Homebrew manually from its
 official instructions first. The scripts do not install Homebrew or Rosetta.

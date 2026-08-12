@@ -37,6 +37,7 @@ is_forbidden_path() {
     || [[ "$path" =~ (^|/)(credentials?|secrets?)(/|$) ]] \
     || [[ "$path" =~ \.(pem|key|p12|pfx|crt|cer)$ ]] \
     || [[ "$path" =~ (^|/)(state|runtime|pids)(/|$) ]] \
+    || [[ "$path" =~ (^|/)(backups?|state_backup)(/|$) ]] \
     || [[ "$path" =~ \.pid$ ]] \
     || [[ "$path" =~ (^|/)logs?(/|$) ]] \
     || [[ "$path" =~ (^|/)data_store(/|$) ]] \
@@ -46,7 +47,7 @@ is_forbidden_path() {
     || [[ "$path" =~ \.pyc$ ]] \
     || [[ "$path" =~ (^|/)(\.idea|\.vscode)(/|$) ]] \
     || [[ "$path" =~ (^|/)\.DS_Store$ ]] \
-    || [[ "$path" =~ (~|\.swp|\.tmp|\.temp|\.bak)$ ]] \
+    || [[ "$path" =~ (~|\.swp|\.tmp|\.temp|\.bak[^/]*|\.backup[^/]*)$ ]] \
     || [[ "$path" =~ (^|/)[^/]*(credential|secret|token|api[-_]?key)[^/]*\.(json|yaml|yml|ini|conf|txt)$ ]]
 }
 
