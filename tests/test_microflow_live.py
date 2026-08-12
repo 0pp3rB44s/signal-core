@@ -9,7 +9,10 @@ from clients.bitget_order_client import BitgetOrderClientMixin
 from clients.bitget_account_client import BitgetAccountClientMixin
 from microflow.candidates import CandidateEpisodeSampler, FrozenResearchSpec
 from microflow.live import MicroflowLiveRuntime, MicroflowPhase, size_microflow_position
-from execution.execution_service import ioc_order_is_confirmed_unfilled
+from execution.execution_service import (
+    ioc_order_is_confirmed_unfilled,
+    normal_entry_policy,
+)
 
 
 def _snapshot(*, direction="LONG", now=1_000_000, trade_age=0, book_age=0,
@@ -137,6 +140,13 @@ def test_ioc_transport_is_price_capped_and_never_market():
     assert client.body["force"] == "ioc"
     assert client.body["marginMode"] == "isolated"
     assert client.body["price"] == "100.01"
+
+
+def test_global_maker_flag_cannot_intercept_microflow_ioc_route():
+    settings = SimpleNamespace(
+        maker_entry_enabled=True, maker_entry_fallback_market=False,
+    )
+    assert normal_entry_policy(settings, "microflow_scalper_v1") == (False, True)
 
 
 def test_ioc_intent_retires_only_on_terminal_explicit_zero_fill():
