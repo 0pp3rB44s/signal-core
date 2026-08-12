@@ -1,5 +1,25 @@
 # SIGNAL-CORE — OPERATIONELE ROADMAP (kortetermijn-checklists)
 
+## Current plan — MicroFlow v1 (2026-08-12)
+
+- [x] Flat account and zero unknown order/intent state verified; candle-first
+      LIVE entry runtime stopped and low-vol family placed on HOLD.
+- [x] Freeze Bitget-native 12-symbol collection universe and baseline event spec.
+- [ ] Merge/deploy PR A: read-only `trade` + `books5` collector, immutable
+      segments, manifests, freshness/sequence safety; zero orders.
+- [ ] Collect at least 100 independent pressure episodes (prefer 200) across
+      symbols, sides and market periods.
+- [ ] Freeze chronological 60/20/20 research split; compare confluence against
+      random, OFI-only, book-only, microprice-only and short momentum.
+- [ ] Implement PR B only if positive net expectancy survives actual 2/6 bps
+      account fees plus measured execution slippage.
+- [ ] Implement PR C and MicroFlow-only LIVE cutover only if every acceptance
+      gate passes. Otherwise keep the collector and leave all new entries OFF.
+
+Leverage promotion is not part of collection. Any initial eligible LIVE pilot
+is capped at 5x or the lower existing production ceiling; 10x requires later
+realized evidence and 20x requires separate owner approval.
+
 VERSIE: 2026-07-18 · STATUS: ACTIEF · VORIGE VERSIE: 2026-07-07 (git-historie)
 
 **De centrale koers staat in [MASTER_PLAN.md](MASTER_PLAN.md)** (missie,

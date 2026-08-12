@@ -1,5 +1,16 @@
 # Microstructuur-archivering (observe-only)
 
+## MicroFlow high-frequency extension (2026-08-12)
+
+The original REST archiver below remains historical infrastructure. MicroFlow
+adds a separate Bitget-native high-frequency collector using public futures
+`trade` and `books5` WebSocket channels. It stores rolling 1/5/15/30/60-second
+aggressor flow, five-level depth, top-one/top-five imbalance, microprice,
+book deltas, latency/freshness and sequence quality. It creates deduplicated
+research events but no trade plans or orders. See
+[MICROFLOW_V1.md](MICROFLOW_V1.md) for the frozen universe, thresholds, segment
+manifest and disk policy.
+
 Doel: gestructureerde live-archivering van orderbook-, funding- en
 liquidatiedata zodat de geblokkeerde onderzoeksfamilies (journal fase-4D
 triage: executie-algo's, MM-inventory, orderflow, liquidatie-dynamiek) na

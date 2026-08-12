@@ -1,5 +1,19 @@
 # PROJECT STATUS — signal-core
 
+## Current override — 2026-08-12
+
+The owner placed the complete `low_vol_reclaim` family on **HOLD for new
+entries** and stopped the flat LIVE runtime. Existing code and lifecycle
+support remain intact. The active development track is
+`MICROFLOW_SCALPER_V1`, beginning with a public Bitget `trade` + `books5`
+collector that cannot place orders. MicroFlow is not LIVE-eligible until at
+least 100 independent events exist and chronological gross/net, baseline,
+symbol, side, MAE and execution gates all pass. Frozen collection details:
+[docs/MICROFLOW_V1.md](docs/MICROFLOW_V1.md).
+
+The older status narrative below is retained as historical context and is
+superseded where it describes a running candle-first LIVE strategy.
+
 **Peildatum: 2026-08-10** · Dit is het autoritatieve statusdocument.
 Koers en Path-to-Live: [MASTER_PLAN.md](MASTER_PLAN.md). Historie:
 [docs/JOURNAL.md](docs/JOURNAL.md) (verhalend), [CHANGELOG.md](CHANGELOG.md)
