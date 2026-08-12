@@ -83,6 +83,39 @@ def test_cancel_success_no_position_is_unfilled():
     assert r["status"] == "UNFILLED_CANCELLED"
 
 
+def test_cancel_failure_without_position_blocks_unknown():
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "11"}}
+    client.extract_order_id.return_value = "11"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.cancel_futures_order.side_effect = RuntimeError("cancel transport failed")
+    client.get_all_positions.return_value = {"data": []}
+
+    r = attempt_maker_entry(
+        client, _settings(), "BTCUSDT", "SHORT", 5.0, 100.0, "short", _log()
+    )
+
+    assert r["status"] == "BLOCKED_UNKNOWN"
+    assert "cancel was not confirmed" in r["message"]
+
+
+def test_postcancel_position_readback_failure_blocks_unknown():
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "12"}}
+    client.extract_order_id.return_value = "12"
+    client.get_order_detail.return_value = {"data": {}}
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.get_all_positions.side_effect = RuntimeError("position endpoint unavailable")
+
+    r = attempt_maker_entry(
+        client, _settings(), "BTCUSDT", "SHORT", 5.0, 100.0, "short", _log()
+    )
+
+    assert r["status"] == "BLOCKED_UNKNOWN"
+    assert "position readback failed" in r["message"]
+
+
 def test_maker_place_failure_is_error_no_position():
     client = MagicMock()
     client.place_futures_limit_order.side_effect = RuntimeError("400 post_only rejected")
