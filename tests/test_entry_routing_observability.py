@@ -354,6 +354,39 @@ def test_quote_capture_is_off_by_default_and_makes_no_api_call():
     assert service.client.get_symbol_price.call_count == 0
 
 
+def test_maker_attempt_telemetry_is_serialized_with_lineage_and_identity(tmp_path):
+    recorder = EntryRoutingRecorder(
+        lifecycle_id="entry-plan-1", plan_id="plan-1", candidate_id="candidate-1",
+        strategy_id="low_vol_reclaim_v2", execution_identity={"executor_id": "runner01"},
+        symbol="AVAXUSDT", direction="SHORT", planned_entry=6.25,
+        intended_route="maker_only", size_requested=3.0,
+        path=str(tmp_path / "routing.jsonl"),
+    )
+    maker_attempt = {
+        "candidate_id": "candidate-1", "plan_id": "plan-1",
+        "strategy_id": "low_vol_reclaim_v2", "executor_id": "runner01",
+        "symbol": "AVAXUSDT", "side": "sell", "best_bid_submit": 6.234,
+        "best_ask_submit": 6.235, "submitted_price": 6.236,
+        "tick_size": 0.001, "distance_to_touch_ticks": 1.0,
+        "distance_to_touch_bps": 1.603849, "post_only": True,
+        "submit_ts": "2026-08-12T07:00:00.000Z",
+        "ack_ts": "2026-08-12T07:00:00.400Z", "fill_ts": "",
+        "cancel_ts": "2026-08-12T07:00:04.800Z", "timeout_ms": 4000,
+        "exchange_order_state": "canceled", "exchange_cancel_reason": "normal_cancel",
+        "fill_qty": 0.0, "fill_price": 0.0, "maker_fee": 0.0,
+        "reprice_count": 0, "price_transitions": [],
+        "setup_valid_at_reprice": None, "maker_timeout": True, "skipped_no_fill": True,
+    }
+    recorder.set_maker_attempt(maker_attempt)
+
+    row = recorder.to_row()
+
+    assert row["candidate_id"] == "candidate-1"
+    assert row["strategy_id"] == "low_vol_reclaim_v2"
+    assert row["executor_id"] == "runner01"
+    assert row["maker_attempt"] == maker_attempt
+
+
 @pytest.mark.parametrize("module", ["execution/maker_entry.py", "execution/entry_submitter.py"])
 def test_order_placement_modules_do_not_import_observability(module):
     """Observability must not reach into the code that places orders."""
