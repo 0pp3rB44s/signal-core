@@ -96,6 +96,10 @@ def normal_entry_policy(settings: object, strategy: object) -> tuple[bool, bool]
     """Return (maker_enabled, market_fallback_enabled) for a normal entry."""
     if is_low_vol_reclaim_v2(strategy):
         return True, False
+    if is_microflow_scalper_v1(strategy):
+        # The downstream "market" leg is strategy-dispatched to capped IOC.
+        # Global maker flags must never intercept this time-sensitive contract.
+        return False, True
     return (
         bool(getattr(settings, "maker_entry_enabled", False)),
         bool(getattr(settings, "maker_entry_fallback_market", True)),
