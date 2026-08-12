@@ -442,3 +442,17 @@ nothing: rebuilding the ranking offline is exactly what has already produced
 two wrong answers.
 
 Read-only throughout; no trading behaviour touched.
+# 2026-08-12 — Candle-first entries paused; MicroFlow collection begins
+
+The owner stopped further LIVE iteration on `low_vol_reclaim_v2.1/v2.2`.
+The account was flat, exchange attestation showed no orders, plans,
+protections, recovery intents or ownership ambiguity, and the sole executor was
+stopped cleanly. No strategy code was deleted.
+
+The replacement research architecture predicts a bounded first-passage event
+from public futures tape and L2 state, not the color of a future candle. PR A is
+deliberately collector-only: official Bitget `trade` and `books5`, 12 symbols,
+rolling flow/book/microprice state, persistence-aware episode deduplication and
+immutable SHA-256-manifested gzip segments. There is no order client or
+credential dependency. MicroFlow promotion remains blocked pending at least
+100 independent events and positive chronological net evidence.

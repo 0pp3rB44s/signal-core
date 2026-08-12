@@ -214,3 +214,24 @@ straks meetbaar. Tot die data bestaat blijft die stap `INCOMPLETE_LINEAGE`;
 oude lifecycles krijgen met terugwerkende kracht **niets** — een
 reconstructie op symbool/tijd/prijs zou de verkeerde plannen crediteren en is
 daarom bewust niet gedaan.
+# 2026-08-12 — MICROFLOW_V1 pre-registration
+
+**Status: DATA COLLECTION ONLY; outcome unseen at freeze.**
+
+Mechanism: persistent agreement among aggressor OFI, top-five notional book
+imbalance and touch microprice may predict whether price reaches a small
+directional barrier first. Candles are excluded as direction predictors.
+
+Frozen baseline is `microflow-v1-baseline-20260812`, SHA-256
+`34a0fd1efe1e6a7dd8b822e307f124c2a906facbe45185183df7ce6357db9483`:
+OFI(5s) ±0.25, book ±0.20, same-sign microprice, 2s persistence, ≤5 bps spread,
+≤1s stream age, valid sequence, ≥10 bps 60s observed range; label TP/SL/max
+hold = 40/20 bps/10m. One event per episode, 1s neutralization and 60s cooldown.
+
+Do not decide before N≥100 independent events. Use chronological 60/20/20.
+Compare random direction, OFI-only, book-only, microprice-only and short
+momentum. Test at most the owner-bounded geometry and one-dimension-at-a-time
+signal sensitivities. Actual authenticated fees observed for every frozen
+symbol are maker 2 bps and taker 6 bps per side; execution slippage must be
+measured, not assumed away. Failure leaves collector data intact and all new
+strategy entries off.
