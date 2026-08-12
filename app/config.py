@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     executor_id: str = Field(default="", alias="EXECUTOR_ID")
     host_id: str = Field(default="", alias="HOST_ID")
 
+    # Separate, fail-closed MicroFlow pilot surface. These settings do not
+    # reuse maker-entry or legacy strategy switches.
+    microflow_scalper_enabled: bool = Field(default=False, alias="MICROFLOW_SCALPER_ENABLED")
+    microflow_symbols: str = Field(default="", alias="MICROFLOW_SYMBOLS")
+    microflow_leverage: float = Field(default=1.0, alias="MICROFLOW_LEVERAGE")
+    microflow_max_slippage_bps: float = Field(default=1.0, alias="MICROFLOW_MAX_SLIPPAGE_BPS")
+    microflow_data_dir: str = Field(default="data_store/microflow_live", alias="MICROFLOW_DATA_DIR")
+
     # dynamic_grid_v1 is an isolated, fail-closed pilot. OFF and SHADOW can
     # never place grid orders; LIVE additionally requires the global LIVE gate.
     dynamic_grid_enabled: bool = Field(default=False, alias="DYNAMIC_GRID_ENABLED")
@@ -363,8 +371,18 @@ class Settings(BaseSettings):
                     )
                 if not self.strategy_isolation_enabled:
                     raise ValueError("production LIVE requires STRATEGY_ISOLATION_ENABLED=true")
-                if self.enabled_strategy_set != {"low_vol_reclaim_v2"}:
-                    raise ValueError("production LIVE allowlist must be exactly low_vol_reclaim_v2")
+                if self.enabled_strategy_set != {"microflow_scalper_v1"}:
+                    raise ValueError("production LIVE allowlist must be exactly microflow_scalper_v1")
+                if not self.microflow_scalper_enabled:
+                    raise ValueError("production LIVE requires MICROFLOW_SCALPER_ENABLED=true")
+                if parse_symbol_allowlist(self.microflow_symbols, required=True) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
+                    raise ValueError("MICROFLOW_SYMBOLS must equal the approved production universe")
+                if not (0 < self.microflow_leverage <= 5.0):
+                    raise ValueError("MICROFLOW_LEVERAGE must be >0 and <=5")
+                if self.microflow_leverage > self.max_leverage:
+                    raise ValueError("MICROFLOW_LEVERAGE may not exceed MAX_LEVERAGE")
+                if not (0 < self.microflow_max_slippage_bps <= 1.0):
+                    raise ValueError("MICROFLOW_MAX_SLIPPAGE_BPS must be >0 and <=1")
                 if self.old_strategies_new_entries_enabled:
                     raise ValueError("production LIVE requires OLD_STRATEGIES_NEW_ENTRIES_ENABLED=false")
                 if self.dynamic_grid_enabled or grid_mode != "OFF":
@@ -443,6 +461,14 @@ class Settings(BaseSettings):
         return frozenset(
             symbol.strip().upper()
             for symbol in self.dynamic_grid_symbols.split(",")
+            if symbol.strip()
+        )
+
+    @property
+    def microflow_symbol_set(self) -> frozenset[str]:
+        return frozenset(
+            symbol.strip().upper()
+            for symbol in self.microflow_symbols.split(",")
             if symbol.strip()
         )
 

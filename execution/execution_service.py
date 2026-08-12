@@ -73,6 +73,25 @@ def is_low_vol_reclaim_v2(strategy: object) -> bool:
     return str(strategy or "").strip().lower() == "low_vol_reclaim_v2"
 
 
+def is_microflow_scalper_v1(strategy: object) -> bool:
+    return str(strategy or "").strip().lower() == "microflow_scalper_v1"
+
+
+def ioc_order_is_confirmed_unfilled(metrics: dict) -> bool:
+    """Retire an IOC intent only from explicit zero-fill and terminal truth."""
+    raw = metrics.get("raw") if isinstance(metrics.get("raw"), dict) else {}
+    explicit_filled = max(
+        _safe_float(raw.get("baseVolume"), 0.0),
+        _safe_float(raw.get("filledQty"), 0.0),
+        _safe_float(raw.get("fillSize"), 0.0),
+    )
+    dead_state = str(metrics.get("state") or "").lower() in {
+        "cancelled", "canceled", "full-canceled", "full_cancelled",
+        "expired", "partially_filled_cancelled",
+    }
+    return explicit_filled <= 0 and dead_state
+
+
 def normal_entry_policy(settings: object, strategy: object) -> tuple[bool, bool]:
     """Return (maker_enabled, market_fallback_enabled) for a normal entry."""
     if is_low_vol_reclaim_v2(strategy):
@@ -184,6 +203,9 @@ class ExecutionService:
         #: reaches the guard, so its verdict has to wait somewhere.
         self._entry_recovery_block_reason = ""
         self._ownership_audit_done = False
+        # Injected only by the integrated public-feed runtime. The executor
+        # refuses MicroFlow if this immediate pre-submit revalidation is absent.
+        self.microflow_entry_guard = None
 
     @staticmethod
     def _exchange_rows(payload: dict | None) -> list[dict]:
@@ -270,6 +292,30 @@ class ExecutionService:
         result["maker_fee_rate"] = rates[0]
         result["normal_exit_fee_rate"] = rates[1]
         return result
+
+    def _microflow_fee_gate(self, plan: TradePlan, planned_entry: float) -> dict[str, float | bool]:
+        """Frozen IOC economics using authenticated taker fees on both legs."""
+        symbol = str(plan.symbol).upper()
+        rates = self._account_fee_rates.get(symbol)
+        if rates is None:
+            payload = self.client.get_trade_fee_rate(symbol=symbol, business_type="mix")
+            data = payload.get("data") or {}
+            rates = (float(data.get("makerFeeRate")), float(data.get("takerFeeRate")))
+            if rates[0] < 0 or rates[1] <= 0:
+                raise RuntimeError("invalid authenticated account fee rates")
+            self._account_fee_rates[symbol] = rates
+        target = _safe_float((plan.take_profits or [0.0])[0], 0.0)
+        anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_entry
+        gross_bps = abs(target - anchor) / anchor * 10_000.0
+        fee_bps = rates[1] * 20_000.0
+        required_bps = fee_bps + float(self.settings.microflow_max_slippage_bps)
+        return {
+            "planned_gross_move_bps": round(gross_bps, 4),
+            "expected_fee_bps": round(fee_bps, 4),
+            "minimum_required_price_movement_bps": round(required_bps, 4),
+            "fee_gate_pass": gross_bps > required_bps,
+            "maker_fee_rate": rates[0], "taker_fee_rate": rates[1],
+        }
 
     def _ensure_entry_intent_recovery(self) -> None:
         """Reconcile persisted order intents once per process. Housekeeping only.
@@ -512,9 +558,10 @@ class ExecutionService:
             is_momentum = "momentum" in strategy_name or "breakout" in strategy_name or "breakdown" in strategy_name
             is_continuation = "continuation" in strategy_name
             is_low_vol_reclaim = "low_vol_reclaim" in strategy_name or "reclaim" in strategy_name
+            is_microflow = is_microflow_scalper_v1(plan.strategy)
             enabled_set = self.settings.enabled_strategy_set
             env_allowed = (not enabled_set) or any(name in strategy_name for name in enabled_set)
-            if (not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim) or not env_allowed:
+            if (not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim and not is_microflow) or not env_allowed:
                 reports.append(
                     self._report(
                         plan=plan,
@@ -830,6 +877,7 @@ class ExecutionService:
                             )
                         )
                         continue
+
                     plan.notes.extend(
                         [
                             f"planned_gross_move_bps={fee_gate['planned_gross_move_bps']}",
@@ -844,24 +892,54 @@ class ExecutionService:
                         "LOW_VOL_RECLAIM_V2_FEE_GATE | %s | strategy_id=low_vol_reclaim_v2 | "
                         "planned_gross_move_bps=%.4f | expected_fee_bps=%.4f | "
                         "minimum_required_price_movement_bps=%.4f | fee_gate_pass=%s",
-                        plan.symbol,
-                        fee_gate["planned_gross_move_bps"],
+                        plan.symbol, fee_gate["planned_gross_move_bps"],
                         fee_gate["expected_fee_bps"],
-                        fee_gate["minimum_required_price_movement_bps"],
-                        fee_gate["fee_gate_pass"],
+                        fee_gate["minimum_required_price_movement_bps"], fee_gate["fee_gate_pass"],
                     )
                     if not bool(fee_gate["fee_gate_pass"]):
-                        reports.append(
-                            self._report(
-                                plan=plan,
-                                status="SKIPPED",
-                                message="v2 fee gate blocked: planned movement does not clear actual fees",
-                                planned_avg_entry=planned_avg_entry,
-                                notional=live_notional,
-                                leverage=effective_leverage,
-                            )
-                        )
+                        reports.append(self._report(
+                            plan=plan, status="SKIPPED",
+                            message="v2 fee gate blocked: planned movement does not clear actual fees",
+                            planned_avg_entry=planned_avg_entry, notional=live_notional,
+                            leverage=effective_leverage,
+                        ))
                         continue
+
+                microflow_guard: dict = {}
+                if is_microflow_scalper_v1(plan.strategy):
+                    try:
+                        fee_gate = self._microflow_fee_gate(plan, planned_avg_entry)
+                        if not bool(fee_gate["fee_gate_pass"]):
+                            raise RuntimeError("frozen TP does not clear authenticated IOC fees")
+                        if not callable(self.microflow_entry_guard):
+                            raise RuntimeError("MicroFlow pre-submit guard unavailable")
+                        microflow_guard = dict(self.microflow_entry_guard(plan) or {})
+                        if not microflow_guard.get("allowed"):
+                            raise RuntimeError(str(microflow_guard.get("reason") or "signal revalidation failed"))
+                        self.log.info(
+                            "MICROFLOW_PRE_SUBMIT_PASS | %s | candidate_id=%s | fee_bps=%s | "
+                            "limit_price=%s | decision_latency_ms=%s | remaining_tp_bps=%.4f",
+                            plan.symbol, plan.candidate_id, fee_gate["expected_fee_bps"],
+                            microflow_guard.get("limit_price"),
+                            microflow_guard.get("decision_latency_ms"),
+                            float(microflow_guard.get("remaining_tp_bps") or 0),
+                        )
+                    except Exception as exc:
+                        self.log.warning(
+                            "MICROFLOW_PRE_SUBMIT_BLOCKED | %s | candidate_id=%s | reason=%s",
+                            plan.symbol, plan.candidate_id, exc,
+                        )
+                        reports.append(self._report(
+                            plan=plan, status="SKIPPED", message=f"MicroFlow pre-submit blocked: {exc}",
+                            planned_avg_entry=planned_avg_entry, notional=live_notional,
+                            leverage=effective_leverage,
+                        ))
+                        continue
+                    plan.notes.extend([
+                        f"actual_maker_fee_rate={fee_gate['maker_fee_rate']}",
+                        f"actual_taker_fee_rate={fee_gate['taker_fee_rate']}",
+                        f"expected_all_in_fee_bps={fee_gate['expected_fee_bps']}",
+                    ])
 
                 try:
                     leverage_payload = self.client.set_futures_leverage(
@@ -904,6 +982,9 @@ class ExecutionService:
                         direction=plan.direction,
                         planned_entry=planned_avg_entry,
                         intended_route=(
+                            "capped_marketable_limit_ioc"
+                            if is_microflow_scalper_v1(plan.strategy)
+                            else
                             "maker_only"
                             if is_low_vol_reclaim_v2(plan.strategy)
                             else "maker_then_market_fallback"
@@ -1162,6 +1243,12 @@ class ExecutionService:
                     if live_order_id is None:
                         def _place_market_entry(client_oid: str, _plan=plan, _size=order_size,
                                                 _side=side, _ref=planned_avg_entry):
+                            if is_microflow_scalper_v1(_plan.strategy):
+                                return self.client.place_futures_ioc_order(
+                                    symbol=_plan.symbol, direction=_plan.direction,
+                                    size=_size, price=float(microflow_guard["limit_price"]),
+                                    margin_mode="isolated", client_oid=client_oid,
+                                )
                             return self.client.place_futures_market_order(
                                 symbol=_plan.symbol,
                                 size=_size,
@@ -1186,7 +1273,10 @@ class ExecutionService:
                             plan=plan,
                             size=order_size,
                             side=side,
-                            order_type="market",
+                            order_type=("limit_ioc" if is_microflow_scalper_v1(plan.strategy) else "market"),
+                            # Strategy is part of the deterministic clientOid;
+                            # the existing normal-entry identity leg therefore
+                            # remains collision-free without changing recovery.
                             leg=ENTRY_LEG_MARKET,
                             place=_place_market_entry,
                             notional_usdt=live_notional,
@@ -1234,6 +1324,8 @@ class ExecutionService:
 
                         live_order_payload = submission.payload
                         live_order_id = submission.order_id
+                        if is_microflow_scalper_v1(plan.strategy):
+                            entry_via = "capped_marketable_limit_ioc"
                         if submission.status == RESULT_ADOPTED:
                             entry_via = f"{entry_via}_adopted_after_reconciliation"
 
@@ -1253,8 +1345,19 @@ class ExecutionService:
                         order_size,
                     )
 
-                    verification_payload = self.client.get_all_positions()
-                    verification_positions = verification_payload.get("data") or []
+                    verification_positions = []
+                    verification_attempts = 5 if is_microflow_scalper_v1(plan.strategy) else 1
+                    for verification_attempt in range(verification_attempts):
+                        verification_payload = self.client.get_all_positions()
+                        verification_positions = verification_payload.get("data") or []
+                        if any(
+                            str(row.get("symbol") or "") == plan.symbol
+                            and _safe_float(row.get("total") or row.get("size") or row.get("available"), 0) > 0
+                            for row in verification_positions
+                        ):
+                            break
+                        if verification_attempt + 1 < verification_attempts:
+                            time.sleep(0.25)
 
                     exchange_position_identity = None
 
@@ -1332,6 +1435,22 @@ class ExecutionService:
                             break
 
                     if not exchange_position_found:
+                        if is_microflow_scalper_v1(plan.strategy):
+                            detail = self.client.get_order_detail(symbol=plan.symbol, order_id=str(live_order_id))
+                            metrics = self.client.extract_fill_metrics(detail)
+                            if ioc_order_is_confirmed_unfilled(metrics):
+                                self.intent_store.mark(
+                                    entry_client_oid, STATE_ABANDONED,
+                                    note="IOC expired/cancelled without fill; exchange position flat",
+                                    classification="ORDER_DEAD", exchange_order_id=str(live_order_id),
+                                    protection_state="NOT_REQUIRED",
+                                )
+                                reports.append(self._report(
+                                    plan=plan, status="SKIPPED", message="IOC unfilled; no position created",
+                                    planned_avg_entry=planned_avg_entry, notional=live_notional,
+                                    leverage=effective_leverage,
+                                ))
+                                continue
                         self.log.critical(
                             "FALSE_FILL_DETECTED | %s | order_id=%s | order acknowledged but no exchange position found",
                             plan.symbol,
@@ -1916,6 +2035,11 @@ class ExecutionService:
                 "last_price": exchange_avg_entry or planned_avg_entry,
                 "notes": plan.notes,
                 "reasons": plan.reasons,
+                "max_hold_ms": (600_000 if is_microflow_scalper_v1(plan.strategy) else None),
+                "signal_timestamp_ms": (
+                    plan.candidate_candle_open_timestamp_ms
+                    if is_microflow_scalper_v1(plan.strategy) else None
+                ),
             }
             existing.append(position)
             open_symbols.add(plan.symbol)

@@ -18,10 +18,9 @@ from deployment.exchange_attestation import (
 )
 
 
-OWNER_SYMBOLS = (
-    "BTCUSDT", "SOLUSDT", "SUIUSDT", "XLMUSDT", "AVAXUSDT",
-    "DOGEUSDT",  "SEIUSDT", "TRXUSDT",
-)
+from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
+
+OWNER_SYMBOLS = OWNER_APPROVED_PRODUCTION_SYMBOLS
 
 
 class _ExchangeAdapter:
@@ -313,16 +312,13 @@ def test_unresolved_intent_or_quarantine_artifact_blocks_flat_account():
 
 
 def test_all_owner_allowlist_symbols_must_be_individually_approved():
-    symbols = (
-        "BTCUSDT", "SOLUSDT", "SUIUSDT", "XLMUSDT", "AVAXUSDT",
-        "DOGEUSDT",  "SEIUSDT", "TRXUSDT",
-    )
+    symbols = OWNER_SYMBOLS
     result = attest_exchange(
         _ExchangeAdapter(symbols), symbols=symbols, required_leverage=3
     )
 
     assert result["deployment_gate"] == "PASS"
-    assert result["allowlist_count"] == 8
+    assert result["allowlist_count"] == len(OWNER_SYMBOLS)
     assert [row["symbol"] for row in result["contracts"]] == list(symbols)
     assert {row["classification"] for row in result["contracts"]} == {"APPROVED"}
 
@@ -423,7 +419,7 @@ def _config_text() -> str:
         "MAX_OPEN_POSITIONS=2",
         "EXECUTION_MAX_PER_CYCLE=2",
         f"PRODUCTION_SYMBOL_ALLOWLIST={','.join(OWNER_SYMBOLS)}",
-        "MAX_SYMBOLS=8",
+        "MAX_SYMBOLS=12",
         "ALLOW_AUTO_WATCHLIST_REFRESH=false",
         "EXECUTION_REQUIRE_CONFIRMATION=true",
         "BREAK_EVEN_OPEN_FEE_FALLBACK_RATE=0.0006",
@@ -436,7 +432,11 @@ def _config_text() -> str:
         "EXECUTOR_ID=runner01",
         "HOST_ID=runner-mba01",
         "STRATEGY_ISOLATION_ENABLED=true",
-        "ENABLED_STRATEGIES=low_vol_reclaim_v2",
+        "ENABLED_STRATEGIES=microflow_scalper_v1",
+        "MICROFLOW_SCALPER_ENABLED=true",
+        f"MICROFLOW_SYMBOLS={','.join(OWNER_SYMBOLS)}",
+        "MICROFLOW_LEVERAGE=3",
+        "MICROFLOW_MAX_SLIPPAGE_BPS=1",
         "OLD_STRATEGIES_NEW_ENTRIES_ENABLED=false",
         "DYNAMIC_GRID_ENABLED=false",
         "DYNAMIC_GRID_MODE=OFF",
@@ -476,7 +476,7 @@ def test_config_attestation_validates_safe_values_and_never_returns_secrets(tmp_
     assert result["checksum_sha256"] == checksum
     assert result["portfolio"]["max_open_positions"] == 2
     assert result["allowlist"] == list(OWNER_SYMBOLS)
-    assert result["allowlist_count"] == 8
+    assert result["allowlist_count"] == len(OWNER_SYMBOLS)
     assert result["secrets_redacted"] is True
     assert result["redacted_key_count"] == 2
     assert result["comparisons"]["full_settings_schema"] is True

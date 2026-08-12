@@ -514,6 +514,17 @@ class StartupRunner:
         self._position_monitor_wakeup = threading.Event()
         self._position_monitor_thread: threading.Thread | None = None
         self._startup_close_recovery_complete = bool(settings.forward_paper_only)
+        self.microflow_runtime = None
+        if settings.microflow_scalper_enabled and self.execution_service is not None:
+            from microflow.live import MicroflowLiveRuntime
+            self.microflow_runtime = MicroflowLiveRuntime(
+                settings=settings,
+                execution_client=self.execution_service.client,
+                execute_plans=self._execute_selected_plans,
+            )
+            self.execution_service.microflow_entry_guard = (
+                self.microflow_runtime.pre_submit_guard
+            )
 
     def _startup_recovery_verdict(self, stats) -> tuple[bool, str]:
         """Decide whether a recovery sweep leaves anything unaccounted for.
@@ -667,6 +678,11 @@ class StartupRunner:
         runtime_heartbeat("startup_checks")
         self._startup_checks()
 
+        if self.microflow_runtime is not None:
+            if not self._ensure_startup_close_recovery():
+                raise RuntimeError("MicroFlow startup blocked by close-recovery gate")
+            self.microflow_runtime.start()
+
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
             self._position_monitor_thread = threading.Thread(
                 target=self._position_monitor_loop,
@@ -687,6 +703,12 @@ class StartupRunner:
             while True:
                 time.sleep(self.settings.scan_interval_sec)
                 self._scan_cycle_iteration()
+        elif self.microflow_runtime is not None:
+            # The WebSocket/decision workers are the MicroFlow engine. Keep the
+            # supported app.main owner alive even when candle scanning is off.
+            self.log.info("MicroFlow event loop active | legacy scan loop disabled")
+            while True:
+                time.sleep(1.0)
 
     def _scan_cycle_iteration(self) -> bool:
         """Run one scan cycle without allowing a transient failure to kill the loop.

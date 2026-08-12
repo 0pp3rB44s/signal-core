@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 from microflow.candidates import CandidateEpisodeSampler, FrozenResearchSpec
 from microflow.segments import ImmutableSegmentWriter
@@ -48,12 +49,16 @@ class MicroflowCollector:
     """Public-data-only Bitget collector. This class has no order API surface."""
 
     def __init__(self, *, symbols: tuple[str, ...], data_dir: Path,
-                 ws_url: str = BITGET_PUBLIC_WS) -> None:
+                 ws_url: str = BITGET_PUBLIC_WS,
+                 candidate_callback: Callable[[dict], None] | None = None,
+                 snapshot_callback: Callable[[dict], None] | None = None) -> None:
         if not symbols or len(symbols) > 15:
             raise ValueError("MicroFlow universe must contain 1-15 symbols")
         self.symbols = tuple(symbol.upper() for symbol in symbols)
         self.data_dir = Path(data_dir)
         self.ws_url = ws_url
+        self.candidate_callback = candidate_callback
+        self.snapshot_callback = snapshot_callback
         self.stop_event = threading.Event()
         self.connection_id = "not-connected"
         self.states = {symbol: MicroflowSymbolState(symbol) for symbol in self.symbols}
@@ -79,6 +84,14 @@ class MicroflowCollector:
         self.last_frame_local_ms: int | None = None
         self.stream_gaps = {symbol: 0 for symbol in self.symbols}
         self._last_channel_ts: dict[tuple[str, str], int] = {}
+        self._latest_snapshots: dict[str, dict] = {}
+        self._snapshot_lock = threading.Lock()
+
+    def latest_snapshot(self, symbol: str) -> dict | None:
+        """Return the latest complete public snapshot for a pre-submit gate."""
+        with self._snapshot_lock:
+            value = self._latest_snapshots.get(str(symbol).upper())
+            return dict(value) if value is not None else None
 
     def _record_channel_time(self, symbol: str, channel: str, timestamp_ms: int) -> None:
         key = (symbol, channel)
@@ -145,10 +158,17 @@ class MicroflowCollector:
             self._record_channel_time(symbol, channel, exchange_ts)
             snapshot = state.snapshot(local_ts_ms=now_ms, connection_id=self.connection_id)
             snapshot["quality"]["stream_gaps"] = self.stream_gaps[symbol]
+            with self._snapshot_lock:
+                self._latest_snapshots[symbol] = snapshot
             self.state_writer.append(snapshot)
             self.book_rows += 1
             written += 1
             candidate = self.samplers[symbol].observe(snapshot)
+            if self.snapshot_callback is not None:
+                try:
+                    self.snapshot_callback(dict(snapshot))
+                except Exception:
+                    log.exception("MICROFLOW_SNAPSHOT_CALLBACK_FAILED | symbol=%s", symbol)
             if candidate:
                 candidate["timestamp_local"] = now_ms
                 candidate["quality"] = {"stream_gaps": self.stream_gaps[symbol],
@@ -159,6 +179,14 @@ class MicroflowCollector:
                     "MICROFLOW_RESEARCH_CANDIDATE | id=%s | symbol=%s | side=%s | spec=%s",
                     candidate["candidate_id"], symbol, candidate["side"], candidate["spec_hash"],
                 )
+                if self.candidate_callback is not None:
+                    try:
+                        self.candidate_callback(dict(candidate))
+                    except Exception:
+                        log.exception(
+                            "MICROFLOW_CANDIDATE_CALLBACK_FAILED | id=%s | symbol=%s",
+                            candidate["candidate_id"], symbol,
+                        )
         return written
 
     def handle_message(self, raw: str) -> int:

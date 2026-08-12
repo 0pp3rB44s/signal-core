@@ -87,6 +87,22 @@ def test_generic_env_and_unknown_keys_cannot_be_targeted(tmp_path, monkeypatch):
         managed.apply_updates(generic, {"ARBITRARY_KEY": "value"}, backup_dir=tmp_path / "backups")
 
 
+def test_only_reviewed_microflow_keys_may_be_added_to_an_existing_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(managed, "AUTHORITATIVE_RUNNER_REPO", tmp_path)
+    env = _env(tmp_path / ".env.live")
+    report = managed.apply_updates(
+        env,
+        {"MICROFLOW_SCALPER_ENABLED": "true", "MICROFLOW_LEVERAGE": "3"},
+        backup_dir=tmp_path / "backups" / "env-live",
+    )
+    assert "MICROFLOW_SCALPER_ENABLED=true" in env.read_text()
+    assert report["changed_non_secret_keys"]["MICROFLOW_LEVERAGE"]["before"] == "<ABSENT>"
+    with pytest.raises(managed.EnvLivePolicyError, match="refusing to add"):
+        managed.apply_updates(
+            env, {"DEFAULT_LEVERAGE": "3"}, backup_dir=tmp_path / "other-backups"
+        )
+
+
 def test_gitignore_and_policy_keep_env_and_backups_out_of_git():
     root = Path(__file__).resolve().parents[1]
     ignored = (root / ".gitignore").read_text()

@@ -159,6 +159,18 @@ guard_assert_live_mode() {
   case "${BITGET_API_KEY:-}" in __SET_AT_DEPLOY__*) guard_die "BITGET_API_KEY is still the template placeholder";; esac
   [ "${EXECUTION_REQUIRE_CONFIRMATION:-}" = "true" ] || guard_die "live mode requires EXECUTION_REQUIRE_CONFIRMATION=true"
   [ -n "${EXECUTION_CONFIRM_SYMBOLS:-}" ] || guard_die "live mode requires a non-empty EXECUTION_CONFIRM_SYMBOLS allow-list"
+  if [ "${APP_ENV:-}" = "production" ]; then
+    [ "${STRATEGY_ISOLATION_ENABLED:-}" = "true" ] || guard_die "production LIVE requires strategy isolation"
+    [ "${ENABLED_STRATEGIES:-}" = "microflow_scalper_v1" ] || guard_die "production LIVE enables only microflow_scalper_v1"
+    [ "${MICROFLOW_SCALPER_ENABLED:-}" = "true" ] || guard_die "production LIVE requires MICROFLOW_SCALPER_ENABLED=true"
+    [ "${OLD_STRATEGIES_NEW_ENTRIES_ENABLED:-}" = "false" ] || guard_die "legacy new-entry paths must remain disabled"
+    [ "${DYNAMIC_GRID_ENABLED:-}" = "false" ] || guard_die "dynamic grid must remain disabled"
+    [ "${DYNAMIC_GRID_MODE:-}" = "OFF" ] || guard_die "dynamic grid mode must remain OFF"
+    [ "${MICROFLOW_SYMBOLS:-}" = "${PRODUCTION_SYMBOL_ALLOWLIST:-}" ] || guard_die "MicroFlow universe must equal the canonical production allowlist"
+    awk -v v="${MICROFLOW_LEVERAGE:-0}" 'BEGIN { exit !(v > 0 && v <= 5) }' || guard_die "MicroFlow leverage must be >0 and <=5"
+    awk -v v="${MAX_LEVERAGE:-0}" 'BEGIN { exit !(v > 0 && v <= 5) }' || guard_die "MAX_LEVERAGE must be >0 and <=5"
+    awk -v v="${MICROFLOW_MAX_SLIPPAGE_BPS:-0}" 'BEGIN { exit !(v > 0 && v <= 1) }' || guard_die "MicroFlow slippage cap must be >0 and <=1 bps"
+  fi
   echo "guard: LIVE invariants OK"
 }
 
