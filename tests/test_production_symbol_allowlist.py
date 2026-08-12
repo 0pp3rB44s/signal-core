@@ -44,7 +44,11 @@ _PRODUCTION_SAFETY_CONFIG = {
     "EXECUTOR_ID": "runner01",
     "HOST_ID": "runner-mba01",
     "STRATEGY_ISOLATION_ENABLED": True,
-    "ENABLED_STRATEGIES": "low_vol_reclaim_v2",
+    "ENABLED_STRATEGIES": "microflow_scalper_v1",
+    "MICROFLOW_SCALPER_ENABLED": True,
+    "MICROFLOW_SYMBOLS": "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,BNBUSDT,LINKUSDT,AVAXUSDT,SUIUSDT,HYPEUSDT,ZECUSDT,NEARUSDT",
+    "MICROFLOW_LEVERAGE": 3,
+    "MICROFLOW_MAX_SLIPPAGE_BPS": 1,
     "OLD_STRATEGIES_NEW_ENTRIES_ENABLED": False,
     "DYNAMIC_GRID_ENABLED": False,
     "DYNAMIC_GRID_MODE": "OFF",
@@ -111,14 +115,14 @@ def test_production_live_requires_exact_owner_approved_allowlist():
         _live(APP_ENV="production")
 
 
-def test_production_live_accepts_exactly_the_owner_approved_eight():
+def test_production_live_accepts_exactly_the_owner_approved_twelve():
     from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
     approved = ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS)
     settings = _live(APP_ENV="production", PRODUCTION_SYMBOL_ALLOWLIST=approved,
                      MAX_SYMBOLS=len(OWNER_APPROVED_PRODUCTION_SYMBOLS),
                      **_PRODUCTION_SAFETY_CONFIG)
     assert tuple(settings.watchlist_symbols) == OWNER_APPROVED_PRODUCTION_SYMBOLS
-    assert len(OWNER_APPROVED_PRODUCTION_SYMBOLS) == 8
+    assert len(OWNER_APPROVED_PRODUCTION_SYMBOLS) == 12
 
 
 def test_wifusdt_is_conditional_and_not_executable():
@@ -132,9 +136,9 @@ def test_wifusdt_is_conditional_and_not_executable():
 
 def test_adding_wif_back_silently_fails_closed():
     from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
-    nine = ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS) + ",WIFUSDT"
+    thirteen = ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS) + ",WIFUSDT"
     with pytest.raises(ValidationError, match="owner-approved allowlist"):
-        _live(APP_ENV="production", PRODUCTION_SYMBOL_ALLOWLIST=nine, MAX_SYMBOLS=9)
+        _live(APP_ENV="production", PRODUCTION_SYMBOL_ALLOWLIST=thirteen, MAX_SYMBOLS=13)
 
 
 def _run_guard(body: str) -> subprocess.CompletedProcess[str]:

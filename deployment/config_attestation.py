@@ -385,9 +385,12 @@ def attest_config_file(
         "btc_only_override_absent": _btc_override_absent(values),
         "auto_watchlist_refresh_disabled": auto_refresh is False,
         "execution_confirmation_required": confirmation is True,
-        "low_vol_v2_isolated": (
+        "microflow_isolated": (
             values.get("STRATEGY_ISOLATION_ENABLED", "").strip().lower() == "true"
-            and values.get("ENABLED_STRATEGIES", "").strip().lower() == "low_vol_reclaim_v2"
+            and values.get("ENABLED_STRATEGIES", "").strip().lower() == "microflow_scalper_v1"
+            and values.get("MICROFLOW_SCALPER_ENABLED", "").strip().lower() == "true"
+            and tuple(parse_symbol_allowlist(values.get("MICROFLOW_SYMBOLS", "")))
+            == OWNER_APPROVED_PRODUCTION_SYMBOLS
             and values.get("OLD_STRATEGIES_NEW_ENTRIES_ENABLED", "").strip().lower() == "false"
             and values.get("DYNAMIC_GRID_ENABLED", "").strip().lower() == "false"
             and values.get("DYNAMIC_GRID_MODE", "").strip().upper() == "OFF"

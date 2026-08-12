@@ -101,7 +101,7 @@ def test_position_manager_exposes_the_reconciliation_hook():
 
 
 @pytest.mark.parametrize("marker", [
-    'self.reconcile_closed_lifecycle(\n                            position, dead_close_result, "dead_trade_timeout"\n                        )',
+    'self.reconcile_closed_lifecycle(\n                            position, dead_close_result, timeout_reason\n                        )',
     'self.reconcile_closed_lifecycle(position, close_all_result, "tp3")',
     'self.reconcile_closed_lifecycle(\n                            position, residual_close_result, position["closed_reason"]\n                        )',
 ])

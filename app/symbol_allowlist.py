@@ -16,13 +16,17 @@ _SYMBOL = re.compile(r"^[A-Z0-9]{2,24}USDT$")
 #: Exactly this set is accepted — not a superset, not "any allowlist".
 OWNER_APPROVED_PRODUCTION_SYMBOLS = (
     "BTCUSDT",
+    "ETHUSDT",
     "SOLUSDT",
-    "SUIUSDT",
-    "XLMUSDT",
-    "AVAXUSDT",
+    "XRPUSDT",
     "DOGEUSDT",
-    "SEIUSDT",
-    "TRXUSDT",
+    "BNBUSDT",
+    "LINKUSDT",
+    "AVAXUSDT",
+    "SUIUSDT",
+    "HYPEUSDT",
+    "ZECUSDT",
+    "NEARUSDT",
 )
 
 #: Owner-approved in principle but withheld from execution, with the reason.

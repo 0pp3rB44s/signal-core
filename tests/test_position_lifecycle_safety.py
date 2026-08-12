@@ -560,6 +560,25 @@ def test_young_flat_trade_is_left_alone():
     assert rows[0]["status"] == "OPEN"
 
 
+def test_microflow_max_hold_closes_after_ten_minutes_even_when_profitable():
+    live = _live_payload(size=1.0, mark_price=100.5)
+    manager = _manager([live])
+    position = _position(
+        strategy="microflow_scalper_v1", opened_at=_iso_minutes_ago(11),
+        max_hold_ms=600_000,
+    )
+    manager.store.save([position])
+
+    manager.sync([_snapshot(price=100.5)])
+
+    row = manager.store.load(default=[])[0]
+    assert row["status"] == "CLOSED"
+    assert row["closed_reason"] == "MAX_HOLD"
+    manager.client.close_futures_position_full.assert_called_once_with(
+        symbol="BTCUSDT", direction="LONG", reason="MAX_HOLD", cleanup_tpsl=True,
+    )
+
+
 def test_old_trade_in_profit_is_not_dead():
     live = _live_payload(size=1.0, mark_price=100.5)
     manager = _manager([live])

@@ -469,6 +469,57 @@ class BitgetOrderClientMixin:
             client_oid=client_oid or "",
         )
 
+    def place_futures_ioc_order(
+        self,
+        symbol: str,
+        direction: str,
+        size: float,
+        price: float,
+        margin_mode: str = "isolated",
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+        client_oid: str | None = None,
+    ) -> dict[str, Any]:
+        """Place one price-capped IOC entry; never degrades to a market order."""
+        direction_upper = str(direction).upper()
+        if direction_upper not in {"LONG", "SHORT"}:
+            raise ValueError(f"Unsupported futures direction: {direction}")
+        self._assert_order_transport_allowed()
+        formatted_price = self._format_trigger_price(symbol, float(price))
+        normalized, reason = self.validate_entry_size(
+            symbol, float(size), reference_price=formatted_price
+        )
+        if formatted_price <= 0 or reason is not None:
+            raise ValueError(
+                f"IOC order rejected for {symbol}: reason={reason or 'invalid_price'}"
+            )
+        side = "buy" if direction_upper == "LONG" else "sell"
+        hold_side = "long" if direction_upper == "LONG" else "short"
+        body: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": (product_type or self.settings.bitget_product_type).upper(),
+            "marginCoin": margin_coin.upper(),
+            "marginMode": margin_mode,
+            "size": str(float(normalized)),
+            "price": str(formatted_price),
+            "side": side,
+            "tradeSide": "open",
+            "orderType": "limit",
+            "force": "ioc",
+            "holdSide": hold_side,
+        }
+        if client_oid:
+            body["clientOid"] = client_oid
+        self._validate_futures_order_flags(body)
+        self.log.warning(
+            "BITGET_PLACE_IOC_ORDER | %s | direction=%s | size=%s | price=%s | client_oid=%s",
+            symbol.upper(), direction_upper, normalized, formatted_price, client_oid or "-",
+        )
+        return self._request(
+            method="POST", path="/api/v2/mix/order/place-order", body=body,
+            private=True, allow_blind_retry=False, client_oid=client_oid or "",
+        )
+
     def place_futures_limit_close_order(
         self,
         symbol: str,

@@ -51,6 +51,15 @@ MUTABLE_NON_SECRET_KEYS = frozenset({
     "EXECUTOR_ID", "HOST_ID", "DYNAMIC_GRID_ENABLED", "DYNAMIC_GRID_MODE",
     "MAKER_ENTRY_ENABLED", "MAKER_ENTRY_FALLBACK_MARKET", "MAKER_ENTRY_WAIT_SECONDS",
     "MAKER_ENTRY_POLL_SECONDS", "MAKER_ENTRY_OFFSET_BPS",
+    "MICROFLOW_SCALPER_ENABLED", "MICROFLOW_SYMBOLS", "MICROFLOW_LEVERAGE",
+    "MICROFLOW_MAX_SLIPPAGE_BPS", "MICROFLOW_DATA_DIR",
+})
+
+# Reviewed additive keys introduced after existing Runner env files were
+# created. Only these non-secret keys may be appended by the controlled helper.
+ADDITIVE_NON_SECRET_KEYS = frozenset({
+    "MICROFLOW_SCALPER_ENABLED", "MICROFLOW_SYMBOLS", "MICROFLOW_LEVERAGE",
+    "MICROFLOW_MAX_SLIPPAGE_BPS", "MICROFLOW_DATA_DIR",
 })
 
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -141,7 +150,8 @@ def apply_updates(env_path: Path, updates: dict[str, str], *, backup_dir: Path =
     lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
     before, indexes = _parse(lines)
     missing = sorted(set(updates) - set(indexes))
-    if missing:
+    forbidden_missing = sorted(set(missing) - ADDITIVE_NON_SECRET_KEYS)
+    if forbidden_missing:
         raise EnvLivePolicyError("refusing to add unknown/missing key(s): " + ",".join(missing))
 
     if backup_dir.is_symlink():
@@ -152,8 +162,13 @@ def apply_updates(env_path: Path, updates: dict[str, str], *, backup_dir: Path =
     os.chmod(backup_dir, 0o700)
 
     for key, value in updates.items():
-        newline = "\n" if lines[indexes[key]].endswith("\n") else ""
-        lines[indexes[key]] = f"{key}={value}{newline}"
+        if key in indexes:
+            newline = "\n" if lines[indexes[key]].endswith("\n") else ""
+            lines[indexes[key]] = f"{key}={value}{newline}"
+        else:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines.append(f"{key}={value}\n")
 
     proposed, _ = _parse(lines)
     secret_keys = {key for key in before if _is_secret_key(key)}
@@ -189,8 +204,8 @@ def apply_updates(env_path: Path, updates: dict[str, str], *, backup_dir: Path =
         "backup_created": True,
         "backup_location": "RUNNER_LOCAL_IGNORED_BACKUP",
         "changed_non_secret_keys": {
-            key: {"before": before[key].strip().strip("'\""), "after": after[key].strip().strip("'\"")}
-            for key in sorted(updates) if before[key] != after[key]
+            key: {"before": before.get(key, "<ABSENT>").strip().strip("'\""), "after": after[key].strip().strip("'\"")}
+            for key in sorted(updates) if before.get(key) != after[key]
         },
         "credential_values_preserved": True,
         "secret_values_redacted": True,

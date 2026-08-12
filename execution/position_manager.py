@@ -1506,19 +1506,24 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             # only with verified live exchange state, never on trades that hit
             # TP1 or are meaningfully in profit/loss (protections manage those).
             if position.get("status") == "OPEN":
-                dead_timeout_minutes = float(
+                hard_max_hold_ms = int(position.get("max_hold_ms") or 0)
+                hard_max_hold = hard_max_hold_ms > 0
+                dead_timeout_minutes = (
+                    hard_max_hold_ms / 60_000.0 if hard_max_hold else float(
                     getattr(self.settings, "dead_trade_timeout_reclaim_minutes", 90.0)
                     if "reclaim" in str(position.get("strategy") or "").lower()
                     else getattr(self.settings, "dead_trade_timeout_default_minutes", 240.0)
                     or 0.0
+                    )
                 )
+                timeout_reason = "MAX_HOLD" if hard_max_hold else "dead_trade_timeout"
                 dead_max_abs_pnl = float(getattr(self.settings, "dead_trade_max_abs_pnl_pct", 0.20) or 0.0)
                 position_age_minutes = self._position_age_minutes(position)
                 if (
                     dead_timeout_minutes > 0
                     and position_age_minutes >= dead_timeout_minutes
-                    and not position.get("tp1_hit")
-                    and abs(price_return_pct_value) < dead_max_abs_pnl
+                    and (hard_max_hold or not position.get("tp1_hit"))
+                    and (hard_max_hold or abs(price_return_pct_value) < dead_max_abs_pnl)
                     and bitget_sync_ok
                     and symbol in bitget_open_symbols
                     and live_size > 0
@@ -1531,7 +1536,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         dead_close_result = self.client.close_futures_position_full(
                             symbol=symbol,
                             direction=direction,
-                            reason="dead_trade_timeout",
+                            reason=timeout_reason,
                             cleanup_tpsl=True,
                         )
                     except Exception as exc:
@@ -1540,7 +1545,7 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                         position["dead_trade_close_result"] = dead_close_result
                         position["remaining_size_pct"] = 0.0
                         position["status"] = "CLOSED"
-                        position["closed_reason"] = "dead_trade_timeout"
+                        position["closed_reason"] = timeout_reason
                         position["closed_at"] = datetime.now(timezone.utc).isoformat()
                         position["stale_tpsl_cleanup_done"] = True
                         note_parts.append(
@@ -1554,21 +1559,21 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                             price_return_pct_value,
                             dead_timeout_minutes,
                         )
-                        self._sync_journal_close(symbol, "dead_trade_timeout", margin_roi_pct_value)
+                        self._sync_journal_close(symbol, timeout_reason, margin_roi_pct_value)
                         self._append_provisional_close_dataset_row(
                             position=position,
-                            close_reason="dead_trade_timeout",
+                            close_reason=timeout_reason,
                             exit_price=current_price,
                             margin_roi_pct=margin_roi_pct_value,
-                            extra={"close_source": "dead_trade_timeout", "age_minutes": round(position_age_minutes, 1)},
+                            extra={"close_source": timeout_reason, "age_minutes": round(position_age_minutes, 1)},
                         )
                         # The row above carries no exchange money yet. Ask Bitget
                         # what this lifecycle was worth; on failure it stays
                         # provisional and the recovery sweep retries later.
                         self.reconcile_closed_lifecycle(
-                            position, dead_close_result, "dead_trade_timeout"
+                            position, dead_close_result, timeout_reason
                         )
-                        self._register_symbol_cooldown(symbol, "dead_trade_timeout", margin_roi_pct_value)
+                        self._register_symbol_cooldown(symbol, timeout_reason, margin_roi_pct_value)
                     else:
                         # Position stays OPEN and keeps its exchange stop. It is
                         # a housekeeping close, never a protection action, so a
