@@ -754,6 +754,32 @@ class RiskManager:
         confirmation_trend = (candidate.market.confirmation.trend or "").lower()
         strategy_name = (candidate.strategy or "").lower()
         mtf_quality = self._mtf_quality(candidate)
+        v2_1_primary_aligned_mixed_confirmation = (
+            strategy_name == "low_vol_reclaim_v2"
+            and alignment == "mixed"
+            and (
+                (direction == "LONG" and primary_trend == "bullish" and confirmation_trend == "mixed")
+                or (direction == "SHORT" and primary_trend == "bearish" and confirmation_trend == "mixed")
+            )
+        )
+
+        if strategy_name == "low_vol_reclaim_v2":
+            logger.info(
+                "V2_SELECTION_GATE | %s | strategy_version=low_vol_reclaim_v2_1 | "
+                "gate_name=mtf_alignment | input=alignment:%s,primary:%s,confirmation:%s,direction:%s | "
+                "threshold=primary_trend_matches_direction_and_confirmation_mixed | old_gate_result=%s | "
+                "new_gate_result=%s | reason=%s",
+                candidate.symbol,
+                alignment,
+                primary_trend,
+                confirmation_trend,
+                direction,
+                "pass" if alignment != "mixed" or mtf_quality else "fail",
+                "pass" if alignment != "mixed" or mtf_quality or v2_1_primary_aligned_mixed_confirmation else "fail",
+                "v2_1_primary_aligned_mixed_confirmation"
+                if v2_1_primary_aligned_mixed_confirmation
+                else "unchanged_alignment_policy",
+            )
 
         if alignment == "conflicted":
             if "low_vol_reclaim" in strategy_name and RiskManager._has_mtf_override(candidate):
@@ -762,12 +788,16 @@ class RiskManager:
                 reasons.append("blocked: market alignment conflicted")
                 return False, reasons
 
-        if alignment == "mixed" and not mtf_quality:
+        if alignment == "mixed" and not mtf_quality and not v2_1_primary_aligned_mixed_confirmation:
             if "low_vol_reclaim" in strategy_name and RiskManager._has_mtf_override(candidate):
                 reasons.append("watch: mixed alignment allowed for reclaim MTF override")
             else:
                 reasons.append("blocked: market alignment mixed without MTF confirmation")
                 return False, reasons
+        elif v2_1_primary_aligned_mixed_confirmation:
+            reasons.append(
+                "watch: v2.1 mixed confirmation allowed because primary trend matches direction"
+            )
 
         if direction == "LONG":
             if primary_trend != "bullish":
@@ -777,7 +807,9 @@ class RiskManager:
                     reasons.append("blocked: long without bullish primary trend")
                     return False, reasons
             if confirmation_trend not in {"bullish", "neutral"}:
-                if "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
+                if v2_1_primary_aligned_mixed_confirmation:
+                    reasons.append("watch: v2.1 long mixed confirmation accepted with bullish primary")
+                elif "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
                     reasons.append("watch: long reclaim allowed with mixed/neutral confirmation via MTF override")
                 else:
                     reasons.append("blocked: long without bullish/neutral confirmation trend")
@@ -790,7 +822,9 @@ class RiskManager:
                     reasons.append("blocked: short without bearish primary trend")
                     return False, reasons
             if confirmation_trend not in {"bearish", "neutral"}:
-                if "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
+                if v2_1_primary_aligned_mixed_confirmation:
+                    reasons.append("watch: v2.1 short mixed confirmation accepted with bearish primary")
+                elif "low_vol_reclaim" in strategy_name and confirmation_trend in {"mixed", "neutral"} and RiskManager._has_mtf_override(candidate):
                     reasons.append("watch: short reclaim allowed with mixed/neutral confirmation via MTF override")
                 else:
                     reasons.append("blocked: short without bearish/neutral confirmation trend")

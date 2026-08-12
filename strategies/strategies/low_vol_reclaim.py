@@ -10,6 +10,7 @@ logger = logging.getLogger("StartupRunner")
 
 class LowVolReclaimStrategy:
     name = "low_vol_reclaim_v2"
+    version = "low_vol_reclaim_v2_1"
     _last_reject_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _last_watch_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _reject_counts: dict[str, int] = {}
@@ -28,6 +29,27 @@ class LowVolReclaimStrategy:
     MTF_OVERRIDE_MIN_PARTICIPATION_SCORE = 0.72
     MTF_OVERRIDE_MAX_VOL_RANK = 65.0
     ATR_MEDIAN_LOOKBACK = 20
+
+    def _gate_telemetry(
+        self,
+        market: MarketSnapshot,
+        gate_name: str,
+        input_value: object,
+        threshold: object,
+        passed: bool,
+        reason: str,
+    ) -> None:
+        logger.info(
+            "V2_SELECTION_GATE | %s | strategy_version=%s | gate_name=%s | "
+            "input=%s | threshold=%s | pass=%s | reason=%s",
+            market.symbol,
+            self.version,
+            gate_name,
+            input_value,
+            threshold,
+            str(bool(passed)).lower(),
+            reason,
+        )
 
     @staticmethod
     def _atr_bps_at(candles: list, end_index: int) -> float:
@@ -62,6 +84,13 @@ class LowVolReclaimStrategy:
         return current, rolling_median, current < rolling_median
 
     def _reject(self, market: MarketSnapshot, reason: str, **context: object) -> None:
+        context = {
+            "strategy_version": self.version,
+            "gate_name": context.get("gate_name", reason),
+            "gate_result": "fail",
+            "rejection_reason": reason,
+            **context,
+        }
         symbol = str(market.symbol).upper()
         direction = str(context.get("direction") or "NA").upper()
         signature_key = (symbol, reason)
@@ -257,10 +286,11 @@ class LowVolReclaimStrategy:
             return None
 
         logger.info(
-            "LOW_VOL_RECLAIM_V2_ATR_GATE | %s | strategy_id=%s | atr=%.4f | "
+            "LOW_VOL_RECLAIM_V2_ATR_GATE | %s | strategy_id=%s | strategy_version=%s | atr=%.4f | "
             "rolling_atr_median=%.4f | atr_gate_pass=%s | lookback=%s",
             market.symbol,
             self.name,
+            self.version,
             atr_bps,
             rolling_atr_median,
             atr_gate_pass,
@@ -276,6 +306,14 @@ class LowVolReclaimStrategy:
                 atr_gate_pass=False,
             )
             return None
+        self._gate_telemetry(
+            market,
+            "atr_causal_rolling_median",
+            round(atr_bps, 4),
+            f"below_{rolling_atr_median:.4f}",
+            True,
+            "current_atr_below_prior_rolling_median",
+        )
 
         last = latest_closed_candle(market.primary)
         prev = previous_closed_candle(market.primary)
@@ -283,6 +321,7 @@ class LowVolReclaimStrategy:
 
         notes: list[str] = ["low_vol_reclaim_mode"]
         notes.append(f"strategy_id={self.name}")
+        notes.append(f"strategy_version={self.version}")
         notes.append(f"atr={atr_bps:.4f}")
         notes.append(f"rolling_atr_median={rolling_atr_median:.4f}")
         notes.append("atr_gate_pass=true")
@@ -339,6 +378,24 @@ class LowVolReclaimStrategy:
         )
         long_mtf_override = bool(long_mtf_context.get("allowed"))
         short_mtf_override = bool(short_mtf_context.get("allowed"))
+
+        gate_rows = (
+            ("volatility_rank", volatility_rank, self.LOW_VOL_MAX_RANK, volatility_rank <= self.LOW_VOL_MAX_RANK or long_mtf_override or short_mtf_override),
+            ("volume_ratio", volume_ratio, self.MTF_OVERRIDE_MIN_VOLUME_RATIO if (long_mtf_override or short_mtf_override) else self.MIN_VOLUME_RATIO, volume_ratio >= (self.MTF_OVERRIDE_MIN_VOLUME_RATIO if (long_mtf_override or short_mtf_override) else self.MIN_VOLUME_RATIO)),
+            ("spread", spread_bps, self.MAX_SPREAD_BPS, spread_bps <= self.MAX_SPREAD_BPS or (spread_bps >= 99.0 and "orderbook_liquidity_ok=true" in self._note_text(market))),
+            ("candle_body", round(body_pct, 4), self.MIN_BODY_PCT, body_pct >= self.MIN_BODY_PCT),
+            ("followthrough_volume", round(followthrough_volume_ratio, 4), self.MIN_FOLLOWTHROUGH_VOLUME_RATIO, followthrough_volume_ratio >= self.MIN_FOLLOWTHROUGH_VOLUME_RATIO),
+            ("ema_reclaim_distance", round(ema_reclaim_distance_pct, 4), self.MAX_EMA_RECLAIM_DISTANCE_PCT, ema_reclaim_distance_pct <= self.MAX_EMA_RECLAIM_DISTANCE_PCT),
+        )
+        for gate_name, input_value, threshold, passed in gate_rows:
+            self._gate_telemetry(
+                market,
+                gate_name,
+                input_value,
+                threshold,
+                passed,
+                "existing_v2_gate_unchanged",
+            )
 
         if long_mtf_override:
             logger.info(
@@ -700,6 +757,16 @@ class LowVolReclaimStrategy:
         notes.append("fast_tp_required")
         notes.append("followthrough_relaxed_0_06=true")
         notes.append("selector_exhaustion_soft_override=true")
+        notes.append("selection_reason=original_v2_reclaim_geometry_and_pre_entry_gates_passed")
+
+        self._gate_telemetry(
+            market,
+            "direction_retest",
+            f"direction:{direction},long_retest:{long_retest_zone},short_retest:{short_retest_zone}",
+            "directional_ema_retest_zone",
+            True,
+            "clean_low_vol_reclaim_selected",
+        )
 
         for context_note in market_context_notes:
             if context_note not in notes:
