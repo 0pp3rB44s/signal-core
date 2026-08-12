@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from clients.bitget_order_client import BitgetOrderClientMixin
+from clients.bitget_account_client import BitgetAccountClientMixin
 from microflow.candidates import CandidateEpisodeSampler, FrozenResearchSpec
 from microflow.live import MicroflowLiveRuntime, MicroflowPhase, size_microflow_position
 from execution.execution_service import ioc_order_is_confirmed_unfilled
@@ -145,6 +146,40 @@ def test_ioc_intent_retires_only_on_terminal_explicit_zero_fill():
     assert ioc_order_is_confirmed_unfilled({
         "state": "canceled", "raw": {"baseVolume": "0.01", "size": "99"}
     }) is False
+
+
+class _MarginClient:
+    set_futures_margin_mode = BitgetAccountClientMixin.set_futures_margin_mode
+
+    def __init__(self):
+        self.settings = SimpleNamespace(bitget_product_type="USDT-FUTURES")
+        self.request = None
+
+    def _assert_order_transport_allowed(self):
+        return None
+
+    def _request(self, method, path, **kwargs):
+        self.request = (method, path, kwargs)
+        return {"code": "00000"}
+
+
+def test_margin_mode_transport_sets_isolated_explicitly():
+    client = _MarginClient()
+    client.set_futures_margin_mode("HYPEUSDT", "isolated")
+    method, path, kwargs = client.request
+    assert method == "POST"
+    assert path == "/api/v2/mix/account/set-margin-mode"
+    assert kwargs["body"] == {
+        "symbol": "HYPEUSDT", "productType": "USDT-FUTURES",
+        "marginCoin": "USDT", "marginMode": "isolated",
+    }
+
+
+def test_margin_mode_transport_rejects_unknown_mode_before_network():
+    client = _MarginClient()
+    with pytest.raises(ValueError, match="unsupported futures margin mode"):
+        client.set_futures_margin_mode("HYPEUSDT", "portfolio")
+    assert client.request is None
     assert ioc_order_is_confirmed_unfilled({
         "state": "live", "raw": {"baseVolume": "0"}
     }) is False
