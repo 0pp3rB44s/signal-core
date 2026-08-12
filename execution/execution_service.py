@@ -942,6 +942,11 @@ class ExecutionService:
                     ])
 
                 try:
+                    if is_microflow_scalper_v1(plan.strategy):
+                        self.client.set_futures_margin_mode(
+                            symbol=plan.symbol,
+                            margin_mode="isolated",
+                        )
                     leverage_payload = self.client.set_futures_leverage(
                         symbol=plan.symbol,
                         leverage=effective_leverage,

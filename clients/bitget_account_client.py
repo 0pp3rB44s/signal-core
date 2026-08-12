@@ -67,6 +67,30 @@ class BitgetAccountClientMixin:
             private=True,
         )
 
+    def set_futures_margin_mode(
+        self,
+        symbol: str,
+        margin_mode: str = "isolated",
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+    ) -> dict[str, Any]:
+        """Set one symbol's explicit margin mode before leverage or entry."""
+        normalized = str(margin_mode or "").strip().lower()
+        if normalized not in {"isolated", "crossed"}:
+            raise ValueError(f"unsupported futures margin mode: {margin_mode}")
+        self._assert_order_transport_allowed()
+        return self._request(
+            "POST",
+            "/api/v2/mix/account/set-margin-mode",
+            body={
+                "symbol": symbol.upper(),
+                "productType": (product_type or self.settings.bitget_product_type).upper(),
+                "marginCoin": margin_coin.upper(),
+                "marginMode": normalized,
+            },
+            private=True,
+        )
+
     def get_all_positions(
         self,
         product_type: str | None = None,
