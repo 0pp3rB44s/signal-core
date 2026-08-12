@@ -51,6 +51,7 @@ def test_path_classifier_rejects_environment_operational_dataset_cache_and_edito
         "nested/.env.live.example",
         "logs/private.log",
         "nested/state/position.json",
+        "backups/env-live/env.live.20260812T120000Z.backup",
         "data/trades.csv",
         "datasets/local.json",
         "cache/market.bin",
