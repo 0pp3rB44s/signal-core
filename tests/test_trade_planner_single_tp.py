@@ -90,3 +90,51 @@ def test_single_tp_is_tp1_for_reclaim():
     plan = planner.build(_candidate("low_vol_reclaim", "LONG"), _score(), _risk())
     assert len(plan.take_profits) == 1
     assert any("single_tp_source=tp1_reclaim_profile" in str(n) for n in plan.notes)
+
+
+def _v2_2_candidate(participation_score: float, pressure_score: float) -> MagicMock:
+    candidate = _candidate("low_vol_reclaim_v2", "LONG")
+    candidate.market.primary.latest_close = 100.0
+    candidate.notes = ["entry_quality_long=85", "expansion_prob=80"]
+    candidate.market.notes = [
+        f"participation_score={participation_score}",
+        f"pressure_score={pressure_score}",
+        "spread_bps=1.0",
+    ]
+    return candidate
+
+
+def test_v2_2_selector_preserves_an_otherwise_executable_known_good_plan():
+    plan = TradePlanner(settings=_settings()).build(
+        _v2_2_candidate(15.0, 15.45),
+        _score(92.0),
+        _risk(),
+    )
+
+    assert plan.verdict == "EXECUTABLE"
+    assert "selection_reason=v2_2_high_participation_low_pressure_passed" in plan.notes
+
+
+def test_v2_2_selector_blocks_an_otherwise_executable_inverse_selection_plan():
+    plan = TradePlanner(settings=_settings()).build(
+        _v2_2_candidate(15.0, 25.42),
+        _score(92.0),
+        _risk(),
+    )
+
+    assert plan.verdict == "BLOCKED"
+    assert "v2_2_pressure_not_below_25" in plan.reasons
+    assert "blocked_reason=v2_2_pressure_not_below_25" in plan.notes
+
+
+def test_v2_2_selection_does_not_change_geometry_or_risk_fields():
+    planner = TradePlanner(settings=_settings())
+    selected = planner.build(_v2_2_candidate(15.0, 15.45), _score(92.0), _risk())
+    rejected = planner.build(_v2_2_candidate(15.0, 25.42), _score(92.0), _risk())
+
+    assert rejected.entry_prices == selected.entry_prices
+    assert rejected.stop_loss == selected.stop_loss
+    assert rejected.take_profits == selected.take_profits
+    assert rejected.account_risk_pct == selected.account_risk_pct
+    assert rejected.leverage == selected.leverage
+    assert rejected.position_notional_usdt == selected.position_notional_usdt

@@ -43,7 +43,7 @@ def test_v2_1_allows_mixed_confirmation_when_primary_matches_long():
     rendered = template % values
     assert "old_gate_result=fail" in rendered
     assert "new_gate_result=pass" in rendered
-    assert "strategy_version=low_vol_reclaim_v2_1" in rendered
+    assert "strategy_version=low_vol_reclaim_v2_2" in rendered
 
 
 def test_v2_1_allows_symmetric_short_case():
@@ -89,6 +89,6 @@ def test_v2_1_does_not_override_conflicted_alignment_or_bad_score():
     assert "blocked: score verdict blocked" in reasons
 
 
-def test_historical_strategy_label_and_v2_1_version_are_both_preserved():
+def test_historical_strategy_label_is_preserved_with_v2_2_version():
     assert LowVolReclaimStrategy.name == "low_vol_reclaim_v2"
-    assert LowVolReclaimStrategy.version == "low_vol_reclaim_v2_1"
+    assert LowVolReclaimStrategy.version == "low_vol_reclaim_v2_2"
