@@ -10,7 +10,7 @@ logger = logging.getLogger("StartupRunner")
 
 class LowVolReclaimStrategy:
     name = "low_vol_reclaim_v2"
-    version = "low_vol_reclaim_v2_1"
+    version = "low_vol_reclaim_v2_2"
     _last_reject_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _last_watch_signature: dict[tuple[str, str], tuple[str, str, str]] = {}
     _reject_counts: dict[str, int] = {}

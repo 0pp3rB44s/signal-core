@@ -14,6 +14,18 @@ from execution.adaptive_tp_engine import AdaptiveTPContext, AdaptiveTPEngine
 logger = logging.getLogger("trade_planner")
 
 STRATEGY_EXPECTANCY_PATH = Path(__file__).resolve().parents[1] / "reports" / "backtests" / "strategy_expectancy.json"
+LOW_VOL_RECLAIM_V2_2_MIN_PARTICIPATION_SCORE = 10.0
+LOW_VOL_RECLAIM_V2_2_MAX_PRESSURE_SCORE = 25.0
+
+
+def low_vol_reclaim_v2_2_selection_gate(
+    participation_score: float,
+    pressure_score: float,
+) -> tuple[bool, bool, bool]:
+    """Frozen v2.2 selector derived from pre-entry planner features only."""
+    participation_passed = participation_score >= LOW_VOL_RECLAIM_V2_2_MIN_PARTICIPATION_SCORE
+    pressure_passed = pressure_score < LOW_VOL_RECLAIM_V2_2_MAX_PRESSURE_SCORE
+    return participation_passed and pressure_passed, participation_passed, pressure_passed
 
 
 class TradePlanner:
@@ -505,7 +517,7 @@ class TradePlanner:
         notes.append(f"estimated_roundtrip_fee_bps={estimated_roundtrip_fee_bps:.2f}")
         notes.append(f"minimum_tp1_move_bps={minimum_tp1_move_bps:.2f}")
         if strategy_name == "low_vol_reclaim_v2":
-            notes.append("strategy_version=low_vol_reclaim_v2_1")
+            notes.append("strategy_version=low_vol_reclaim_v2_2")
             notes.append(f"planned_gross_move_bps={tp1_move_bps:.2f}")
         notes.append(f"strong_continuation_quality={strong_continuation_quality}")
         notes.append(f"planner_participation_score={participation_score:.2f}")
@@ -746,6 +758,49 @@ class TradePlanner:
             reasons.append(f"position notional {position_notional:.2f} below live minimum {min_live_notional:.2f}")
             notes.append(f"live_min_notional_usdt={min_live_notional:.2f}")
 
+        if strategy_name == "low_vol_reclaim_v2":
+            selection_passed, participation_passed, pressure_passed = low_vol_reclaim_v2_2_selection_gate(
+                participation_score,
+                pressure_score,
+            )
+            verdict_before_v2_2_selection = verdict
+            notes.append("v2_2_rule=high_participation_low_pressure")
+            notes.append(
+                f"v2_2_gate gate_name=participation input={participation_score:.2f} "
+                f"threshold=>={LOW_VOL_RECLAIM_V2_2_MIN_PARTICIPATION_SCORE:.2f} "
+                f"pass={str(participation_passed).lower()}"
+            )
+            notes.append(
+                f"v2_2_gate gate_name=pressure input={pressure_score:.2f} "
+                f"threshold=<{LOW_VOL_RECLAIM_V2_2_MAX_PRESSURE_SCORE:.2f} "
+                f"pass={str(pressure_passed).lower()}"
+            )
+            if verdict == "EXECUTABLE" and not selection_passed:
+                verdict = "BLOCKED"
+                if not participation_passed:
+                    rejection_reason = "v2_2_participation_below_10"
+                else:
+                    rejection_reason = "v2_2_pressure_not_below_25"
+                reasons.append(rejection_reason)
+                notes.append(f"blocked_reason={rejection_reason}")
+            elif verdict == "EXECUTABLE":
+                notes.append("selection_reason=v2_2_high_participation_low_pressure_passed")
+            logger.info(
+                "V2_2_SELECTION_GATE | %s | strategy_version=low_vol_reclaim_v2_2 | "
+                "participation_score=%.2f | participation_threshold=>=%.2f | participation_pass=%s | "
+                "pressure_score=%.2f | pressure_threshold=<%.2f | pressure_pass=%s | "
+                "prior_verdict=%s | result=%s",
+                candidate.symbol,
+                participation_score,
+                LOW_VOL_RECLAIM_V2_2_MIN_PARTICIPATION_SCORE,
+                str(participation_passed).lower(),
+                pressure_score,
+                LOW_VOL_RECLAIM_V2_2_MAX_PRESSURE_SCORE,
+                str(pressure_passed).lower(),
+                verdict_before_v2_2_selection,
+                verdict,
+            )
+
         planner_reason_text = " | ".join(str(reason) for reason in reasons[-8:]) if reasons else "no_reasons"
         self._emit_near_executable(
             candidate=candidate,
@@ -775,15 +830,15 @@ class TradePlanner:
             )
             for gate_name, input_value, threshold, passed in v2_gate_rows:
                 notes.append(
-                    f"v2_1_gate gate_name={gate_name} input={input_value} "
+                    f"v2_2_gate gate_name={gate_name} input={input_value} "
                     f"threshold={threshold} pass={str(bool(passed)).lower()}"
                 )
             if verdict == "EXECUTABLE":
-                notes.append("selection_reason=v2_1_all_planner_and_risk_gates_passed")
+                notes.append("selection_reason=v2_2_all_planner_risk_and_selection_gates_passed")
             else:
                 notes.append("rejection_reason=" + planner_reason_text)
             logger.info(
-                "V2_SELECTION_FINAL | %s | strategy_version=low_vol_reclaim_v2_1 | "
+                "V2_SELECTION_FINAL | %s | strategy_version=low_vol_reclaim_v2_2 | "
                 "verdict=%s | selection_reason=%s | rejection_reason=%s",
                 candidate.symbol,
                 verdict,
