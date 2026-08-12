@@ -131,8 +131,10 @@ def attempt_maker_entry(
             log.warning("MAKER_ENTRY_POLL_FAILED | %s | order_id=%s | error=%s", symbol, order_id, exc)
 
     # Niet (volledig) gevuld binnen het venster -> annuleren.
+    cancel_confirmed = False
     try:
         client.cancel_futures_order(symbol=symbol, order_id=order_id)
+        cancel_confirmed = True
         log.warning("MAKER_ENTRY_UNFILLED_CANCELLED | %s | order_id=%s | wait_s=%.1f", symbol, order_id, wait_s)
     except Exception as exc:
         # Cancel kan falen (bv. code 43001 'order bestaat niet') als de order
@@ -171,6 +173,14 @@ def attempt_maker_entry(
                 return result
     except Exception as exc:
         log.warning("MAKER_ENTRY_POSTCANCEL_VERIFY_FAILED | %s | error=%s", symbol, exc)
+        result["status"] = "BLOCKED_UNKNOWN"
+        result["message"] = f"post-cancel position readback failed: {exc}"
+        return result
+
+    if not cancel_confirmed:
+        result["status"] = "BLOCKED_UNKNOWN"
+        result["message"] = "maker cancel was not confirmed and no position was visible"
+        return result
 
     result["status"] = "UNFILLED_CANCELLED"
     return result

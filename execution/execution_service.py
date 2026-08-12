@@ -36,7 +36,12 @@ from execution.entry_snapshot import (
     missingness,
 )
 from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
-from execution.order_intent_store import OrderIntentStore, new_session_id
+from execution.order_intent_store import (
+    STATE_ABANDONED,
+    STATE_UNKNOWN,
+    OrderIntentStore,
+    new_session_id,
+)
 from execution.executor_identity import (
     ExecutionIdentity,
     is_legacy_client_oid,
@@ -993,6 +998,14 @@ class ExecutionService:
                             # Maker leg left the exchange state unknown: entering
                             # again (market fallback) could duplicate the position.
                             entry_block_reason = maker_result.get("message") or "maker entry state unknown"
+                            maker_client_oid = str(maker_result.get("client_oid") or "")
+                            if maker_client_oid:
+                                self.intent_store.mark(
+                                    maker_client_oid,
+                                    STATE_UNKNOWN,
+                                    note=str(entry_block_reason)[:200],
+                                    classification="UNKNOWN",
+                                )
                             self.log.critical(
                                 "LIVE_ENTRY_BLOCKED_MAKER_STATE_UNKNOWN | %s | plan_id=%s | reason=%s",
                                 plan.symbol, plan.plan_id, entry_block_reason,
@@ -1019,6 +1032,27 @@ class ExecutionService:
                                 routing.pre_entry_features["maker_filled"] = True
                         elif not market_fallback_enabled:
                             # Pure maker-modus: niet gevuld -> skippen, geen taker.
+                            if maker_result["status"] == "UNFILLED_CANCELLED":
+                                maker_client_oid = str(maker_result.get("client_oid") or "")
+                                maker_order_id = str(maker_result.get("order_id") or "")
+                                self.intent_store.mark(
+                                    maker_client_oid,
+                                    STATE_ABANDONED,
+                                    note=(
+                                        "maker order cancelled unfilled; "
+                                        "exchange position readback flat"
+                                    ),
+                                    classification="ORDER_DEAD",
+                                    exchange_order_id=maker_order_id,
+                                    protection_state="NOT_REQUIRED",
+                                )
+                                self.log.critical(
+                                    "MAKER_ENTRY_INTENT_RETIRED | client_oid=%s | "
+                                    "order_id=%s | classification=ORDER_DEAD | "
+                                    "flat_verified=True",
+                                    maker_client_oid,
+                                    maker_order_id or "-",
+                                )
                             if is_low_vol_reclaim_v2(plan.strategy):
                                 routing.pre_entry_features["maker_timeout"] = (
                                     maker_result["status"] == "UNFILLED_CANCELLED"

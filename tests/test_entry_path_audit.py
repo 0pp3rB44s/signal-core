@@ -256,6 +256,41 @@ def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
     assert service.intent_store.get(oid)["exchange_order_id"] == "srv-adopted"
 
 
+def test_v2_unfilled_cancelled_maker_is_retired_in_the_execution_path(monkeypatch):
+    service = _service(
+        monkeypatch,
+        MAKER_ENTRY_WAIT_SECONDS=0.0,
+        OLD_STRATEGIES_NEW_ENTRIES_ENABLED=False,
+    )
+    plan = _plan()
+    plan.strategy = "low_vol_reclaim_v2"
+    oid = service.entry_submitter.client_oid_for(plan, leg="maker")
+    service.client.get_trade_fee_rate.return_value = {
+        "data": {"makerFeeRate": "0.0002", "takerFeeRate": "0.0006"}
+    }
+    service.client.place_futures_limit_order.return_value = {
+        "data": {"orderId": "maker-unfilled"}
+    }
+    service.client.extract_fill_metrics.return_value = {
+        "order_id": "maker-unfilled",
+        "avg_price": 0.0,
+        "filled_qty": 0.0,
+        "fee": 0.0,
+        "pnl": 0.0,
+        "state": "live",
+    }
+    service.client.get_all_positions.return_value = {"data": []}
+
+    reports = service.execute([plan])
+
+    assert reports[0].status == "SKIPPED"
+    assert "unfilled_cancelled" in reports[0].message
+    intent = service.intent_store.get(oid)
+    assert intent["state"] == "ABANDONED"
+    assert intent["classification"] == "ORDER_DEAD"
+    assert service.intent_store.recoverable() == []
+
+
 def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypatch):
     service = _service(monkeypatch)
     first, second = _plan("BTCUSDT"), _plan("ETHUSDT")
