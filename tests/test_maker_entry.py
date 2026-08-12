@@ -54,6 +54,30 @@ def test_maker_unfilled_cancels_and_skips():
     client.cancel_futures_order.assert_called_once()
 
 
+def test_exchange_auto_cancel_is_terminal_without_second_cancel():
+    """Bitget post_only_cancel is a proven zero-fill cancellation, not UNKNOWN."""
+    client = MagicMock()
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "auto-1"}}
+    client.extract_order_id.return_value = "auto-1"
+    client.get_order_detail.return_value = {
+        "data": {
+            "orderId": "auto-1",
+            "baseVolume": "0",
+            "state": "canceled",
+            "cancelReason": "post_only_cancel",
+        }
+    }
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "canceled"}
+    client.get_all_positions.return_value = {"data": []}
+
+    r = attempt_maker_entry(
+        client, _settings(), "AVAXUSDT", "SHORT", 3.7, 6.235, "short", _log()
+    )
+
+    assert r["status"] == "UNFILLED_CANCELLED"
+    client.cancel_futures_order.assert_not_called()
+
+
 def test_cancel_race_detects_filled_position_and_protects():
     # De order vult in de race tussen laatste poll en cancel: cancel faalt
     # (43001), maar er staat een positie open -> MOET FILLED teruggeven zodat

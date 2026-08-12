@@ -109,6 +109,7 @@ def attempt_maker_entry(
             return result
 
     deadline = time.monotonic() + wait_s
+    cancel_confirmed = False
     while time.monotonic() < deadline:
         time.sleep(poll_s)
         try:
@@ -127,20 +128,34 @@ def attempt_maker_entry(
                 )
                 result.update(status="FILLED", filled_qty=qty, fill_entry=fill_entry)
                 return result
+            if qty <= 0 and state in ("canceled", "cancelled", "cancel"):
+                # Bitget can cancel a post-only order itself (for example
+                # ``cancelReason=post_only_cancel``) immediately after
+                # accepting it.  That terminal order-detail readback is just
+                # as authoritative as a successful explicit cancel.  Do not
+                # wait out the window and issue a second cancel: Bitget then
+                # returns 43001 (order does not exist), which would turn a
+                # proven zero-fill cancellation into a false UNKNOWN.
+                cancel_confirmed = True
+                log.warning(
+                    "MAKER_ENTRY_EXCHANGE_CANCEL_CONFIRMED | %s | order_id=%s | state=%s",
+                    symbol, order_id, state,
+                )
+                break
         except Exception as exc:
             log.warning("MAKER_ENTRY_POLL_FAILED | %s | order_id=%s | error=%s", symbol, order_id, exc)
 
     # Niet (volledig) gevuld binnen het venster -> annuleren.
-    cancel_confirmed = False
-    try:
-        client.cancel_futures_order(symbol=symbol, order_id=order_id)
-        cancel_confirmed = True
-        log.warning("MAKER_ENTRY_UNFILLED_CANCELLED | %s | order_id=%s | wait_s=%.1f", symbol, order_id, wait_s)
-    except Exception as exc:
-        # Cancel kan falen (bv. code 43001 'order bestaat niet') als de order
-        # net vulde in de race tussen laatste poll en cancel. Dan staat er een
-        # ONBESCHERMDE positie open -> die MOETEN we beschermen, niet skippen.
-        log.warning("MAKER_ENTRY_CANCEL_FAILED | %s | order_id=%s | error=%s", symbol, order_id, exc)
+    if not cancel_confirmed:
+        try:
+            client.cancel_futures_order(symbol=symbol, order_id=order_id)
+            cancel_confirmed = True
+            log.warning("MAKER_ENTRY_UNFILLED_CANCELLED | %s | order_id=%s | wait_s=%.1f", symbol, order_id, wait_s)
+        except Exception as exc:
+            # Cancel kan falen (bv. code 43001 'order bestaat niet') als de order
+            # net vulde in de race tussen laatste poll en cancel. Dan staat er een
+            # ONBESCHERMDE positie open -> die MOETEN we beschermen, niet skippen.
+            log.warning("MAKER_ENTRY_CANCEL_FAILED | %s | order_id=%s | error=%s", symbol, order_id, exc)
 
     # Safety-net: verifieer altijd of er tóch een positie is ontstaan.
     try:
