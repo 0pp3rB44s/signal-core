@@ -947,10 +947,10 @@ class ExecutionService:
                             routing.pre_entry_features["maker_order_submitted"] = True
                         from execution.maker_entry import attempt_maker_entry
                         maker_anchor = _safe_float(getattr(plan, "geometry_entry", 0.0), 0.0) or planned_avg_entry
-                        routing.record(
+                        maker_submit_stage = routing.record(
                             STAGE_MAKER_SUBMIT,
                             quote=self._routing_quote(plan.symbol),
-                            order_price=maker_anchor,
+                            order_price=None,
                             size_requested=order_size,
                         )
                         maker_started_at = time.monotonic()
@@ -966,6 +966,92 @@ class ExecutionService:
                             ),
                         )
                         maker_wait_ms = round((time.monotonic() - maker_started_at) * 1000, 1)
+                        maker_submit_stage.order_price = _safe_float(
+                            maker_result.get("submitted_price"), 0.0
+                        ) or None
+                        maker_submit_stage.at = str(
+                            maker_result.get("submit_ts") or maker_submit_stage.at
+                        )
+                        best_bid = _safe_float(maker_result.get("best_bid_submit"), 0.0)
+                        best_ask = _safe_float(maker_result.get("best_ask_submit"), 0.0)
+                        submitted_price = _safe_float(
+                            maker_result.get("submitted_price"), 0.0
+                        )
+                        if best_bid and best_ask:
+                            submit_mid = (best_bid + best_ask) / 2
+                            maker_submit_stage.quote = Quote(
+                                captured_at=str(
+                                    maker_result.get("touch_captured_at") or ""
+                                ),
+                                bid=best_bid,
+                                ask=best_ask,
+                                mid=round(submit_mid, 10),
+                                spread_bps=round(
+                                    (best_ask - best_bid) / submit_mid * 10_000, 4
+                                ),
+                                source="bitget_l1_pre_submit",
+                            )
+                        tick_size = _safe_float(maker_result.get("tick_size"), 0.0)
+                        touch = best_bid if plan.direction == "LONG" else best_ask
+                        distance_ticks = (
+                            (
+                                (touch - submitted_price)
+                                if plan.direction == "LONG"
+                                else (submitted_price - touch)
+                            ) / tick_size
+                            if submitted_price and touch and tick_size else None
+                        )
+                        distance_bps = (
+                            (
+                                (touch - submitted_price)
+                                if plan.direction == "LONG"
+                                else (submitted_price - touch)
+                            ) / touch * 10_000
+                            if submitted_price and touch else None
+                        )
+                        routing.set_maker_attempt({
+                            "candidate_id": str(getattr(plan, "candidate_id", "") or ""),
+                            "plan_id": str(plan.plan_id or ""),
+                            "strategy_id": str(plan.strategy or ""),
+                            "executor_id": (
+                                self.execution_identity.executor_id
+                                if self.execution_identity is not None else ""
+                            ),
+                            "symbol": plan.symbol,
+                            "side": side,
+                            "best_bid_submit": best_bid or None,
+                            "best_ask_submit": best_ask or None,
+                            "submitted_price": submitted_price or None,
+                            "tick_size": tick_size or None,
+                            "distance_to_touch_ticks": (
+                                round(distance_ticks, 6) if distance_ticks is not None else None
+                            ),
+                            "distance_to_touch_bps": (
+                                round(distance_bps, 6) if distance_bps is not None else None
+                            ),
+                            "post_only": bool(maker_result.get("post_only", True)),
+                            "submit_ts": maker_result.get("submit_ts") or "",
+                            "touch_captured_at": maker_result.get("touch_captured_at") or "",
+                            "ack_ts": maker_result.get("ack_ts") or "",
+                            "fill_ts": maker_result.get("fill_ts") or "",
+                            "cancel_ts": maker_result.get("cancel_ts") or "",
+                            "timeout_ms": int(maker_result.get("timeout_ms") or 0),
+                            "exchange_order_state": maker_result.get("exchange_order_state") or "",
+                            "exchange_cancel_reason": maker_result.get("exchange_cancel_reason") or "",
+                            "fill_qty": _safe_float(maker_result.get("filled_qty"), 0.0),
+                            "fill_price": _safe_float(maker_result.get("fill_entry"), 0.0),
+                            "maker_fee": _safe_float(maker_result.get("maker_fee"), 0.0),
+                            "reprice_count": int(maker_result.get("reprice_count") or 0),
+                            "price_transitions": list(maker_result.get("price_transitions") or []),
+                            "setup_valid_at_reprice": None,
+                            "maker_timeout": (
+                                maker_result.get("status") == "UNFILLED_CANCELLED"
+                                and maker_result.get("exchange_cancel_reason") != "post_only_cancel"
+                            ),
+                            "skipped_no_fill": (
+                                maker_result.get("status") == "UNFILLED_CANCELLED"
+                            ),
+                        })
                         maker_qty = _safe_float(maker_result.get("filled_qty"), 0.0)
                         if maker_qty > 0:
                             routing.record(

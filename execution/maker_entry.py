@@ -14,6 +14,7 @@ zit in attempt_maker_entry en praat met de order-client.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from execution.entry_submitter import RESULT_ACCEPTED, RESULT_ADOPTED
@@ -45,6 +46,23 @@ def _fill_state(metrics: dict[str, Any]) -> tuple[float, str]:
     return qty, str(metrics.get("state") or "").lower()
 
 
+def _utc_now_iso_ms() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _positive(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _order_data(payload: Any) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
 def attempt_maker_entry(
     client, settings, symbol, direction, size, anchor_price, hold_side, log, submit=None
 ) -> dict[str, Any]:
@@ -67,9 +85,49 @@ def attempt_maker_entry(
     result = {
         "status": "ERROR", "filled_qty": 0.0, "fill_entry": 0.0,
         "order_id": "", "payload": None, "client_oid": "", "message": "",
+        # Maker-attempt telemetry. These fields never feed back into pricing or
+        # order decisions; they make the next execution audit reconstructable.
+        "best_bid_submit": None, "best_ask_submit": None,
+        "touch_captured_at": "", "submitted_price": 0.0, "tick_size": None,
+        "post_only": True, "submit_ts": "", "ack_ts": "", "fill_ts": "",
+        "cancel_ts": "", "timeout_ms": int(round(wait_s * 1000)),
+        "exchange_order_state": "", "exchange_cancel_reason": "",
+        "maker_fee": 0.0, "reprice_count": 0, "price_transitions": [],
     }
     if limit_price <= 0:
         return result
+
+    # Resolve the exact exchange-formatted price once. place_futures_limit_order
+    # performs the same formatting again from this already-normalized value, so
+    # this does not change the quote. Contract metadata is cached and is needed
+    # by the placement path for size validation in every case.
+    formatter = getattr(client, "_format_trigger_price", None)
+    if callable(formatter):
+        try:
+            formatted = _positive(formatter(symbol, limit_price))
+            if formatted is not None:
+                limit_price = formatted
+        except Exception:
+            pass
+    result["submitted_price"] = limit_price
+    scale_getter = getattr(client, "_contract_price_scale", None)
+    if callable(scale_getter):
+        try:
+            scale = int(scale_getter(symbol))
+            result["tick_size"] = float(10 ** -scale)
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    # One best-effort L1 snapshot immediately before submit. Unlike the older
+    # two-request routing capture this fetches only the book. Failure is
+    # telemetry-only and never blocks or reprices the order.
+    try:
+        book = client.get_orderbook(symbol=symbol, limit=1) or {}
+        result["best_bid_submit"] = _positive(book.get("best_bid"))
+        result["best_ask_submit"] = _positive(book.get("best_ask"))
+        result["touch_captured_at"] = _utc_now_iso_ms()
+    except Exception as exc:
+        log.info("MAKER_ENTRY_TOUCH_UNAVAILABLE | %s | error=%s", symbol, exc)
 
     def _place(client_oid: str | None = None):
         return client.place_futures_limit_order(
@@ -78,7 +136,9 @@ def attempt_maker_entry(
         )
 
     if submit is not None:
+        result["submit_ts"] = _utc_now_iso_ms()
         submission = submit(_place)
+        result["ack_ts"] = _utc_now_iso_ms()
         result["client_oid"] = submission.client_oid
         result["payload"] = submission.payload
         result["order_id"] = submission.order_id or ""
@@ -96,7 +156,9 @@ def attempt_maker_entry(
         order_id = submission.order_id
     else:
         try:
+            result["submit_ts"] = _utc_now_iso_ms()
             payload = _place()
+            result["ack_ts"] = _utc_now_iso_ms()
             order_id = client.extract_order_id(payload)
             result["order_id"] = order_id or ""
             result["payload"] = payload
@@ -116,6 +178,11 @@ def attempt_maker_entry(
             detail = client.get_order_detail(symbol=symbol, order_id=order_id)
             metrics = client.extract_fill_metrics(detail)
             qty, state = _fill_state(metrics)
+            data = _order_data(detail)
+            result["exchange_order_state"] = str(data.get("state") or state or "")
+            result["exchange_cancel_reason"] = str(data.get("cancelReason") or "")
+            result["maker_fee"] = abs(float(data.get("fee") or 0.0))
+            result["submitted_price"] = float(data.get("price") or result["submitted_price"])
             if qty > 0 and state in ("filled", "full-fill", "partially_filled", "partial-fill"):
                 fill_entry = 0.0
                 try:
@@ -127,6 +194,7 @@ def attempt_maker_entry(
                     symbol, order_id, qty, fill_entry, state,
                 )
                 result.update(status="FILLED", filled_qty=qty, fill_entry=fill_entry)
+                result["fill_ts"] = _utc_now_iso_ms()
                 return result
             if qty <= 0 and state in ("canceled", "cancelled", "cancel"):
                 # Bitget can cancel a post-only order itself (for example
@@ -137,6 +205,7 @@ def attempt_maker_entry(
                 # returns 43001 (order does not exist), which would turn a
                 # proven zero-fill cancellation into a false UNKNOWN.
                 cancel_confirmed = True
+                result["cancel_ts"] = _utc_now_iso_ms()
                 log.warning(
                     "MAKER_ENTRY_EXCHANGE_CANCEL_CONFIRMED | %s | order_id=%s | state=%s",
                     symbol, order_id, state,
@@ -150,7 +219,25 @@ def attempt_maker_entry(
         try:
             client.cancel_futures_order(symbol=symbol, order_id=order_id)
             cancel_confirmed = True
+            result["cancel_ts"] = _utc_now_iso_ms()
+            result["exchange_order_state"] = "canceled"
+            result["exchange_cancel_reason"] = "normal_cancel"
             log.warning("MAKER_ENTRY_UNFILLED_CANCELLED | %s | order_id=%s | wait_s=%.1f", symbol, order_id, wait_s)
+            try:
+                final_detail = client.get_order_detail(symbol=symbol, order_id=order_id)
+                final_data = _order_data(final_detail)
+                result["exchange_order_state"] = str(
+                    final_data.get("state") or result["exchange_order_state"]
+                )
+                result["exchange_cancel_reason"] = str(
+                    final_data.get("cancelReason") or result["exchange_cancel_reason"]
+                )
+                result["maker_fee"] = abs(float(final_data.get("fee") or 0.0))
+            except Exception as exc:
+                log.info(
+                    "MAKER_ENTRY_FINAL_DETAIL_UNAVAILABLE | %s | order_id=%s | error=%s",
+                    symbol, order_id, exc,
+                )
         except Exception as exc:
             # Cancel kan falen (bv. code 43001 'order bestaat niet') als de order
             # net vulde in de race tussen laatste poll en cancel. Dan staat er een
@@ -185,6 +272,7 @@ def attempt_maker_entry(
                     symbol, order_id, live_size, fill_entry,
                 )
                 result.update(status="FILLED", filled_qty=live_size, fill_entry=fill_entry)
+                result["fill_ts"] = _utc_now_iso_ms()
                 return result
     except Exception as exc:
         log.warning("MAKER_ENTRY_POSTCANCEL_VERIFY_FAILED | %s | error=%s", symbol, exc)

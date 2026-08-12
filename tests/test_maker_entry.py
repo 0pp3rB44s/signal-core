@@ -54,6 +54,43 @@ def test_maker_unfilled_cancels_and_skips():
     client.cancel_futures_order.assert_called_once()
 
 
+def test_maker_attempt_emits_complete_touch_and_terminal_telemetry():
+    client = MagicMock()
+    client._format_trigger_price.side_effect = lambda _symbol, price: round(price, 3)
+    client._contract_price_scale.return_value = 3
+    client.get_orderbook.return_value = {"best_bid": 99.99, "best_ask": 100.0}
+    client.place_futures_limit_order.return_value = {"data": {"orderId": "telemetry-1"}}
+    client.extract_order_id.return_value = "telemetry-1"
+    client.get_order_detail.side_effect = [
+        {"data": {"orderId": "telemetry-1", "price": "100.01", "state": "live"}},
+        {"data": {
+            "orderId": "telemetry-1", "price": "100.01", "state": "canceled",
+            "cancelReason": "normal_cancel", "baseVolume": "0", "fee": "0",
+        }},
+    ]
+    client.extract_fill_metrics.return_value = {"filled_qty": 0.0, "state": "live"}
+    client.get_all_positions.return_value = {"data": []}
+
+    result = attempt_maker_entry(
+        client, _settings(), "BTCUSDT", "SHORT", 5.0, 100.0, "short", _log()
+    )
+
+    assert result["status"] == "UNFILLED_CANCELLED"
+    assert result["best_bid_submit"] == 99.99
+    assert result["best_ask_submit"] == 100.0
+    assert result["submitted_price"] == 100.01
+    assert result["tick_size"] == 0.001
+    assert result["post_only"] is True
+    assert result["submit_ts"] and result["ack_ts"] and result["cancel_ts"]
+    assert result["timeout_ms"] == 50
+    assert result["exchange_order_state"] == "canceled"
+    assert result["exchange_cancel_reason"] == "normal_cancel"
+    assert result["filled_qty"] == 0.0
+    assert result["maker_fee"] == 0.0
+    assert result["reprice_count"] == 0
+    assert result["price_transitions"] == []
+
+
 def test_exchange_auto_cancel_is_terminal_without_second_cancel():
     """Bitget post_only_cancel is a proven zero-fill cancellation, not UNKNOWN."""
     client = MagicMock()

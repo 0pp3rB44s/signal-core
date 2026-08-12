@@ -339,6 +339,7 @@ class EntryRoutingRecorder:
         self.path = path
         self.stages: list[RouteStage] = []
         self.pre_entry_features: dict[str, Any] = {}
+        self.maker_attempt: dict[str, Any] = {}
 
     # --- recording ---------------------------------------------------------
 
@@ -393,6 +394,10 @@ class EntryRoutingRecorder:
                     self.symbol, self.lifecycle_id, exc,
                 )
             return False
+
+    def set_maker_attempt(self, attempt: dict[str, Any]) -> None:
+        """Attach execution-only maker telemetry without changing execution."""
+        self.maker_attempt = dict(attempt)
 
     def stage(self, name: str) -> RouteStage | None:
         for entry in self.stages:
@@ -526,6 +531,7 @@ class EntryRoutingRecorder:
             "metrics": self.metrics(),
             "metric_provenance": self.metric_provenance(),
             "pre_entry_features": self.pre_entry_features,
+            "maker_attempt": self.maker_attempt,
             **self.original_geometry,
         }
         leaked = sorted(self.FORBIDDEN_OUTCOME_KEYS.intersection(row))
