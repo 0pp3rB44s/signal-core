@@ -11,6 +11,15 @@
 
 guard_die() { echo "ABORT: $*" >&2; exit 90; }
 
+# Production leverage ceiling for MicroFlow. MUST equal
+# MICROFLOW_MAX_ALLOWED_LEVERAGE in app/config.py -- this guard runs before
+# Python loads, so the two are separate implementations of one policy and a
+# mismatch means LIVE either refuses an approved config or accepts an
+# unapproved one. tests/test_launch_guard_leverage.py fails CI if they diverge.
+# Guarded assignment: this file is sourced by several launchers and a bare
+# `readonly` re-assignment would abort the second source.
+: "${GUARD_MICROFLOW_MAX_LEVERAGE:=10}"
+
 # --- R2: continuous operation is a host property, not a document claim -------
 # The 2026-07-26 validation lost 22.19 h because the host slept while the engine
 # believed it was running, with a caffeinate assertion held. Enforcement
@@ -167,8 +176,10 @@ guard_assert_live_mode() {
     [ "${DYNAMIC_GRID_ENABLED:-}" = "false" ] || guard_die "dynamic grid must remain disabled"
     [ "${DYNAMIC_GRID_MODE:-}" = "OFF" ] || guard_die "dynamic grid mode must remain OFF"
     [ "${MICROFLOW_SYMBOLS:-}" = "${PRODUCTION_SYMBOL_ALLOWLIST:-}" ] || guard_die "MicroFlow universe must equal the canonical production allowlist"
-    awk -v v="${MICROFLOW_LEVERAGE:-0}" 'BEGIN { exit !(v > 0 && v <= 5) }' || guard_die "MicroFlow leverage must be >0 and <=5"
-    awk -v v="${MAX_LEVERAGE:-0}" 'BEGIN { exit !(v > 0 && v <= 5) }' || guard_die "MAX_LEVERAGE must be >0 and <=5"
+    awk -v v="${MICROFLOW_LEVERAGE:-0}" -v m="$GUARD_MICROFLOW_MAX_LEVERAGE" 'BEGIN { exit !(v > 0 && v <= m) }' \
+      || guard_die "MicroFlow leverage must be >0 and <=$GUARD_MICROFLOW_MAX_LEVERAGE"
+    awk -v v="${MAX_LEVERAGE:-0}" -v m="$GUARD_MICROFLOW_MAX_LEVERAGE" 'BEGIN { exit !(v > 0 && v <= m) }' \
+      || guard_die "MAX_LEVERAGE must be >0 and <=$GUARD_MICROFLOW_MAX_LEVERAGE"
     awk -v v="${MICROFLOW_MAX_SLIPPAGE_BPS:-0}" 'BEGIN { exit !(v > 0 && v <= 1) }' || guard_die "MicroFlow slippage cap must be >0 and <=1 bps"
   fi
   echo "guard: LIVE invariants OK"
