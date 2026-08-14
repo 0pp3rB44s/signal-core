@@ -137,12 +137,24 @@ def test_equity_sizing_keys_are_appendable_but_secrets_still_are_not():
     widening cannot quietly grow past non-secret settings.
     """
     from scripts.manage_runner_env_live import (
-        ADDITIVE_NON_SECRET_KEYS, _is_secret_key,
+        ADDITIVE_NON_SECRET_KEYS, MUTABLE_NON_SECRET_KEYS, _is_secret_key,
     )
     for key in ("MICROFLOW_MARGIN_RESERVE_PCT", "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY",
                 "MICROFLOW_MAX_LOSS_PCT_EQUITY"):
-        assert key in ADDITIVE_NON_SECRET_KEYS
+        # BOTH are required and they are not interchangeable: MUTABLE gates --set,
+        # ADDITIVE gates appending a key the file does not have yet. Asserting only
+        # one of them passes while the tool still refuses the key in practice.
+        assert key in MUTABLE_NON_SECRET_KEYS, f"{key} cannot be --set"
+        assert key in ADDITIVE_NON_SECRET_KEYS, f"{key} cannot be appended"
         assert not _is_secret_key(key)
     for secret in ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"):
         assert secret not in ADDITIVE_NON_SECRET_KEYS
         assert _is_secret_key(secret)
+
+
+def test_every_additive_key_is_also_mutable():
+    """A key in one set only is a trap: it reads as approved and still gets refused."""
+    from scripts.manage_runner_env_live import (
+        ADDITIVE_NON_SECRET_KEYS, MUTABLE_NON_SECRET_KEYS,
+    )
+    assert ADDITIVE_NON_SECRET_KEYS <= MUTABLE_NON_SECRET_KEYS
