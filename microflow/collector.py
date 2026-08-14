@@ -51,7 +51,8 @@ class MicroflowCollector:
     def __init__(self, *, symbols: tuple[str, ...], data_dir: Path,
                  ws_url: str = BITGET_PUBLIC_WS,
                  candidate_callback: Callable[[dict], None] | None = None,
-                 snapshot_callback: Callable[[dict], None] | None = None) -> None:
+                 snapshot_callback: Callable[[dict], None] | None = None,
+                 ping_interval: float = 25.0) -> None:
         if not symbols or len(symbols) > 15:
             raise ValueError("MicroFlow universe must contain 1-15 symbols")
         self.symbols = tuple(symbol.upper() for symbol in symbols)
@@ -73,7 +74,12 @@ class MicroflowCollector:
             self.data_dir / "candidates", schema_version="microflow_candidate_v1", symbols=self.symbols
         )
         self.ws = None
+        self.ping_interval = ping_interval
         self.ping_thread: threading.Thread | None = None
+        #: Set when the connection owning ``ping_thread`` goes away. Each
+        #: connection gets its own event so a heartbeat can be stopped without
+        #: touching ``stop_event``, which ends the whole process.
+        self._conn_stop: threading.Event | None = None
         self.subscription_acks: set[tuple[str, str]] = set()
         self.frames = 0
         self.trade_rows = 0
@@ -236,22 +242,61 @@ class MicroflowCollector:
         tmp.write_text(json.dumps(self.status(), indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self.data_dir / "status.json")
 
-    def _ping_loop(self) -> None:
-        while not self.stop_event.wait(25):
+    def _ping_loop(self, ws, conn_stop: threading.Event) -> None:
+        """Heartbeat for exactly one connection.
+
+        The socket is a parameter, never ``self.ws``. A thread that outlives
+        its connection therefore cannot reach the socket that replaced it --
+        which is what previously let N reconnects put N heartbeats on one live
+        connection and earn Bitget's 30007 request-over-limit.
+        """
+        while not conn_stop.wait(self.ping_interval):
+            if self.stop_event.is_set() or ws is not self.ws:
+                return  # superseded or shutting down: this connection is done
             try:
-                if self.ws is not None:
-                    self.ws.send("ping")
+                ws.send("ping")
             except Exception as exc:
+                # Fail closed: a socket that cannot be pinged is not ours to
+                # retry on. run_forever will observe the close and reconnect.
                 log.warning("MICROFLOW_PING_FAILED | error=%s", exc)
+                conn_stop.set()
+                return
+
+    def _stop_active_heartbeat(self) -> None:
+        """Retire the current heartbeat and wait for the thread to leave."""
+        conn_stop, thread = self._conn_stop, self.ping_thread
+        self._conn_stop, self.ping_thread = None, None
+        if conn_stop is not None:
+            conn_stop.set()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
 
     def _on_open(self, ws) -> None:
+        # Defensive: a previous connection must never outlive this one, even if
+        # its close callback was skipped.
+        self._stop_active_heartbeat()
         self.connection_id = str(uuid.uuid4())
         self.subscription_acks.clear()
-        ws.send(json.dumps(subscription_payload(self.symbols), separators=(",", ":")))
+        try:
+            ws.send(json.dumps(subscription_payload(self.symbols), separators=(",", ":")))
+        except Exception as exc:
+            # No subscription means no data; do not leave a heartbeat behind
+            # holding a socket the collector is not actually using.
+            log.warning("MICROFLOW_SUBSCRIBE_FAILED | error=%s", exc)
+            try:
+                ws.close()
+            except Exception:
+                pass
+            return
         log.info("MICROFLOW_WS_OPEN | connection_id=%s | channels=%d",
                  self.connection_id, len(self.symbols) * 2)
-        self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
-        self.ping_thread.start()
+        conn_stop = threading.Event()
+        thread = threading.Thread(
+            target=self._ping_loop, args=(ws, conn_stop), daemon=True,
+            name=f"microflow-ping-{self.connection_id[:8]}",
+        )
+        self._conn_stop, self.ping_thread = conn_stop, thread
+        thread.start()
 
     def _on_message(self, _ws, message: str) -> None:
         self.handle_message(message)
@@ -265,9 +310,11 @@ class MicroflowCollector:
 
     def _on_close(self, _ws, code, reason) -> None:
         log.warning("MICROFLOW_WS_CLOSE | code=%s | reason=%s", code, reason)
+        self._stop_active_heartbeat()
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._stop_active_heartbeat()
         if self.ws is not None:
             try:
                 self.ws.close()
