@@ -53,6 +53,12 @@ MUTABLE_NON_SECRET_KEYS = frozenset({
     "MAKER_ENTRY_POLL_SECONDS", "MAKER_ENTRY_OFFSET_BPS",
     "MICROFLOW_SCALPER_ENABLED", "MICROFLOW_SYMBOLS", "MICROFLOW_LEVERAGE",
     "MICROFLOW_MAX_SLIPPAGE_BPS", "MICROFLOW_DATA_DIR",
+    # Added 2026-08-14 with the equity-sizing change (PR #57). A key must appear
+    # in BOTH sets to be usable: MUTABLE permits --set at all, ADDITIVE permits
+    # appending it when the file does not carry it yet.
+    "MICROFLOW_MARGIN_RESERVE_PCT",
+    "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY",
+    "MICROFLOW_MAX_LOSS_PCT_EQUITY",
 })
 
 # Reviewed additive keys introduced after existing Runner env files were
