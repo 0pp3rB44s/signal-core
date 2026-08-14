@@ -9,6 +9,12 @@ from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol
 #: values rather than an upper bound: 0, 1 or 3 must all fail closed, so a
 #: mistyped or silently-defaulted setting can never widen exposure.
 LIVE_MAX_OPEN_POSITIONS = 2
+
+#: Ceiling MicroFlow's own leverage may reach. Raised 5 -> 10 on 2026-08-14 by owner
+#: request. This is the strategy's bound only: legacy strategies cannot open LIVE
+#: entries at all (the allowlist below must be exactly microflow_scalper_v1), so
+#: raising MAX_LEVERAGE does not hand them a wider permission.
+MICROFLOW_MAX_ALLOWED_LEVERAGE = 10.0
 LIVE_MAX_EXECUTIONS_PER_CYCLE = 2
 
 
@@ -78,6 +84,9 @@ class Settings(BaseSettings):
     microflow_scalper_enabled: bool = Field(default=False, alias="MICROFLOW_SCALPER_ENABLED")
     microflow_symbols: str = Field(default="", alias="MICROFLOW_SYMBOLS")
     microflow_leverage: float = Field(default=1.0, alias="MICROFLOW_LEVERAGE")
+    microflow_margin_reserve_pct: float = Field(default=10.0, alias="MICROFLOW_MARGIN_RESERVE_PCT")
+    microflow_max_notional_pct_equity: float = Field(default=500.0, alias="MICROFLOW_MAX_NOTIONAL_PCT_EQUITY")
+    microflow_max_loss_pct_equity: float = Field(default=2.0, alias="MICROFLOW_MAX_LOSS_PCT_EQUITY")
     microflow_max_slippage_bps: float = Field(default=1.0, alias="MICROFLOW_MAX_SLIPPAGE_BPS")
     microflow_data_dir: str = Field(default="data_store/microflow_live", alias="MICROFLOW_DATA_DIR")
 
@@ -377,10 +386,22 @@ class Settings(BaseSettings):
                     raise ValueError("production LIVE requires MICROFLOW_SCALPER_ENABLED=true")
                 if parse_symbol_allowlist(self.microflow_symbols, required=True) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
                     raise ValueError("MICROFLOW_SYMBOLS must equal the approved production universe")
-                if not (0 < self.microflow_leverage <= 5.0):
-                    raise ValueError("MICROFLOW_LEVERAGE must be >0 and <=5")
+                if not (0 < self.microflow_leverage <= MICROFLOW_MAX_ALLOWED_LEVERAGE):
+                    raise ValueError(
+                        f"MICROFLOW_LEVERAGE must be >0 and <={MICROFLOW_MAX_ALLOWED_LEVERAGE:g}")
                 if self.microflow_leverage > self.max_leverage:
                     raise ValueError("MICROFLOW_LEVERAGE may not exceed MAX_LEVERAGE")
+                if self.max_leverage > MICROFLOW_MAX_ALLOWED_LEVERAGE:
+                    raise ValueError(
+                        f"MAX_LEVERAGE may not exceed {MICROFLOW_MAX_ALLOWED_LEVERAGE:g} in production LIVE")
+                # Sizing bounds. Each fails closed: a missing or absurd value must
+                # stop the bot, never silently widen exposure.
+                if not (0.0 <= self.microflow_margin_reserve_pct < 100.0):
+                    raise ValueError("MICROFLOW_MARGIN_RESERVE_PCT must be >=0 and <100")
+                if not (0 < self.microflow_max_notional_pct_equity <= 1000.0):
+                    raise ValueError("MICROFLOW_MAX_NOTIONAL_PCT_EQUITY must be >0 and <=1000")
+                if not (0 < self.microflow_max_loss_pct_equity <= 5.0):
+                    raise ValueError("MICROFLOW_MAX_LOSS_PCT_EQUITY must be >0 and <=5")
                 if not (0 < self.microflow_max_slippage_bps <= 1.0):
                     raise ValueError("MICROFLOW_MAX_SLIPPAGE_BPS must be >0 and <=1")
                 if self.old_strategies_new_entries_enabled:

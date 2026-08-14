@@ -284,11 +284,16 @@ def test_live_env_trading_parameters_untouched():
     text = live.read_text()
     # Risk-bearing ceilings. These must not drift; loosening any of them is the
     # failure mode this guard exists for.
-    for expected in ("MAX_SYMBOLS=1", "MAX_OPEN_POSITIONS=1", "DEFAULT_LEVERAGE=3",
-                     "MAX_LEVERAGE=3", "ACCOUNT_RISK_PER_TRADE_PCT=0.50",
-                     "EXECUTION_CONFIRM_SYMBOLS=BTCUSDT",
-                     "EXECUTION_REQUIRE_CONFIRMATION=true",
-                     "EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT=35"):
+    # Updated 2026-08-14 for the owner-approved equity-sizing change: the fixed
+    # 35 USDT notional cap was replaced by margin-slot sizing and MicroFlow moved
+    # to 10x. The ceilings pinned here are the *new* approved values -- this guard
+    # exists to catch drift, so it must track deliberate changes and nothing else.
+    for expected in ("MAX_SYMBOLS=12", "MAX_OPEN_POSITIONS=2", "DEFAULT_LEVERAGE=10",
+                     "MAX_LEVERAGE=10", "MICROFLOW_LEVERAGE=10",
+                     "MICROFLOW_MARGIN_RESERVE_PCT=10",
+                     "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY=500",
+                     "MICROFLOW_MAX_LOSS_PCT_EQUITY=2",
+                     "EXECUTION_REQUIRE_CONFIRMATION=true"):
         assert expected in text, f"missing/changed in .env.live: {expected}"
 
     # ENABLE_SHORTS is owner-controlled and was deliberately switched to true on

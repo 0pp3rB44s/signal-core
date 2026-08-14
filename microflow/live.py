@@ -35,30 +35,85 @@ class MicroflowSizing:
     total_loss_usdt: float
     total_loss_pct_equity: float
     taker_fee_rate: float
+    margin_usdt: float = 0.0
+    margin_per_slot_usdt: float = 0.0
+    binding_constraint: str = ""
 
 
-def size_microflow_position(*, equity_usdt: float, risk_pct: float,
-                            notional_cap_usdt: float, leverage: float,
-                            taker_fee_rate: float, slippage_bps: float) -> MicroflowSizing:
-    """Size from stop+fees+entry slippage; leverage is only a margin ceiling."""
-    if equity_usdt <= 0 or risk_pct <= 0 or leverage <= 0 or taker_fee_rate <= 0:
-        raise ValueError("positive authenticated equity, risk, leverage and taker fee required")
+def size_microflow_position(*, equity_usdt: float, available_usdt: float,
+                            committed_margin_usdt: float, leverage: float,
+                            taker_fee_rate: float, slippage_bps: float,
+                            margin_reserve_pct: float, max_notional_pct_equity: float,
+                            max_loss_pct_equity: float,
+                            max_open_positions: int,
+                            min_notional_usdt: float = 5.0) -> MicroflowSizing:
+    """Equity-based, portfolio-aware sizing for one MicroFlow position.
+
+    The account balance is the basis, not a fixed USDT ceiling. Usable margin is
+    split evenly across the position slots so filling slot 1 cannot starve slot 2,
+    and the reserve keeps fees and execution variation out of the margin that gets
+    committed.
+
+    Risk stays explicit but as a *bound*, not as the sizer: the resulting loss at
+    the stop is computed and the trade is refused if it exceeds
+    ``max_loss_pct_equity``. Leverage is a margin multiplier and never a reason to
+    size larger than that bound allows.
+    """
+    if equity_usdt <= 0 or leverage <= 0 or taker_fee_rate <= 0:
+        raise ValueError("positive authenticated equity, leverage and taker fee required")
+    if available_usdt < 0 or committed_margin_usdt < 0:
+        raise ValueError("balances may not be negative")
+    if max_open_positions < 1:
+        raise ValueError("max_open_positions must be >=1")
+    if not (0.0 <= margin_reserve_pct < 100.0):
+        raise ValueError("margin_reserve_pct must be >=0 and <100")
+    if max_notional_pct_equity <= 0 or max_loss_pct_equity <= 0:
+        raise ValueError("notional and loss ceilings must be positive")
+
     loss_fraction = (
         FrozenResearchSpec().sl_bps + slippage_bps + taker_fee_rate * 20_000.0
     ) / 10_000.0
-    risk_budget = equity_usdt * risk_pct / 100.0
-    notional = min(
-        risk_budget / loss_fraction,
-        notional_cap_usdt,
-        equity_usdt * leverage,
-    )
+    keep = 1.0 - margin_reserve_pct / 100.0
+
+    # One slot's share of the usable balance, so two positions can coexist.
+    margin_per_slot = available_usdt * keep / max_open_positions
+    # Never commit more than what is actually free right now.
+    free_margin = max(0.0, available_usdt - committed_margin_usdt) * keep
+    margin = min(margin_per_slot, free_margin)
+
+    notional_from_margin = margin * leverage
+    notional_ceiling = equity_usdt * max_notional_pct_equity / 100.0
+    notional = min(notional_from_margin, notional_ceiling)
+    binding = "margin_slot" if notional_from_margin <= notional_ceiling else "notional_pct_equity"
+
+    if notional < min_notional_usdt:
+        # Covers "no free margin left" as well as a balance too small to trade.
+        # Refusing is the honest outcome; a zero- or dust-sized order would look
+        # like a successful trade and hide the fact that sizing had nothing to work
+        # with.
+        raise ValueError(
+            f"sizable notional {notional:.8f} is below the exchange minimum "
+            f"{min_notional_usdt} (margin available {margin:.8f})"
+        )
+
     total_loss = notional * loss_fraction
+    loss_pct = total_loss / equity_usdt * 100.0
+    if loss_pct > max_loss_pct_equity:
+        # Fail closed rather than silently shrinking: a sizing input that lands
+        # here is wrong, and a quietly smaller trade would hide it.
+        raise ValueError(
+            f"planned loss {loss_pct:.4f}% of equity exceeds "
+            f"MICROFLOW_MAX_LOSS_PCT_EQUITY={max_loss_pct_equity}"
+        )
     return MicroflowSizing(
         notional_usdt=round(notional, 8),
-        risk_budget_usdt=round(risk_budget, 8),
+        risk_budget_usdt=round(equity_usdt * max_loss_pct_equity / 100.0, 8),
         total_loss_usdt=round(total_loss, 8),
-        total_loss_pct_equity=round(total_loss / equity_usdt * 100.0, 8),
+        total_loss_pct_equity=round(loss_pct, 8),
         taker_fee_rate=taker_fee_rate,
+        margin_usdt=round(margin, 8),
+        margin_per_slot_usdt=round(margin_per_slot, 8),
+        binding_constraint=binding,
     )
 
 
@@ -146,6 +201,33 @@ class MicroflowLiveRuntime:
                     return value
         raise RuntimeError("authenticated USDT account equity unavailable")
 
+    @staticmethod
+    def _margin_state(payload: dict) -> tuple[float, float]:
+        """Free balance and margin already committed, from the same authenticated read.
+
+        Taken from one payload rather than two calls so sizing cannot be built from
+        an available balance and a committed figure observed at different moments.
+        """
+        for row in payload.get("data") or []:
+            if str(row.get("marginCoin") or "").upper() != "USDT":
+                continue
+            available = float(row.get("available") or 0)
+            equity = float(row.get("accountEquity") or row.get("usdtEquity") or 0)
+            # Whatever equity is not available is already working: isolated margin
+            # on open positions, plus anything locked by resting orders.
+            committed = max(0.0, equity - available)
+            if available >= 0 and equity > 0:
+                return available, committed
+        raise RuntimeError("authenticated USDT margin state unavailable")
+
+    def _effective_leverage(self) -> float:
+        """Lowest of every configured ceiling. Config validation owns the upper bound."""
+        return min(
+            float(self.settings.microflow_leverage),
+            float(self.settings.default_leverage),
+            float(self.settings.max_leverage),
+        )
+
     def _fee_rates(self, symbol: str) -> tuple[float, float]:
         data = (self.client.get_trade_fee_rate(symbol=symbol, business_type="mix").get("data") or {})
         maker, taker = float(data.get("makerFeeRate")), float(data.get("takerFeeRate"))
@@ -157,21 +239,22 @@ class MicroflowLiveRuntime:
         symbol = str(candidate["symbol"]).upper()
         direction = str(candidate["side"]).upper()
         reference = float(candidate["entry_reference"])
-        equity = self._account_equity(self.client.get_accounts())
+        accounts = self.client.get_accounts()
+        equity = self._account_equity(accounts)
+        available, committed = self._margin_state(accounts)
         maker, taker = self._fee_rates(symbol)
-        leverage = min(
-            float(self.settings.microflow_leverage),
-            float(self.settings.default_leverage),
-            float(self.settings.max_leverage),
-            5.0,
-        )
+        leverage = self._effective_leverage()
         sizing = size_microflow_position(
             equity_usdt=equity,
-            risk_pct=float(self.settings.account_risk_per_trade_pct),
-            notional_cap_usdt=float(self.settings.execution_max_live_notional_per_trade_usdt),
+            available_usdt=available,
+            committed_margin_usdt=committed,
             leverage=leverage,
             taker_fee_rate=taker,
             slippage_bps=float(self.settings.microflow_max_slippage_bps),
+            margin_reserve_pct=float(self.settings.microflow_margin_reserve_pct),
+            max_notional_pct_equity=float(self.settings.microflow_max_notional_pct_equity),
+            max_loss_pct_equity=float(self.settings.microflow_max_loss_pct_equity),
+            max_open_positions=int(self.settings.max_open_positions),
         )
         features = candidate.get("features") or {}
         flow = features.get("trade_flow") or {}
@@ -233,18 +316,21 @@ class MicroflowLiveRuntime:
             return {"allowed": False, "reason": "slippage_cap_exceeded"}
         remaining_tp_bps = abs(float(plan.take_profits[0]) - current) / current * 10_000.0
         try:
-            equity = self._account_equity(self.client.get_accounts())
+            accounts = self.client.get_accounts()
+            equity = self._account_equity(accounts)
+            available, committed = self._margin_state(accounts)
             maker, taker = self._fee_rates(plan.symbol)
-            leverage = min(
-                float(self.settings.microflow_leverage),
-                float(self.settings.default_leverage), float(self.settings.max_leverage), 5.0,
-            )
+            leverage = self._effective_leverage()
             sizing = size_microflow_position(
                 equity_usdt=equity,
-                risk_pct=float(self.settings.account_risk_per_trade_pct),
-                notional_cap_usdt=float(self.settings.execution_max_live_notional_per_trade_usdt),
+                available_usdt=available,
+                committed_margin_usdt=committed,
                 leverage=leverage, taker_fee_rate=taker,
                 slippage_bps=cap_bps,
+                margin_reserve_pct=float(self.settings.microflow_margin_reserve_pct),
+                max_notional_pct_equity=float(self.settings.microflow_max_notional_pct_equity),
+                max_loss_pct_equity=float(self.settings.microflow_max_loss_pct_equity),
+                max_open_positions=int(self.settings.max_open_positions),
             )
         except Exception as exc:
             return {"allowed": False, "reason": f"authenticated_risk_recheck_failed:{exc}"}
