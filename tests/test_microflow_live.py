@@ -59,27 +59,51 @@ def test_sequence_error_fails_closed():
     ) is None
 
 
-def test_risk_sizing_uses_stop_fees_and_slippage_not_leverage_multiplier():
+def test_sizing_is_equity_based_with_leverage_as_the_margin_multiplier():
+    """Superseded model, 2026-08-14.
+
+    Sizing used to be risk-driven and capped at a fixed 35 USDT, with leverage
+    deliberately *not* a multiplier. The owner replaced that with margin-slot
+    sizing off the account balance, where leverage does multiply exposure. The
+    old assertions are kept here in inverted form so the change stays visible:
+    the fixed cap is gone and leverage now moves the notional.
+
+    Detailed coverage lives in tests/test_microflow_equity_sizing.py.
+    """
     sized = size_microflow_position(
-        equity_usdt=46.674882, risk_pct=0.5, notional_cap_usdt=35,
-        leverage=5, taker_fee_rate=0.0006, slippage_bps=1,
+        equity_usdt=46.674882, available_usdt=46.674882, committed_margin_usdt=0.0,
+        leverage=10, taker_fee_rate=0.0006, slippage_bps=1,
+        margin_reserve_pct=10.0, max_notional_pct_equity=500.0,
+        max_loss_pct_equity=2.0, max_open_positions=2,
     )
-    assert sized.notional_usdt == 35
-    assert sized.total_loss_usdt == pytest.approx(0.1155)
-    assert sized.total_loss_pct_equity < 0.5
-    assert sized.risk_budget_usdt == pytest.approx(0.23337441)
+    assert sized.notional_usdt != 35, "the fixed 35 USDT cap must be gone"
+    assert sized.notional_usdt == pytest.approx(46.674882 * 0.9 / 2 * 10, rel=1e-7)
+    assert sized.margin_usdt == pytest.approx(46.674882 * 0.9 / 2, rel=1e-7)
+    assert sized.binding_constraint == "margin_slot"
+    # Leverage is a multiplier now: same margin, more exposure, more loss.
+    at_three = size_microflow_position(
+        equity_usdt=46.674882, available_usdt=46.674882, committed_margin_usdt=0.0,
+        leverage=3, taker_fee_rate=0.0006, slippage_bps=1,
+        margin_reserve_pct=10.0, max_notional_pct_equity=500.0,
+        max_loss_pct_equity=2.0, max_open_positions=2,
+    )
+    assert sized.total_loss_usdt > at_three.total_loss_usdt
+    assert sized.margin_usdt == pytest.approx(at_three.margin_usdt, rel=1e-7)
 
 
 def test_pre_submit_guard_enforces_one_bps_cap_and_fresh_signal():
     runtime = MicroflowLiveRuntime.__new__(MicroflowLiveRuntime)
     runtime.settings = SimpleNamespace(
         microflow_max_slippage_bps=1.0, microflow_leverage=3,
-        default_leverage=3, max_leverage=3, account_risk_per_trade_pct=0.5,
-        execution_max_live_notional_per_trade_usdt=35,
+        default_leverage=3, max_leverage=3, max_open_positions=2,
+        microflow_margin_reserve_pct=10.0,
+        microflow_max_notional_pct_equity=500.0,
+        microflow_max_loss_pct_equity=2.0,
     )
     runtime.client = MagicMock()
     runtime.client.get_accounts.return_value = {
-        "data": [{"marginCoin": "USDT", "accountEquity": "46.674882"}]
+        "data": [{"marginCoin": "USDT", "accountEquity": "46.674882",
+                  "available": "46.674882"}]
     }
     runtime.client.get_trade_fee_rate.return_value = {
         "data": {"makerFeeRate": "0.0002", "takerFeeRate": "0.0006"}
