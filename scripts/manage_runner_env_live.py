@@ -60,6 +60,12 @@ MUTABLE_NON_SECRET_KEYS = frozenset({
 ADDITIVE_NON_SECRET_KEYS = frozenset({
     "MICROFLOW_SCALPER_ENABLED", "MICROFLOW_SYMBOLS", "MICROFLOW_LEVERAGE",
     "MICROFLOW_MAX_SLIPPAGE_BPS", "MICROFLOW_DATA_DIR",
+    # Added 2026-08-14 with the equity-sizing change (PR #57). Each is a bound
+    # that fails closed in app/config.py, so an absent or absurd value stops the
+    # bot rather than widening exposure.
+    "MICROFLOW_MARGIN_RESERVE_PCT",
+    "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY",
+    "MICROFLOW_MAX_LOSS_PCT_EQUITY",
 })
 
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")

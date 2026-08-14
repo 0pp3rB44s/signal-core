@@ -127,3 +127,22 @@ def test_tool_contains_no_secret_transport_or_git_operations():
     source = Path(managed.__file__).read_text()
     for forbidden in ("subprocess", "requests", "socket.create_connection", "git add", "scp ", "rsync "):
         assert forbidden not in source
+
+
+def test_equity_sizing_keys_are_appendable_but_secrets_still_are_not():
+    """The three bounds added with PR #57 must be settable through the controlled route.
+
+    They are risk *ceilings* that fail closed in app/config.py, so the Runner cannot
+    run the equity-sizing model without them. Asserted alongside a secret key so the
+    widening cannot quietly grow past non-secret settings.
+    """
+    from scripts.manage_runner_env_live import (
+        ADDITIVE_NON_SECRET_KEYS, _is_secret_key,
+    )
+    for key in ("MICROFLOW_MARGIN_RESERVE_PCT", "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY",
+                "MICROFLOW_MAX_LOSS_PCT_EQUITY"):
+        assert key in ADDITIVE_NON_SECRET_KEYS
+        assert not _is_secret_key(key)
+    for secret in ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"):
+        assert secret not in ADDITIVE_NON_SECRET_KEYS
+        assert _is_secret_key(secret)
