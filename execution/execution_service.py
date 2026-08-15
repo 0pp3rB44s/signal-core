@@ -748,7 +748,18 @@ class ExecutionService:
                 fallback_notional_cap = min(50.0, max(10.0, account_equity * 0.75)) if account_equity > 0 else 25.0
                 max_live_notional = configured_notional_cap if configured_notional_cap > 0 else fallback_notional_cap
                 requested_notional = float(plan.position_notional_usdt or 0.0)
-                live_notional = min(requested_notional, hard_cap_notional, max_live_notional)
+                if is_microflow_scalper_v1(plan.strategy):
+                    # MicroFlow sizes from the account balance itself
+                    # (microflow/live.py::size_microflow_position): usable margin split
+                    # across the position slots, bounded by MICROFLOW_MAX_NOTIONAL_PCT_EQUITY
+                    # and refused outright above MICROFLOW_MAX_LOSS_PCT_EQUITY. Applying the
+                    # flat EXECUTION_MAX_LIVE_NOTIONAL_PER_TRADE_USDT on top of that silently
+                    # undoes it -- observed 2026-08-15, when a correctly sized 209.29 was
+                    # capped back to 35.00 here. The leverage-derived hard cap still applies.
+                    # Legacy strategies keep the flat cap; it is their only ceiling.
+                    live_notional = min(requested_notional, hard_cap_notional)
+                else:
+                    live_notional = min(requested_notional, hard_cap_notional, max_live_notional)
                 min_live_notional_usdt = float(
                     getattr(self.settings, "execution_min_live_notional_usdt", 5.0) or 5.0
                 )
