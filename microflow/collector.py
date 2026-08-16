@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from microflow.candidates import CandidateEpisodeSampler, FrozenResearchSpec
+from microflow.near_miss import NearMissTracker, evaluate_gates
 from microflow.segments import ImmutableSegmentWriter
 from microflow.state import MicroflowSymbolState
 
@@ -73,6 +74,14 @@ class MicroflowCollector:
         self.candidate_writer = ImmutableSegmentWriter(
             self.data_dir / "candidates", schema_version="microflow_candidate_v1", symbols=self.symbols
         )
+        # Near-miss telemetry. Research-only: nothing downstream of the collector
+        # reads it, and disabling it cannot change what the bot trades.
+        self.near_miss_writer = ImmutableSegmentWriter(
+            self.data_dir / "near_miss", schema_version="microflow_near_miss_v1", symbols=self.symbols
+        )
+        self.near_miss = NearMissTracker(FrozenResearchSpec())
+        self.near_miss_rows = 0
+        self.spec = FrozenResearchSpec()
         self.ws = None
         self.ping_interval = ping_interval
         self.ping_thread: threading.Thread | None = None
@@ -170,6 +179,7 @@ class MicroflowCollector:
             self.book_rows += 1
             written += 1
             candidate = self.samplers[symbol].observe(snapshot)
+            self._record_near_miss(snapshot, candidate)
             if self.snapshot_callback is not None:
                 try:
                     self.snapshot_callback(dict(snapshot))
@@ -194,6 +204,24 @@ class MicroflowCollector:
                             candidate["candidate_id"], symbol,
                         )
         return written
+
+    def _record_near_miss(self, snapshot: dict, candidate: dict | None) -> None:
+        """Observe the episode. Never allowed to affect trading.
+
+        Wrapped whole: a telemetry bug must not be able to stop the collector or
+        change an entry decision, so any failure is logged and swallowed.
+        """
+        try:
+            evaluation = evaluate_gates(snapshot, self.spec)
+            rows = self.near_miss.observe(
+                snapshot, evaluation,
+                candidate_id=(candidate or {}).get("candidate_id"),
+            )
+            for row in rows:
+                self.near_miss_writer.append(row)
+                self.near_miss_rows += 1
+        except Exception:
+            log.exception("MICROFLOW_NEAR_MISS_FAILED | symbol=%s", snapshot.get("symbol"))
 
     def handle_message(self, raw: str) -> int:
         if raw == "pong":
@@ -229,6 +257,7 @@ class MicroflowCollector:
             "trade_rows": self.trade_rows,
             "book_rows": self.book_rows,
             "candidate_rows": self.candidate_rows,
+            "near_miss_rows": self.near_miss_rows,
             "reconnects": self.reconnects,
             "malformed_frames": self.malformed_frames,
             "stream_gaps": self.stream_gaps,
@@ -342,6 +371,7 @@ class MicroflowCollector:
             attempt += 1
         self.state_writer.close()
         self.trade_writer.close()
+        self.near_miss_writer.close()
         self.candidate_writer.close()
         self._write_status()
 
