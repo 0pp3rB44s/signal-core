@@ -38,33 +38,15 @@ class CandidateEpisodeSampler:
         self.cooldown_until_ms = 0
 
     def _direction(self, snapshot: dict) -> str | None:
-        flow = snapshot["trade_flow"][self.spec.ofi_window]
-        ofi = flow.get("ofi")
-        book = snapshot["book"].get("book_imbalance_top5")
-        edge = snapshot["microprice"].get("microprice_vs_mid_bps")
-        freshness = snapshot["freshness"]
-        movement = snapshot["trade_flow"]["60s"].get("realized_range_bps")
-        fresh = (
-            freshness.get("sequence_valid") is True
-            and freshness.get("trade_stream_age_ms") is not None
-            and freshness.get("book_stream_age_ms") is not None
-            and freshness["trade_stream_age_ms"] <= self.spec.freshness_ms
-            and freshness["book_stream_age_ms"] <= self.spec.freshness_ms
-        )
-        common = (
-            fresh
-            and snapshot["book"]["spread_bps"] <= self.spec.max_spread_bps
-            and movement is not None
-            and movement >= self.spec.minimum_60s_range_bps
-            and ofi is not None and book is not None and edge is not None
-        )
-        if not common:
-            return None
-        if ofi >= self.spec.ofi_threshold and book >= self.spec.book_threshold and edge > self.spec.microprice_edge_bps:
-            return "LONG"
-        if ofi <= -self.spec.ofi_threshold and book <= -self.spec.book_threshold and edge < -self.spec.microprice_edge_bps:
-            return "SHORT"
-        return None
+        """Direction to act on, or None.
+
+        Delegates to :func:`microflow.near_miss.evaluate_gates` so the gate telemetry
+        and this decision are the same computation. If they were written twice they
+        would eventually disagree, and the telemetry would describe a bot that does
+        not exist.
+        """
+        from microflow.near_miss import evaluate_gates
+        return evaluate_gates(snapshot, self.spec).direction
 
     def observe(self, snapshot: dict) -> dict | None:
         now_ms = int(snapshot["timestamp_local"])
