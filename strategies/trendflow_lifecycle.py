@@ -187,3 +187,97 @@ class PortfolioState:
         if self.committed_risk_pct >= spec.max_portfolio_risk_pct:
             return "PORTFOLIO_RISK_EXHAUSTED"
         return None
+
+
+@dataclass
+class TrendRunnerTracker:
+    """V1.1 position lifecycle: one partial at +1R, then a trailed runner.
+
+    Same PB-2 guarantee as `TargetTracker` — seeded from the fill, and `observe()` refuses any
+    observation stamped at or before it. The differences from V1 are deliberate and pre-registered:
+    there is no TP2, the runner is 75% rather than 50%, and the trail is 2.0 ATR so a pullback
+    cannot shake it out of a trend it is supposed to be riding.
+    """
+
+    direction: str
+    entry_price: float
+    fill_timestamp_ms: int
+    initial_stop: float
+    spec: object                     # TrendFlowV11Spec
+    tp1_hit: bool = False
+    remaining_pct: float = 100.0
+    stop_price: float = 0.0
+    max_favourable_price: float = 0.0
+    last_observation_ms: int = 0
+    events: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.direction not in ("LONG", "SHORT"):
+            raise LifecycleError("direction must be LONG or SHORT")
+        if self.entry_price <= 0:
+            raise LifecycleError("entry price must be positive")
+        if self.fill_timestamp_ms <= 0:
+            raise LifecycleError("a real fill timestamp is required")
+        if abs(self.entry_price - self.initial_stop) <= 0:
+            raise LifecycleError("initial stop cannot equal the entry")
+        self.stop_price = self.initial_stop
+        self.max_favourable_price = self.entry_price
+
+    @property
+    def r_distance(self) -> float:
+        return abs(self.entry_price - self.initial_stop)
+
+    def tp1_price(self) -> float:
+        sign = 1.0 if self.direction == "LONG" else -1.0
+        return self.entry_price + sign * self.spec.tp1_r * self.r_distance
+
+    def _reached(self, price: float, target: float) -> bool:
+        return price >= target if self.direction == "LONG" else price <= target
+
+    def _favourable(self, price: float) -> bool:
+        return (price > self.max_favourable_price if self.direction == "LONG"
+                else price < self.max_favourable_price)
+
+    def _tighten(self, candidate: float) -> bool:
+        if self.direction == "LONG":
+            if candidate > self.stop_price:
+                self.stop_price = candidate
+                return True
+        elif candidate < self.stop_price:
+            self.stop_price = candidate
+            return True
+        return False
+
+    def reached_stop(self, price: float) -> bool:
+        return price <= self.stop_price if self.direction == "LONG" else price >= self.stop_price
+
+    def observe(self, *, price: float, timestamp_ms: int, atr14: float | None = None) -> list[str]:
+        if timestamp_ms <= self.fill_timestamp_ms:
+            raise LifecycleError(
+                f"observation at {timestamp_ms} is not after the fill at {self.fill_timestamp_ms}; "
+                "pre-entry price action may never advance target state (PB-2)")
+        if timestamp_ms < self.last_observation_ms:
+            raise LifecycleError("observations must not go backwards in time")
+        if price <= 0:
+            raise LifecycleError("price must be positive")
+        self.last_observation_ms = timestamp_ms
+        fired: list[str] = []
+        if self._favourable(price):
+            self.max_favourable_price = price
+        if not self.tp1_hit and self._reached(price, self.tp1_price()):
+            self.tp1_hit = True
+            self.remaining_pct -= self.spec.tp1_close_pct
+            fired.append("TP1_HIT")
+            self._tighten(self.entry_price)          # break-even, from post-entry action only
+        # Trailing arms only after TP1, exactly as specified.
+        if self.tp1_hit and atr14 and atr14 > 0:
+            trail = (self.max_favourable_price - self.spec.trail_atr_multiple * atr14
+                     if self.direction == "LONG"
+                     else self.max_favourable_price + self.spec.trail_atr_multiple * atr14)
+            if self._tighten(trail):
+                fired.append("TRAIL_ADVANCED")
+        self.events.extend(fired)
+        return fired
+
+    def max_hold_exceeded(self, now_ms: int) -> bool:
+        return (now_ms - self.fill_timestamp_ms) >= self.spec.max_hold_hours * 3_600_000
