@@ -132,11 +132,17 @@ class LiquidationOICollector:
     def poll_open_interest_once(self, fetch=None) -> int:
         """One REST sweep across the universe. Returns rows written. Never raises."""
         fetch = fetch or _get
-        now_ms = int(time.time() * 1000)
         written = 0
         for symbol in self.symbols:
             if self.stop_event.is_set():
                 break
+            # Stamped per symbol, not per sweep. A sweep of 12 symbols takes ~12 s, so a
+            # single sweep-level timestamp made every row's local clock read up to 12 s
+            # earlier than its own exchange timestamp -- 100% negative receive latency,
+            # median -6.2 s. That is fatal for any lead/lag work, which is the whole point
+            # of collecting this. The Runner clock was verified good (-200 ms vs Bitget
+            # server time), so the fault was here.
+            now_ms = int(time.time() * 1000)
             try:
                 oi = fetch("/api/v2/mix/market/open-interest",
                            {"symbol": symbol, "productType": PRODUCT})
@@ -147,7 +153,8 @@ class LiquidationOICollector:
             except Exception:
                 self.oi_errors += 1
                 continue
-            row = _oi_row(symbol, oi, px, fr, now_ms)
+            row = _oi_row(symbol, oi, px, fr, now_ms,
+                          fetch_started_ms=now_ms, fetch_completed_ms=int(time.time() * 1000))
             if row is None:
                 self.oi_errors += 1
                 continue
@@ -197,7 +204,9 @@ def _f(value):
         return None
 
 
-def _oi_row(symbol: str, oi: dict, px: dict, fr: dict, now_ms: int) -> dict | None:
+def _oi_row(symbol: str, oi: dict, px: dict, fr: dict, now_ms: int,
+            *, fetch_started_ms: int | None = None,
+            fetch_completed_ms: int | None = None) -> dict | None:
     oi_data = (oi or {}).get("data") or {}
     lst = oi_data.get("openInterestList") or []
     amount = _f(lst[0].get("size")) if lst else None
@@ -214,6 +223,9 @@ def _oi_row(symbol: str, oi: dict, px: dict, fr: dict, now_ms: int) -> dict | No
         "schema_version": "research_oi_v1",
         "timestamp_exchange": int(_f(oi_data.get("ts")) or _f(px_row.get("ts")) or now_ms),
         "timestamp_local": now_ms,
+        # Both ends of the request, so receive latency is measurable rather than assumed.
+        "fetch_started_ms": fetch_started_ms if fetch_started_ms is not None else now_ms,
+        "fetch_completed_ms": fetch_completed_ms if fetch_completed_ms is not None else now_ms,
         "symbol": symbol,
         "open_interest": amount,
         "mark_price": mark,
