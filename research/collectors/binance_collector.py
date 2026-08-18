@@ -23,6 +23,8 @@ every study so far has needed the raw bytes re-read under a different definition
 
 from __future__ import annotations
 
+import certifi
+import hashlib
 import json
 import logging
 import ssl
@@ -43,16 +45,33 @@ EXCHANGE = "binance-usdm"
 #: Binance publishes OI on a slow cadence and rate-limits REST. 60 s per symbol is safe and is not
 #: meaningfully worse than the ~42 s Bitget sweep already accepted. Sub-second OI does not exist.
 OI_POLL_SECONDS = 60.0
+TRADE_POLL_SECONDS = 2.0
+MARK_POLL_SECONDS = 5.0
+AGG_TRADE_LIMIT = 1000
+# A stream is stale once it has produced nothing for this long. bookTicker and the REST
+# trade/mark cursors all cycle in seconds, so a minute of silence is a fault, not a lull.
+STREAM_STALE_SECONDS = {"book": 60.0, "trade": 60.0, "mark": 60.0, "oi": 180.0}
 MAX_QUEUE = 20_000
 #: Binance closes idle sockets at 24 h; reconnecting well before that avoids a mid-stream drop.
 RECONNECT_SECONDS = 6 * 3600
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Verified TLS against certifi's roots, never the interpreter default.
+
+    The default store is whatever the host's Python build points at, and on at least one of
+    our machines that path resolves to a bundle that fails verification outright -- which
+    silently turned every REST sweep into an error while curl on the same box succeeded.
+    Pinning certifi keeps verification ON and makes the result host-independent.
+    """
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _get(path: str, params: dict) -> dict:
     query = "&".join(f"{k}={v}" for k, v in params.items())
     url = f"{REST_BASE}{path}" + (f"?{query}" if query else "")
     req = urllib.request.Request(url, headers={"User-Agent": "cgc-research"})
-    with urllib.request.urlopen(req, timeout=10) as response:
+    with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as response:
         return json.loads(response.read())
 
 
@@ -94,15 +113,26 @@ class BinanceResearchCollector:
         self.last_liq_event_ms: int | None = None
         self.started_ms = int(time.time() * 1000)
         self._last_event_ms: dict[tuple[str, str], int] = {}
-        self._seen: set[tuple[str, str, int]] = set()
+        self._seen: set[tuple] = set()
+        # Per-stream freshness. A healthy book stream must never make a dead trade stream
+        # look alive, so every stream carries its own last-row clock and its own verdict.
+        self._last_row_ms: dict[str, int] = {}
+        self.trade_errors = 0
+        self.mark_errors = 0
+        self.same_ms_distinct_retained = 0
+        # Cursor per symbol into Binance's aggregate-trade id space. Polling by id is gapless:
+        # we resume from the last id we actually wrote, so a slow tick cannot silently skip trades.
+        self._trade_cursor: dict[str, int] = {}
+        self._same_ms: set[tuple] = set()
 
     # --- streams ----------------------------------------------------------
 
     def stream_path(self) -> str:
-        parts = []
-        for s in self.symbols:
-            low = s.lower()
-            parts += [f"{low}@aggTrade", f"{low}@bookTicker", f"{low}@markPrice@1s"]
+        # Only streams this endpoint actually delivers. aggTrade and markPrice@1s are acked,
+        # listed in LIST_SUBSCRIPTIONS, and never sent, so they are collected over REST instead
+        # (see poll_trades_once / poll_mark_once). Subscribing to them here would reintroduce a
+        # stream that reports itself subscribed while producing nothing.
+        parts = [f"{s.lower()}@bookTicker" for s in self.symbols]
         parts.append("!forceOrder@arr")          # all-market, one stream, no per-symbol subscribe
         return "/stream?streams=" + "/".join(parts)
 
@@ -157,15 +187,41 @@ class BinanceResearchCollector:
             self.parse_failures += 1
         return 0
 
+    # Exchange-native identity beats any clock. bookTicker carries an order-book update id
+    # (`u`) and aggTrade an aggregate-trade id (`a`); both are unique and monotonic per symbol.
+    # markPrice is timer-driven at 1 Hz so its event time is already unique. Anything else
+    # falls back to a payload fingerprint, which preserves distinct events instead of guessing.
+    _ID_FIELD = {"book": "u", "trade": "a", "oi": None}
+
+    def _identity(self, key: str, symbol: str, payload: dict, fields: dict, event_ms) -> tuple:
+        field = self._ID_FIELD.get(key)
+        if field is not None:
+            native = payload.get(field)
+            if native is not None:
+                return (EXCHANGE, key, symbol, "id", str(native))
+        if key == "mark":
+            return (EXCHANGE, key, symbol, "ts", int(event_ms or 0))
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:32]
+        return (EXCHANGE, key, symbol, "fp", fingerprint)
+
     def _write(self, key: str, writer, payload: dict, now_ms: int, fields: dict) -> int:
         event_ms = payload.get("E")
         symbol = fields.get("symbol") or ""
         if len(self._seen) >= MAX_QUEUE:
             self._seen.clear()          # bounded; identity window resets rather than growing
-        ident = (key, str(symbol), int(event_ms or 0))
+        ident = self._identity(key, str(symbol), payload, fields, event_ms)
         if ident in self._seen:
             self.duplicates += 1
             return 0
+        # Two updates in the same millisecond with different exchange ids are two real events.
+        # The previous key was (kind, symbol, event_ms), which collapsed them and threw away
+        # 5,870 genuine bookTicker rows in the first 90 s of collection.
+        if (key, str(symbol), int(event_ms or 0)) in self._same_ms:
+            self.same_ms_distinct_retained += 1
+        self._same_ms.add((key, str(symbol), int(event_ms or 0)))
+        if len(self._same_ms) >= MAX_QUEUE:
+            self._same_ms.clear()
         self._seen.add(ident)
         if event_ms is not None:
             latency = now_ms - float(event_ms)
@@ -189,6 +245,7 @@ class BinanceResearchCollector:
             **fields,
         })
         self.counts[key] += 1
+        self._last_row_ms[key] = now_ms
         return 1
 
     # --- REST: open interest ----------------------------------------------
@@ -229,11 +286,164 @@ class BinanceResearchCollector:
                     "research_only": True,
                 })
                 self.counts["oi"] += 1
+                self._last_row_ms["oi"] = completed
                 written += 1
             except Exception:
                 log.exception("RESEARCH_BINANCE_OI_WRITE_FAILED")
                 self.oi_errors += 1
         return written
+
+    # --- REST: trades and mark price --------------------------------------
+    #
+    # These two classes are NOT collected over the websocket, and that is deliberate.
+    # `btcusdt@aggTrade` and `btcusdt@markPrice@1s` are accepted by the server, appear in
+    # LIST_SUBSCRIPTIONS, and then deliver nothing -- markPrice@1s is timer-driven and owes
+    # exactly one message per second, yet produced zero in 12 s on a raw single-stream socket
+    # while bookTicker on the same socket produced 4,804. The server also accepted and listed
+    # `btcusdt@totalGarbage`, a stream name that does not exist, so a SUBSCRIBE ack carries no
+    # delivery information whatsoever. REST returns the same data correctly, so REST is the
+    # honest transport here. Book stays on the websocket, where delivery is proven.
+
+    def poll_trades_once(self, fetch=None) -> int:
+        """One aggregate-trade sweep. Resumes from the last id written, so it cannot skip."""
+        fetch = fetch or _get
+        written = 0
+        for symbol in self.symbols:
+            if self.stop_event.is_set():
+                break
+            started = int(time.time() * 1000)
+            cursor = self._trade_cursor.get(symbol)
+            params = {"symbol": symbol, "limit": AGG_TRADE_LIMIT}
+            if cursor is not None:
+                params["fromId"] = cursor + 1
+            try:
+                rows = fetch("/fapi/v1/aggTrades", params)
+            except Exception:
+                self.trade_errors += 1
+                continue
+            completed = int(time.time() * 1000)
+            if not isinstance(rows, list):
+                self.trade_errors += 1
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    self.parse_failures += 1
+                    continue
+                trade_id = row.get("a")
+                event_ms = row.get("T")
+                if trade_id is None or event_ms is None:
+                    self.parse_failures += 1
+                    continue
+                ident = (EXCHANGE, "trade", symbol, "id", str(trade_id))
+                if ident in self._seen:
+                    self.duplicates += 1
+                    continue
+                if len(self._seen) >= MAX_QUEUE:
+                    self._seen.clear()
+                self._seen.add(ident)
+                try:
+                    self.trade_writer.append({
+                        "schema_version": f"{SCHEMA}_trade", "exchange": EXCHANGE, "source": "rest",
+                        "symbol": symbol,
+                        "event_timestamp_ms": int(event_ms),
+                        "receive_timestamp_ms": completed,
+                        "write_timestamp_ms": int(time.time() * 1000),
+                        "fetch_started_ms": started, "fetch_completed_ms": completed,
+                        "price": _f(row.get("p")), "quantity": _f(row.get("q")),
+                        # Binance flags the BUYER as maker; the aggressor is the opposite side.
+                        "buyer_is_maker": row.get("m"),
+                        "aggressor_side": ("sell" if row.get("m") else "buy"),
+                        "trade_id": trade_id,
+                        "first_trade_id": row.get("f"), "last_trade_id": row.get("l"),
+                        "trade_time_ms": int(event_ms),
+                        "raw": row, "research_only": True,
+                    })
+                except Exception:
+                    log.exception("RESEARCH_BINANCE_TRADE_WRITE_FAILED")
+                    self.trade_errors += 1
+                    continue
+                self.counts["trade"] += 1
+                self._last_row_ms["trade"] = completed
+                written += 1
+                latency = completed - float(event_ms)
+                self.latencies.append(latency)
+                if latency < 0:
+                    self.negative_latency += 1
+                prev = self._last_event_ms.get(("trade", symbol))
+                if prev is not None and int(event_ms) < prev:
+                    self.out_of_order += 1
+                else:
+                    self._last_event_ms[("trade", symbol)] = int(event_ms)
+                if cursor is None or int(trade_id) > cursor:
+                    cursor = int(trade_id)
+                    self._trade_cursor[symbol] = cursor
+        return written
+
+    def poll_mark_once(self, fetch=None) -> int:
+        """One mark/index/funding sweep. Stamped per symbol, never once per sweep."""
+        fetch = fetch or _get
+        written = 0
+        for symbol in self.symbols:
+            if self.stop_event.is_set():
+                break
+            started = int(time.time() * 1000)
+            try:
+                pi = fetch("/fapi/v1/premiumIndex", {"symbol": symbol})
+            except Exception:
+                self.mark_errors += 1
+                continue
+            completed = int(time.time() * 1000)
+            mark = _f((pi or {}).get("markPrice"))
+            if mark is None:
+                self.mark_errors += 1
+                continue
+            index = _f((pi or {}).get("indexPrice"))
+            event_ms = int(_f((pi or {}).get("time")) or completed)
+            ident = (EXCHANGE, "mark", symbol, "ts", event_ms)
+            if ident in self._seen:
+                self.duplicates += 1
+                continue
+            if len(self._seen) >= MAX_QUEUE:
+                self._seen.clear()
+            self._seen.add(ident)
+            try:
+                self.mark_writer.append({
+                    "schema_version": f"{SCHEMA}_mark", "exchange": EXCHANGE, "source": "rest",
+                    "symbol": symbol,
+                    "event_timestamp_ms": event_ms,
+                    "receive_timestamp_ms": completed,
+                    "write_timestamp_ms": int(time.time() * 1000),
+                    "fetch_started_ms": started, "fetch_completed_ms": completed,
+                    "mark_price": mark, "index_price": index,
+                    "estimated_settle": _f((pi or {}).get("estimatedSettlePrice")),
+                    "funding_rate": _f((pi or {}).get("lastFundingRate")),
+                    "interest_rate": _f((pi or {}).get("interestRate")),
+                    "next_funding_ms": int(_f((pi or {}).get("nextFundingTime")) or 0) or None,
+                    "basis_bps": ((mark - index) / index * 10_000.0) if (mark and index) else None,
+                    "raw": pi, "research_only": True,
+                })
+            except Exception:
+                log.exception("RESEARCH_BINANCE_MARK_WRITE_FAILED")
+                self.mark_errors += 1
+                continue
+            self.counts["mark"] += 1
+            self._last_row_ms["mark"] = completed
+            written += 1
+        return written
+
+    def _trade_loop(self) -> None:  # pragma: no cover - thread body
+        while not self.stop_event.wait(TRADE_POLL_SECONDS):
+            try:
+                self.poll_trades_once()
+            except Exception:
+                log.exception("RESEARCH_BINANCE_TRADE_LOOP_FAILED")
+
+    def _mark_loop(self) -> None:  # pragma: no cover - thread body
+        while not self.stop_event.wait(MARK_POLL_SECONDS):
+            try:
+                self.poll_mark_once()
+            except Exception:
+                log.exception("RESEARCH_BINANCE_MARK_LOOP_FAILED")
 
     def _oi_loop(self) -> None:  # pragma: no cover - thread body
         while not self.stop_event.wait(self.oi_poll_seconds):
@@ -259,13 +469,49 @@ class BinanceResearchCollector:
                 out[f"clock_offset_{label}_ms"] = None
         return out
 
+    def stream_age_s(self, key: str) -> float | None:
+        last = self._last_row_ms.get(key)
+        return None if last is None else max(0.0, (int(time.time() * 1000) - last) / 1000.0)
+
+    def stream_health(self, key: str) -> str:
+        """One stream's verdict, derived ONLY from that stream's own rows.
+
+        Nothing here reads another stream's counters. A healthy book stream must never be
+        able to make a dead trade stream look alive -- that inheritance is exactly how the
+        PR #65 deployment reported itself healthy while aggTrade and markPrice were silent.
+        """
+        if self.counts.get(key, 0) <= 0:
+            return "NO_DELIVERY_PROVEN"
+        age = self.stream_age_s(key)
+        if age is None:
+            # Rows counted but no freshness clock means the write path forgot to stamp itself.
+            # Reporting HEALTHY here would let a stream that died hours ago coast indefinitely.
+            return "UNKNOWN_AGE"
+        if age > STREAM_STALE_SECONDS.get(key, 60.0):
+            return "STALE"
+        return "HEALTHY"
+
+    def per_stream_health(self) -> dict:
+        out = {}
+        for key in ("book", "trade", "mark", "oi"):
+            out[key] = {"rows": self.counts.get(key, 0),
+                        "last_event_age_s": self.stream_age_s(key),
+                        "status": self.stream_health(key)}
+        out["liq"] = {"rows": self.counts.get("liq", 0),
+                      "last_event_age_s": self.stream_age_s("liq"),
+                      "status": self.liquidation_status()}
+        return out
+
     def liquidation_status(self) -> str:
         """`HEALTHY_NO_EVENT_OBSERVED` is not the same claim as `NO_DELIVERY_PROVEN`."""
         if self.liq_events_total > 0:
-            return "DELIVERY_PROVEN"
-        # Ordinary streams flowing means the socket is fine, so silence is the market, not the feed.
-        if self.counts["trade"] > 0:
-            return "HEALTHY_NO_EVENT_OBSERVED"
+            return "DELIVERING"
+        # `!forceOrder@arr` rides the same websocket that provably refuses to deliver aggTrade
+        # and markPrice while acking both, so websocket silence here is not evidence about the
+        # market. Trade rows now arrive over REST and say nothing about this socket, so they
+        # must NOT be used to upgrade this verdict -- that inference would be unfounded.
+        if self.counts.get("book", 0) > 0:
+            return "HEALTHY_NO_EVENTS_OBSERVED"
         return "NO_DELIVERY_PROVEN"
 
     def health(self) -> dict:
@@ -275,13 +521,22 @@ class BinanceResearchCollector:
             "schema_version": f"{SCHEMA}_health", "exchange": EXCHANGE,
             "write_timestamp_ms": now, "uptime_s": (now - self.started_ms) / 1000.0,
             "rows": dict(self.counts),
+            "streams": self.per_stream_health(),
+            "book_stream_health": self.stream_health("book"),
+            "trade_stream_health": self.stream_health("trade"),
+            "mark_stream_health": self.stream_health("mark"),
+            "oi_stream_health": self.stream_health("oi"),
+            "liq_stream_health": self.liquidation_status(),
+            "trade_transport": "rest", "mark_transport": "rest", "book_transport": "websocket",
             "parse_failures": self.parse_failures, "dropped": self.dropped,
             "duplicates": self.duplicates, "out_of_order": self.out_of_order,
             "negative_latency_rows": self.negative_latency,
             "latency_median_ms": lat[len(lat) // 2] if lat else None,
             "latency_p95_ms": lat[int(0.95 * len(lat))] if lat else None,
             "reconnects": self.reconnects, "ws_errors": self.ws_errors,
-            "oi_errors": self.oi_errors,
+            "oi_errors": self.oi_errors, "trade_errors": self.trade_errors,
+            "mark_errors": self.mark_errors,
+            "same_ms_distinct_events_retained": self.same_ms_distinct_retained,
             "liq_events_total": self.liq_events_total,
             "last_liq_event_age_s": ((now - self.last_liq_event_ms) / 1000.0
                                      if self.last_liq_event_ms else None),
@@ -306,12 +561,15 @@ def run(symbols: tuple[str, ...], data_dir: Path) -> None:  # pragma: no cover -
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     c = BinanceResearchCollector(symbols=symbols, data_dir=data_dir)
     threading.Thread(target=c._oi_loop, daemon=True, name="bn-oi").start()
+    threading.Thread(target=c._trade_loop, daemon=True, name="bn-trade").start()
+    threading.Thread(target=c._mark_loop, daemon=True, name="bn-mark").start()
     status = Path(data_dir) / "status.json"
     while not c.stop_event.is_set():
         opened = time.time()
         try:
             ws = websocket.create_connection(WS_BASE + c.stream_path(), timeout=20,
-                                             sslopt={"cert_reqs": ssl.CERT_NONE})
+                                             sslopt={"cert_reqs": ssl.CERT_REQUIRED,
+                                                     "ca_certs": certifi.where()})
             ws.settimeout(30)
             last_health = 0.0
             while not c.stop_event.is_set():
