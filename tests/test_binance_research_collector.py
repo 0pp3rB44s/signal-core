@@ -34,6 +34,13 @@ def _agg(symbol="BTCUSDT", E=1_000, a=1, m=False, p="63000.5", q="0.4"):
                                 "p": p, "q": q, "m": m, "T": E - 5}})
 
 
+def _book(symbol="BTCUSDT", E=1_500, u=99):
+    return json.dumps({"stream": f"{symbol.lower()}@bookTicker",
+                       "data": {"e": "bookTicker", "E": E, "u": u, "s": symbol,
+                                "b": "63000.0", "B": "1.0", "a": "63000.1", "A": "2.0",
+                                "T": E - 1}})
+
+
 def _force(symbol="BTCUSDT", E=2_000, side="SELL", ap="62000", z="1.5"):
     return json.dumps({"stream": "!forceOrder@arr",
                        "data": {"e": "forceOrder", "E": E,
@@ -196,15 +203,21 @@ def test_no_delivery_proven_before_anything_arrives(c):
 
 def test_healthy_no_event_once_ordinary_streams_flow(c):
     """The Bitget lesson: silence on a live socket is the market, not a broken feed —
-    but that is only claimable once another stream proves the socket works."""
+    but that is only claimable once another stream on THAT SAME SOCKET proves it works.
+
+    Trades now arrive over REST, so they can no longer vouch for the websocket. Only
+    bookTicker, which shares the socket with !forceOrder@arr, can.
+    """
     c.handle_message(_agg())
-    assert c.liquidation_status() == "HEALTHY_NO_EVENT_OBSERVED"
+    assert c.liquidation_status() == "NO_DELIVERY_PROVEN", "REST trades must not vouch for the socket"
+    c.handle_message(_book())
+    assert c.liquidation_status() == "HEALTHY_NO_EVENTS_OBSERVED"
 
 
 def test_delivery_proven_only_after_a_real_liquidation_frame(c):
-    c.handle_message(_agg())
+    c.handle_message(_book())
     c.handle_message(_force())
-    assert c.liquidation_status() == "DELIVERY_PROVEN"
+    assert c.liquidation_status() == "DELIVERING"
     assert c.health()["liq_events_total"] == 1
     assert c.health()["last_liq_event_age_s"] is not None
 
@@ -223,9 +236,12 @@ def test_health_exposes_every_required_counter(c):
 def test_stream_path_covers_every_symbol_and_the_all_market_liquidation_feed(c):
     p = c.stream_path()
     for s in SYMBOLS:
-        for suffix in ("@aggTrade", "@bookTicker", "@markPrice@1s"):
-            assert f"{s.lower()}{suffix}" in p
+        assert f"{s.lower()}@bookTicker" in p
     assert "!forceOrder@arr" in p, "all-market liquidation stream missing"
+    # aggTrade and markPrice@1s are acked by the server and never delivered, so they are
+    # collected over REST instead. Subscribing to them would only restore a silent stream.
+    assert "@aggTrade" not in p
+    assert "@markPrice" not in p
 
 
 def test_a_dead_endpoint_is_counted_not_raised(c):
