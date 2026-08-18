@@ -50,7 +50,7 @@ MARK_POLL_SECONDS = 5.0
 AGG_TRADE_LIMIT = 1000
 # A stream is stale once it has produced nothing for this long. bookTicker and the REST
 # trade/mark cursors all cycle in seconds, so a minute of silence is a fault, not a lull.
-STREAM_STALE_SECONDS = {"book": 60.0, "trade": 60.0, "mark": 60.0, "oi": 180.0}
+STREAM_STALE_SECONDS = {"book": 60.0, "trade": 60.0, "mark": 60.0, "oi": 180.0, "depth": 60.0}
 MAX_QUEUE = 20_000
 #: Binance closes idle sockets at 24 h; reconnecting well before that avoids a mid-stream drop.
 RECONNECT_SECONDS = 6 * 3600
@@ -95,11 +95,12 @@ class BinanceResearchCollector:
             self.data_dir / name, schema_version=f"{SCHEMA}_{ver}", symbols=self.symbols)
         self.trade_writer = mk("trades", "trade")
         self.book_writer = mk("book_ticker", "book")
+        self.depth_writer = mk("depth5", "depth")
         self.mark_writer = mk("mark_price", "mark")
         self.liq_writer = mk("liquidations", "liq")
         self.oi_writer = mk("open_interest", "oi")
         self.health_writer = mk("health", "health")
-        self.counts = {"trade": 0, "book": 0, "mark": 0, "liq": 0, "oi": 0}
+        self.counts = {"trade": 0, "book": 0, "mark": 0, "liq": 0, "oi": 0, "depth": 0}
         self.parse_failures = 0
         self.dropped = 0
         self.reconnects = 0
@@ -132,7 +133,10 @@ class BinanceResearchCollector:
         # listed in LIST_SUBSCRIPTIONS, and never sent, so they are collected over REST instead
         # (see poll_trades_once / poll_mark_once). Subscribing to them here would reintroduce a
         # stream that reports itself subscribed while producing nothing.
-        parts = [f"{s.lower()}@bookTicker" for s in self.symbols]
+        parts = []
+        for sym in self.symbols:
+            low = sym.lower()
+            parts += [f"{low}@bookTicker", f"{low}@depth5@100ms"]
         parts.append("!forceOrder@arr")          # all-market, one stream, no per-symbol subscribe
         return "/stream?streams=" + "/".join(parts)
 
@@ -170,6 +174,13 @@ class BinanceResearchCollector:
                     symbol=payload.get("s"), mark_price=_f(payload.get("p")),
                     index_price=_f(payload.get("i")), estimated_settle=_f(payload.get("P")),
                     funding_rate=_f(payload.get("r")), next_funding_ms=payload.get("T")))
+            if kind == "depthUpdate":
+                return self._write("depth", self.depth_writer, payload, now_ms, dict(
+                    symbol=payload.get("s"),
+                    first_update_id=payload.get("U"), final_update_id=payload.get("u"),
+                    prev_final_update_id=payload.get("pu"),
+                    bids=payload.get("b"), asks=payload.get("a"),
+                    transaction_time_ms=payload.get("T")))
             if kind == "forceOrder":
                 order = payload.get("o") or {}
                 self.liq_events_total += 1
@@ -191,7 +202,7 @@ class BinanceResearchCollector:
     # (`u`) and aggTrade an aggregate-trade id (`a`); both are unique and monotonic per symbol.
     # markPrice is timer-driven at 1 Hz so its event time is already unique. Anything else
     # falls back to a payload fingerprint, which preserves distinct events instead of guessing.
-    _ID_FIELD = {"book": "u", "trade": "a", "oi": None}
+    _ID_FIELD = {"book": "u", "trade": "a", "oi": None, "depth": "u"}
 
     def _identity(self, key: str, symbol: str, payload: dict, fields: dict, event_ms) -> tuple:
         field = self._ID_FIELD.get(key)
@@ -493,7 +504,7 @@ class BinanceResearchCollector:
 
     def per_stream_health(self) -> dict:
         out = {}
-        for key in ("book", "trade", "mark", "oi"):
+        for key in ("book", "trade", "mark", "oi", "depth"):
             out[key] = {"rows": self.counts.get(key, 0),
                         "last_event_age_s": self.stream_age_s(key),
                         "status": self.stream_health(key)}
@@ -547,7 +558,7 @@ class BinanceResearchCollector:
 
     def close(self) -> None:
         self.stop_event.set()
-        for w in (self.trade_writer, self.book_writer, self.mark_writer,
+        for w in (self.trade_writer, self.book_writer, self.depth_writer, self.mark_writer,
                   self.liq_writer, self.oi_writer, self.health_writer):
             try:
                 w.close()
