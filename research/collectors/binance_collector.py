@@ -30,6 +30,7 @@ import logging
 import ssl
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -45,13 +46,20 @@ EXCHANGE = "binance-usdm"
 #: Binance publishes OI on a slow cadence and rate-limits REST. 60 s per symbol is safe and is not
 #: meaningfully worse than the ~42 s Bitget sweep already accepted. Sub-second OI does not exist.
 OI_POLL_SECONDS = 60.0
-TRADE_POLL_SECONDS = 2.0
+TRADE_POLL_SECONDS = 15.0
 MARK_POLL_SECONDS = 5.0
-AGG_TRADE_LIMIT = 1000
+AGG_TRADE_LIMIT = 500
 # A stream is stale once it has produced nothing for this long. bookTicker and the REST
 # trade/mark cursors all cycle in seconds, so a minute of silence is a fault, not a lull.
 STREAM_STALE_SECONDS = {"book": 60.0, "trade": 60.0, "mark": 60.0, "oi": 180.0, "depth": 60.0}
 MAX_QUEUE = 20_000
+# Binance bans the IP outright on abuse (HTTP 418) rather than just throttling, and says so in
+# the ban body: "Please use the websocket... to avoid bans." PR #66 polled REST for 12 symbols
+# every 2 s with no weight budget and no backoff -- roughly 1440 weight/min against a public-IP
+# limit far below that -- and got the Runner's shared home IP banned outright. This constant is
+# the floor while a ban is in effect if Binance omits Retry-After.
+DEFAULT_RATE_LIMIT_COOLDOWN_S = 60.0
+REST_INTER_REQUEST_S = 0.15
 #: Binance closes idle sockets at 24 h; reconnecting well before that avoids a mid-stream drop.
 RECONNECT_SECONDS = 6 * 3600
 
@@ -67,12 +75,35 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
+class RateLimited(Exception):
+    """HTTP 418 (banned) or 429 (throttled). Carries how long Binance says to back off.
+
+    Distinguished from a generic network failure because the correct response is opposite:
+    a generic failure should be retried soon; this one must NOT be retried until it clears,
+    or hammering it converts a temporary throttle into an outright ban (or extends one).
+    """
+
+    def __init__(self, retry_after_s: float, status: int, body: str):
+        self.retry_after_s = retry_after_s
+        self.status = status
+        self.body = body
+        super().__init__(f"HTTP {status}: {body[:200]}")
+
+
 def _get(path: str, params: dict) -> dict:
     query = "&".join(f"{k}={v}" for k, v in params.items())
     url = f"{REST_BASE}{path}" + (f"?{query}" if query else "")
     req = urllib.request.Request(url, headers={"User-Agent": "cgc-research"})
-    with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as response:
-        return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (418, 429):
+            body = exc.read().decode("utf-8", errors="replace")
+            retry_after = exc.headers.get("Retry-After")
+            cooldown = float(retry_after) if retry_after else DEFAULT_RATE_LIMIT_COOLDOWN_S
+            raise RateLimited(cooldown, exc.code, body) from exc
+        raise
 
 
 def _f(value):
@@ -120,6 +151,11 @@ class BinanceResearchCollector:
         self._last_row_ms: dict[str, int] = {}
         self.trade_errors = 0
         self.mark_errors = 0
+        # Shared across trade/mark/OI/clock-offset: they hit the same IP-wide Binance limit,
+        # so one ban must pause all of them, not just the endpoint that triggered it.
+        self._rest_cooldown_until_ms = 0
+        self.rate_limit_hits = 0
+        self.rate_limited_skips = 0
         self.same_ms_distinct_retained = 0
         # Cursor per symbol into Binance's aggregate-trade id space. Polling by id is gapless:
         # we resume from the last id we actually wrote, so a slow tick cannot silently skip trades.
@@ -204,6 +240,15 @@ class BinanceResearchCollector:
     # falls back to a payload fingerprint, which preserves distinct events instead of guessing.
     _ID_FIELD = {"book": "u", "trade": "a", "oi": None, "depth": "u"}
 
+    def _rest_paused(self) -> bool:
+        return int(time.time() * 1000) < self._rest_cooldown_until_ms
+
+    def _enter_cooldown(self, exc: "RateLimited") -> None:
+        self._rest_cooldown_until_ms = int(time.time() * 1000) + int(exc.retry_after_s * 1000)
+        self.rate_limit_hits += 1
+        log.warning("RESEARCH_BINANCE_RATE_LIMITED | status=%s retry_after_s=%.1f body=%s",
+                    exc.status, exc.retry_after_s, exc.body[:200])
+
     def _identity(self, key: str, symbol: str, payload: dict, fields: dict, event_ms) -> tuple:
         field = self._ID_FIELD.get(key)
         if field is not None:
@@ -268,11 +313,19 @@ class BinanceResearchCollector:
         for symbol in self.symbols:
             if self.stop_event.is_set():
                 break
+            if self._rest_paused():
+                self.rate_limited_skips += 1
+                continue
             started = int(time.time() * 1000)
             try:
                 oi = fetch("/fapi/v1/openInterest", {"symbol": symbol})
                 pi = fetch("/fapi/v1/premiumIndex", {"symbol": symbol})
+            except RateLimited as exc:
+                self._enter_cooldown(exc)
+                self.oi_errors += 1
+                break
             except Exception:
+                log.warning("RESEARCH_BINANCE_OI_FETCH_FAILED | symbol=%s", symbol, exc_info=True)
                 self.oi_errors += 1
                 continue
             completed = int(time.time() * 1000)
@@ -322,6 +375,9 @@ class BinanceResearchCollector:
         for symbol in self.symbols:
             if self.stop_event.is_set():
                 break
+            if self._rest_paused():
+                self.rate_limited_skips += 1
+                continue
             started = int(time.time() * 1000)
             cursor = self._trade_cursor.get(symbol)
             params = {"symbol": symbol, "limit": AGG_TRADE_LIMIT}
@@ -329,9 +385,16 @@ class BinanceResearchCollector:
                 params["fromId"] = cursor + 1
             try:
                 rows = fetch("/fapi/v1/aggTrades", params)
+            except RateLimited as exc:
+                self._enter_cooldown(exc)
+                self.trade_errors += 1
+                break
             except Exception:
+                log.warning("RESEARCH_BINANCE_TRADE_FETCH_FAILED | symbol=%s", symbol, exc_info=True)
                 self.trade_errors += 1
                 continue
+            if len(self.symbols) > 1:
+                time.sleep(REST_INTER_REQUEST_S)  # stagger the sweep instead of bursting it
             completed = int(time.time() * 1000)
             if not isinstance(rows, list):
                 self.trade_errors += 1
@@ -397,10 +460,18 @@ class BinanceResearchCollector:
         for symbol in self.symbols:
             if self.stop_event.is_set():
                 break
+            if self._rest_paused():
+                self.rate_limited_skips += 1
+                continue
             started = int(time.time() * 1000)
             try:
                 pi = fetch("/fapi/v1/premiumIndex", {"symbol": symbol})
+            except RateLimited as exc:
+                self._enter_cooldown(exc)
+                self.mark_errors += 1
+                break
             except Exception:
+                log.warning("RESEARCH_BINANCE_MARK_FETCH_FAILED | symbol=%s", symbol, exc_info=True)
                 self.mark_errors += 1
                 continue
             completed = int(time.time() * 1000)
@@ -466,16 +537,27 @@ class BinanceResearchCollector:
     # --- health -----------------------------------------------------------
 
     def clock_offsets(self, fetch=None) -> dict:
-        """Local clock against both venues. A claimed 200 ms lead is meaningless without this."""
+        """Local clock against Binance. A claimed 200 ms lead is meaningless without this.
+
+        Skips the call entirely while in cooldown -- during the ban that motivated this fix,
+        this endpoint was still being hit every health cycle for a result that was going to be
+        418 regardless, which is exactly the behavior that produced the ban in the first place.
+        """
         fetch = fetch or _get
         out = {}
         for label, path, key in (("binance", "/fapi/v1/time", "serverTime"),):
+            if self._rest_paused():
+                out[f"clock_offset_{label}_ms"] = None
+                continue
             try:
                 t0 = time.time() * 1000
                 d = fetch(path, {})
                 t1 = time.time() * 1000
                 srv = _f((d or {}).get(key))
                 out[f"clock_offset_{label}_ms"] = ((t0 + t1) / 2 - srv) if srv else None
+            except RateLimited as exc:
+                self._enter_cooldown(exc)
+                out[f"clock_offset_{label}_ms"] = None
             except Exception:
                 out[f"clock_offset_{label}_ms"] = None
         return out
@@ -547,6 +629,9 @@ class BinanceResearchCollector:
             "reconnects": self.reconnects, "ws_errors": self.ws_errors,
             "oi_errors": self.oi_errors, "trade_errors": self.trade_errors,
             "mark_errors": self.mark_errors,
+            "rate_limit_hits": self.rate_limit_hits, "rate_limited_skips": self.rate_limited_skips,
+            "rest_cooldown_active": self._rest_paused(),
+            "rest_cooldown_remaining_s": max(0.0, (self._rest_cooldown_until_ms - int(time.time()*1000))/1000.0),
             "same_ms_distinct_events_retained": self.same_ms_distinct_retained,
             "liq_events_total": self.liq_events_total,
             "last_liq_event_age_s": ((now - self.last_liq_event_ms) / 1000.0
