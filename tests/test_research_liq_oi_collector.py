@@ -160,3 +160,52 @@ def test_one_bad_symbol_does_not_stop_the_sweep(collector):
 def test_stop_event_halts_the_sweep_immediately(collector):
     collector.stop_event.set()
     assert collector.poll_open_interest_once(fetch=lambda p, q: {}) == 0
+
+
+# --- timestamp quality (regression: the 2026-08-18 negative-latency defect) --------------
+
+
+def test_each_row_is_stamped_when_it_was_fetched_not_when_the_sweep_began(collector):
+    """The defect this reproduces: a sweep of 12 symbols takes ~12 s, and stamping every row
+    with the sweep-start time made 100% of rows show negative receive latency (median -6.2 s).
+    The Runner clock was verified good, so the fault was here. Lead/lag research on sub-second
+    scales is worthless against a 6 s systematic error."""
+    import time as _t
+    oi, px, fr = _oi_payloads()
+    seen = []
+
+    def slow_fetch(path, params):
+        _t.sleep(0.02)                      # each symbol's sweep costs real time
+        seen.append(_t.time())
+        return {"open-interest": oi, "symbol-price": px, "current-fund-rate": fr}[path.split("/")[-1]]
+
+    rows = []
+    collector.oi_writer.append = lambda row: rows.append(row)
+    collector.poll_open_interest_once(fetch=slow_fetch)
+    assert len(rows) == len(SYMBOLS)
+    stamps = [r["timestamp_local"] for r in rows]
+    assert len(set(stamps)) == len(stamps), \
+        "every symbol shares one timestamp — the sweep-level stamp bug is back"
+    assert stamps == sorted(stamps), "timestamps must advance through the sweep"
+
+
+def test_both_ends_of_the_request_are_recorded():
+    """Receive latency must be measurable from the row, not assumed."""
+    oi, px, fr = _oi_payloads()
+    row = _oi_row("BTCUSDT", oi, px, fr, now_ms=1_000, fetch_started_ms=1_000,
+                  fetch_completed_ms=1_250)
+    assert row["fetch_started_ms"] == 1_000
+    assert row["fetch_completed_ms"] == 1_250
+    assert row["fetch_completed_ms"] >= row["fetch_started_ms"]
+
+
+def test_receive_latency_is_not_systematically_negative(collector):
+    """The row's own clock must not predate its exchange timestamp by construction."""
+    oi, px, fr = _oi_payloads()
+    rows = []
+    collector.oi_writer.append = lambda row: rows.append(row)
+    collector.poll_open_interest_once(
+        fetch=lambda p, q: {"open-interest": oi, "symbol-price": px,
+                            "current-fund-rate": fr}[p.split("/")[-1]])
+    for r in rows:
+        assert r["timestamp_local"] >= r["fetch_started_ms"]
