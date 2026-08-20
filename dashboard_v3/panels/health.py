@@ -16,6 +16,7 @@ TRACKED = [
     ("state/executed_trades.json", "Local position ledger", True),
     ("state/execution_events.json", "Execution reports", True),
     ("state/account_equity.json", "Equity snapshot", True),
+    ("state/portfolio_equity_guard.json", "Equity drawdown breaker", True),
     ("state/watchdog_heartbeat.json", "Watchdog", False),
     ("state/last_shutdown.json", "Last shutdown", False),
     ("reports/backtests/strategy_expectancy.json", "Strategy gates", True),
@@ -28,6 +29,10 @@ TRACKED = [
     ("state/dynamic_grid_v1_shadow.json", "dynamic_grid_v1 shadow lifecycle", False),
     ("logs/live.out", "Engine stdout", True),
     ("logs/alerts.log", "Alert history", False),
+    ("data_store/research_liq_oi/status.json", "Bitget research collector", False),
+    ("data_store/research_binance/status.json", "Binance futures collector", False),
+    ("data_store/research_binance_spot/status.json", "Binance spot collector", False),
+    ("data_store/microflow_live/status.json", "Bitget LIVE sensor", False),
 ]
 
 

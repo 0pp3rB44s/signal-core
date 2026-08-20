@@ -98,6 +98,7 @@ def build(client_factory=None) -> dict[str, Any]:
     account: dict[str, Any] = {}
     positions: list[dict[str, Any]] = []
     open_orders: list[dict[str, Any]] = []
+    plan_orders: list[dict[str, Any]] = []
     local_loaded = src.load_json("state/executed_trades.json", default=[])
     local_states = [
         row for row in (local_loaded.value or []) if isinstance(row, dict)
@@ -126,6 +127,7 @@ def build(client_factory=None) -> dict[str, Any]:
             tpsl = client.get_tpsl_orders(product_type=product)
             for row in (tpsl or {}).get("data") or []:
                 if isinstance(row, dict):
+                    plan_orders.append(row)
                     tpsl_by_symbol.setdefault(str(row.get("symbol", "")).upper(), []).append(row)
         except Exception as exc:
             errors.append(f"TP/SL lookup unavailable: {type(exc).__name__}")
@@ -294,6 +296,9 @@ def build(client_factory=None) -> dict[str, Any]:
         "active_symbols": [p["symbol"] for p in positions],
         "local_state_provenance": local_loaded.provenance,
         "open_orders": open_orders,
+        "plan_orders": plan_orders,
+        "normal_order_count": len(open_orders) if reachable else None,
+        "plan_order_count": len(plan_orders) if reachable else None,
         "position_count": len(positions),
         "unprotected_count": sum(1 for p in positions if p["protection"] != "PROTECTED"),
     }

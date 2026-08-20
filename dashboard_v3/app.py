@@ -48,11 +48,15 @@ SAFE_SETTINGS = (
 
 NAV = [
     ("command", "Command", "/"),
+    ("operations", "System", "/operations"),
     ("funnel", "Funnel", "/funnel"),
     ("strategy", "Strategies", "/strategy"),
     ("positions", "Positions", "/positions"),
     ("performance", "Performance", "/performance"),
-    ("risk", "Risk & Expectancy", "/risk"),
+    ("risk", "RiskManager", "/risk"),
+    ("collectors", "Collectors", "/collectors"),
+    ("logs", "Logs", "/logs"),
+    ("project", "Project", "/project"),
     ("incidents", "Incidents", "/incidents"),
     ("health", "Data Health", "/health"),
 ]
@@ -71,6 +75,7 @@ def login_required(view):
 
 @app.context_processor
 def _helpers() -> dict[str, Any]:
+    import os
     def tone(status: Any) -> str:
         return TONE.get(status, "unknown") if isinstance(status, Status) else "unknown"
 
@@ -136,6 +141,7 @@ def _helpers() -> dict[str, Any]:
         "num": num, "pct": pct, "pct_raw": pct_raw, "money": money,
         "dt_utc": dt_utc, "dt_local": dt_local, "ago": ago,
         "NAV": NAV, "Status": Status,
+        "REFRESH_SECONDS": min(300, max(2, int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "5")))),
     }
 
 
@@ -184,6 +190,12 @@ def funnel():
     return _page("funnel.html", "funnel")
 
 
+@app.route("/operations")
+@login_required
+def operations():
+    return _page("operations.html", "operations")
+
+
 @app.route("/positions")
 @login_required
 def positions():
@@ -206,6 +218,24 @@ def strategy():
 @login_required
 def risk():
     return _page("risk.html", "risk")
+
+
+@app.route("/collectors")
+@login_required
+def collectors():
+    return _page("collectors.html", "collectors")
+
+
+@app.route("/logs")
+@login_required
+def logs():
+    return _page("logs.html", "logs")
+
+
+@app.route("/project")
+@login_required
+def project():
+    return _page("project.html", "project")
 
 
 @app.route("/incidents")

@@ -99,6 +99,15 @@ def _stats(pnls: list[float]) -> dict[str, Any]:
     }
 
 
+def _window_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    stats = _stats([t["pnl"] for t in trades])
+    gross = sum(t["gross"] for t in trades if t["gross"] is not None)
+    fees = sum(t["fees"] for t in trades if t["fees"] is not None)
+    stats.update({"gross": round(gross, 8), "fees": round(fees, 8),
+                  "net": round(sum(t["pnl"] for t in trades), 8)})
+    return stats
+
+
 def build(window_days: int = 30) -> dict[str, Any]:
     signals = SignalSet()
     loaded = src.load_csv("logs/trade_dataset_v2.csv", limit=None)
@@ -168,6 +177,17 @@ def build(window_days: int = 30) -> dict[str, Any]:
             "tp1_hit": _truthy(row.get("tp1_hit")),
             "sl_hit": _truthy(row.get("sl_hit")) if "sl_hit" in row else None,
             "fees": _f(row.get("exchange_truth_fee") or row.get("fees")),
+            "gross": _optional_f(row.get("gross_pnl")),
+            # These fields were explicitly quarantined after live forensics.
+            # Preserve their presence for diagnosis but never promote them to facts.
+            "mfe": row.get("mfe_pct") or row.get("mfe"),
+            "mae": row.get("mae_pct") or row.get("mae"),
+            "hold_duration": row.get("hold_duration_seconds") or row.get("hold_duration"),
+            "telemetry_quarantine": {
+                "mae": "QUARANTINED — historical field is not exchange-grounded",
+                "hold_duration": "QUARANTINED — historical field is not trusted",
+                "tp1_hit": "QUARANTINED unless explicitly recorded by current lifecycle",
+            },
             "score": _f(row.get("score")) if row.get("score") else None,
             "cohort": "RECOVERY_ONLY" if recovery else "LIVE",
             "in_window": when >= cutoff,
@@ -196,10 +216,28 @@ def build(window_days: int = 30) -> dict[str, Any]:
         by_strategy[t["strategy"]].append(t["pnl"])
 
     equity_curve = []
+    drawdown_curve = []
+    fees_curve = []
     running = 0.0
+    cumulative_fees = 0.0
+    peak = 0.0
     for t in sorted(live, key=lambda x: x["closed_at"]):
         running += t["pnl"]
+        cumulative_fees += t["fees"] or 0.0
+        peak = max(peak, running)
         equity_curve.append({"t": t["closed_at"].isoformat(), "equity": round(running, 4)})
+        drawdown_curve.append({"t": t["closed_at"].isoformat(),
+                               "drawdown": round(running - peak, 4)})
+        fees_curve.append({"t": t["closed_at"].isoformat(),
+                           "fees": round(cumulative_fees, 4)})
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    windows = {
+        "today": _window_stats([t for t in live if t["closed_at"] >= today_start]),
+        "24h": _window_stats([t for t in live if t["closed_at"] >= now - timedelta(hours=24)]),
+        "7d": _window_stats([t for t in live if t["closed_at"] >= now - timedelta(days=7)]),
+    }
 
     if not loaded.provenance.exists:
         signals.add(Signal("dataset", "Trade dataset", Status.UNKNOWN, "file absent"))
@@ -231,6 +269,9 @@ def build(window_days: int = 30) -> dict[str, Any]:
         "live_stats": live_stats,
         "recovery_stats": recovery_stats,
         "equity_curve": equity_curve,
+        "drawdown_curve": drawdown_curve,
+        "fees_curve": fees_curve,
+        "windows": windows,
         "by_symbol": sorted(
             ({"key": k, **_stats(v)} for k, v in by_symbol.items()),
             key=lambda r: r["total"], reverse=True),

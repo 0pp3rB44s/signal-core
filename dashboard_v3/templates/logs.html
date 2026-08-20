@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% import "base.html" as ui with context %}
+{% block title %}Logs{% endblock %}{% block heading %}Safe operational logs{% endblock %}
+{% set l = d.panels.operations.logs %}{% block content %}
+<div class="card"><header><h3>Recent selected events</h3><span class="spacer"></span>{{ ui.badge(l.status) }} <input id="logq" placeholder="filter level / source / text…"></header>
+<div class="body"><div class="notice t-ok"><span class="nt">● REDACTION ACTIVE</span><p>Credential assignments, authorization headers, cookies, bearer/basic tokens and long hexadecimal key shapes are replaced before rendering.</p></div></div>
+<div class="body flush"><div class="scroll tall"><table id="logtable"><thead><tr><th>Timestamp</th><th>Source</th><th>Category</th><th>Message</th></tr></thead><tbody>
+{% for row in l.rows %}<tr><td><code>{{ dt_utc(row.timestamp) }}</code></td><td><code>{{ row.source }}</code></td><td>{{ row.levels|join(', ') }}</td><td><code>{{ row.message }}</code></td></tr>{% endfor %}
+{% if not l.rows %}<tr><td colspan="4">No matching operational log rows; state is UNKNOWN, not clean.</td></tr>{% endif %}</tbody></table></div></div></div>
+<script>(function(){var q=document.getElementById('logq'),t=document.getElementById('logtable');if(!q||!t)return;q.addEventListener('input',function(){var v=q.value.toLowerCase();t.querySelectorAll('tbody tr').forEach(function(r){r.style.display=r.textContent.toLowerCase().indexOf(v)>-1?'':'none';});});})();</script>
+{% endblock %}
