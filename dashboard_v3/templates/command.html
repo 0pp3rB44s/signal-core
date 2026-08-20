@@ -8,6 +8,8 @@
 {% set fn = d.panels.funnel %}
 {% set inc = d.panels.incidents %}
 {% set perm = d.permission %}
+{% set op = d.panels.operations %}
+{% set h = d.panels.history %}
 
 {% block verdict %}
 <div class="verdict t-{{ tone(perm.status) }}">
@@ -47,6 +49,12 @@
         money(ex.account.equity, ex.account.margin_coin) if ex.reachable else 'UNKNOWN',
         ('beschikbaar ' ~ money(ex.account.available, ex.account.margin_coin)) if ex.reachable else '') }}
   </div></div>
+</div>
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Today net PnL', money(h.windows.today.net) if h.provenance.exists else 'UNKNOWN', (h.windows.today.trades|string ~ ' trades') if h.provenance.exists else '') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Drawdown', pct_raw(op.risk.drawdown_pct), 'breaker ' ~ pct_raw(op.risk.drawdown_breaker_threshold_pct), 'neg' if op.risk.breaker != 'GREEN' else 'pos') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Risk', op.risk.breaker, op.risk.last_decision, 'pos' if op.risk.breaker == 'GREEN' else 'neg') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Deployment', op.deployment.sha.match, (op.deployment.sha.shas.runtime or 'UNKNOWN')[:12]) }}</div></div>
 </div>
 
 <div class="grid g2">

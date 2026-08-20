@@ -5,9 +5,13 @@
 
 {% set fn = d.panels.funnel %}
 {% set sc = d.panels.scores %}
+{% set mf = d.panels.operations.microflow_funnel %}
 {% set top = fn.rows|map(attribute='total')|max if fn.rows else 1 %}
 
 {% block content %}
+<div class="card" style="margin-bottom:14px"><header><h3>MicroFlow LIVE funnel</h3><span class="spacer"></span>{{ ui.badge(mf.status) }}</header><div class="body flush"><table><thead><tr>{% for stage in mf.stages %}<th>{{ stage.name }}</th>{% endfor %}</tr></thead><tbody><tr>{% for stage in mf.stages %}<td class="n">{{ stage.count if stage.count is not none else 'UNKNOWN' }}</td>{% endfor %}</tr></tbody></table></div>
+<div class="body"><b>Block reasons:</b> {% if mf.block_reasons %}{% for reason,count in mf.block_reasons.items() %}<span class="tag">{{ reason }}={{ count }}</span> {% endfor %}{% else %}UNKNOWN{% endif %}</div>
+{{ ui.provenance(mf.near_miss_provenance) }}</div>
 <div class="grid g4" style="margin-bottom:14px">
   <div class="card"><div class="body">{{ ui.metric('Events', fn.event_count, 'in venster') }}</div></div>
   <div class="card"><div class="body">{{ ui.metric('Venster', (num(fn.window_hours,2) ~ ' u') if fn.window_hours else 'UNKNOWN', 'sinds sessiestart') }}</div></div>

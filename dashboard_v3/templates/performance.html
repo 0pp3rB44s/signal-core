@@ -6,6 +6,13 @@
 {% set L = h.live_stats %}
 {% block content %}
 
+<div class="grid g4" style="margin-bottom:14px">
+{% for name,label in [('today','Today'),('24h','Last 24h'),('7d','Last 7d')] %}{% set w = h.windows[name] %}
+ <div class="card"><div class="body">{{ ui.metric(label, money(w.net) if h.provenance.exists else 'UNKNOWN', (w.trades ~ ' trades · ' ~ w.wins ~ 'W/' ~ w.losses ~ 'L · fees ' ~ money(w.fees)) if h.provenance.exists else '') }}</div></div>
+{% endfor %}
+ <div class="card"><div class="body">{{ ui.metric('Quarantine', 'ACTIVE', 'MAE / hold duration / legacy TP1') }}</div></div>
+</div>
+
 <div class="card" style="margin-bottom:14px"><div class="body">
   <div class="notice t-warn"><span class="nt">▲ COHORT-SCHEIDING</span>
     <p>Alleen <b>LIVE</b>-fills tellen mee in de cijfers hieronder.
@@ -83,7 +90,7 @@
         <th class="n">Gepland</th><th class="n">Exchange-entry</th><th>Entrybron</th>
         <th>Lifecycle</th><th class="n">Exchange-exit</th><th class="n">PnL USDT</th>
         <th class="n">Prijsretour</th><th class="n">Margin ROI</th><th class="n">Omvang</th>
-        <th class="n">R</th><th>Reden</th><th>TP1</th><th>Cohort</th>
+        <th class="n">Gross</th><th class="n">Fees</th><th class="n">Net</th><th>MFE</th><th>MAE</th><th>Hold</th><th>Reden</th><th>TP1</th><th>Cohort</th>
       </tr></thead>
       <tbody>
       {% for t in h.trades %}
@@ -101,7 +108,12 @@
           <td class="n">{{ pct_raw(t.price_return_pct,3) }}</td>
           <td class="n">{{ pct_raw(t.margin_roi_pct,3) }}</td>
           <td class="n">{{ num(t.confirmed_size,4) if t.confirmed_size is not none else 'UNKNOWN' }}</td>
-          <td class="n">{{ num(t.r_multiple,2) if t.r_multiple is not none else '—' }}</td>
+          <td class="n">{{ num(t.gross,4) if t.gross is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ num(t.fees,4) if t.fees is not none else 'UNKNOWN' }}</td>
+          <td class="n">{{ num(t.pnl,4) }}</td>
+          <td><span class="tag">QUARANTINED</span></td>
+          <td><span class="tag">QUARANTINED</span></td>
+          <td><span class="tag">QUARANTINED</span></td>
           <td>{{ t.exit_reason }}</td>
           <td>{% if t.tp1_hit is none %}<span class="tag">UNKNOWN</span>{% elif t.tp1_hit %}<span class="badge t-ok">● ja</span>{% else %}<span class="tag">nee</span>{% endif %}</td>
           <td>{% if t.cohort == 'LIVE' %}<span class="badge t-ok">LIVE</span>{% else %}<span class="badge t-warn">{{ t.cohort }}</span>{% endif %}</td>

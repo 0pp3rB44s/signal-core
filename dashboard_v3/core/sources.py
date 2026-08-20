@@ -14,6 +14,7 @@ Design rules:
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 import os
 import subprocess
@@ -21,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from collections import deque
 
 from dashboard_v3.core.status import Status, freshness
 
@@ -33,6 +35,8 @@ STALE_POLICY: dict[str, tuple[float, float | None]] = {
     "state/runtime_heartbeat.json": (600, 3600),
     "state/watchdog_heartbeat.json": (3600, None),
     "state/account_equity.json": (3600, None),
+    "state/portfolio_equity_guard.json": (900, 7200),
+    "data_store/trades/daily_learning_report.json": (3600, 86400),
     "state/executed_trades.json": (900, 7200),
     "data_store/funnel_events.jsonl": (900, 7200),
     "data_store/dynamic_grid_v1_events.jsonl": (900, 7200),
@@ -44,6 +48,11 @@ STALE_POLICY: dict[str, tuple[float, float | None]] = {
     "reports/backtests/latest_summary.json": (86400 * 7, None),
     "logs/trade_dataset_v2.csv": (86400 * 7, None),
     "logs/alerts.log": (86400 * 30, None),
+    "data_store/research_liq_oi/status.json": (120, 600),
+    "data_store/research_binance/status.json": (120, 600),
+    "data_store/research_binance_spot/status.json": (120, 600),
+    "data_store/microflow_live/status.json": (120, 600),
+    "data_store/microflow-v1/status.json": (120, 600),
 }
 DEFAULT_POLICY = (86400.0, None)
 
@@ -215,6 +224,41 @@ def load_jsonl_tail(rel: str, max_bytes: int = 4_000_000, limit: int = 4000) -> 
     return Loaded(events, prov)
 
 
+def load_segment_tail(rel: str, segment_limit: int = 4, row_limit: int = 6000) -> Loaded:
+    """Read only the newest immutable gzip segments, streaming into a bounded deque."""
+    root = BASE_PATH / rel
+    segment_dir = root / "segments"
+    if not segment_dir.is_dir():
+        return Loaded([], Provenance(rel, exists=False, parsed=False,
+                                     error="segment directory not found"), True)
+    try:
+        segments = sorted(segment_dir.glob("*.jsonl.gz"), key=lambda p: p.stat().st_mtime)
+        selected = segments[-max(1, segment_limit):]
+        rows: deque[dict[str, Any]] = deque(maxlen=max(1, row_limit))
+        bad = 0
+        total_bytes = 0
+        for path in selected:
+            total_bytes += path.stat().st_size
+            with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        bad += 1
+                        continue
+                    if isinstance(value, dict):
+                        rows.append(value)
+        mtime = max((path.stat().st_mtime for path in selected), default=None)
+        prov = Provenance(rel, mtime_epoch=mtime, size_bytes=total_bytes, rows=len(rows),
+                          note=f"{len(selected)}/{len(segments)} newest segment(s)")
+        if bad:
+            prov.note += f"; {bad} unparseable row(s) skipped"
+        return Loaded(list(rows), prov)
+    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+        return Loaded([], Provenance(rel, parsed=False,
+                                     error=f"segment read failed: {type(exc).__name__}"), True)
+
+
 def load_text_tail(rel: str, max_bytes: int = 400_000, lines: int = 400) -> Loaded:
     path = BASE_PATH / rel
     if not path.exists():
@@ -271,6 +315,47 @@ def repo_head() -> str:
         return out.stdout.strip()
     except Exception:
         return ""
+
+
+def git_ref(ref: str) -> str:
+    """Resolve a local git ref without fetching or changing repository state."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--verify", ref], cwd=str(BASE_PATH),
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
+def worktree_status(limit: int = 40) -> dict[str, Any]:
+    """Read-only porcelain snapshot; bounded so a dirty tree cannot flood the UI."""
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=str(BASE_PATH), capture_output=True, text=True, timeout=8, check=True,
+        )
+        rows = out.stdout.splitlines()
+        return {"known": True, "clean": not rows, "rows": rows[:limit], "total": len(rows)}
+    except Exception as exc:
+        return {"known": False, "clean": None, "rows": [], "total": None,
+                "error": type(exc).__name__}
+
+
+def read_first_line(rel: str) -> Loaded:
+    """Read one small marker file. Missing and unreadable remain explicit."""
+    path = BASE_PATH / rel
+    if not path.exists():
+        return Loaded(None, Provenance(rel, exists=False, parsed=False,
+                                       error="file not found"), True)
+    mtime, size = _stat(path)
+    try:
+        value = path.read_text(encoding="utf-8", errors="replace").splitlines()[0].strip()
+    except (OSError, IndexError) as exc:
+        return Loaded(None, Provenance(rel, parsed=False, error=f"unreadable: {type(exc).__name__}",
+                                       mtime_epoch=mtime, size_bytes=size), True)
+    return Loaded(value or None, Provenance(rel, mtime_epoch=mtime, size_bytes=size))
 
 
 def pid_alive(pid: int | None) -> bool:
@@ -360,6 +445,7 @@ def host_boot_epoch() -> float | None:
 
 __all__ = [
     "BASE_PATH", "Loaded", "Provenance", "file_provenance", "host_boot_epoch",
-    "load_csv", "load_json", "load_jsonl_tail", "load_text_tail", "matching_pids",
-    "pid_alive", "process_info", "read_kv_state", "repo_head",
+    "git_ref", "load_csv", "load_json", "load_jsonl_tail", "load_segment_tail", "load_text_tail",
+    "matching_pids", "pid_alive", "process_info", "read_first_line", "read_kv_state",
+    "repo_head", "worktree_status",
 ]

@@ -1,9 +1,33 @@
 {% extends "base.html" %}
 {% import "base.html" as ui with context %}
 {% block title %}Risk{% endblock %}
-{% block heading %}Expectancy &amp; risicopoorten{% endblock %}
+{% block heading %}RiskManager &amp; breakers{% endblock %}
 {% set xp = d.panels.expectancy %}
+{% set r = d.panels.operations.risk %}
 {% block content %}
+
+<div class="grid g4" style="margin-bottom:14px">
+ <div class="card"><div class="body">{{ ui.metric('RiskManager', ('ACTIVE' if r.active else 'STALE') if r.active is not none else 'UNKNOWN', 'last ' ~ dt_utc(r.last_evaluation)) }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('Last decision', r.last_decision, r.last_fields.get('symbol','UNKNOWN')) }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('Breaker', r.breaker, 'drawdown ' ~ pct_raw(r.drawdown_pct) ~ ' / ' ~ pct_raw(r.drawdown_breaker_threshold_pct), 'pos' if r.breaker == 'GREEN' else 'neg') }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('Weekly freeze', ('ACTIVE' if r.weekly_frozen else 'CLEAR') if r.weekly_frozen is not none else 'UNKNOWN', pct_raw(r.weekly_loss_pct) ~ ' / ' ~ pct_raw(r.weekly_freeze_limit_pct)) }}</div></div>
+</div>
+<div class="grid g2" style="margin-bottom:14px">
+ <div class="card"><header><h3>Limits / current state</h3>{{ ui.badge(r.status) }}</header><div class="body flush"><table><tbody>
+  <tr><td>Daily realised PnL</td><td class="n">{{ money(r.daily_realized_loss) }}</td><td>limit {{ pct_raw(r.daily_loss_limit_pct) }}</td></tr>
+  <tr><td>Consecutive losses</td><td class="n">{{ r.consecutive_losses if r.consecutive_losses is not none else 'UNKNOWN' }}</td><td>limit {{ r.consecutive_loss_limit }}</td></tr>
+  <tr><td>Weekly realised PnL</td><td class="n">{{ money(r.weekly_realized_pnl) }}</td><td>limit {{ pct_raw(r.weekly_freeze_limit_pct) }}</td></tr>
+  <tr><td>Session risk</td><td class="n">{{ ('x' ~ num(r.session_multiplier,2)) if r.session_multiplier is not none else 'UNKNOWN' }}</td><td>{{ r.session_reason }}</td></tr>
+  <tr><td>Correlated exposure</td><td class="n">{{ r.correlated_exposure if r.correlated_exposure is not none else 'UNKNOWN' }}</td><td>not persisted by current telemetry</td></tr>
+  <tr><td>Total portfolio exposure</td><td class="n">{{ r.total_portfolio_exposure if r.total_portfolio_exposure is not none else 'UNKNOWN' }}</td><td>not persisted by current telemetry</td></tr>
+  <tr><td>Equity high-water</td><td class="n">{{ money(r.equity_high_water) }}</td><td>current {{ money(r.current_equity) }}</td></tr>
+ </tbody></table></div></div>
+ <div class="card"><header><h3>Recent RISK_REJECTED</h3><span class="spacer"></span><span class="tag">{{ r.rejections|length }} bounded</span></header><div class="body flush"><div class="scroll"><table><thead><tr><th>Timestamp</th><th>Symbol</th><th>Reason</th><th>Value</th><th>Limit</th></tr></thead><tbody>
+ {% for event in r.rejections %}<tr><td><code>{{ dt_utc(event.timestamp) }}</code></td><td>{{ event.symbol }}</td><td>{{ event.reason }}</td><td>{{ event.value }}</td><td>{{ event.limit }}</td></tr>{% endfor %}
+ {% if not r.rejections %}<tr><td colspan="5">UNKNOWN — no persisted RISK_REJECTED event in bounded log tail.</td></tr>{% endif %}</tbody></table></div></div></div>
+</div>
+
+<h2 style="margin:22px 0 12px">Expectancy gates</h2>
 
 {% if xp.symbol_source_status == 'SOURCE_MALFORMED' %}
 <div class="card" style="margin-bottom:14px">

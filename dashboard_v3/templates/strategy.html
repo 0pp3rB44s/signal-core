@@ -8,8 +8,22 @@
 {% set ec = st.economics %}
 {% set rk = st.ranking %}
 {% set dg = st.dynamic_grid %}
+{% set live = d.panels.operations.strategy_state %}
+{% set project = d.panels.operations.project %}
+{% set ql = d.panels.operations.quality %}
 
 {% block content %}
+
+<div class="card" style="margin-bottom:14px"><header><h3>Current MicroFlow LIVE configuration</h3><span class="spacer"></span><span class="badge {{ 't-ok' if live.enabled else 't-block' }}">{{ 'ENABLED' if live.enabled else 'DISABLED' }}</span></header><div class="body"><div class="grid g4">
+ {{ ui.metric('Strategy ID', live.strategy_id, live.spec_id) }}
+ {{ ui.metric('TP / SL', live.tp_bps ~ ' / ' ~ live.sl_bps ~ ' bps') }}
+ {{ ui.metric('Max hold', (live.max_hold_ms / 60000)|int ~ ' min') }}
+ {{ ui.metric('Risk / trade', pct_raw(live.risk_per_trade_pct), live.symbols|join(', ')) }}
+</div><p><b>Canonical disposition:</b> {{ project.strategy_disposition }}</p></div></div>
+
+<div class="card" style="margin-bottom:14px"><header><h3>Reviewed entry / direction / exit quality</h3>{{ ui.badge(ql.status) }}</header><div class="body">
+{% if ql.available %}<div class="grid g3"><div><b>Entry</b><p>{% for key,value in ql.entry.items() %}<span class="tag">{{ key }}={{ value }}</span> {% endfor %}</p></div><div><b>Direction</b><p>{% for key,value in ql.direction.items() %}<span class="tag">{{ key }}={{ value }}</span> {% endfor %}</p></div><div><b>Exit</b><p>{% for key,value in ql.exit.items() %}<span class="tag">{{ key }}={{ value }}</span> {% endfor %}</p></div></div><p>Pattern A profit-lock watch={{ ql.pattern_a_profit_lock_watch_count }} · late/chase={{ ql.late_chase_count }}</p>
+{% else %}<div class="notice t-unknown"><span class="nt">? REVIEW METRICS UNKNOWN</span><p>No structured review summary is available at <code>state/dashboard_review_summary.json</code>. The dashboard does not re-run or infer research from narrative notes.</p></div>{% endif %}</div>{{ ui.provenance(ql.provenance) }}</div>
 
 <div class="card" style="margin-bottom:14px">
   <header><h3>dynamic_grid_v1 · lifecycle &amp; lineage</h3><span class="spacer"></span><span class="badge">{{ dg.mode }}</span></header>

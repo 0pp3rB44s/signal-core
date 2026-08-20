@@ -3,6 +3,7 @@
 {% block title %}Posities{% endblock %}
 {% block heading %}Open posities{% endblock %}
 {% set ex = d.panels.exchange %}
+{% set rec = d.panels.operations.reconciliation %}
 {% block content %}
 {% if not ex.reachable %}
   <div class="card"><div class="body">
@@ -84,5 +85,13 @@
   </table></div></div>
 </div>
 {% endif %}
+<div class="grid g2" style="margin-top:14px">
+ <div class="card"><header><h3>Plan / protective orders</h3><span class="spacer"></span><span class="tag">{{ ex.plan_order_count }}</span></header><div class="body flush"><div class="scroll"><table><thead><tr><th>Symbol</th><th>Type</th><th>Side</th><th>Trigger</th><th>Order ID</th></tr></thead><tbody>
+ {% for o in ex.plan_orders %}<tr><td>{{ o.get('symbol','UNKNOWN') }}</td><td>{{ o.get('planType') or o.get('orderType') or 'UNKNOWN' }}</td><td>{{ o.get('holdSide') or o.get('side') or 'UNKNOWN' }}</td><td>{{ o.get('triggerPrice') or o.get('planTriggerPrice') or 'UNKNOWN' }}</td><td><code>{{ o.get('orderId','UNKNOWN') }}</code></td></tr>{% endfor %}
+ {% if not ex.plan_orders %}<tr><td colspan="5">No plan orders returned by the read-only API.</td></tr>{% endif %}</tbody></table></div></div></div>
+ <div class="card"><header><h3>Unresolved intents</h3><span class="spacer"></span>{{ ui.badge(rec.status) }}</header><div class="body flush"><div class="scroll"><table><thead><tr><th>Symbol</th><th>State</th><th>Plan</th><th>Updated</th></tr></thead><tbody>
+ {% for i in rec.intents %}<tr><td>{{ i.get('symbol','UNKNOWN') }}</td><td><span class="tag">{{ i.get('state','UNKNOWN') }}</span></td><td><code>{{ i.get('plan_id','UNKNOWN') }}</code></td><td>{{ i.get('updated_at','UNKNOWN') }}</td></tr>{% endfor %}
+ {% if rec.unresolved_count == 0 %}<tr><td colspan="4">No unresolved persisted intents.</td></tr>{% elif rec.unresolved_count is none %}<tr><td colspan="4">INTENTS=UNKNOWN — state source unavailable.</td></tr>{% endif %}</tbody></table></div></div></div>
+</div>
 {% endif %}
 {% endblock %}

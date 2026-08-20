@@ -6,8 +6,8 @@ documentation and known manual report workflows. Ambiguous modules are retained.
 | Path | Status | Evidence / action |
 | --- | --- | --- |
 | `app/main.py`, `app/runner.py` | active | `scripts/start_bot.sh` starts `app.main`; runner owns the scan and monitor loops. |
-| `dashboard_v2/` | retired duplicate | Kept only as a rollback target for v3. `start_dashboard.sh` stops it and starts v3; nothing starts v2. |
-| `dashboard_v3/` | **authoritative** | `scripts/start_dashboard.sh` starts `dashboard_v3.app`. Read-only, password-gated, binds `127.0.0.1`. |
+| `dashboard_v2/` | retired duplicate | Kept only as a historical rollback target for v3. No supported entrypoint starts or controls it. |
+| `dashboard_v3/` | **authoritative** | `scripts/start_dashboard.sh` starts `dashboard_v3.app`. Read-only and password-gated; the supported Runner launcher explicitly opts into the configured home-LAN bind. |
 | `agents_v2/learning/coach_rules.py` | active | Imported and invoked by `app/runner.py`. |
 | `agents_v2/learning/learning_service.py` | active | Imported by the v2 dashboard data provider. |
 | Remaining `agents_v2/` audit/learning tools | compatibility | Produce the documented reports under `agents_v2/reports`; retained for manual workflows. |
@@ -56,4 +56,3 @@ because it only reads.
 removed, `/login` must be the only route accepting a mutating method, no
 `/control` namespace may exist, and `dashboard_v3` may not reference the
 launcher scripts or write files.
-

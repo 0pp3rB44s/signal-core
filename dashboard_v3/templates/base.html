@@ -113,7 +113,7 @@
 
   // Soft refresh: reload only when the tab is visible, to avoid pointless
   // exchange reads while the window is in the background.
-  var PERIOD = 30000;
+  var PERIOD = {{ REFRESH_SECONDS * 1000 }};
   setInterval(function () {
     if (document.visibilityState === 'visible') { location.reload(); }
   }, PERIOD);
