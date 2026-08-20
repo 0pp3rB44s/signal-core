@@ -8,8 +8,16 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from candidate_lifecycle import deterministic_plan_id
-from clients.schemas import TradePlan
+from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
+from clients.schemas import (
+    ContractSpec,
+    MarketSnapshot,
+    StrategyCandidate,
+    StrategyScore,
+    SweepDetection,
+    TimeframeSnapshot,
+    TradePlan,
+)
 from microflow.candidates import CandidateEpisodeSampler, FrozenResearchSpec
 from microflow.collector import MicroflowCollector
 
@@ -120,10 +128,11 @@ def size_microflow_position(*, equity_usdt: float, available_usdt: float,
 class MicroflowLiveRuntime:
     """Public-feed coordinator; all private execution stays in ExecutionService."""
 
-    def __init__(self, *, settings, execution_client, execute_plans) -> None:
+    def __init__(self, *, settings, execution_client, execute_plans, risk_manager) -> None:
         self.settings = settings
         self.client = execution_client
         self.execute_plans = execute_plans
+        self.risk_manager = risk_manager
         self.log = logging.getLogger(self.__class__.__name__)
         self.spec = FrozenResearchSpec()
         self._validator = CandidateEpisodeSampler(self.spec)
@@ -235,6 +244,84 @@ class MicroflowLiveRuntime:
             raise RuntimeError("authenticated fee rates invalid")
         return maker, taker
 
+    @staticmethod
+    def _risk_candidate(candidate: dict) -> StrategyCandidate:
+        """Translate the frozen feed episode into the canonical risk schema."""
+        symbol = str(candidate["symbol"]).upper()
+        direction = str(candidate["side"]).upper()
+        signal_ts = int(candidate["signal_ts"])
+        reference = float(candidate["entry_reference"])
+        features = candidate.get("features") or {}
+        book = features.get("book") or {}
+        trend = "bullish" if direction == "LONG" else "bearish"
+        timeframe = TimeframeSnapshot(
+            symbol=symbol,
+            granularity="microflow",
+            latest_close=reference,
+            change_pct=0.0,
+            range_pct=0.0,
+            volume_ratio_20=0.0,
+            ema20=reference,
+            ema50=reference,
+            trend=trend,
+            candles=[],
+            closed_candle_timestamp_ms=signal_ts,
+            as_of_timestamp_ms=signal_ts,
+        )
+        market = MarketSnapshot(
+            symbol=symbol,
+            contract=ContractSpec(
+                symbol=symbol,
+                product_type="USDT-FUTURES",
+                quote_coin="USDT",
+                base_coin=symbol.removesuffix("USDT"),
+                status="live",
+                min_trade_num=None,
+                size_multiplier=None,
+                price_place=None,
+                volume_24h_usdt=None,
+                change_pct_24h=None,
+                raw={},
+            ),
+            primary=timeframe,
+            confirmation=timeframe,
+            alignment=f"aligned_{trend}",
+            score_hint=100.0,
+            notes=[],
+        )
+        detection = SweepDetection(
+            side=direction,
+            swept_level=reference,
+            sweep_extreme=reference,
+            reclaim_level=reference,
+            entry_hint=reference,
+            invalidation=float(candidate["stop_loss"]),
+            displacement_pct=0.0,
+            bars_since_sweep=0,
+            volume_ratio_on_sweep=0.0,
+            local_range_size_pct=0.0,
+            reason_flags=[],
+        )
+        canonical_id = deterministic_candidate_id(
+            STRATEGY_ID, symbol, direction, signal_ts
+        )
+        return StrategyCandidate(
+            candidate_id=canonical_id,
+            candidate_candle_open_timestamp_ms=signal_ts,
+            symbol=symbol,
+            strategy=STRATEGY_ID,
+            direction=direction,
+            primary_granularity="microflow",
+            confirmation_granularity="microflow",
+            market=market,
+            detection=detection,
+            notes=[
+                f"microflow_source_candidate_id={candidate['candidate_id']}",
+                f"spread_bps={book.get('spread_bps')}",
+                "risk_schema_adapter=microflow_v1",
+            ],
+        )
+
     def _build_plan(self, candidate: dict) -> TradePlan:
         symbol = str(candidate["symbol"]).upper()
         direction = str(candidate["side"]).upper()
@@ -256,6 +343,25 @@ class MicroflowLiveRuntime:
             max_loss_pct_equity=float(self.settings.microflow_max_loss_pct_equity),
             max_open_positions=int(self.settings.max_open_positions),
         )
+        risk_candidate = self._risk_candidate(candidate)
+        risk = self.risk_manager.evaluate(
+            risk_candidate,
+            StrategyScore(total=100.0, breakdown={"frozen_microflow": 100.0}, verdict="GO", reasons=[]),
+            observed_equity=equity,
+            proposed_notional_usdt=sizing.notional_usdt,
+        )
+        if not risk.allowed:
+            raise RuntimeError("RiskManager blocked MicroFlow: " + " | ".join(risk.reasons))
+        base_risk_pct = min(
+            float(self.settings.account_risk_per_trade_pct),
+            float(self.risk_manager.SAFE_ALPHA_MAX_RISK_PCT),
+        )
+        if base_risk_pct <= 0:
+            raise RuntimeError("RiskManager returned an unusable base risk percentage")
+        allocation_multiplier = min(1.0, max(0.0, float(risk.account_risk_pct) / base_risk_pct))
+        allocated_notional = round(sizing.notional_usdt * allocation_multiplier, 8)
+        if allocated_notional < 5.0:
+            raise RuntimeError("RiskManager allocation reduces MicroFlow below exchange minimum")
         features = candidate.get("features") or {}
         flow = features.get("trade_flow") or {}
         book = features.get("book") or {}
@@ -274,8 +380,9 @@ class MicroflowLiveRuntime:
             f"trade_feed_age_ms={freshness.get('trade_stream_age_ms')}",
             f"book_feed_age_ms={freshness.get('book_stream_age_ms')}",
             f"maker_fee_rate={maker}", f"taker_fee_rate={taker}",
-            f"max_planned_loss_usdt={sizing.total_loss_usdt}",
-            f"max_planned_loss_pct={sizing.total_loss_pct_equity}",
+            f"max_planned_loss_usdt={round(sizing.total_loss_usdt * allocation_multiplier, 8)}",
+            f"max_planned_loss_pct={round(sizing.total_loss_pct_equity * allocation_multiplier, 8)}",
+            f"risk_allocation_multiplier={allocation_multiplier}",
             "execution_method=capped_marketable_limit_ioc",
             f"slippage_cap_bps={self.settings.microflow_max_slippage_bps}",
         ]
@@ -289,9 +396,9 @@ class MicroflowLiveRuntime:
             stop_loss=float(candidate["stop_loss"]),
             take_profits=[float(candidate["take_profit"])],
             risk_reward_ratio=2.0,
-            account_risk_pct=float(self.settings.account_risk_per_trade_pct),
-            leverage=leverage, position_notional_usdt=sizing.notional_usdt,
-            notes=notes, reasons=[PILOT_STATUS], tp_size_pcts=[100.0],
+            account_risk_pct=float(risk.account_risk_pct),
+            leverage=leverage, position_notional_usdt=allocated_notional,
+            notes=notes, reasons=[PILOT_STATUS, *risk.reasons], tp_size_pcts=[100.0],
             geometry_entry=reference,
         )
 
@@ -332,9 +439,33 @@ class MicroflowLiveRuntime:
                 max_loss_pct_equity=float(self.settings.microflow_max_loss_pct_equity),
                 max_open_positions=int(self.settings.max_open_positions),
             )
+            source_candidate = {
+                "candidate_id": plan.candidate_id,
+                "symbol": plan.symbol,
+                "side": plan.direction,
+                "signal_ts": plan.candidate_candle_open_timestamp_ms,
+                "entry_reference": plan.geometry_entry,
+                "stop_loss": plan.stop_loss,
+                "take_profit": plan.take_profits[0],
+                "features": snapshot,
+            }
+            risk = self.risk_manager.evaluate(
+                self._risk_candidate(source_candidate),
+                StrategyScore(total=100.0, breakdown={"frozen_microflow": 100.0}, verdict="GO", reasons=[]),
+                observed_equity=equity,
+                proposed_notional_usdt=float(plan.position_notional_usdt),
+            )
+            if not risk.allowed:
+                return {"allowed": False, "reason": "risk_manager_recheck_blocked:" + " | ".join(risk.reasons)}
+            base_risk_pct = min(
+                float(self.settings.account_risk_per_trade_pct),
+                float(self.risk_manager.SAFE_ALPHA_MAX_RISK_PCT),
+            )
+            allocation_multiplier = min(1.0, max(0.0, float(risk.account_risk_pct) / base_risk_pct))
+            risk_allowed_notional = sizing.notional_usdt * allocation_multiplier
         except Exception as exc:
             return {"allowed": False, "reason": f"authenticated_risk_recheck_failed:{exc}"}
-        if float(plan.position_notional_usdt) > sizing.notional_usdt + 1e-8:
+        if float(plan.position_notional_usdt) > risk_allowed_notional + 1e-8:
             return {"allowed": False, "reason": "risk_budget_shrank"}
         required_move_bps = taker * 20_000.0 + cap_bps
         if remaining_tp_bps <= required_move_bps:

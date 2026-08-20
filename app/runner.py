@@ -521,6 +521,7 @@ class StartupRunner:
                 settings=settings,
                 execution_client=self.execution_service.client,
                 execute_plans=self._execute_selected_plans,
+                risk_manager=self.risk_manager,
             )
             self.execution_service.microflow_entry_guard = (
                 self.microflow_runtime.pre_submit_guard

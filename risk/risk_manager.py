@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import Settings
-from app.equity import resolve_account_equity
+from app.equity import portfolio_equity_drawdown_gate, resolve_account_equity
 from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
 from risk import symbol_expectancy
 from telemetry.close_record_sources import (
@@ -58,6 +58,48 @@ class RiskManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
+    def _log_risk_evaluation(
+        self,
+        candidate: StrategyCandidate,
+        *,
+        allowed: bool,
+        reasons: list[str],
+        account_risk_pct: float,
+        observed_equity: float | None,
+        proposed_notional_usdt: float,
+    ) -> None:
+        """Emit one auditable decision record without changing the verdict."""
+        try:
+            daily = self._daily_defensive_status()
+            daily_pnl = daily.get("daily_total_net_pnl", "UNKNOWN")
+            consecutive = daily.get("consecutive_losses", "UNKNOWN")
+        except Exception:
+            daily_pnl = "UNKNOWN"
+            consecutive = "UNKNOWN"
+        try:
+            session_multiplier, session_reason = self._session_risk_multiplier()
+        except Exception:
+            session_multiplier, session_reason = "UNKNOWN", "UNKNOWN"
+        level = logger.info if allowed else logger.warning
+        level(
+            "RISK_EVALUATION | decision=%s | symbol=%s | strategy=%s | direction=%s | "
+            "daily_realized_loss=%s | consecutive_losses=%s | session_multiplier=%s | "
+            "session_reason=%s | observed_equity=%s | proposed_notional_usdt=%s | "
+            "approved_account_risk_pct=%s | reasons=%s",
+            "RISK_APPROVED" if allowed else "RISK_REJECTED",
+            candidate.symbol,
+            candidate.strategy,
+            candidate.direction,
+            daily_pnl,
+            consecutive,
+            session_multiplier,
+            session_reason or "inactive",
+            observed_equity if observed_equity is not None else "resolver",
+            proposed_notional_usdt,
+            account_risk_pct,
+            " | ".join(str(reason) for reason in reasons) or "none",
+        )
 
     @staticmethod
     def _latest_agent_decisions() -> dict:
@@ -133,11 +175,14 @@ class RiskManager:
         )
         return True, reasons, False
 
-    def _kill_switch_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _kill_switch_gate(
+        self,
+        candidate: StrategyCandidate,
+        *,
+        observed_equity: float | None = None,
+    ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
-        summary = self._latest_backtest_summary()
-        if not summary:
-            return True, reasons
+        summary = self._latest_backtest_summary() or {}
 
         strategy_name = (candidate.strategy or "").lower()
         symbol = (candidate.symbol or "").upper()
@@ -168,7 +213,11 @@ class RiskManager:
         # HARD_DAILY_STOP_PCT the rest of the system (dashboard_v2) already
         # surfaces -- previously this was a flat -10.0 USD figure that didn't
         # scale with account size.
-        account_equity, _equity_source = resolve_account_equity(self.settings)
+        account_equity, _equity_source = (
+            (float(observed_equity), "authenticated")
+            if observed_equity is not None
+            else resolve_account_equity(self.settings)
+        )
         hard_daily_stop_pct = float(getattr(self.settings, "hard_daily_stop_pct", 0.0) or 0.0)
         daily_loss_pct = (
             abs(daily_realized_pnl) / account_equity * 100.0
@@ -627,7 +676,7 @@ class RiskManager:
         return None
 
     @staticmethod
-    def _load_open_positions() -> list[dict]:
+    def _load_open_positions() -> list[dict] | None:
         path = BASE_PATH / "state" / "executed_trades.json"
         if not path.exists():
             return []
@@ -636,14 +685,20 @@ class RiskManager:
             with open(path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except Exception:
-            return []
+            return None
 
         if not isinstance(payload, list):
-            return []
+            return None
 
         return [p for p in payload if isinstance(p, dict) and str(p.get("status") or "") == "OPEN"]
 
-    def _cluster_risk_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _cluster_risk_gate(
+        self,
+        candidate: StrategyCandidate,
+        *,
+        proposed_notional_usdt: float = 0.0,
+        observed_equity: float | None = None,
+    ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         symbol = (candidate.symbol or "").upper()
         cluster = self._cluster_for_symbol(symbol)
@@ -652,6 +707,8 @@ class RiskManager:
             return True, reasons
 
         open_positions = self._load_open_positions()
+        if open_positions is None:
+            return False, ["cluster exposure blocked: open-position state unreadable"]
         same_cluster = []
 
         for position in open_positions:
@@ -666,11 +723,21 @@ class RiskManager:
             )
             return False, reasons
 
-        total_cluster_exposure = 0.0
-        for position in same_cluster:
-            total_cluster_exposure += float(position.get("position_notional_usdt") or 0.0)
+        try:
+            total_cluster_exposure = sum(
+                float(position.get("position_notional_usdt") or 0.0)
+                for position in same_cluster
+            ) + float(proposed_notional_usdt or 0.0)
+        except (TypeError, ValueError):
+            return False, ["cluster exposure blocked: notional state unreadable"]
 
-        wallet_reference = 100.0
+        wallet_reference = (
+            float(observed_equity)
+            if observed_equity is not None
+            else float(resolve_account_equity(self.settings)[0])
+        )
+        if wallet_reference <= 0:
+            return False, ["cluster exposure blocked: account equity unavailable"]
         cluster_exposure_pct = (total_cluster_exposure / wallet_reference) * 100 if wallet_reference else 0.0
 
         if cluster_exposure_pct >= self.settings.max_cluster_exposure_pct:
@@ -681,7 +748,13 @@ class RiskManager:
 
         return True, reasons
 
-    def _directional_exposure_gate(self, candidate: StrategyCandidate) -> tuple[bool, list[str]]:
+    def _directional_exposure_gate(
+        self,
+        candidate: StrategyCandidate,
+        *,
+        proposed_notional_usdt: float = 0.0,
+        observed_equity: float | None = None,
+    ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         direction = str(candidate.direction or "").upper()
         symbol = str(candidate.symbol or "").upper()
@@ -690,10 +763,9 @@ class RiskManager:
             return True, reasons
 
         open_positions = self._load_open_positions()
-        open_other_positions = [
-            position for position in open_positions
-            if str(position.get("symbol") or "").upper() != symbol
-        ]
+        if open_positions is None:
+            return False, ["portfolio exposure blocked: open-position state unreadable"]
+        open_other_positions = list(open_positions)
 
         max_total_positions = int(getattr(self.settings, "max_open_positions", 4) or 4)
         max_same_direction_positions = int(getattr(self.settings, "max_same_direction_positions", 3) or 3)
@@ -732,8 +804,32 @@ class RiskManager:
             )
             return False, reasons
 
+        try:
+            current_notional = sum(
+                float(position.get("position_notional_usdt") or 0.0)
+                for position in open_positions
+            )
+            proposed_notional = float(proposed_notional_usdt or 0.0)
+            equity = (
+                float(observed_equity)
+                if observed_equity is not None
+                else float(resolve_account_equity(self.settings)[0])
+            )
+            max_exposure_pct = float(self.settings.max_total_exposure_pct)
+        except (TypeError, ValueError):
+            return False, ["portfolio exposure blocked: exposure inputs unreadable"]
+        if equity <= 0 or max_exposure_pct <= 0 or current_notional < 0 or proposed_notional < 0:
+            return False, ["portfolio exposure blocked: exposure inputs invalid"]
+        projected_exposure_pct = (current_notional + proposed_notional) / equity * 100.0
+        if projected_exposure_pct > max_exposure_pct + 1e-9:
+            return False, [
+                "portfolio exposure blocked: projected notional "
+                f"{projected_exposure_pct:.4f}% exceeds MAX_TOTAL_EXPOSURE_PCT={max_exposure_pct:.4f}%"
+            ]
+
         reasons.append(
-            f"portfolio exposure ok: direction={direction} same_direction={len(same_direction_positions)}/{max_same_direction_positions} total={len(open_other_positions)}/{max_total_positions}"
+            f"portfolio exposure ok: direction={direction} same_direction={len(same_direction_positions)}/{max_same_direction_positions} "
+            f"total={len(open_other_positions)}/{max_total_positions} projected_notional={projected_exposure_pct:.4f}%/{max_exposure_pct:.4f}%"
         )
         logger.info(
             "PORTFOLIO_EXPOSURE_OK | symbol=%s | direction=%s | same_direction=%s/%s | total=%s/%s",
@@ -1117,7 +1213,14 @@ class RiskManager:
         live = str(getattr(self.settings, "execution_mode", "")).strip().upper() == "LIVE"
         return not live
 
-    def evaluate(self, candidate: StrategyCandidate, score: StrategyScore) -> RiskVerdict:
+    def evaluate(
+        self,
+        candidate: StrategyCandidate,
+        score: StrategyScore,
+        *,
+        observed_equity: float | None = None,
+        proposed_notional_usdt: float = 0.0,
+    ) -> RiskVerdict:
         reasons: list[str] = []
 
         note_text = self._note_text(candidate)
@@ -1138,6 +1241,12 @@ class RiskManager:
                 str(getattr(self.settings, "execution_mode", "UNKNOWN")),
             )
             reasons.append("blocked: shorts disabled by configuration (ENABLE_SHORTS=false)")
+            self._log_risk_evaluation(
+                candidate, allowed=False, reasons=reasons,
+                account_risk_pct=account_risk_pct,
+                observed_equity=observed_equity,
+                proposed_notional_usdt=proposed_notional_usdt,
+            )
             return RiskVerdict(
                 allowed=False,
                 status="BLOCKED",
@@ -1149,6 +1258,12 @@ class RiskManager:
 
         if "orderbook_risk_off=true" in note_text or "orderbook_available=false" in note_text:
             reasons.append("blocked: orderbook risk-off")
+            self._log_risk_evaluation(
+                candidate, allowed=False, reasons=reasons,
+                account_risk_pct=account_risk_pct,
+                observed_equity=observed_equity,
+                proposed_notional_usdt=proposed_notional_usdt,
+            )
             return RiskVerdict(
                 allowed=False,
                 status="BLOCKED",
@@ -1183,6 +1298,13 @@ class RiskManager:
             reasons.append("max_open_positions must be at least 1")
 
         strategy_name = (candidate.strategy or "").lower()
+        is_microflow = strategy_name == "microflow_scalper_v1"
+        if is_microflow:
+            leverage = min(
+                float(self.settings.microflow_leverage),
+                float(self.settings.default_leverage),
+                float(self.settings.max_leverage),
+            )
         is_sweep = "sweep" in strategy_name
         is_momentum = "momentum" in strategy_name or "breakout" in strategy_name or "breakdown" in strategy_name
         is_continuation = "continuation" in strategy_name
@@ -1190,7 +1312,7 @@ class RiskManager:
         mtf_quality = self._mtf_quality(candidate)
         is_adaptive_fallback = strategy_name == "adaptive_momentum_continuation"
 
-        if not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim:
+        if not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim and not is_microflow:
             allowed = False
             reasons.append(f"Safe Mode blocks unsupported strategy: {candidate.strategy}")
 
@@ -1205,7 +1327,9 @@ class RiskManager:
         if self._is_backtest_candidate(candidate):
             reasons.append("backtest mode: adaptive kill-switch/strategy-weighting disabled")
         else:
-            kill_allowed, kill_reasons = self._kill_switch_gate(candidate)
+            kill_allowed, kill_reasons = self._kill_switch_gate(
+                candidate, observed_equity=observed_equity
+            )
             reasons.extend(kill_reasons)
             if not kill_allowed:
                 allowed = False
@@ -1227,10 +1351,31 @@ class RiskManager:
                 "PROBE" if probe_mode else ("FULL" if (kill_allowed and strategy_weight_allowed and ai_agent_allowed) else "BLOCKED"),
             )
 
-        cluster_allowed, cluster_reasons = self._cluster_risk_gate(candidate)
+        cluster_allowed, cluster_reasons = self._cluster_risk_gate(
+            candidate,
+            proposed_notional_usdt=proposed_notional_usdt,
+            observed_equity=observed_equity,
+        )
         reasons.extend(cluster_reasons)
         if not cluster_allowed:
             allowed = False
+
+        directional_allowed, directional_reasons = self._directional_exposure_gate(
+            candidate,
+            proposed_notional_usdt=proposed_notional_usdt,
+            observed_equity=observed_equity,
+        )
+        reasons.extend(directional_reasons)
+        if not directional_allowed:
+            allowed = False
+
+        if is_microflow or getattr(self.settings, "is_live_execution", None) is True:
+            equity_allowed, equity_reason = portfolio_equity_drawdown_gate(
+                self.settings, observed_equity=observed_equity
+            )
+            reasons.append(equity_reason)
+            if not equity_allowed:
+                allowed = False
 
         execution_cost_allowed, execution_cost_reasons = self._execution_cost_gate(candidate)
         reasons.extend(execution_cost_reasons)
@@ -1251,6 +1396,8 @@ class RiskManager:
             required_score = 74 if mtf_quality else self.SAFE_CONTINUATION_MIN_SCORE
         elif is_low_vol_reclaim:
             required_score = 68 if mtf_quality else max(self.SAFE_ALPHA_MIN_SCORE, 72)
+        elif is_microflow:
+            required_score = self.SAFE_ALPHA_MIN_SCORE
         else:
             required_score = self.SAFE_ALPHA_MIN_SCORE
         if score.total < required_score:
@@ -1266,10 +1413,10 @@ class RiskManager:
                     f"continuation blocked: weak volume confirmation ({volume_ratio:.2f} < {required_continuation_volume:.2f})"
                 )
 
-        if candidate.direction == "LONG" and candidate.market.alignment == "aligned_bearish":
+        if not is_microflow and candidate.direction == "LONG" and candidate.market.alignment == "aligned_bearish":
             allowed = False
             reasons.append("HTF alignment opposes long setup")
-        if candidate.direction == "SHORT" and candidate.market.alignment == "aligned_bullish":
+        if not is_microflow and candidate.direction == "SHORT" and candidate.market.alignment == "aligned_bullish":
             allowed = False
             reasons.append("HTF alignment opposes short setup")
 
@@ -1325,10 +1472,13 @@ class RiskManager:
                     f"sweep is too old for Safe Alpha: {bars_since_sweep} bars"
                 )
 
-        alignment_allowed, alignment_reasons = self._alignment_gate(candidate, score)
-        reasons.extend(alignment_reasons)
-        if not alignment_allowed:
-            allowed = False
+        if is_microflow:
+            reasons.append("microflow: frozen order-flow entry policy; legacy HTF alignment gate not applicable")
+        else:
+            alignment_allowed, alignment_reasons = self._alignment_gate(candidate, score)
+            reasons.extend(alignment_reasons)
+            if not alignment_allowed:
+                allowed = False
 
         if not allowed:
             self._emit_near_risk_blocked(candidate, score, reasons)
@@ -1349,6 +1499,12 @@ class RiskManager:
             if session_multiplier < 1.0:
                 account_risk_pct = round(account_risk_pct * session_multiplier, 4)
                 reasons.append(session_reason)
+        self._log_risk_evaluation(
+            candidate, allowed=allowed, reasons=reasons,
+            account_risk_pct=account_risk_pct,
+            observed_equity=observed_equity,
+            proposed_notional_usdt=proposed_notional_usdt,
+        )
         return RiskVerdict(
             allowed=allowed,
             status=status,

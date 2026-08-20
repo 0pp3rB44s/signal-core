@@ -99,6 +99,12 @@ def test_pre_submit_guard_enforces_one_bps_cap_and_fresh_signal():
         microflow_margin_reserve_pct=10.0,
         microflow_max_notional_pct_equity=500.0,
         microflow_max_loss_pct_equity=2.0,
+        account_risk_per_trade_pct=0.75,
+    )
+    runtime.risk_manager = MagicMock()
+    runtime.risk_manager.SAFE_ALPHA_MAX_RISK_PCT = 0.75
+    runtime.risk_manager.evaluate.return_value = SimpleNamespace(
+        allowed=True, account_risk_pct=0.75, reasons=["risk gate passed"]
     )
     runtime.client = MagicMock()
     runtime.client.get_accounts.return_value = {
@@ -112,9 +118,10 @@ def test_pre_submit_guard_enforces_one_bps_cap_and_fresh_signal():
     runtime.collector = MagicMock()
     runtime.collector.latest_snapshot.return_value = _snapshot(now=1_000_000)
     plan = SimpleNamespace(
+        candidate_id="feed-candidate",
         symbol="BTCUSDT", direction="LONG", geometry_entry=99.995,
         take_profits=[100.395], candidate_candle_open_timestamp_ms=1_000_000,
-        position_notional_usdt=35,
+        position_notional_usdt=35, stop_loss=99.795,
     )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("microflow.live.time.time", lambda: 1_000.0)
