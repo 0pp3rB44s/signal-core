@@ -41,6 +41,41 @@ from telemetry.live_forensics import emit_forensic_event
 DEAD_TRADE_CLOSE_MAX_ATTEMPTS = 3
 
 
+# Snapshot age beyond which a pre-fetched exchange read is no longer trusted for
+# reconciliation. Tied to the position-monitor's own refresh cadence (30s default):
+# a snapshot older than one full monitor cycle will be superseded by a fresher one
+# imminently anyway, so treating it as unreliable costs nothing and avoids reconciling
+# against a read that predates a fill/close that may have happened in the meantime.
+EXCHANGE_SNAPSHOT_MAX_AGE_MS = 20_000
+
+
+class ExchangeSnapshot:
+    """One fetch of Bitget's open-position list, captured OUTSIDE any lock.
+
+    `ok=False` (fetch failed, raised, or is too stale to trust) routes reconciliation
+    through the exact same conservative "preserve OPEN state, do not treat as closed"
+    path that an in-flight network failure already used before this snapshot was
+    split out of `sync()` -- staleness and failure are handled identically on purpose.
+    """
+
+    __slots__ = ("positions_live", "open_symbols", "ok", "fetched_at_ms", "error")
+
+    def __init__(self, *, positions_live, open_symbols, ok, fetched_at_ms, error=None):
+        self.positions_live = positions_live
+        self.open_symbols = open_symbols
+        self.ok = ok
+        self.fetched_at_ms = fetched_at_ms
+        self.error = error
+
+    def age_ms(self, *, now_ms=None) -> float:
+        import time
+        now_ms = now_ms if now_ms is not None else time.time() * 1000
+        return max(0.0, now_ms - self.fetched_at_ms)
+
+    def usable(self, *, now_ms=None) -> bool:
+        return self.ok and self.age_ms(now_ms=now_ms) <= EXCHANGE_SNAPSHOT_MAX_AGE_MS
+
+
 class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifecycleMixin):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -91,11 +126,47 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         result["recording_outcomes"] = outcomes
         return result
 
+    def fetch_exchange_snapshot(self) -> "ExchangeSnapshot":
+        """One Bitget position-list fetch. MUST be called without any lock held.
+
+        This is the network call that used to run inline inside `sync()` while
+        `trading_state_lock` was held -- with 3 retries at up to 15s each plus
+        backoff, a single degraded response could hold that lock for up to ~49s,
+        blocking every other lock consumer (including the position-monitor thread
+        and the next scan cycle's own sync). Callers must fetch here first, THEN
+        acquire the lock and pass the result into `sync(exchange_snapshot=...)`.
+        """
+        import time
+        try:
+            payload = self.client.get_all_positions()
+            positions_live = payload.get("data") or []
+            open_symbols = {
+                str(p.get("symbol") or "")
+                for p in positions_live
+                if float(p.get("total") or p.get("size") or 0) > 0
+            }
+            return ExchangeSnapshot(
+                positions_live=positions_live,
+                open_symbols=open_symbols,
+                ok=True,
+                fetched_at_ms=time.time() * 1000,
+            )
+        except Exception as exc:
+            self.log.warning("Bitget position sync failed in PositionManager: %s", exc)
+            return ExchangeSnapshot(
+                positions_live=[],
+                open_symbols=set(),
+                ok=False,
+                fetched_at_ms=time.time() * 1000,
+                error=str(exc),
+            )
+
     def sync(
         self,
         snapshots: list[MarketSnapshot],
         *,
         use_snapshot_context: bool = True,
+        exchange_snapshot: "ExchangeSnapshot | None" = None,
     ) -> list[PositionUpdate]:
         recovery_stats = self.recover_provisional_close_rows()
         if recovery_stats.get("blocked"):
@@ -123,27 +194,28 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 }
         updates: list[PositionUpdate] = []
         events = self.event_store.load(default=[])
-        bitget_open_symbols: set[str] = set()
-        positions_live: list[dict] = []
-        bitget_sync_ok = False
-        try:
-            payload = self.client.get_all_positions()
-            positions_live = payload.get("data") or []
-            bitget_open_symbols = {
-                str(p.get("symbol") or "")
-                for p in positions_live
-                if float(p.get("total") or p.get("size") or 0) > 0
-            }
-            if not use_snapshot_context:
-                for live_position in positions_live:
-                    live_symbol = str(live_position.get("symbol") or "")
-                    live_mark = self._live_mark_price(live_position)
-                    if live_symbol and live_mark > 0:
-                        price_map[live_symbol] = live_mark
-                        candle_range_map[live_symbol] = {"high": live_mark, "low": live_mark}
-            bitget_sync_ok = True
-        except Exception as exc:
-            self.log.warning("Bitget position sync failed in PositionManager: %s", exc)
+        if exchange_snapshot is None:
+            # No caller pre-fetched (e.g. a direct/legacy call): fall back to
+            # fetching here so behaviour is unchanged for any such caller. The
+            # production call sites always pass a pre-fetched snapshot now.
+            exchange_snapshot = self.fetch_exchange_snapshot()
+        usable = exchange_snapshot.usable()
+        if exchange_snapshot.ok and not usable:
+            self.log.warning(
+                "POSITION_SYNC_SNAPSHOT_STALE | age_ms=%.0f | max_age_ms=%s | "
+                "treated as sync-failed; preserving local OPEN state",
+                exchange_snapshot.age_ms(), EXCHANGE_SNAPSHOT_MAX_AGE_MS,
+            )
+        positions_live = exchange_snapshot.positions_live if usable else []
+        bitget_open_symbols = exchange_snapshot.open_symbols if usable else set()
+        bitget_sync_ok = usable
+        if usable and not use_snapshot_context:
+            for live_position in positions_live:
+                live_symbol = str(live_position.get("symbol") or "")
+                live_mark = self._live_mark_price(live_position)
+                if live_symbol and live_mark > 0:
+                    price_map[live_symbol] = live_mark
+                    candle_range_map[live_symbol] = {"high": live_mark, "low": live_mark}
 
         local_open_symbols = {
             str(position.get("symbol") or "")
