@@ -771,21 +771,50 @@ class StartupRunner:
         with self._position_snapshots_lock:
             snapshots = list(self._position_snapshots)
         if snapshots:
-            self._sync_positions(snapshots, use_snapshot_context=False)
+            self._sync_positions(snapshots, use_snapshot_context=False, caller="monitor")
 
-    def _sync_positions(self, snapshots: list[MarketSnapshot], *, use_snapshot_context: bool) -> None:
+    def _sync_positions(
+        self, snapshots: list[MarketSnapshot], *, use_snapshot_context: bool,
+        caller: str = "main",
+    ) -> None:
         if (
             not snapshots
             or not self.settings.position_manager_enabled
             or self.position_manager is None
         ):
             return
+        # The exchange fetch runs OUTSIDE trading_state_lock on purpose. It used to
+        # run inline while the lock was held; with 3 retries at up to 15s each plus
+        # backoff, one degraded Bitget response could hold the lock ~49s, blocking
+        # the other sync caller (main cycle vs. the 30s position-monitor thread) for
+        # that whole duration. The lock now protects only local-state reconciliation.
+        self.log.info("POSITION_SYNC_FETCH_STARTED | caller=%s", caller)
+        fetch_started = time.perf_counter()
+        exchange_snapshot = self.position_manager.fetch_exchange_snapshot()
+        fetch_duration_ms = (time.perf_counter() - fetch_started) * 1000.0
+        self.log.info(
+            "POSITION_SYNC_FETCH_COMPLETED | caller=%s | fetch_duration_ms=%.1f | ok=%s",
+            caller, fetch_duration_ms, exchange_snapshot.ok,
+        )
+        lock_wait_started = time.perf_counter()
         with self._position_sync_lock:
             with trading_state_lock():
+                lock_acquired_at = time.perf_counter()
+                snapshot_age_ms = exchange_snapshot.age_ms()
+                snapshot_discarded_stale = exchange_snapshot.ok and not exchange_snapshot.usable()
                 position_updates = self.position_manager.sync(
                     snapshots,
                     use_snapshot_context=use_snapshot_context,
+                    exchange_snapshot=exchange_snapshot,
                 )
+                lock_hold_ms = (time.perf_counter() - lock_acquired_at) * 1000.0
+        lock_wait_ms = (lock_acquired_at - lock_wait_started) * 1000.0 - lock_hold_ms
+        self.log.info(
+            "POSITION_SYNC_RECONCILE_DONE | caller=%s | snapshot_age_ms=%.0f | "
+            "snapshot_discarded_stale=%s | lock_wait_ms=%.1f | lock_hold_ms=%.1f",
+            caller, snapshot_age_ms, snapshot_discarded_stale,
+            max(0.0, lock_wait_ms), lock_hold_ms,
+        )
         if position_updates:
             self._emit_position_summary(position_updates)
             self.position_logger.append_rows(position_updates)
@@ -1841,7 +1870,7 @@ class StartupRunner:
             if snapshots and self.settings.position_manager_enabled:
                 with self._position_snapshots_lock:
                     self._position_snapshots = list(snapshots)
-                self._sync_positions(snapshots, use_snapshot_context=True)
+                self._sync_positions(snapshots, use_snapshot_context=True, caller="main")
 
             scan_completed = True
             executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
