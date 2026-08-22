@@ -8,6 +8,7 @@ import pytest
 
 from execution.close_dedup import economic_close_exists, lifecycle_keys
 from execution.close_reconciler import (
+    AmbiguousLifecycle,
     CloseReconciliationUnavailable,
     RECONCILED_SOURCE,
     economics_from_history,
@@ -198,3 +199,108 @@ def test_reconciled_row_counts_economically():
 
 def test_lifecycle_keys_ignore_blank_identifiers():
     assert lifecycle_keys({"position_lifecycle_id": "", "symbol": "", "direction": ""}) == set()
+
+
+# ── recovered-position matching (SOLUSDT pos-dab4e47f4e843fb08a6606047d1f836d) ─
+#
+# Real incident, 2026-08-21. This lifecycle was recovered_from_exchange=True:
+# discovered already open, so its local opened_at (08:12:48.400Z) is the
+# discovery timestamp, not the exchange's true open time (ctime 08:10:13.475Z,
+# from Bitget position history). The ~155s gap exceeds OPEN_OBSERVATION_MAX_MS
+# (120s), so the unmodified open-axis filter rejected the one genuine match.
+# closed_at_ms here is our OWN close action's timestamp -- reliable regardless
+# of discovery lag -- and is what is_recovered=True relies on instead.
+
+SOL_OPENED_AT_DISCOVERY_MS = 1_787_299_968_400   # local opened_at (discovery time)
+SOL_CLOSED_AT_MS = 1_787_299_995_109             # local closed_at (our own close action)
+
+
+def sol_hist(pid, ctime, utime, side="short", size="1.6"):
+    return {
+        "symbol": "SOLUSDT", "holdSide": side, "ctime": str(ctime), "utime": str(utime),
+        "openTotalPos": size, "closeTotalPos": size, "openAvgPrice": "90.0",
+        "closeAvgPrice": "90.0", "pnl": "-0.1728", "netProfit": "-0.347184",
+        "openFee": "-0.08714016", "closeFee": "-0.08724384", "totalFunding": "0",
+        "positionId": pid,
+    }
+
+
+SOL_TARGET = sol_hist("1474607784862052361", 1_787_299_813_475, 1_787_299_995_389)
+SOL_TOO_EARLY_CLOSE = sol_hist("1474601057546563586", 1_787_298_209_558, 1_787_298_300_126)
+SOL_TOO_LATE_OPEN = sol_hist("1474627118183378945", 1_787_304_422_898, 1_787_304_465_264)
+
+
+def test_recovered_position_matches_despite_discovery_time_gap():
+    """The real incident: without is_recovered, this returns None (proven bug)."""
+    rows = [SOL_TOO_EARLY_CLOSE, SOL_TARGET, SOL_TOO_LATE_OPEN]
+    got = match_lifecycle(
+        rows, symbol="SOLUSDT", direction="short",
+        opened_at_ms=SOL_OPENED_AT_DISCOVERY_MS, size=1.6,
+        exchange_position_id="", closed_at_ms=SOL_CLOSED_AT_MS,
+        is_recovered=True,
+    )
+    assert got is not None
+    assert got["positionId"] == "1474607784862052361"
+
+
+def test_recovered_position_without_the_flag_still_fails_the_open_axis():
+    """Proves the fix is additive: the un-flagged path is exactly the old bug."""
+    rows = [SOL_TOO_EARLY_CLOSE, SOL_TARGET, SOL_TOO_LATE_OPEN]
+    got = match_lifecycle(
+        rows, symbol="SOLUSDT", direction="short",
+        opened_at_ms=SOL_OPENED_AT_DISCOVERY_MS, size=1.6,
+        exchange_position_id="", closed_at_ms=SOL_CLOSED_AT_MS,
+        is_recovered=False,
+    )
+    assert got is None
+
+
+def test_recovered_position_rejects_the_too_early_close_candidate():
+    got = match_lifecycle(
+        [SOL_TOO_EARLY_CLOSE], symbol="SOLUSDT", direction="short",
+        opened_at_ms=SOL_OPENED_AT_DISCOVERY_MS, size=1.6,
+        closed_at_ms=SOL_CLOSED_AT_MS, is_recovered=True,
+    )
+    assert got is None  # close-axis lag ~28 min, far outside CLOSE_OBSERVATION_MAX_MS
+
+
+def test_recovered_position_rejects_the_too_late_open_candidate():
+    got = match_lifecycle(
+        [SOL_TOO_LATE_OPEN], symbol="SOLUSDT", direction="short",
+        opened_at_ms=SOL_OPENED_AT_DISCOVERY_MS, size=1.6,
+        closed_at_ms=SOL_CLOSED_AT_MS, is_recovered=True,
+    )
+    assert got is None  # close-axis lag negative and far outside tolerance
+
+
+def test_recovered_position_fails_closed_on_a_genuinely_ambiguous_candidate():
+    """A second row that ALSO satisfies the close axis must raise, not guess."""
+    decoy = sol_hist("9999999999999999999", 1_787_260_000_000, SOL_CLOSED_AT_MS + 500)
+    rows = [SOL_TARGET, decoy]
+    with pytest.raises(AmbiguousLifecycle):
+        match_lifecycle(
+            rows, symbol="SOLUSDT", direction="short",
+            opened_at_ms=SOL_OPENED_AT_DISCOVERY_MS, size=1.6,
+            closed_at_ms=SOL_CLOSED_AT_MS, is_recovered=True,
+        )
+
+
+def test_normal_locally_opened_lifecycle_matching_is_unchanged():
+    """is_recovered defaults to False: every pre-existing behaviour is untouched."""
+    got = match_lifecycle([hist()], symbol="TRXUSDT", direction="short",
+                           opened_at_ms=OPEN_MS, size=77.0)
+    assert got is not None and got["positionId"] == "12223747"
+    assert match_lifecycle([hist(ctime=OPEN_MS + 60_000)], symbol="TRXUSDT",
+                            direction="short", opened_at_ms=OPEN_MS, size=77.0,
+                            is_recovered=False) is None
+
+
+def test_recovered_position_rejects_wrong_size_candidate():
+    wrong_size = sol_hist("8888888888888888888", 1_787_299_813_475,
+                           1_787_299_995_389, size="9.9")
+    got = match_lifecycle(
+        [wrong_size], symbol="SOLUSDT", direction="short",
+        opened_at_ms=SOL_OPENED_AT_DISCOVERY_MS, size=1.6,
+        closed_at_ms=SOL_CLOSED_AT_MS, is_recovered=True,
+    )
+    assert got is None

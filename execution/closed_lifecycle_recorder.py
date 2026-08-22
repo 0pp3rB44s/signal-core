@@ -451,6 +451,8 @@ def recover_provisional_closes(
                 size=_f(row.get("confirmed_position_size") or row.get("position_size")),
                 exchange_position_id=row.get("exchange_position_id"),
                 closed_at_ms=_closed_at_ms(row),
+                is_recovered=str(row.get("recovered_from_exchange") or "").strip().lower()
+                in ("true", "1", "yes"),
             )
             if hit is None:
                 raise CloseReconciliationUnavailable("no unambiguous lifecycle match")

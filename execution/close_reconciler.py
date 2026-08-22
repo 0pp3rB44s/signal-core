@@ -192,6 +192,7 @@ def match_lifecycle(
     size: float | None,
     exchange_position_id: str | None = None,
     closed_at_ms: int | None = None,
+    is_recovered: bool = False,
 ) -> dict | None:
     """Pick the one history row that is this lifecycle.
 
@@ -212,6 +213,18 @@ def match_lifecycle(
     matches; none returns ``None``; more than one raises `AmbiguousLifecycle`.
     Every filter can only shrink the candidate set, so each added axis is
     strictly safer than omitting it.
+
+    `is_recovered=True` skips the open-axis filter only. It exists for
+    `recovered_from_exchange` lifecycles, whose local `opened_at` is the
+    moment the position-monitor *discovered* an untracked open position, not
+    the exchange's true open time -- there is no bound on how long a position
+    can sit open before discovery, so no open-time tolerance is trustworthy
+    for these rows, and widening the shared constant would weaken the axis for
+    every normal, locally-opened lifecycle too. The close axis is unaffected
+    and still required whenever the caller supplies `closed_at_ms`: `closed_at`
+    is timestamped by our own close action, not a discovery guess, so it stays
+    a reliable, independent identity check and keeps the composite fallback
+    just as safe against misattribution and ambiguity as before.
     """
     want_sym = str(symbol or "").upper()
     want_side = str(direction or "").lower()
@@ -248,13 +261,15 @@ def match_lifecycle(
     cands = sized
 
     # Open axis: exchange `ctime` (event) against our `opened_at` (observation).
-    within = [
-        r for r in cands
-        if _observation_lag_ok(r.get("ctime"), opened_at_ms, OPEN_OBSERVATION_MAX_MS)
-    ]
-    if not within:
-        return None
-    cands = within
+    # Skipped for recovered lifecycles -- see `is_recovered` in the docstring.
+    if not is_recovered:
+        within = [
+            r for r in cands
+            if _observation_lag_ok(r.get("ctime"), opened_at_ms, OPEN_OBSERVATION_MAX_MS)
+        ]
+        if not within:
+            return None
+        cands = within
 
     # Close axis: exchange `utime` against our `closed_at`. A second, independent
     # time axis, applied only when the caller has an observed close — recovery
