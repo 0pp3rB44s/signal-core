@@ -11,6 +11,12 @@ import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Written for a position discovered already open on the exchange (never placed
+# by us). Its local `opened_at` is therefore the moment of discovery, not the
+# exchange's true open time -- see `execution.close_reconciler.match_lifecycle`'s
+# `is_recovered` parameter, which depends on this exact string.
+RECOVERED_EXCHANGE_POSITION_STRATEGY = "recovered_exchange_position"
+
 from execution.position_model import (
     INITIAL_PROTECTION_CONFIRMED,
     PROTECTION_UPDATE_FAILED,
@@ -78,7 +84,7 @@ class PositionReconcilerMixin:
             recovered_position = {
                 "symbol": symbol,
                 "direction": direction,
-                "strategy": "recovered_exchange_position",
+                "strategy": RECOVERED_EXCHANGE_POSITION_STRATEGY,
                 "status": "OPEN",
                 "avg_entry": None,
                 "planned_avg_entry": None,

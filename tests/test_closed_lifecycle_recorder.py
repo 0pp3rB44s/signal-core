@@ -208,3 +208,39 @@ def test_reconciled_row_is_economic_and_provisional_is_not():
                               "sync_source": "dead_trade_timeout"}) is False
     assert is_economic_close({"event_type": "CLOSE_QUARANTINED",
                               "sync_source": RECONCILED_SOURCE}) is False
+
+
+# ── recovered-position wiring (real incident, 2026-08-21) ──────────────────
+#
+# trade_dataset_v2.csv has no `recovered_from_exchange` column -- only the
+# JSON position record does. The CSV's own signal is the `strategy` label
+# written at discovery by position_reconciler.py. This proves the wiring
+# reads that field, not a column that does not exist in the dataset schema.
+
+def test_recovery_wires_is_recovered_from_strategy_label_not_a_missing_column(tmp_path):
+    """A CSV row has no `recovered_from_exchange` field at all -- if the wiring
+    read that key it would always get None and this would stay unresolved,
+    exactly reproducing the real incident."""
+    row = pos(ctime=OPEN_MS + 155_000)  # 155s discovery-time gap, as in production
+    row["strategy"] = "recovered_exchange_position"
+    assert "recovered_from_exchange" not in row  # the nonexistent-column trap
+    s = Sink()
+    stats = recover_provisional_closes(
+        provisional_rows=[row], dataset_path=str(dataset(tmp_path)),
+        fetch_history=lambda: [hist(ctime=OPEN_MS)], write_economic_close=s.write,
+        retire_provisional=s.retire,
+    )
+    assert stats["recovered"] == 1 and len(s.written) == 1
+
+
+def test_recovery_does_not_grant_recovered_semantics_to_a_normal_lifecycle(tmp_path):
+    """Same 155s gap, but no recovered-position strategy label: must stay pending."""
+    row = pos(ctime=OPEN_MS + 155_000)
+    assert row.get("strategy") is None
+    s = Sink()
+    stats = recover_provisional_closes(
+        provisional_rows=[row], dataset_path=str(dataset(tmp_path)),
+        fetch_history=lambda: [hist(ctime=OPEN_MS)], write_economic_close=s.write,
+        retire_provisional=s.retire,
+    )
+    assert stats["recovered"] == 0 and stats["still_pending"] == 1

@@ -41,6 +41,7 @@ from execution.close_dedup import (
     read_segment,
     segment_paths,
 )
+from execution.position_reconciler import RECOVERED_EXCHANGE_POSITION_STRATEGY
 from execution.close_reconciler import (
     AmbiguousLifecycle,
     CloseReconciliationUnavailable,
@@ -451,8 +452,13 @@ def recover_provisional_closes(
                 size=_f(row.get("confirmed_position_size") or row.get("position_size")),
                 exchange_position_id=row.get("exchange_position_id"),
                 closed_at_ms=_closed_at_ms(row),
-                is_recovered=str(row.get("recovered_from_exchange") or "").strip().lower()
-                in ("true", "1", "yes"),
+                # trade_dataset_v2.csv has no `recovered_from_exchange` column --
+                # that field only exists on the JSON position record. The CSV's
+                # own signal for "discovered already open" is this strategy
+                # label, written once at discovery by position_reconciler.py and
+                # never overwritten by anything downstream.
+                is_recovered=str(row.get("strategy") or "").strip()
+                == RECOVERED_EXCHANGE_POSITION_STRATEGY,
             )
             if hit is None:
                 raise CloseReconciliationUnavailable("no unambiguous lifecycle match")
