@@ -170,17 +170,31 @@ guard_assert_live_mode() {
   [ -n "${EXECUTION_CONFIRM_SYMBOLS:-}" ] || guard_die "live mode requires a non-empty EXECUTION_CONFIRM_SYMBOLS allow-list"
   if [ "${APP_ENV:-}" = "production" ]; then
     [ "${STRATEGY_ISOLATION_ENABLED:-}" = "true" ] || guard_die "production LIVE requires strategy isolation"
-    [ "${ENABLED_STRATEGIES:-}" = "microflow_scalper_v1" ] || guard_die "production LIVE enables only microflow_scalper_v1"
-    [ "${MICROFLOW_SCALPER_ENABLED:-}" = "true" ] || guard_die "production LIVE requires MICROFLOW_SCALPER_ENABLED=true"
     [ "${OLD_STRATEGIES_NEW_ENTRIES_ENABLED:-}" = "false" ] || guard_die "legacy new-entry paths must remain disabled"
     [ "${DYNAMIC_GRID_ENABLED:-}" = "false" ] || guard_die "dynamic grid must remain disabled"
     [ "${DYNAMIC_GRID_MODE:-}" = "OFF" ] || guard_die "dynamic grid mode must remain OFF"
-    [ "${MICROFLOW_SYMBOLS:-}" = "${PRODUCTION_SYMBOL_ALLOWLIST:-}" ] || guard_die "MicroFlow universe must equal the canonical production allowlist"
-    awk -v v="${MICROFLOW_LEVERAGE:-0}" -v m="$GUARD_MICROFLOW_MAX_LEVERAGE" 'BEGIN { exit !(v > 0 && v <= m) }' \
-      || guard_die "MicroFlow leverage must be >0 and <=$GUARD_MICROFLOW_MAX_LEVERAGE"
     awk -v v="${MAX_LEVERAGE:-0}" -v m="$GUARD_MICROFLOW_MAX_LEVERAGE" 'BEGIN { exit !(v > 0 && v <= m) }' \
       || guard_die "MAX_LEVERAGE must be >0 and <=$GUARD_MICROFLOW_MAX_LEVERAGE"
-    awk -v v="${MICROFLOW_MAX_SLIPPAGE_BPS:-0}" 'BEGIN { exit !(v > 0 && v <= 1) }' || guard_die "MicroFlow slippage cap must be >0 and <=1 bps"
+    case "${ENABLED_STRATEGIES:-}" in
+      microflow_scalper_v1)
+        [ "${MICROFLOW_SCALPER_ENABLED:-}" = "true" ] || guard_die "production LIVE requires MICROFLOW_SCALPER_ENABLED=true"
+        [ "${MICROFLOW_SYMBOLS:-}" = "${PRODUCTION_SYMBOL_ALLOWLIST:-}" ] || guard_die "MicroFlow universe must equal the canonical production allowlist"
+        awk -v v="${MICROFLOW_LEVERAGE:-0}" -v m="$GUARD_MICROFLOW_MAX_LEVERAGE" 'BEGIN { exit !(v > 0 && v <= m) }' \
+          || guard_die "MicroFlow leverage must be >0 and <=$GUARD_MICROFLOW_MAX_LEVERAGE"
+        awk -v v="${MICROFLOW_MAX_SLIPPAGE_BPS:-0}" 'BEGIN { exit !(v > 0 && v <= 1) }' || guard_die "MicroFlow slippage cap must be >0 and <=1 bps"
+        ;;
+      adaptive_trend_tsmom_v1)
+        # Owner-gated: enabling this strategy in production LIVE also
+        # requires its dedicated flag -- ENABLED_STRATEGIES alone is not
+        # sufficient, matching the same coupling enforced one layer down
+        # in ExecutionService.execute()'s HYBRID SAFE MODE gate.
+        [ "${ADAPTIVE_TREND_LIVE_ENTRY_ENABLED:-}" = "true" ] \
+          || guard_die "production LIVE requires ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=true for adaptive_trend_tsmom_v1"
+        ;;
+      *)
+        guard_die "production LIVE enables only microflow_scalper_v1 or adaptive_trend_tsmom_v1"
+        ;;
+    esac
   fi
   echo "guard: LIVE invariants OK"
 }
