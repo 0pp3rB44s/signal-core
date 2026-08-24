@@ -158,3 +158,92 @@ def test_every_additive_key_is_also_mutable():
         ADDITIVE_NON_SECRET_KEYS, MUTABLE_NON_SECRET_KEYS,
     )
     assert ADDITIVE_NON_SECRET_KEYS <= MUTABLE_NON_SECRET_KEYS
+
+
+# --- ADAPTIVE_TREND_LIVE_ENTRY_ENABLED allowlist extension ---------------
+
+
+def test_adaptive_trend_live_entry_flag_false_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(managed, "AUTHORITATIVE_RUNNER_REPO", tmp_path)
+    env = _env(tmp_path / ".env.live")
+    report = managed.apply_updates(
+        env, {"ADAPTIVE_TREND_LIVE_ENTRY_ENABLED": "false"},
+        backup_dir=tmp_path / "backups" / "env-live",
+    )
+    assert "ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=false" in env.read_text()
+    assert report["changed_non_secret_keys"]["ADAPTIVE_TREND_LIVE_ENTRY_ENABLED"] == {
+        "before": "<ABSENT>", "after": "false",
+    }
+
+
+def test_adaptive_trend_live_entry_flag_true_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(managed, "AUTHORITATIVE_RUNNER_REPO", tmp_path)
+    env = _env(tmp_path / ".env.live")
+    report = managed.apply_updates(
+        env, {"ADAPTIVE_TREND_LIVE_ENTRY_ENABLED": "true"},
+        backup_dir=tmp_path / "backups" / "env-live",
+    )
+    assert "ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=true" in env.read_text()
+    assert report["changed_non_secret_keys"]["ADAPTIVE_TREND_LIVE_ENTRY_ENABLED"]["after"] == "true"
+
+
+def test_arbitrary_unknown_keys_still_rejected_after_this_addition(tmp_path, monkeypatch):
+    monkeypatch.setattr(managed, "AUTHORITATIVE_RUNNER_REPO", tmp_path)
+    env = _env(tmp_path / ".env.live")
+    with pytest.raises(managed.EnvLivePolicyError, match="not an approved non-secret"):
+        managed.apply_updates(
+            env, {"SOME_RANDOM_NEW_KEY": "true"}, backup_dir=tmp_path / "backups" / "env-live",
+        )
+    with pytest.raises(managed.EnvLivePolicyError, match="not an approved non-secret"):
+        managed.apply_updates(
+            env, {"ADAPTIVE_TREND_LIVE_ENTRY_ENABL": "true"},  # near-miss, not a prefix match
+            backup_dir=tmp_path / "backups" / "env-live",
+        )
+
+
+def test_malformed_value_for_the_flag_is_rejected_like_any_other_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(managed, "AUTHORITATIVE_RUNNER_REPO", tmp_path)
+    env = _env(tmp_path / ".env.live")
+    with pytest.raises(managed.EnvLivePolicyError, match="unsafe value"):
+        managed.apply_updates(
+            env, {"ADAPTIVE_TREND_LIVE_ENTRY_ENABLED": "true; rm -rf /"},
+            backup_dir=tmp_path / "backups" / "env-live",
+        )
+    with pytest.raises(managed.EnvLivePolicyError, match="unsafe value"):
+        managed.apply_updates(
+            env, {"ADAPTIVE_TREND_LIVE_ENTRY_ENABLED": "$(whoami)"},
+            backup_dir=tmp_path / "backups" / "env-live",
+        )
+
+
+def test_setting_the_flag_does_not_mutate_unrelated_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(managed, "AUTHORITATIVE_RUNNER_REPO", tmp_path)
+    env = _env(tmp_path / ".env.live")
+    before_text = env.read_text()
+    report = managed.apply_updates(
+        env, {"ADAPTIVE_TREND_LIVE_ENTRY_ENABLED": "true"},
+        backup_dir=tmp_path / "backups" / "env-live",
+    )
+    assert list(report["changed_non_secret_keys"].keys()) == ["ADAPTIVE_TREND_LIVE_ENTRY_ENABLED"]
+    after_text = env.read_text()
+    # Every pre-existing line is byte-identical; only the new line was appended.
+    for line in before_text.splitlines():
+        assert line in after_text
+    assert "EXECUTION_MODE=DRY_RUN" in after_text
+    assert "MAX_LEVERAGE=5" in after_text
+    assert "BITGET_API_KEY=key-secret" in after_text
+
+
+def test_inspect_reports_the_flag_once_present(tmp_path):
+    env = _env(tmp_path / ".env.live")
+    with env.open("a") as fh:
+        fh.write("ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=false\n")
+    report = managed.inspect_redacted(env)
+    assert report["non_secret"]["ADAPTIVE_TREND_LIVE_ENTRY_ENABLED"] == "false"
+
+
+def test_tool_still_performs_no_executor_launch_or_restart():
+    source = Path(managed.__file__).read_text()
+    for forbidden in ("launch_live", "subprocess", "os.system", "os.exec", "app.main",
+                       "supervisor", "launchctl"):
+        assert forbidden not in source, f"tool must never launch/restart anything: found {forbidden!r}"

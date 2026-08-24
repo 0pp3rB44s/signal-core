@@ -59,6 +59,10 @@ MUTABLE_NON_SECRET_KEYS = frozenset({
     "MICROFLOW_MARGIN_RESERVE_PCT",
     "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY",
     "MICROFLOW_MAX_LOSS_PCT_EQUITY",
+    # Added 2026-08-24: AdaptiveTrend's owner-gated live-entry flag. Defaults
+    # False in app/config.py; this only lets the controlled tool flip it, it
+    # does not change the default and does not restart or launch anything.
+    "ADAPTIVE_TREND_LIVE_ENTRY_ENABLED",
 })
 
 # Reviewed additive keys introduced after existing Runner env files were
@@ -72,6 +76,9 @@ ADDITIVE_NON_SECRET_KEYS = frozenset({
     "MICROFLOW_MARGIN_RESERVE_PCT",
     "MICROFLOW_MAX_NOTIONAL_PCT_EQUITY",
     "MICROFLOW_MAX_LOSS_PCT_EQUITY",
+    # Added 2026-08-24: absent from .env.live today (defaults False), so it
+    # must be additive to be settable at all via this tool.
+    "ADAPTIVE_TREND_LIVE_ENTRY_ENABLED",
 })
 
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
