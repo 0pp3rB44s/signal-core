@@ -576,9 +576,22 @@ class ExecutionService:
             is_continuation = "continuation" in strategy_name
             is_low_vol_reclaim = "low_vol_reclaim" in strategy_name or "reclaim" in strategy_name
             is_microflow = is_microflow_scalper_v1(plan.strategy)
+            # Owner-gated: adaptive_trend_tsmom_v1 is recognized here ONLY when
+            # its dedicated flag is explicitly true. Flag false/missing leaves
+            # this False, so nothing changes for it -- it still falls through
+            # to "hybrid gate blocked unsupported strategy" exactly as before.
+            # Still subject to env_allowed below, unchanged: ENABLED_STRATEGIES
+            # remains a separate, orthogonal allow-list this does not bypass.
+            is_adaptive_trend_live = (
+                is_trailing_stop_only_strategy(plan.strategy)
+                and bool(self.settings.adaptive_trend_live_entry_enabled)
+            )
             enabled_set = self.settings.enabled_strategy_set
             env_allowed = (not enabled_set) or any(name in strategy_name for name in enabled_set)
-            if (not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim and not is_microflow) or not env_allowed:
+            if (
+                not is_sweep and not is_momentum and not is_continuation
+                and not is_low_vol_reclaim and not is_microflow and not is_adaptive_trend_live
+            ) or not env_allowed:
                 reports.append(
                     self._report(
                         plan=plan,
