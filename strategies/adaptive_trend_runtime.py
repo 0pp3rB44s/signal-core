@@ -252,6 +252,7 @@ def evaluate_universe(
     candidates = [ev.candidate for ev in evaluations if ev.candidate is not None]
     winner = rank_candidates(candidates)
     routed_reason = None
+    winner_sizing = None
     if winner is not None:
         routed_reason = route_selected_candidate(
             winner=winner, equity=equity,
@@ -259,10 +260,22 @@ def evaluate_universe(
             weekly_freeze_active=weekly_freeze_active, runtime_sha=runtime_sha,
             shadow_log=shadow_log,
         )
+        # Recomputed here (pure, deterministic, identical inputs to the call
+        # inside route_selected_candidate above) so the caller can build a
+        # TradePlan without this module itself ever importing execution.* or
+        # clients.* -- the shadow-only import boundary this module is
+        # AST-verified to hold stays intact.
+        stop = initial_stop(winner.close, winner.atr, winner.side)
+        winner_sizing = size_position(
+            equity=equity, entry_price=winner.close, stop_price=stop,
+            exchange_min_notional=exchange_min_notional.get(winner.symbol, 5.0),
+        )
 
     return dict(
         last_processed=last_processed,
         evaluations=evaluations,
         winner_symbol=winner.symbol if winner else None,
+        winner=winner,
+        winner_sizing=winner_sizing,
         routed_reason=routed_reason,
     )

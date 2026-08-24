@@ -224,6 +224,16 @@ class Settings(BaseSettings):
         default=False, alias="ENTRY_ROUTING_QUOTE_CAPTURE"
     )
 
+    # Default OFF, deliberately. Independent of the weekly freeze -- both
+    # gates must pass for a live entry to happen; this flag is not a
+    # substitute for risk gating, only an additional off switch. Owner-gated:
+    # set to true only by explicit separate authorization, after the full
+    # entry/protection/race-scenario test suite is proven, never as a side
+    # effect of any code change.
+    adaptive_trend_live_entry_enabled: bool = Field(
+        default=False, alias="ADAPTIVE_TREND_LIVE_ENTRY_ENABLED"
+    )
+
     maker_entry_enabled: bool = Field(default=False, alias="MAKER_ENTRY_ENABLED")
     # Hybride: vult de maker-limit niet, dan alsnog een market-order (taker)
     # i.p.v. de trade skippen. True = nooit een trade missen + fee besparen waar

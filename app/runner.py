@@ -998,14 +998,33 @@ class StartupRunner:
             except Exception as exc:
                 self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
 
-            # Shadow-only: never submits an order, never blocks the cycle on
-            # failure. See app/adaptive_trend_scan.py module docstring for the
-            # scope boundary this deliberately stays inside of.
+            # Shadow-only evaluation: never submits an order itself, never
+            # blocks the cycle on failure. See app/adaptive_trend_scan.py
+            # module docstring for the scope boundary this deliberately
+            # stays inside of.
             from app.adaptive_trend_scan import run_adaptive_trend_shadow_scan
-            run_adaptive_trend_shadow_scan(
+            adaptive_trend_scan_result = run_adaptive_trend_shadow_scan(
                 client=self.client, settings=self.settings,
                 weekly_freeze_active=weekly_freeze_active,
             )
+            # Owner-gated, default OFF. When false: nothing below this line
+            # runs -- no TradePlan, no ExecutionService.execute(), no durable
+            # intent, no Bitget call. The weekly freeze (already reflected in
+            # `weekly_freeze_active` above, via route_selected_candidate's
+            # rejection_reason) is independent of and not replaced by this
+            # flag -- both must separately allow an entry.
+            if (
+                self.settings.adaptive_trend_live_entry_enabled
+                and self.execution_service is not None
+                and "error" not in adaptive_trend_scan_result
+            ):
+                from execution.adaptive_trend_entry import submit_adaptive_trend_entry
+                submit_adaptive_trend_entry(
+                    winner=adaptive_trend_scan_result.get("winner"),
+                    winner_sizing=adaptive_trend_scan_result.get("winner_sizing"),
+                    weekly_freeze_active=weekly_freeze_active,
+                    execution_service=self.execution_service,
+                )
 
             try:
                 contracts = self.fetcher.fetch_contracts(force_refresh=False)
