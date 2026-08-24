@@ -288,3 +288,40 @@ def test_sync_dispatches_adaptive_trend_positions_and_skips_microflow_branch(mon
 
     manager.sync([FakeSnap()])
     assert called.get("dispatched") is True
+
+
+def test_restart_mid_flight_after_exchange_confirmed_is_still_idempotent():
+    """Race scenario: exchange accepts a stop update but the process crashes
+    before the sync loop's own local save flushes `adaptive_trend_last_processed_close_ms`.
+    On restart, `current_stop` is read fresh from the exchange (already the
+    NEW value -- Bitget is the source of truth, not our local record), so the
+    ratchet recomputes the same candidate and lands on UNCHANGED. No second
+    exchange call, no double-application, no drift."""
+    closes = [100.0] * 15 + [120.0]
+    client = FakeClient(make_candles(closes))
+    manager = Harness(client)
+
+    # Simulates the crash: local state never advanced past the OLD stop, but
+    # the exchange already reflects the NEW one (as if a save was interrupted
+    # right after the successful protection call).
+    position = base_position(stop_loss=90.0)  # stale, as-if-never-saved
+    updates, events = [], []
+    manager._sync_adaptive_trend_position(
+        position, bitget_sync_ok=True, bitget_open_symbols={"BTCUSDT"},
+        positions_live=[live_position(stop_loss=125.0)],  # exchange already moved
+        price_map={"BTCUSDT": 120.0}, updates=updates, events=events,
+    )
+    assert client.protect_calls == []  # candidate (<=120-2.5*atr) can't beat 125 -> no call
+    assert position["stop_loss"] == 125.0  # local state reconciles to exchange truth
+
+
+def test_recovered_position_never_reaches_adaptive_trend_sync():
+    """A position discovered on the exchange with no prior local record is
+    always labeled `recovered_exchange_position` (fail-closed attribution,
+    execution/position_reconciler.py), never guessed as adaptive_trend_tsmom_v1
+    -- so PositionManager.sync()'s strategy-equality dispatch check can never
+    route it here by construction. This test documents that invariant at the
+    boundary this module owns."""
+    from execution.position_reconciler import RECOVERED_EXCHANGE_POSITION_STRATEGY
+
+    assert RECOVERED_EXCHANGE_POSITION_STRATEGY != STRATEGY_VERSION
