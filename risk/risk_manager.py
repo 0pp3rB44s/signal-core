@@ -1225,6 +1225,15 @@ class RiskManager:
         live = str(getattr(self.settings, "execution_mode", "")).strip().upper() == "LIVE"
         return not live
 
+    @staticmethod
+    def _microflow_retirement_gate(candidate: StrategyCandidate) -> bool:
+        """True when this candidate is the retired microflow_scalper_v1
+        strategy. Extracted so tests exercising the rest of the pipeline can
+        isolate it the same way _strategy_weighting_gate/_ai_agent_gate/
+        _execution_cost_gate already are -- production behaviour is
+        identical either way."""
+        return str(candidate.strategy or "").strip().lower() == "microflow_scalper_v1"
+
     def evaluate(
         self,
         candidate: StrategyCandidate,
@@ -1238,6 +1247,34 @@ class RiskManager:
         note_text = self._note_text(candidate)
         leverage = min(self.settings.default_leverage, self.settings.max_leverage, self.SAFE_ALPHA_MAX_LEVERAGE)
         account_risk_pct = min(self.settings.account_risk_per_trade_pct, self.SAFE_ALPHA_MAX_RISK_PCT)
+
+        # --- MicroFlow retirement ----------------------------------------
+        # Conclusively negative economic history (PF 0.254, expectancy
+        # -0.1448 USDT/trade, n=134, three independent studies) -- retired
+        # from LIVE eligibility. This is the first check, before anything
+        # else, so no downstream gate can accidentally re-admit it. It only
+        # ever turns an approval into a rejection: existing behaviour for
+        # every other strategy is completely unchanged.
+        if self._microflow_retirement_gate(candidate):
+            logger.warning(
+                "MICROFLOW_RETIRED | %s | strategy=%s | stage=risk_gate | new entries disabled",
+                candidate.symbol, candidate.strategy,
+            )
+            reasons.append("blocked: microflow_scalper_v1 retired from LIVE eligibility (no proven positive expectancy)")
+            self._log_risk_evaluation(
+                candidate, allowed=False, reasons=reasons,
+                account_risk_pct=account_risk_pct,
+                observed_equity=observed_equity,
+                proposed_notional_usdt=proposed_notional_usdt,
+            )
+            return RiskVerdict(
+                allowed=False,
+                status="BLOCKED",
+                reasons=reasons,
+                account_risk_pct=account_risk_pct,
+                leverage=leverage,
+                max_open_positions=self.settings.max_open_positions,
+            )
 
         # --- short-side enforcement -------------------------------------
         # ENABLE_SHORTS existed in config but was never wired into any decision

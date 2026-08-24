@@ -174,7 +174,7 @@ def _wired_risk_manager(monkeypatch, tmp_path, **setting_overrides):
         max_correlated_positions=2,
         max_cluster_exposure_pct=1000.0,
         max_same_direction_positions=2,
-        enabled_strategy_set={"microflow_scalper_v1"},
+        enabled_strategy_set={"microflow_scalper_v1", "test_continuation_probe"},
         enable_shorts=True,
         execution_mode="LIVE",
         is_live_execution=True,
@@ -195,6 +195,12 @@ def _wired_risk_manager(monkeypatch, tmp_path, **setting_overrides):
     monkeypatch.setattr(rm, "_ai_agent_gate", lambda candidate: (True, [], False))
     monkeypatch.setattr(rm, "_execution_cost_gate", lambda candidate: (True, []))
     monkeypatch.setattr(rm, "_load_open_positions", lambda: [])
+    # microflow_scalper_v1 is retired and unconditionally blocked by
+    # RiskManager.evaluate() -- these tests verify the generic loss-breaker/
+    # exposure/session mechanics that run AFTER that gate, not the
+    # retirement rule itself (see test_microflow_retired_from_live_risk_path
+    # below for that). Isolated exactly like the other gates above.
+    monkeypatch.setattr(rm, "_microflow_retirement_gate", lambda candidate: False)
     return rm
 
 
@@ -272,3 +278,15 @@ def test_equity_breaker_survives_risk_manager_restart(monkeypatch, tmp_path):
     verdict = _evaluate(restarted, equity=97.9)
     assert not verdict.allowed
     assert any("portfolio equity breaker active" in reason for reason in verdict.reasons)
+
+
+def test_microflow_full_pipeline_is_unconditionally_blocked(monkeypatch, tmp_path):
+    """Unlike every other test in this file, this one leaves the real
+    retirement gate active -- it proves genuine production behaviour: a real
+    MicroFlow candidate, constructed the same way _risk_input() does it, is
+    blocked before any other gate runs."""
+    rm = _wired_risk_manager(monkeypatch, tmp_path)
+    rm._microflow_retirement_gate = RiskManager._microflow_retirement_gate  # un-patch, use the real gate
+    verdict = _evaluate(rm)
+    assert not verdict.allowed
+    assert any("microflow_scalper_v1 retired" in reason for reason in verdict.reasons)

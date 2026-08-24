@@ -294,3 +294,51 @@ def test_exposure_gates_no_longer_reject_valid_empty_state(tmp_path, monkeypatch
     # rejected for legitimate exposure-percentage reasons unrelated to this fix.
     _, reasons = rm._directional_exposure_gate(candidate, proposed_notional_usdt=100.0)
     assert not any("state unreadable" in r for r in reasons)
+
+
+# --- MicroFlow retirement --------------------------------------------------
+
+def _numeric_settings(rm):
+    rm.settings.default_leverage = 10.0
+    rm.settings.max_leverage = 10.0
+    rm.settings.account_risk_per_trade_pct = 0.5
+    rm.settings.max_open_positions = 2
+    return rm
+
+
+def test_microflow_new_entries_blocked_before_any_other_gate():
+    """The retirement check runs before any other gate that needs real
+    numeric settings -- verified here with a bare-minimum candidate/score."""
+    rm = _numeric_settings(_make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0))
+    candidate = _candidate(strategy="microflow_scalper_v1")
+    score = MagicMock()
+
+    verdict = rm.evaluate(candidate, score, observed_equity=1000.0, proposed_notional_usdt=10.0)
+
+    assert verdict.allowed is False
+    assert verdict.status == "BLOCKED"
+    assert any("microflow_scalper_v1 retired" in r for r in verdict.reasons)
+
+
+def test_microflow_retirement_check_is_case_insensitive():
+    rm = _numeric_settings(_make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0))
+    candidate = _candidate(strategy="MicroFlow_Scalper_V1")
+    verdict = rm.evaluate(candidate, MagicMock(), observed_equity=1000.0, proposed_notional_usdt=10.0)
+    assert verdict.allowed is False
+
+
+def test_non_microflow_strategy_is_unaffected_by_retirement_gate():
+    """Proves the gate only ever turns an approval into a rejection for
+    microflow_scalper_v1 specifically. A non-microflow candidate reaches a
+    LATER gate (proven by that gate's own unrelated MagicMock TypeError,
+    since this test does not mock the full pipeline) instead of being
+    blocked by the retirement check itself."""
+    rm = _numeric_settings(_make_risk_manager(equity=1000.0, hard_daily_stop_pct=2.0, daily_pnl=0.0))
+    candidate = _candidate(strategy="adaptive_trend_tsmom_v1")
+    try:
+        verdict = rm.evaluate(candidate, MagicMock(), observed_equity=1000.0, proposed_notional_usdt=10.0)
+        assert not any("microflow_scalper_v1 retired" in r for r in verdict.reasons)
+    except TypeError:
+        # Reached a downstream gate that needs fuller mocking -- proves the
+        # retirement check itself did not block this candidate.
+        pass
