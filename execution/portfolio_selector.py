@@ -198,7 +198,14 @@ def _invalid_reason(plan: TradePlan, allowed_symbols: frozenset[str] | None) -> 
         return "planned_entry_invalid"
     if float(plan.stop_loss or 0) <= 0:
         return "stop_loss_invalid"
-    if not plan.take_profits or any(float(value) <= 0 for value in plan.take_profits):
+    # Trailing-stop-only strategies (currently: adaptive_trend_tsmom_v1) carry
+    # take_profits=[] by design -- ExecutionService already guards every
+    # take_profits[0]/[1] access with `if ... else None`, so an empty list is
+    # a first-class, supported exit model, not a missing field.
+    if plan.take_profits:
+        if any(float(value) <= 0 for value in plan.take_profits):
+            return "take_profit_invalid"
+    elif str(plan.strategy or "").lower() != "adaptive_trend_tsmom_v1":
         return "take_profit_invalid"
     return ""
 
