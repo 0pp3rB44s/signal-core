@@ -390,30 +390,44 @@ class Settings(BaseSettings):
                     )
                 if not self.strategy_isolation_enabled:
                     raise ValueError("production LIVE requires STRATEGY_ISOLATION_ENABLED=true")
-                if self.enabled_strategy_set != {"microflow_scalper_v1"}:
-                    raise ValueError("production LIVE allowlist must be exactly microflow_scalper_v1")
-                if not self.microflow_scalper_enabled:
-                    raise ValueError("production LIVE requires MICROFLOW_SCALPER_ENABLED=true")
-                if parse_symbol_allowlist(self.microflow_symbols, required=True) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
-                    raise ValueError("MICROFLOW_SYMBOLS must equal the approved production universe")
-                if not (0 < self.microflow_leverage <= MICROFLOW_MAX_ALLOWED_LEVERAGE):
+                if self.enabled_strategy_set == {"microflow_scalper_v1"}:
+                    if not self.microflow_scalper_enabled:
+                        raise ValueError("production LIVE requires MICROFLOW_SCALPER_ENABLED=true")
+                    if parse_symbol_allowlist(self.microflow_symbols, required=True) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
+                        raise ValueError("MICROFLOW_SYMBOLS must equal the approved production universe")
+                    if not (0 < self.microflow_leverage <= MICROFLOW_MAX_ALLOWED_LEVERAGE):
+                        raise ValueError(
+                            f"MICROFLOW_LEVERAGE must be >0 and <={MICROFLOW_MAX_ALLOWED_LEVERAGE:g}")
+                    if self.microflow_leverage > self.max_leverage:
+                        raise ValueError("MICROFLOW_LEVERAGE may not exceed MAX_LEVERAGE")
+                    # Sizing bounds. Each fails closed: a missing or absurd value
+                    # must stop the bot, never silently widen exposure.
+                    if not (0.0 <= self.microflow_margin_reserve_pct < 100.0):
+                        raise ValueError("MICROFLOW_MARGIN_RESERVE_PCT must be >=0 and <100")
+                    if not (0 < self.microflow_max_notional_pct_equity <= 1000.0):
+                        raise ValueError("MICROFLOW_MAX_NOTIONAL_PCT_EQUITY must be >0 and <=1000")
+                    if not (0 < self.microflow_max_loss_pct_equity <= 5.0):
+                        raise ValueError("MICROFLOW_MAX_LOSS_PCT_EQUITY must be >0 and <=5")
+                    if not (0 < self.microflow_max_slippage_bps <= 1.0):
+                        raise ValueError("MICROFLOW_MAX_SLIPPAGE_BPS must be >0 and <=1")
+                elif self.enabled_strategy_set == {"adaptive_trend_tsmom_v1"}:
+                    # Owner-gated: mirrors the identical coupling enforced in
+                    # ExecutionService.execute()'s HYBRID SAFE MODE gate and in
+                    # scripts/lib/env_guard.sh -- ENABLED_STRATEGIES alone is
+                    # not sufficient for this strategy.
+                    if not self.adaptive_trend_live_entry_enabled:
+                        raise ValueError(
+                            "production LIVE requires ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=true "
+                            "for adaptive_trend_tsmom_v1"
+                        )
+                else:
                     raise ValueError(
-                        f"MICROFLOW_LEVERAGE must be >0 and <={MICROFLOW_MAX_ALLOWED_LEVERAGE:g}")
-                if self.microflow_leverage > self.max_leverage:
-                    raise ValueError("MICROFLOW_LEVERAGE may not exceed MAX_LEVERAGE")
+                        "production LIVE allowlist must be exactly microflow_scalper_v1 "
+                        "or adaptive_trend_tsmom_v1"
+                    )
                 if self.max_leverage > MICROFLOW_MAX_ALLOWED_LEVERAGE:
                     raise ValueError(
                         f"MAX_LEVERAGE may not exceed {MICROFLOW_MAX_ALLOWED_LEVERAGE:g} in production LIVE")
-                # Sizing bounds. Each fails closed: a missing or absurd value must
-                # stop the bot, never silently widen exposure.
-                if not (0.0 <= self.microflow_margin_reserve_pct < 100.0):
-                    raise ValueError("MICROFLOW_MARGIN_RESERVE_PCT must be >=0 and <100")
-                if not (0 < self.microflow_max_notional_pct_equity <= 1000.0):
-                    raise ValueError("MICROFLOW_MAX_NOTIONAL_PCT_EQUITY must be >0 and <=1000")
-                if not (0 < self.microflow_max_loss_pct_equity <= 5.0):
-                    raise ValueError("MICROFLOW_MAX_LOSS_PCT_EQUITY must be >0 and <=5")
-                if not (0 < self.microflow_max_slippage_bps <= 1.0):
-                    raise ValueError("MICROFLOW_MAX_SLIPPAGE_BPS must be >0 and <=1")
                 if self.old_strategies_new_entries_enabled:
                     raise ValueError("production LIVE requires OLD_STRATEGIES_NEW_ENTRIES_ENABLED=false")
                 if self.dynamic_grid_enabled or grid_mode != "OFF":
