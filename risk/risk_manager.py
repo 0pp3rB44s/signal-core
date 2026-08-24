@@ -677,6 +677,16 @@ class RiskManager:
 
     @staticmethod
     def _load_open_positions() -> list[dict] | None:
+        """Read the persisted lifecycle store's OPEN positions, fail-closed.
+
+        Production schema is `{"_state_metadata": {...}, "data": [...]}`, not a
+        bare list -- checking `isinstance(payload, list)` against the real file
+        was always False, so every cluster/portfolio exposure evaluation
+        returned None and rejected with "open-position state unreadable",
+        regardless of actual exposure. A genuinely empty `data: []` is a valid,
+        readable, zero-position state and must NOT be treated as an error --
+        only a missing/wrong-typed `data` key is.
+        """
         path = BASE_PATH / "state" / "executed_trades.json"
         if not path.exists():
             return []
@@ -687,6 +697,8 @@ class RiskManager:
         except Exception:
             return None
 
+        if isinstance(payload, dict):
+            payload = payload.get("data")
         if not isinstance(payload, list):
             return None
 

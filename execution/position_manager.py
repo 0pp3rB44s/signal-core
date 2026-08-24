@@ -167,8 +167,17 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         *,
         use_snapshot_context: bool = True,
         exchange_snapshot: "ExchangeSnapshot | None" = None,
+        recovery_stats: dict | None = None,
     ) -> list[PositionUpdate]:
-        recovery_stats = self.recover_provisional_close_rows()
+        if recovery_stats is None:
+            # No caller pre-ran recovery (e.g. a direct/legacy call): fall back
+            # to running it here, exactly as before. The production caller in
+            # app/runner.py always pre-runs it OUTSIDE trading_state_lock now --
+            # recover_provisional_close_rows() can perform a Bitget REST fetch
+            # with the same retry/backoff as any other client call, and running
+            # it here unconditionally used to do that fetch while the lock was
+            # held, alongside the (now separately fixed) open-positions fetch.
+            recovery_stats = self.recover_provisional_close_rows()
         if recovery_stats.get("blocked"):
             self.log.critical("PERIODIC_CLOSE_RECOVERY_BLOCKED | %s", recovery_stats)
         positions = self.store.load(default=[])

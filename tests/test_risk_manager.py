@@ -186,3 +186,111 @@ def test_kill_switch_missing_daily_report_is_not_a_block():
     rm._daily_defensive_status = lambda: {}
     allowed, _ = rm._kill_switch_gate(_candidate())
     assert allowed
+
+
+# ── _load_open_positions schema (HIGH-1) ────────────────────────────────────
+#
+# Real incident: production state/executed_trades.json is always
+# {"_state_metadata": {...}, "data": [...]}, never a bare list. Checking
+# isinstance(payload, list) against that file is always False, so every
+# cluster/portfolio exposure gate returned None and rejected every single
+# candidate with "open-position state unreadable" -- 863/863 evaluations in
+# one weekend, confirmed in production logs, regardless of actual exposure.
+
+import json as _json
+
+import risk.risk_manager as risk_manager_mod
+
+
+def _write_state(tmp_path, monkeypatch, payload):
+    monkeypatch.setattr(risk_manager_mod, "BASE_PATH", tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "executed_trades.json"
+    if payload is _MISSING_FILE:
+        return path
+    with open(path, "w", encoding="utf-8") as fh:
+        if isinstance(payload, str):
+            fh.write(payload)
+        else:
+            _json.dump(payload, fh)
+    return path
+
+
+_MISSING_FILE = object()
+
+
+def test_real_production_envelope_schema_is_read(tmp_path, monkeypatch):
+    """The exact real schema: {"_state_metadata": {...}, "data": [...]}."""
+    _write_state(tmp_path, monkeypatch, {
+        "_state_metadata": {"version": 1},
+        "data": [
+            {"symbol": "BTCUSDT", "status": "OPEN"},
+            {"symbol": "ETHUSDT", "status": "CLOSED"},
+        ],
+    })
+    got = RiskManager._load_open_positions()
+    assert got is not None
+    assert [p["symbol"] for p in got] == ["BTCUSDT"]
+
+
+def test_valid_empty_data_is_a_readable_zero_position_set(tmp_path, monkeypatch):
+    """An account with nothing open must read as [], not as an error."""
+    _write_state(tmp_path, monkeypatch, {"_state_metadata": {}, "data": []})
+    assert RiskManager._load_open_positions() == []
+
+
+def test_multiple_real_open_positions_parse_correctly(tmp_path, monkeypatch):
+    _write_state(tmp_path, monkeypatch, {"data": [
+        {"symbol": "SOLUSDT", "status": "OPEN", "direction": "SHORT"},
+        {"symbol": "ZECUSDT", "status": "OPEN", "direction": "LONG"},
+        {"symbol": "BTCUSDT", "status": "CLOSED_SYNCED"},
+    ]})
+    got = RiskManager._load_open_positions()
+    assert {p["symbol"] for p in got} == {"SOLUSDT", "ZECUSDT"}
+
+
+def test_missing_file_is_a_readable_zero_position_set(tmp_path, monkeypatch):
+    _write_state(tmp_path, monkeypatch, _MISSING_FILE)
+    assert RiskManager._load_open_positions() == []
+
+
+def test_invalid_json_fails_closed(tmp_path, monkeypatch):
+    _write_state(tmp_path, monkeypatch, "{not valid json")
+    assert RiskManager._load_open_positions() is None
+
+
+def test_missing_data_key_fails_closed(tmp_path, monkeypatch):
+    _write_state(tmp_path, monkeypatch, {"_state_metadata": {}})
+    assert RiskManager._load_open_positions() is None
+
+
+def test_non_list_data_fails_closed(tmp_path, monkeypatch):
+    _write_state(tmp_path, monkeypatch, {"data": "not-a-list"})
+    assert RiskManager._load_open_positions() is None
+
+
+def test_bare_list_legacy_schema_still_works(tmp_path, monkeypatch):
+    """Any pre-envelope caller/fixture using a bare list must keep working."""
+    _write_state(tmp_path, monkeypatch, [{"symbol": "BTCUSDT", "status": "OPEN"}])
+    got = RiskManager._load_open_positions()
+    assert got is not None and got[0]["symbol"] == "BTCUSDT"
+
+
+def test_exposure_gates_no_longer_reject_valid_empty_state(tmp_path, monkeypatch):
+    """The actual production symptom: valid empty state must not block entries."""
+    _write_state(tmp_path, monkeypatch, {"_state_metadata": {}, "data": []})
+    rm = _make_risk_manager(equity=27.44, hard_daily_stop_pct=1.5, daily_pnl=0.0)
+    rm.settings.max_correlated_positions = 5
+    rm.settings.max_open_positions = 4
+    rm.settings.max_same_direction_positions = 3
+    rm.settings.correlated_exposure_cap_usdt = 1_000_000.0
+    rm.settings.max_cluster_exposure_pct = 1_000_000.0
+    candidate = _candidate(symbol="BTCUSDT")
+    allowed, reasons = rm._cluster_risk_gate(candidate, proposed_notional_usdt=100.0)
+    assert allowed is True
+    assert not any("state unreadable" in r for r in reasons)
+    # Only the HIGH-1 symptom is asserted here: a large notional may still be
+    # rejected for legitimate exposure-percentage reasons unrelated to this fix.
+    _, reasons = rm._directional_exposure_gate(candidate, proposed_notional_usdt=100.0)
+    assert not any("state unreadable" in r for r in reasons)
