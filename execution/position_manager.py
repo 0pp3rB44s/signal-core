@@ -12,6 +12,8 @@ from clients.bitget_rest import BitgetRestClient
 from clients.schemas import MarketSnapshot, PositionUpdate
 from execution.state_store import JsonStateStore
 from risk.cooldown_manager import SymbolCooldownManager
+from execution.adaptive_trend_sync import AdaptiveTrendSyncMixin
+from strategies.adaptive_trend_tsmom import STRATEGY_VERSION as ADAPTIVE_TREND_STRATEGY_VERSION
 from execution.closed_trade_writer import ClosedTradeWriterMixin
 from execution.position_reconciler import PositionReconcilerMixin
 from execution.position_model import (
@@ -76,7 +78,9 @@ class ExchangeSnapshot:
         return self.ok and self.age_ms(now_ms=now_ms) <= EXCHANGE_SNAPSHOT_MAX_AGE_MS
 
 
-class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifecycleMixin):
+class PositionManager(
+    ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifecycleMixin, AdaptiveTrendSyncMixin
+):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.log = logging.getLogger(self.__class__.__name__)
@@ -292,6 +296,17 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             symbol = position["symbol"]
             if bitget_sync_ok and symbol in bitget_open_symbols:
                 self._heal_missing_protection_from_fallback(position)
+            if position.get("strategy") == ADAPTIVE_TREND_STRATEGY_VERSION:
+                self._sync_adaptive_trend_position(
+                    position,
+                    bitget_sync_ok=bitget_sync_ok,
+                    bitget_open_symbols=bitget_open_symbols,
+                    positions_live=positions_live,
+                    price_map=price_map,
+                    updates=updates,
+                    events=events,
+                )
+                continue
             if not bitget_sync_ok:
                 current_price = float(price_map.get(symbol, position.get("last_price") or 0.0))
                 position["last_price"] = current_price
