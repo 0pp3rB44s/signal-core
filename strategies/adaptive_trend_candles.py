@@ -96,6 +96,7 @@ class DataHealth:
 
 def check_data_health(
     candles: list[Candle6h], *, now_ms: int, max_staleness_ms: int = SIGNAL_TIMEFRAME_MS + 30 * 60 * 1000,
+    min_candles: int = WARMUP_CANDLES,
 ) -> DataHealth:
     """Stale/incomplete data must produce NO trade, not a guess.
 
@@ -103,10 +104,16 @@ def check_data_health(
     generous grace period; if the freshest closed candle is older than that,
     something upstream (the collector, the exchange feed) is unhealthy and
     this strategy must refuse to signal on data it cannot trust.
+
+    `min_candles` defaults to the full signal-generation warmup
+    (MOM_LOOKBACK + ATR_PERIOD + 1), but callers that only need ATR history
+    -- the trailing-stop path on an already-open position, which needs no
+    momentum lookback at all -- pass a smaller, explicit requirement rather
+    than being held to the signal path's stricter one.
     """
     if not candles:
         return DataHealth(ok=False, reason="no_candles")
-    if len(candles) < WARMUP_CANDLES:
+    if len(candles) < min_candles:
         return DataHealth(ok=False, reason="insufficient_warmup",
                            latest_close_ms=candles[-1].close_ms)
     latest = candles[-1].close_ms
