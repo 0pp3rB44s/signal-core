@@ -796,6 +796,21 @@ class StartupRunner:
             "POSITION_SYNC_FETCH_COMPLETED | caller=%s | fetch_duration_ms=%.1f | ok=%s",
             caller, fetch_duration_ms, exchange_snapshot.ok,
         )
+        # Same reasoning as the exchange-positions fetch above: recovery's own
+        # Bitget close-history fetch (only performed when something is actually
+        # pending) used to run inline inside sync(), inside the lock. It is now
+        # pre-run here so a slow/retried history fetch cannot hold the lock.
+        self.log.info("CLOSE_RECOVERY_FETCH_STARTED | caller=%s", caller)
+        recovery_fetch_started = time.perf_counter()
+        recovery_stats = self.position_manager.recover_provisional_close_rows()
+        recovery_fetch_duration_ms = (time.perf_counter() - recovery_fetch_started) * 1000.0
+        self.log.info(
+            "CLOSE_RECOVERY_FETCH_COMPLETED | caller=%s | duration_ms=%.1f | "
+            "recovered=%s | still_pending=%s | blocked=%s",
+            caller, recovery_fetch_duration_ms,
+            recovery_stats.get("recovered"), recovery_stats.get("still_pending"),
+            recovery_stats.get("blocked"),
+        )
         lock_wait_started = time.perf_counter()
         with self._position_sync_lock:
             with trading_state_lock():
@@ -806,6 +821,7 @@ class StartupRunner:
                     snapshots,
                     use_snapshot_context=use_snapshot_context,
                     exchange_snapshot=exchange_snapshot,
+                    recovery_stats=recovery_stats,
                 )
                 lock_hold_ms = (time.perf_counter() - lock_acquired_at) * 1000.0
         lock_wait_ms = (lock_acquired_at - lock_wait_started) * 1000.0 - lock_hold_ms

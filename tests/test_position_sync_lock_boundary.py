@@ -236,14 +236,21 @@ def test_network_fetch_runs_with_lock_not_held(monkeypatch):
 
     monkeypatch.setattr(runner_mod, "trading_state_lock", fake_trading_state_lock)
 
+    lock_held_during_recovery_fetch = {"value": None}
+
     class FetchProbePM:
         def fetch_exchange_snapshot(self):
             lock_held_during_fetch["value"] = real_lock.locked()
             return ExchangeSnapshot(positions_live=[], open_symbols=set(), ok=True,
                                      fetched_at_ms=time.time() * 1000)
 
-        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot):
+        def recover_provisional_close_rows(self):
+            lock_held_during_recovery_fetch["value"] = real_lock.locked()
+            return {"blocked": False, "recovered": 0, "still_pending": 0}
+
+        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot, recovery_stats=None):
             assert real_lock.locked()  # reconciliation DOES run under the lock
+            assert recovery_stats is not None  # pre-fetched, not recomputed inside the lock
             return []
 
     self, _ = _make_runner_stub(FetchProbePM(), None)
@@ -251,6 +258,7 @@ def test_network_fetch_runs_with_lock_not_held(monkeypatch):
     runner_mod.StartupRunner._sync_positions(self, [snapshot], use_snapshot_context=True)
 
     assert lock_held_during_fetch["value"] is False
+    assert lock_held_during_recovery_fetch["value"] is False
 
 
 def test_slow_fetch_does_not_block_a_concurrent_lock_consumer(monkeypatch):
@@ -272,12 +280,15 @@ def test_slow_fetch_does_not_block_a_concurrent_lock_consumer(monkeypatch):
     monkeypatch.setattr(runner_mod, "trading_state_lock", lambda: ProbeLock())
 
     class SlowFetchPM:
+        def recover_provisional_close_rows(self):
+            return {"blocked": False, "recovered": 0, "still_pending": 0}
+
         def fetch_exchange_snapshot(self):
             time.sleep(0.2)  # stands in for the ~49s worst case, scaled for test speed
             return ExchangeSnapshot(positions_live=[], open_symbols=set(), ok=True,
                                      fetched_at_ms=time.time() * 1000)
 
-        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot):
+        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot, recovery_stats=None):
             return []
 
     self, _ = _make_runner_stub(SlowFetchPM(), None)
@@ -320,11 +331,14 @@ def test_lock_is_released_even_if_reconciliation_raises(monkeypatch):
     monkeypatch.setattr(runner_mod, "trading_state_lock", lambda: _FakeLock())
 
     class RaisingPM:
+        def recover_provisional_close_rows(self):
+            return {"blocked": False, "recovered": 0, "still_pending": 0}
+
         def fetch_exchange_snapshot(self):
             return ExchangeSnapshot(positions_live=[], open_symbols=set(), ok=True,
                                      fetched_at_ms=time.time() * 1000)
 
-        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot):
+        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot, recovery_stats=None):
             raise RuntimeError("reconciliation blew up")
 
     self, _ = _make_runner_stub(RaisingPM(), None)
@@ -352,11 +366,14 @@ def test_monitor_and_main_callers_are_distinguished_in_logs(caplog, monkeypatch)
     monkeypatch.setattr(runner_mod, "trading_state_lock", lambda: _FakeLock())
 
     class NoopPM:
+        def recover_provisional_close_rows(self):
+            return {"blocked": False, "recovered": 0, "still_pending": 0}
+
         def fetch_exchange_snapshot(self):
             return ExchangeSnapshot(positions_live=[], open_symbols=set(), ok=True,
                                      fetched_at_ms=time.time() * 1000)
 
-        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot):
+        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot, recovery_stats=None):
             return []
 
     self, _ = _make_runner_stub(NoopPM(), None)
@@ -371,3 +388,111 @@ def test_monitor_and_main_callers_are_distinguished_in_logs(caplog, monkeypatch)
             self, [SimpleNamespace(symbol="BTCUSDT")],
             use_snapshot_context=True, caller="main")
     assert any("caller=main" in r.message for r in caplog.records)
+
+
+# --- HIGH-2: recover_provisional_close_rows' own Bitget fetch must not run
+# under trading_state_lock either -----------------------------------------
+#
+# sync()'s first line used to unconditionally call
+# self.recover_provisional_close_rows(), which -- when something is actually
+# pending -- performs its own separate Bitget close-history REST fetch via
+# _fetch_closed_position_history(), with the same retry/backoff worst case as
+# any other client call. That ran while trading_state_lock was held, even
+# after the earlier fix moved the open-positions fetch out.
+
+def test_recovery_network_fetch_runs_with_lock_not_held(monkeypatch):
+    """PositionManager.recover_provisional_close_rows() must be called by the
+    runner BEFORE the lock, and sync() must receive its result rather than
+    recomputing it under the lock."""
+    import app.runner as runner_mod
+
+    real_lock = threading.Lock()
+
+    class ProbeLock:
+        def __enter__(self):
+            real_lock.acquire()
+            return self
+
+        def __exit__(self, *a):
+            real_lock.release()
+
+    monkeypatch.setattr(runner_mod, "trading_state_lock", lambda: ProbeLock())
+
+    lock_held_during_recovery = {"value": None}
+    recovery_calls = {"n": 0}
+
+    class RecoveryProbePM:
+        def fetch_exchange_snapshot(self):
+            return ExchangeSnapshot(positions_live=[], open_symbols=set(), ok=True,
+                                     fetched_at_ms=time.time() * 1000)
+
+        def recover_provisional_close_rows(self):
+            recovery_calls["n"] += 1
+            lock_held_during_recovery["value"] = real_lock.locked()
+            return {"blocked": False, "recovered": 1, "still_pending": 0}
+
+        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot, recovery_stats=None):
+            assert real_lock.locked()
+            # sync() must use the pre-fetched stats, not call recovery again itself.
+            assert recovery_stats == {"blocked": False, "recovered": 1, "still_pending": 0}
+            return []
+
+    self, _ = _make_runner_stub(RecoveryProbePM(), None)
+    runner_mod.StartupRunner._sync_positions(
+        self, [SimpleNamespace(symbol="BTCUSDT")], use_snapshot_context=True)
+
+    assert lock_held_during_recovery["value"] is False
+    assert recovery_calls["n"] == 1  # exactly once -- not repeated inside the lock
+
+
+def test_slow_recovery_fetch_does_not_block_a_concurrent_lock_consumer(monkeypatch):
+    """Same acceptance criterion as the positions fetch: a slow recovery fetch
+    (standing in for the 9-12s+ lock holds seen in production) must not block
+    an unrelated lock consumer, because it never touches the lock."""
+    import app.runner as runner_mod
+
+    real_lock = threading.Lock()
+
+    class ProbeLock:
+        def __enter__(self):
+            real_lock.acquire()
+            return self
+
+        def __exit__(self, *a):
+            real_lock.release()
+
+    monkeypatch.setattr(runner_mod, "trading_state_lock", lambda: ProbeLock())
+
+    class SlowRecoveryPM:
+        def fetch_exchange_snapshot(self):
+            return ExchangeSnapshot(positions_live=[], open_symbols=set(), ok=True,
+                                     fetched_at_ms=time.time() * 1000)
+
+        def recover_provisional_close_rows(self):
+            time.sleep(0.2)  # stands in for a slow Bitget close-history fetch
+            return {"blocked": False, "recovered": 0, "still_pending": 0}
+
+        def sync(self, snapshots, *, use_snapshot_context, exchange_snapshot, recovery_stats=None):
+            return []
+
+    self, _ = _make_runner_stub(SlowRecoveryPM(), None)
+    other_acquired = threading.Event()
+
+    def other_lock_consumer():
+        with real_lock:
+            other_acquired.set()
+            time.sleep(0.01)
+
+    worker = threading.Thread(target=lambda: runner_mod.StartupRunner._sync_positions(
+        self, [SimpleNamespace(symbol="BTCUSDT")], use_snapshot_context=True))
+    worker.start()
+    time.sleep(0.02)  # let the recovery fetch (sleep 0.2s) begin, unlocked
+    other = threading.Thread(target=other_lock_consumer)
+    other.start()
+    got_lock_while_recovery_in_flight = other_acquired.wait(timeout=0.15)
+    worker.join()
+    other.join()
+
+    assert got_lock_while_recovery_in_flight is True, (
+        "an unrelated lock consumer was blocked by an in-flight, unlocked recovery fetch"
+    )
