@@ -179,6 +179,16 @@ def _liquidity_spread_quality(plan: TradePlan) -> float:
     return -spread if math.isfinite(spread) else -math.inf
 
 
+def is_trailing_stop_only_strategy(strategy: object) -> bool:
+    """True for strategies whose exit model is a trailing stop with no fixed
+    take-profit levels (currently: adaptive_trend_tsmom_v1). Mirrors
+    execution.execution_service.is_trailing_stop_only_strategy -- kept as a
+    separate, identically-named predicate here rather than an import, since
+    execution_service.py itself imports select_execution_winner from this
+    module and a reverse import would be circular."""
+    return str(strategy or "").strip().lower() == "adaptive_trend_tsmom_v1"
+
+
 def _invalid_reason(plan: TradePlan, allowed_symbols: frozenset[str] | None) -> str:
     symbol = str(plan.symbol or "").upper()
     direction = str(plan.direction or "").upper()
@@ -205,7 +215,7 @@ def _invalid_reason(plan: TradePlan, allowed_symbols: frozenset[str] | None) -> 
     if plan.take_profits:
         if any(float(value) <= 0 for value in plan.take_profits):
             return "take_profit_invalid"
-    elif str(plan.strategy or "").lower() != "adaptive_trend_tsmom_v1":
+    elif not is_trailing_stop_only_strategy(plan.strategy):
         return "take_profit_invalid"
     return ""
 

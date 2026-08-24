@@ -77,6 +77,15 @@ def is_microflow_scalper_v1(strategy: object) -> bool:
     return str(strategy or "").strip().lower() == "microflow_scalper_v1"
 
 
+def is_trailing_stop_only_strategy(strategy: object) -> bool:
+    """True for strategies whose exit model is a trailing stop with no fixed
+    take-profit levels (currently: adaptive_trend_tsmom_v1). For these,
+    take_profits=[] is a valid, complete protection state -- not a missing
+    field -- so the generic "TP is mandatory" checks below must not treat an
+    empty list as unprotected."""
+    return str(strategy or "").strip().lower() == "adaptive_trend_tsmom_v1"
+
+
 def ioc_order_is_confirmed_unfilled(metrics: dict) -> bool:
     """Retire an IOC intent only from explicit zero-fill and terminal truth."""
     raw = metrics.get("raw") if isinstance(metrics.get("raw"), dict) else {}
@@ -823,7 +832,9 @@ class ExecutionService:
                 ]
                 valid_take_profits = [tp for tp in valid_take_profits if tp > 0]
 
-                if plan.stop_loss <= 0 or not valid_take_profits:
+                if plan.stop_loss <= 0 or (
+                    not valid_take_profits and not is_trailing_stop_only_strategy(plan.strategy)
+                ):
                     self.log.critical(
                         "LIVE_ENTRY_BLOCKED_MISSING_PROTECTION | %s | direction=%s | stop_loss=%s | take_profits=%s",
                         plan.symbol,
@@ -1618,7 +1629,11 @@ class ExecutionService:
                         expected_tp_count = int(
                             protection_payload.get("expected_take_profit_count") or len(valid_take_profits)
                         ) if protection_payload else len(valid_take_profits)
-                        has_tp = actual_tp_count >= expected_tp_count and expected_tp_count > 0
+                        has_tp = (
+                            actual_tp_count >= expected_tp_count
+                            if expected_tp_count > 0
+                            else is_trailing_stop_only_strategy(plan.strategy)
+                        )
                         entry_protection_verified = bool(
                             protection_payload and protection_payload.get("protection_verified")
                         )
