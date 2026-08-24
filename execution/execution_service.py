@@ -167,6 +167,10 @@ class ExecutionService:
     # Regime diversification cap: with MAX_OPEN_POSITIONS total slots, no
     # single strategy may hold more than this many at once.
     MAX_OPEN_POSITIONS_PER_STRATEGY = 2
+    # AdaptiveTrend's frozen spec caps it at exactly one open position total
+    # (across BTC/ETH/SOL), stricter than the generic per-strategy default --
+    # a hedge is structurally impossible once at most one position can exist.
+    PER_STRATEGY_MAX_OPEN_POSITIONS_OVERRIDE = {"adaptive_trend_tsmom_v1": 1}
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -601,12 +605,15 @@ class ExecutionService:
                 and str(row.get("strategy") or "").lower() == str(plan.strategy or "").lower()
                 and row.get("symbol") in open_symbols
             )
-            if open_for_strategy >= self.MAX_OPEN_POSITIONS_PER_STRATEGY:
+            strategy_max_open = self.PER_STRATEGY_MAX_OPEN_POSITIONS_OVERRIDE.get(
+                str(plan.strategy or "").lower(), self.MAX_OPEN_POSITIONS_PER_STRATEGY
+            )
+            if open_for_strategy >= strategy_max_open:
                 reports.append(
                     self._report(
                         plan=plan,
                         status="SKIPPED",
-                        message=f"max open positions for strategy reached: {open_for_strategy}/{self.MAX_OPEN_POSITIONS_PER_STRATEGY} ({plan.strategy})",
+                        message=f"max open positions for strategy reached: {open_for_strategy}/{strategy_max_open} ({plan.strategy})",
                         planned_avg_entry=planned_avg_entry,
                         notional=min(plan.position_notional_usdt, hard_cap_notional),
                         leverage=plan.leverage,
