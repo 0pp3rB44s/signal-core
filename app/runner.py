@@ -978,10 +978,12 @@ class StartupRunner:
                 except Exception as exc:
                     self.log.warning("EQUITY_SNAPSHOT_FAILED | error=%s", exc)
 
+            weekly_freeze_active = False
             try:
                 day_mode = self.risk_manager.day_mode()
                 if day_mode.get("mode") == "RED":
                     grid_risk_stop_reason = "daily_or_weekly_drawdown_gate_red"
+                weekly_freeze_active = bool(day_mode.get("mode") == "RED")
                 self.log.info(
                     "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s | weekly_pnl=%.2f | weekly_loss_pct=%.2f | equity=%.2f (%s)",
                     day_mode["mode"],
@@ -995,6 +997,15 @@ class StartupRunner:
                 )
             except Exception as exc:
                 self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
+
+            # Shadow-only: never submits an order, never blocks the cycle on
+            # failure. See app/adaptive_trend_scan.py module docstring for the
+            # scope boundary this deliberately stays inside of.
+            from app.adaptive_trend_scan import run_adaptive_trend_shadow_scan
+            run_adaptive_trend_shadow_scan(
+                client=self.client, settings=self.settings,
+                weekly_freeze_active=weekly_freeze_active,
+            )
 
             try:
                 contracts = self.fetcher.fetch_contracts(force_refresh=False)
