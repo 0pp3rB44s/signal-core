@@ -18,6 +18,7 @@ from typing import Any
 
 from app.config import Settings
 from dashboard_v3.core import sources as src
+from dashboard_v3.core.risk_truth import compute_weekly_risk
 from dashboard_v3.core.status import Signal, SignalSet, Status, worst
 from telemetry.close_record_sources import is_displayable_close
 
@@ -147,30 +148,6 @@ def _kv_fields(line: str | None) -> dict[str, str]:
     return fields
 
 
-def _weekly_net(rows: list[dict[str, Any]]) -> float | None:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-    total = 0.0
-    seen = set()
-    observed = False
-    for row in rows:
-        if not is_displayable_close(row):
-            continue
-        when = _parse_ts(row.get("closed_at") or row.get("timestamp"))
-        if not when or when < cutoff:
-            continue
-        lifecycle = str(row.get("position_lifecycle_id") or "")
-        if lifecycle and lifecycle in seen:
-            continue
-        net = _optional_float(row.get("exchange_truth_pnl") if row.get("exchange_truth_pnl") not in (None, "") else row.get("net_pnl"))
-        if net is None:
-            continue
-        observed = True
-        total += net
-        if lifecycle:
-            seen.add(lifecycle)
-    return round(total, 8) if observed else None
-
-
 def build_risk() -> dict[str, Any]:
     settings = Settings()
     guard = src.load_json("state/portfolio_equity_guard.json", default={})
@@ -211,13 +188,16 @@ def build_risk() -> dict[str, Any]:
     else:
         breaker, breaker_status = "GREEN", Status.HEALTHY
 
-    weekly = _weekly_net(journal.value if isinstance(journal.value, list) else [])
+    # Weekly risk comes from the same code path as the kill-switch, not from a
+    # parallel reconstruction over journal rows. See dashboard_v3/core/risk_truth.
     weekly_limit = _optional_float(getattr(settings, "weekly_freeze_loss_pct", None))
     current_equity = _optional_float(g.get("last_equity"))
-    weekly_loss_pct = (abs(weekly) / current_equity * 100.0
-                       if weekly is not None and weekly < 0 and current_equity else 0.0
-                       if weekly is not None and current_equity else None)
-    weekly_frozen = (weekly_loss_pct >= weekly_limit if weekly_loss_pct is not None and weekly_limit else None)
+    weekly_risk = compute_weekly_risk(
+        src.BASE_PATH, equity=current_equity, freeze_threshold_pct=weekly_limit
+    )
+    weekly = weekly_risk.realized_pnl
+    weekly_loss_pct = weekly_risk.loss_pct
+    weekly_frozen = weekly_risk.freeze_active
     last_ts = _parse_ts(latest) if latest else None
     age = (datetime.now(timezone.utc) - last_ts).total_seconds() if last_ts else None
     active = age is not None and age <= 3600
@@ -232,6 +212,12 @@ def build_risk() -> dict[str, Any]:
         "consecutive_loss_limit": 3,
         "weekly_realized_pnl": weekly, "weekly_freeze_limit_pct": weekly_limit,
         "weekly_loss_pct": weekly_loss_pct, "weekly_frozen": weekly_frozen,
+        "weekly_headroom_pct": weekly_risk.headroom_pct,
+        "weekly_counted_trades": weekly_risk.counted_trades,
+        "weekly_skipped_non_economic": weekly_risk.skipped_non_economic,
+        "weekly_sources_read": list(weekly_risk.files_read),
+        "weekly_sources_missing": list(weekly_risk.files_missing),
+        "weekly_usable": weekly_risk.usable,
         "session_multiplier": _optional_float(fields.get("session_multiplier")),
         "session_reason": fields.get("session_reason", "UNKNOWN"),
         # These are not persisted by current production RiskManager telemetry.

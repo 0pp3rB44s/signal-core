@@ -51,6 +51,8 @@ STALE_POLICY: dict[str, tuple[float, float | None]] = {
     "data_store/research_liq_oi/status.json": (120, 600),
     "data_store/research_binance/status.json": (120, 600),
     "data_store/research_binance_spot/status.json": (120, 600),
+    "data_store/adaptive_trend/shadow_decisions.jsonl": (28800, 86400),
+    "state/adaptive_trend_scan_state.json": (28800, 86400),
     "data_store/microflow_live/status.json": (120, 600),
     "data_store/microflow-v1/status.json": (120, 600),
 }

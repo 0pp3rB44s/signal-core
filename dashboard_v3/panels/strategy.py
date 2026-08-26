@@ -44,7 +44,14 @@ from telemetry.close_record_sources import is_displayable_close
 #: Production strategies, in the order the funnel is read. Listed explicitly so
 #: a strategy that stops producing rows still shows up as a zero rather than
 #: vanishing from the page.
+#: The roster the dashboard reports on. It had drifted two strategy generations
+#: behind production: the five names below the divider are historical, and
+#: neither the retired MicroFlow nor the only entry-enabled strategy appeared at
+#: all. They are all listed now, with their real disposition, so that "no rows"
+#: is never mistaken for "no such strategy" in either direction.
 KNOWN_STRATEGIES = [
+    "adaptive_trend_tsmom_v1",
+    "microflow_scalper_v1",
     "low_vol_reclaim",
     "momentum_breakout",
     "momentum_breakdown",
@@ -55,6 +62,15 @@ KNOWN_STRATEGIES = [
 #: Present in code, disabled by configuration. Shown as dormant rather than
 #: omitted, so "no rows" is not mistaken for "no such strategy".
 DORMANT_STRATEGIES = ["adaptive_momentum_continuation"]
+
+#: The sole entry-enabled strategy. Its live detail lives in the AdaptiveTrend
+#: panel; here it only needs to be present in the roster.
+ENTRY_ENABLED_STRATEGIES = ["adaptive_trend_tsmom_v1"]
+
+#: Retired at the RiskManager layer (`_microflow_retirement_gate`), which is
+#: unconditional and independent of ENABLED_STRATEGIES. Rendered as RETIRED so
+#: its historical rows are not read as an active strategy.
+RETIRED_STRATEGIES = ["microflow_scalper_v1"]
 
 #: Fixed, conservative sample bands. Not fitted to any result.
 SAMPLE_BANDS = ((0, "NO_DATA"), (1, "TINY_SAMPLE"), (10, "DESCRIPTIVE"), (30, "REASONABLE_SAMPLE"))
