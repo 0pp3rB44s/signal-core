@@ -162,6 +162,7 @@ def build(now: datetime | None = None) -> dict[str, Any]:
         decisions[key] = decisions.get(key, 0) + 1
 
     actionable = [v for v in per_symbol if v.actionable]
+    winner = pick_winner(per_symbol)
     blocked = [v for v in views if v.decision and v.decision != "EXECUTED"]
 
     return {
@@ -183,6 +184,36 @@ def build(now: datetime | None = None) -> dict[str, Any]:
         "shadow_rows": len(rows),
         "decision_counts": decisions,
         "actionable_count": len(actionable),
+        "winner": winner,
+        "winner_symbol": winner.symbol if winner else None,
         "blocked_count": len(blocked),
         "provenance": {"shadow": loaded.provenance, "scan_state": scan.provenance},
     }
+
+#: Tie-break order from `rank_candidates()`. Mirrored for display only — the
+#: dashboard never re-ranks; it shows which symbol the engine's own rule favours
+#: among the rows the engine itself recorded.
+TIE_BREAK = {"BTCUSDT": 0, "ETHUSDT": 1, "SOLUSDT": 2}
+
+
+def pick_winner(views: list[SymbolView]) -> SymbolView | None:
+    """Highest mom_strength wins; ties break BTC > ETH > SOL.
+
+    Only actionable rows can win, matching the strategy: a symbol below the
+    momentum threshold is not a candidate however strong its ranking field is.
+    Returns None when nothing is actionable, which is the common case while the
+    weekly freeze is active.
+    """
+    ranked = [v for v in views if v.actionable and v.mom_strength is not None]
+    if not ranked:
+        return None
+    return sorted(ranked, key=lambda v: (-v.mom_strength, TIE_BREAK.get(v.symbol, 99)))[0]
+
+
+def timeline(limit: int = 500, now: datetime | None = None) -> list[SymbolView]:
+    """Newest-first shadow/live decisions for the signal history page."""
+    loaded = sources.load_jsonl_tail(SHADOW_LOG)
+    rows = loaded.value if isinstance(loaded.value, list) else []
+    views = [_view(r) for r in rows if isinstance(r, dict)]
+    views.sort(key=lambda v: v.timestamp or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return views[:limit]
