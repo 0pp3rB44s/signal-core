@@ -456,3 +456,37 @@ rolling flow/book/microprice state, persistence-aware episode deduplication and
 immutable SHA-256-manifested gzip segments. There is no order client or
 credential dependency. MicroFlow promotion remains blocked pending at least
 100 independent events and positive chronological net evidence.
+# 2026-08-20/26 — MicroFlow retired; AdaptiveTrend v1 built, wired, and made
+# live-entry eligible; no edge proven yet
+
+MicroFlow was conclusively retired from LIVE eligibility (PF 0.2544,
+expectancy -0.1448 USDT/trade, -19.40 USDT net over 134 economically-confirmed
+trades, three independent measurements agreeing) and unconditionally blocked
+in `RiskManager._microflow_retirement_gate`. Three internally-designed
+replacement candidates (liquidity sweep+reclaim, breakout-retest, extreme-
+displacement mean reversion) were tested on real tick data with chronological
+train/validation/holdout splits and all rejected on holdout.
+
+AdaptiveTrend v1 (`adaptive_trend_tsmom_v1`, arXiv:2602.11708-derived 6H
+momentum + ATR trailing stop) was chosen specifically to escape this
+project's own historical-data bubble — deliberately not backtested against
+our own history. Built and merged across roughly a dozen PRs: core strategy
++ shadow-only signal evaluation, TradePlan adapter, ATR trailing-stop
+evaluator, restart reconciliation wired into `PositionManager.sync()`,
+one-position/no-hedge enforcement, the real scan-loop wiring into
+`app/runner.py` (closing a gap where the signal path existed but nothing
+ever called it), the owner-gated `ADAPTIVE_TREND_LIVE_ENTRY_ENABLED` entry
+call site, two real bugs found and fixed while wiring it to the generic
+execution path (`select_execution_winner` rejected empty `take_profits`;
+the protection-verification check would have emergency-closed every
+trailing-stop-only entry), the HYBRID SAFE MODE gate and production launch
+guard both made flag-conditional for this one strategy, and a Python-level
+`Settings` validator fix (a third, previously-undiscovered guard layer that
+caused one real but harmless crash-restart loop — caught before any
+exposure occurred, fixed, deployed).
+
+Full detail, frozen parameters, evidence level and current risk state:
+`docs/ADAPTIVE_TREND_V1.md`. As of 2026-08-26 the infrastructure is proven;
+the weekly freeze (a real, MicroFlow-era loss, not a defect) has blocked
+every real entry so far, so economic edge remains entirely unproven in
+either direction.

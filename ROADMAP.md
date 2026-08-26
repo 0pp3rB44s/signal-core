@@ -1,5 +1,11 @@
 # SIGNAL-CORE — OPERATIONELE ROADMAP (kortetermijn-checklists)
 
+> **Strategy status below is superseded as of 2026-08-26.** MicroFlow is
+> retired from LIVE eligibility; the live strategy is now
+> `adaptive_trend_tsmom_v1`. Current truth: `docs/ADAPTIVE_TREND_V1.md`.
+> Sections below are kept for historical record of the MicroFlow research
+> track, not as current operating status.
+
 ## Current plan — MicroFlow v1 (2026-08-12)
 
 - [x] Flat account and zero unknown order/intent state verified; candle-first
