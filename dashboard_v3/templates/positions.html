@@ -50,7 +50,7 @@
           <td class="n {{ 'neg' if (p.margin_roi_pct or 0) < 0 else 'pos' }}">{{ pct_raw(p.margin_roi_pct, 3) }}</td>
           <td class="n">{{ num(p.liquidation, 4) if p.liquidation else 'UNKNOWN' }}</td>
           <td>{{ num(p.active_stop, 4) if p.active_stop is not none else 'GEEN' }}</td>
-          <td>{{ p.take_profit|join(', ') if p.take_profit else 'GEEN' }}</td>
+          <td>{{ p.take_profit|join(', ') if p.take_profit else 'NONE (trailing-stop only)' }}</td>
           <td>{{ ui.badge(p.protection_status, p.protection) }}</td>
           <td><span class="tag">{{ p.protection_state }}</span></td>
         </tr>

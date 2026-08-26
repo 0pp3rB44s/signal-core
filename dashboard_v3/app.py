@@ -48,6 +48,8 @@ SAFE_SETTINGS = (
 
 NAV = [
     ("command", "Command", "/"),
+    ("adaptive_trend", "AdaptiveTrend", "/adaptive-trend"),
+    ("signals", "Signals", "/signals"),
     ("operations", "System", "/operations"),
     ("funnel", "Funnel", "/funnel"),
     ("strategy", "Strategies", "/strategy"),
@@ -181,7 +183,46 @@ def _page(template: str, active: str, **extra):
 @app.route("/")
 @login_required
 def command():
-    return _page("command.html", "command")
+    from dashboard_v3.panels import adaptive_trend as at
+    return _page("command.html", "command",
+                 adaptive_trend=assembly.cached("adaptive_trend", at.build, ttl=30.0))
+
+
+@app.route("/adaptive-trend")
+@login_required
+def adaptive_trend():
+    """The primary strategy page: what the only entry-enabled strategy sees now."""
+    from dashboard_v3.panels import adaptive_trend as at
+    return _page("adaptive_trend.html", "adaptive_trend", at=assembly.cached("adaptive_trend", at.build, ttl=30.0))
+
+
+@app.route("/signals")
+@login_required
+def signals_page():
+    """Chronological AdaptiveTrend decision history, with filters."""
+    from dashboard_v3.panels import adaptive_trend as at
+    window = request.args.get("window", "7d")
+    symbol = request.args.get("symbol", "")
+    decision = request.args.get("decision", "")
+    rows = at.timeline()
+    now = datetime.now(timezone.utc)
+    spans = {"today": None, "24h": timedelta(hours=24), "7d": timedelta(days=7), "all": None}
+    if window == "today":
+        rows = [r for r in rows if r.timestamp and r.timestamp.date() == now.date()]
+    elif spans.get(window):
+        rows = [r for r in rows if r.timestamp and (now - r.timestamp) <= spans[window]]
+    if symbol:
+        rows = [r for r in rows if r.symbol == symbol]
+    if decision:
+        rows = [r for r in rows if (r.decision or "UNKNOWN") == decision]
+    all_rows = at.timeline()
+    return _page(
+        "signals.html", "signals", rows=rows,
+        window=window, symbol=symbol, decision=decision,
+        symbols=sorted({r.symbol for r in all_rows if r.symbol}),
+        decisions=sorted({(r.decision or "UNKNOWN") for r in all_rows}),
+        total=len(all_rows),
+    )
 
 
 @app.route("/funnel")
@@ -205,7 +246,17 @@ def positions():
 @app.route("/performance")
 @login_required
 def performance():
-    return _page("performance.html", "performance")
+    from dashboard_v3.core import sources as src
+    from dashboard_v3.panels import adaptive_trend as at
+    from dashboard_v3.panels import performance_eras as eras
+
+    def _build():
+        rows = src.load_csv("logs/trade_dataset_v2.csv", limit=None).value or []
+        rotated = src.load_csv("logs/trade_dataset_v2.csv.1", limit=None).value or []
+        return eras.compute_all(list(rotated) + list(rows), at.timeline())
+
+    return _page("performance.html", "performance",
+                 eras=assembly.cached("performance_eras", _build, ttl=120.0))
 
 
 @app.route("/strategy")

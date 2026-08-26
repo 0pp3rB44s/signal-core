@@ -117,17 +117,49 @@ def build_all() -> dict[str, Any]:
 
 
 def _trading_permission(panels: dict[str, Any]) -> dict[str, Any]:
-    """Why is the bot trading, or not? One answer, derived from evidence."""
-    reasons: list[str] = []
-    status = Status.HEALTHY
+    """Why is the bot trading, or not? One answer, derived from evidence.
+
+    The ordered blocker precedence lives in `panels.eligibility` so there is a
+    single place that decides which condition actually matters. Exchange-specific
+    findings that only this assembly can see (unprotected positions, an
+    unreachable exchange, a funnel stage admitting nothing) are folded in as
+    additional reasons rather than as a competing verdict.
+    """
+    from dashboard_v3.panels import adaptive_trend as at
+    from dashboard_v3.panels.eligibility import Eligibility, assess
 
     exch = panels.get("exchange") or {}
     fun = panels.get("funnel") or {}
     rt = panels.get("runtime") or {}
+    ops = panels.get("operations") or {}
+    risk = ops.get("risk") or {}
+    deployment = ops.get("deployment") or {}
+    shas = deployment.get("shas") or {}
 
-    if not (rt.get("engine") or {}).get("alive"):
-        status = Status.OFFLINE
-        reasons.append("Engine process is not running.")
+    engine = rt.get("engine") or {}
+    hb = rt.get("heartbeat") or {}
+
+    try:
+        signal = at.build()
+        signal_stale = signal.get("signal_status") is Status.STALE
+    except Exception:  # a strategy panel must never break the home page
+        signal_stale = None
+
+    verdict = assess(
+        engine_running=bool(engine.get("alive")) if engine else None,
+        heartbeat_stale=(hb.get("stale") if isinstance(hb, dict) and "stale" in hb else None),
+        runtime_sha=str(shas.get("runtime") or "") or None,
+        deployed_sha=str(shas.get("runner") or shas.get("github_production") or "") or None,
+        weekly_frozen=risk.get("weekly_frozen"),
+        unresolved_intents=exch.get("unresolved_intents"),
+        live_entry_enabled=_live_entry_enabled(),
+        signal_data_stale=signal_stale,
+    )
+
+    reasons: list[str] = []
+    if verdict.primary is not None:
+        reasons.append(verdict.why)
+    status = verdict.status
 
     if exch.get("unprotected_count"):
         status = worst(status, Status.BLOCKED)
@@ -137,7 +169,6 @@ def _trading_permission(panels: dict[str, Any]) -> dict[str, Any]:
 
     decisive = fun.get("decisive")
     if decisive:
-        status = worst(status, Status.BLOCKED)
         top = fun.get("blockers") or []
         detail = ", ".join(b["label"] for b in top[:2]) if top else decisive["label"]
         reasons.append(f"{decisive['label']} admits 0 of {decisive['total']} candidates ({detail}).")
@@ -149,7 +180,25 @@ def _trading_permission(panels: dict[str, Any]) -> dict[str, Any]:
     if not reasons:
         reasons.append("No blocking condition detected in the current window.")
 
-    return {"status": status, "reasons": reasons}
+    return {
+        "status": status,
+        "reasons": reasons,
+        "eligibility": verdict.eligibility,
+        "primary_blocker": verdict.primary,
+        "secondary_blockers": list(verdict.secondary),
+        "ready": verdict.eligibility == Eligibility.READY,
+        "live_entry_enabled": _live_entry_enabled(),
+    }
+
+
+def _live_entry_enabled() -> bool | None:
+    """AdaptiveTrend live entry flag, read from configuration only."""
+    try:
+        from app.config import Settings
+        value = getattr(Settings(), "adaptive_trend_live_entry_enabled", None)
+        return bool(value) if value is not None else None
+    except Exception:
+        return None
 
 
 __all__ = ["build_all", "cached", "invalidate", "session_start"]

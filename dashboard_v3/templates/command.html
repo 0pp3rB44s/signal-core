@@ -19,8 +19,32 @@
     {% elif perm.status == Status.OFFLINE %}Engine offline
     {% else %}Status onzeker — niet als gezond behandelen{% endif %}
   </h2>
+  <p class="eligibility"><strong>{{ perm.eligibility or "UNKNOWN" }}</strong>
+    {% if perm.primary_blocker %} — {{ perm.primary_blocker.label }}
+      {% if perm.primary_blocker.detail and perm.primary_blocker.detail != perm.primary_blocker.label %}
+        <span class="s">({{ perm.primary_blocker.detail }})</span>{% endif %}
+    {% endif %}
+  </p>
   <ul>{% for r in perm.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+  {% if perm.secondary_blockers %}
+  <p class="s">Also blocking, in order:
+    {% for b in perm.secondary_blockers %}{{ b.label }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
 </div>
+
+{% set at = d.adaptive_trend %}
+{% if at %}
+<div class="card at-strip">
+  <h2>{{ at.strategy_id }} <span class="tag">{{ at.timeframe }}</span> {{ badge(at.signal_status) }}
+    <a href="/adaptive-trend" class="s">detail →</a></h2>
+  <div class="grid g4">
+    {{ metric("Live entry", "ENABLED" if perm.live_entry_enabled else ("DISABLED" if perm.live_entry_enabled is false else "UNKNOWN")) }}
+    {{ metric("Next 6H boundary", dt_utc(at.next_boundary)) }}
+    {{ metric("Winner", at.winner_symbol or "NONE ACTIONABLE") }}
+    {{ metric("Last signal", dt_utc(at.last_signal_at) if at.last_signal_at else "UNKNOWN") }}
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block content %}

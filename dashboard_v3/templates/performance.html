@@ -6,6 +6,78 @@
 {% set L = h.live_stats %}
 {% block content %}
 
+<div class="card">
+  <h2>Performance by strategy era</h2>
+  <p class="s">These scopes are never summed. MicroFlow is retired and its record is
+     historical; AdaptiveTrend LIVE is the current strategy. A single blended figure
+     would describe neither.</p>
+
+  {% for m in eras.scopes %}
+  <div class="era">
+    <h3>{{ m.label }}
+      <span class="tag{% if m.scope == 'MICROFLOW_LEGACY' %} t-warn{% endif %}">{{ m.evidence }}</span>
+      {% if m.scope == 'MICROFLOW_LEGACY' %}<span class="tag t-warn">LEGACY / RETIRED</span>{% endif %}
+      {% if m.scope == 'ALL_HISTORICAL' %}<span class="tag">ACCOUNT TOTAL — NOT A STRATEGY METRIC</span>{% endif %}
+    </h3>
+    <p class="s">{{ m.description }}</p>
+    {% if m.trades == 0 %}
+      <div class="empty"><strong>NO DATA</strong>
+        <p>{% if m.scope == 'ADAPTIVETREND_LIVE' %}AdaptiveTrend has never opened a real
+           position. This is the honest current state, not a loading failure.
+           {% else %}No economically-confirmed closes in this scope.{% endif %}</p></div>
+    {% else %}
+      <div class="grid g4">
+        {{ metric("Trades", m.trades) }}
+        {{ metric("Wins / losses", m.wins ~ " / " ~ m.losses) }}
+        {{ metric("Win rate", pct(m.win_rate, 1)) }}
+        {{ metric("Net PnL", money(m.net_pnl)) }}
+      </div>
+      <div class="grid g4">
+        {{ metric("Gross PnL", money(m.gross_pnl) if m.gross_pnl is not none else "UNKNOWN") }}
+        {{ metric("Fees", money(m.fees) if m.fees is not none else "UNKNOWN") }}
+        {{ metric("Profit factor", num(m.profit_factor, 3)) }}
+        {{ metric("Expectancy", money(m.expectancy, digits=4)) }}
+      </div>
+      <div class="grid g4">
+        {{ metric("Avg win", money(m.avg_win, digits=4) if m.avg_win is not none else "UNKNOWN") }}
+        {{ metric("Avg loss", money(m.avg_loss, digits=4) if m.avg_loss is not none else "UNKNOWN") }}
+        {{ metric("Max drawdown", money(m.max_drawdown) if m.max_drawdown is not none else "UNKNOWN") }}
+        {{ metric("Avg hold", (num(m.avg_hold_seconds/60, 1) ~ " min") if m.avg_hold_seconds else "UNKNOWN") }}
+      </div>
+      {% if not m.statistically_meaningful %}
+        <p class="notice t-warn">{{ m.evidence }} — {{ m.trades }} trade(s). These figures are
+           descriptive only; they do not support a claim about edge in either direction.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <div class="era">
+    <h3>{{ eras.shadow.label }} <span class="tag">{{ eras.shadow.evidence }}</span></h3>
+    <p class="s">{{ eras.shadow.note }}</p>
+    {% if eras.shadow.decisions == 0 %}
+      <div class="empty"><strong>NO DATA</strong><p>No shadow decisions recorded.</p></div>
+    {% else %}
+      <div class="grid g4">
+        {{ metric("Decisions", eras.shadow.decisions) }}
+        {% for k, v in eras.shadow.decision_counts.items() %}{{ metric(k, v) }}{% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<hr>
+<div class="notice t-warn">
+  <strong>LEGACY — MicroFlow era.</strong>
+  Everything below describes the retired <code>microflow_scalper_v1</code> lifecycle:
+  fixed TP1/TP2/TP3 targets, a 10-minute max hold, and expectancy panels built for that
+  strategy. <strong>None of it governs AdaptiveTrend</strong>, which is trailing-stop-only
+  with no fixed take-profit. The <code>tp1_hit</code> field is additionally known-unreliable
+  (PB-2: the pre-entry scanner candle range can contaminate it), so it is retained for
+  historical continuity, not as evidence.
+</div>
+
+
 <div class="grid g4" style="margin-bottom:14px">
 {% for name,label in [('today','Today'),('24h','Last 24h'),('7d','Last 7d')] %}{% set w = h.windows[name] %}
  <div class="card"><div class="body">{{ ui.metric(label, money(w.net) if h.provenance.exists else 'UNKNOWN', (w.trades ~ ' trades · ' ~ w.wins ~ 'W/' ~ w.losses ~ 'L · fees ' ~ money(w.fees)) if h.provenance.exists else '') }}</div></div>
