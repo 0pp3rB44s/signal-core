@@ -1,11 +1,17 @@
 # AdaptiveTrend v1 — frozen live-entry specification and current truth
 
-Status: **LIVE-ENTRY ENABLED, RISK-BLOCKED**. `adaptive_trend_tsmom_v1` is
-the sole enabled entry strategy in production as of this document. MicroFlow
-(`microflow_scalper_v1`) is retired from LIVE eligibility (see below) and
-`ENABLED_STRATEGIES` no longer includes it. Real entries are currently
-blocked by the weekly-freeze kill-switch (§ Current risk state), which is
-working as designed and has not been touched.
+Status as of 2026-08-27T06:28Z: **LIVE-ENTRY ENABLED, RISK-BLOCKED status
+superseded — the weekly freeze cleared naturally on 2026-08-27, ahead of
+schedule but within the predicted window (~2026-08-27T02:47:34Z).
+`ACCOUNT_RISK_MODE=GREEN`, `weekly_loss_pct≈4.2%`, well under the 7.0%
+threshold.** `adaptive_trend_tsmom_v1` is the sole enabled entry strategy
+and, as of this update, the account is genuinely entry-eligible: a
+qualifying signal on the next 6H boundary can place a real order. See
+"CURRENT TRUTH — 2026-08-27" at the end of this file for the latest
+snapshot; treat the body of this document as accurate except where that
+section says otherwise. MicroFlow (`microflow_scalper_v1`) remains retired
+from LIVE eligibility (see below) and `ENABLED_STRATEGIES` no longer
+includes it.
 
 ## Why AdaptiveTrend, and why MicroFlow stopped
 
@@ -178,3 +184,57 @@ exchange minimum on its own.
 - Do not resurrect MicroFlow. Do not backtest-optimize AdaptiveTrend's
   frozen parameters against this project's own historical data — that is
   the exact failure mode it was chosen to avoid.
+
+## CURRENT TRUTH — 2026-08-27 (reconciliation/finetuning audit)
+
+Full reconciliation + finetuning audit performed against deployed code,
+runtime, exchange truth, and this document. **No proven defect found.
+Zero code/config changes applied this pass** — everything provable was
+already fixed in the PRs referenced above; the audit itself is the
+evidence.
+
+- **Weekly freeze cleared naturally 2026-08-27**, on schedule.
+  `ACCOUNT_RISK_MODE=GREEN`, `weekly_loss_pct≈4.2%`. The account is
+  genuinely entry-eligible now — a qualifying signal can place a real
+  order. None has yet (last evaluated: 2026-08-27T04:00 UTC candle,
+  `winner=None`, no symbol met threshold).
+- **Signal-selectivity observation (Bucket C — do not act on this
+  alone):** across every evaluable candle in the ~2-week history the
+  exchange makes available (19 candles × 3 symbols = 57), `MOM_THRESHOLD
+  = 0.03` was met by **100%** of them — zero near-misses, zero clear
+  rejections. The threshold has provided no observed selectivity in this
+  window. This may reflect a genuinely atypical, synchronized bull regime
+  across BTC/ETH/SOL rather than a threshold defect — the sample is too
+  short and too regime-specific to conclude either way. Pre-registered
+  for a future test once a wider/more varied window exists; not acted on.
+- **Symbol-correlation observation (Bucket C):** BTC, ETH and SOL moved in
+  near-identical momentum patterns throughout the observed window
+  (correlated declining-momentum trajectories over the same candles). The
+  3-symbol universe may currently function as one correlated exposure
+  routed through a tie-break, not three independent opportunities. Not
+  actionable without a longer, more varied sample — noted as a hypothesis
+  only.
+- **Sizing/exchange-minimum interaction (already documented above, this
+  pass's fresh number):** at $27.44 equity, a minimum-size AdaptiveTrend
+  trade carries `effective_risk_usdt≈$0.266` (0.97% of equity, still
+  under the 1.00% hard cap) and `required_margin≈$27.44` (effectively the
+  whole account) at `leverage≈0.18x` — nowhere near the 10x ceiling.
+- **Fee/breakeven economics (new this pass):** at the configured
+  `PLANNER_ESTIMATED_ROUNDTRIP_FEE_BPS=12.0` assumption (not yet
+  empirically confirmed from a real fill), round-trip cost on a $5
+  minimum-notional trade is ~$0.006 — about 2.3% of the 1R risk budget
+  and ~44x smaller than the ~5.3% stop distance observed on the reference
+  BTCUSDT counterfactual. **Fee drag is immaterial to this strategy's
+  economics at its current stop-distance/holding-period profile.**
+  Breakeven win-rate/avg-R hurdles (fees included, negligible effect):
+  40% win rate needs ~1.5R average winner, 45% needs ~1.22R, 50% needs
+  1.0R, 55% needs ~0.82R.
+- **Out-of-band finding, not part of this audit:** PRs #89 and #90
+  (`dashboard_v4`, merged 2026-08-26, author `0pp3rB44s`) added
+  AdaptiveTrend-aware dashboard pages and a single-verdict eligibility
+  panel. Dashboard-only — no execution/risk/strategy code touched, no
+  control endpoints. Not reviewed or deployed by this audit; flagged here
+  so a future reader knows it exists and was authored elsewhere.
+- Live engine (PID 913 at time of this audit) ran continuously
+  throughout this entire audit, untouched — this document and its
+  companion reconciliation report were produced read-only.
