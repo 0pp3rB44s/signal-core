@@ -30,7 +30,13 @@ def build() -> dict[str, Any]:
 
     runtime_state = src.read_kv_state("state/live_runtime.state")
     heartbeat = src.load_json("state/runtime_heartbeat.json", default={})
-    watchdog = src.load_json("state/watchdog_heartbeat.json", default={})
+    # watchdog_live_heartbeat.json is written by scripts/watchdog_live.sh, the
+    # watchdog actually scheduled via com.cgc.watchdog at a 60s cadence.
+    # watchdog_heartbeat.json belongs to scripts/watchdog.sh (the forward-paper
+    # variant), which nothing schedules in a LIVE deployment — pointing here
+    # made this signal permanently stale regardless of whether the real
+    # watchdog was running.
+    watchdog = src.load_json("state/watchdog_live_heartbeat.json", default={})
     shutdown = src.load_json("state/last_shutdown.json", default={})
 
     # --- engine process -------------------------------------------------
@@ -131,7 +137,8 @@ def build() -> dict[str, Any]:
     signals.add(Signal("watchdog", "Watchdog", wd_status,
                        f"last run {watchdog.provenance.age_label} ago"
                        if watchdog.provenance.exists else "never run",
-                       "scripts/watchdog.sh has no scheduler; it only runs when invoked."))
+                       "com.cgc.watchdog runs scripts/watchdog_live.sh every 60s; "
+                       "see /watchdog for the full extended-checks status."))
 
     alert_env = src.BASE_PATH / "state" / "alerting.env"
     alerting_configured = alert_env.exists()

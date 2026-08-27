@@ -109,11 +109,12 @@ def build() -> dict[str, Any]:
         "scripts/alert_config.sh validate reports the exact configuration state.",
     ))
 
-    wd = src.file_provenance("state/watchdog_heartbeat.json")
+    wd = src.file_provenance("state/watchdog_live_heartbeat.json")
     signals.add(Signal(
-        "watchdog_sched", "Watchdog schedule", Status.DEGRADED,
+        "watchdog_sched", "Watchdog schedule",
+        Status.HEALTHY if wd.exists and (wd.age_seconds or 1e9) < 180 else Status.DEGRADED,
         f"last run {wd.age_label} ago" if wd.exists else "never run",
-        "No launchd job or cron entry invokes scripts/watchdog.sh — it is manual-only.",
+        "com.cgc.watchdog invokes scripts/watchdog_live.sh every 60s via launchd.",
     ))
 
     if real_active:

@@ -30,6 +30,7 @@ TTL = {
     "history": 120.0,
     "strategy": 120.0,
     "operations": 5.0,
+    "watchdog": 20.0,
 }
 
 _cache: dict[str, tuple[float, Any]] = {}
@@ -86,6 +87,7 @@ def build_all() -> dict[str, Any]:
     """Every panel, cached independently."""
     from dashboard_v3.panels import (
         exchange, expectancy, funnel, health, history, incidents, operations, runtime, strategy,
+        watchdog,
     )
 
     start = session_start()
@@ -100,6 +102,7 @@ def build_all() -> dict[str, Any]:
         "history": cached("history", history.build),
         "strategy": cached("strategy", strategy.build),
         "operations": cached("operations", operations.build),
+        "watchdog": cached("watchdog", watchdog.build),
     }
 
     overall = worst(*(p.get("status", Status.UNKNOWN) for p in panels.values()))

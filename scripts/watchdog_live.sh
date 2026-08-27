@@ -295,6 +295,22 @@ if [ $DRY_RUN -eq 0 ]; then
     --active "$(IFS=,; echo "${ACTIVE_KEYS[*]:-}")"
 fi
 
+# 13. extended checks: AdaptiveTrend scan state, exchange truth, position
+# protection, risk, deployment SHA classification, logging lag, first-trade
+# watch. LIVE-mode only — these all assume a live-shaped state layout and
+# would just be noise in DRY_RUN/FORWARD_PAPER. Best-effort: a failure here
+# must never fail this script or block its own heartbeat write below.
+if [ "$MODE" = "LIVE" ]; then
+  EXT_ARGS=(--now "$NOW")
+  [ $DRY_RUN -eq 1 ] && EXT_ARGS+=(--dry-run)
+  [ $NO_DELIVER -eq 1 ] && EXT_ARGS+=(--no-deliver)
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 45 /usr/bin/python3 scripts/wd_extended.py "${EXT_ARGS[@]}" 2>&1 | sed 's/^/  [ext] /' || true
+  else
+    /usr/bin/python3 scripts/wd_extended.py "${EXT_ARGS[@]}" 2>&1 | sed 's/^/  [ext] /' || true
+  fi
+fi
+
 # --- own heartbeat --------------------------------------------------------
 if [ $DRY_RUN -eq 0 ]; then
   printf '{"watchdog_utc":"%s","mode":"%s","mode_source":"%s","findings":%d,"engine_alive":%s,"engine_pid":"%s","heartbeat_age":%s}\n' \
