@@ -61,6 +61,7 @@ NAV = [
     ("project", "Project", "/project"),
     ("incidents", "Incidents", "/incidents"),
     ("health", "Data Health", "/health"),
+    ("watchdog", "Watchdog", "/watchdog"),
 ]
 
 
@@ -300,6 +301,13 @@ def incidents():
 def health():
     safe = {k: getattr(settings, k, None) for k in SAFE_SETTINGS}
     return _page("health.html", "health", safe_settings=safe)
+
+
+@app.route("/watchdog")
+@login_required
+def watchdog():
+    """Production watchdog status: read-only view of state/watchdog_status.json."""
+    return _page("watchdog.html", "watchdog")
 
 
 # --- read-only JSON -----------------------------------------------------

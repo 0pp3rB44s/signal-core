@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Watchdog{% endblock %}
+{% block heading %}Productie watchdog{% endblock %}
+{% set wd = d.panels.watchdog %}
+{% set p = wd.payload %}
+{% block content %}
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('Status', wd.overall_health or 'ONBEKEND', 'GREEN / YELLOW / RED', 'pos' if wd.overall_health == 'GREEN' else ('neg' if wd.overall_health == 'RED' else 'warn')) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Laatste run', wd.provenance.age_label if wd.provenance.exists else 'NOOIT', 'watchdog schrijft elke 60s') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Watchdog PID', p.watchdog_pid or 'ONBEKEND', 'proces-id') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Engine heartbeat', num(p.engine.heartbeat_age, 0) ~ 's' if p.engine and p.engine.heartbeat_age is not none else 'ONBEKEND', 'leeftijd') }}</div></div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <header><h3>Watchdog verdict</h3><span class="spacer"></span>{{ ui.badge(wd.status) }}</header>
+  {{ ui.signals(wd.signals) }}
+  {% if wd.overall_health_reasons %}
+  <div class="body">
+    <ul>{% for r in wd.overall_health_reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</div>
+
+{% if p %}
+<div class="grid g2" style="margin-bottom:14px">
+  <div class="card">
+    <header><h3>Engine</h3></header>
+    <div class="body">
+      <table>
+        <tr><td>Status</td><td>{{ p.engine.status }}</td></tr>
+        <tr><td>PID</td><td>{{ p.engine.pid or 'ONBEKEND' }}</td></tr>
+        <tr><td>Duplicaat proces</td><td>{{ 'JA' if p.engine.duplicate_engine else 'nee' }}</td></tr>
+        <tr><td>Scan cycli</td><td>{{ p.engine.cycles_completed }} / {{ p.engine.cycles_started }}</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <header><h3>Strategie</h3></header>
+    <div class="body">
+      <table>
+        <tr><td>Actief</td><td>{{ p.strategy.active_strategy }}</td></tr>
+        <tr><td>Live entry</td><td>{{ p.strategy.adaptive_enabled }}</td></tr>
+        <tr><td>Trade-in aanmerking</td><td>{{ p.strategy.trade_eligible }}</td></tr>
+        <tr><td>Blokkade</td><td>{{ p.strategy.blocker or '—' }}</td></tr>
+        <tr><td>Laatste signaal</td><td>{{ p.strategy.last_signal or 'ONBEKEND' }}</td></tr>
+        <tr><td>Volgende 6H-grens</td><td>{{ p.strategy.next_6h_boundary }}</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="grid g2" style="margin-bottom:14px">
+  <div class="card">
+    <header><h3>Veiligheid</h3></header>
+    <div class="body">
+      <table>
+        <tr><td>Posities beschermd</td><td>{{ p.safety.position_protected }}</td></tr>
+        <tr><td>Onbeschermd aantal</td><td>{{ p.safety.unprotected_count }}</td></tr>
+        <tr><td>Hedge gedetecteerd</td><td>{{ p.safety.hedge_detected }}</td></tr>
+        <tr><td>Onopgeloste intents</td><td>{{ p.safety.unresolved_intents }}</td></tr>
+        <tr><td>Recovery vastgelopen</td><td>{{ p.safety.startup_recovery_pending }}</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <header><h3>Risico &amp; deployment</h3></header>
+    <div class="body">
+      <table>
+        <tr><td>Risicomodus</td><td>{{ p.risk.mode }}</td></tr>
+        <tr><td>Weekverlies %</td><td>{{ p.risk.weekly_loss_pct }}</td></tr>
+        <tr><td>Freeze actief</td><td>{{ p.risk.freeze_active }}</td></tr>
+        <tr><td>Deployment</td><td>{{ p.deployment.classification }}</td></tr>
+        <tr><td>Runtime SHA</td><td style="font-family:var(--mono);font-size:11px">{{ (p.deployment.runtime_sha or '')[:12] }}</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <header><h3>Logging &amp; exchange</h3></header>
+  <div class="body">
+    <table>
+      <tr><td>agent.log lag</td><td>{{ p.logging.agent_log_lag_seconds }}s</td></tr>
+      <tr><td>live.out lag</td><td>{{ p.logging.live_out_lag_seconds }}s</td></tr>
+      <tr><td>Exchange bereikbaar</td><td>{{ p.exchange.reachable }}</td></tr>
+      <tr><td>Posities (exchange)</td><td>{{ p.exchange.positions }}</td></tr>
+      <tr><td>Laatst gecontroleerd</td><td>cyclus {{ p.meta.cycle }}, elke {{ p.meta.exchange_check_every_n_cycles }}e run</td></tr>
+    </table>
+  </div>
+  {{ ui.provenance(wd.provenance) }}
+</div>
+{% else %}
+{{ ui.empty('Geen watchdog-status', 'state/watchdog_status.json bestaat nog niet — scripts/wd_extended.py heeft nog niet geschreven.') }}
+{% endif %}
+{% endblock %}
