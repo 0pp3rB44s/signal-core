@@ -41,8 +41,23 @@ class SensitiveDataFilter(logging.Filter):
         return cls._bearer_pattern.sub("Bearer [REDACTED]", message)
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Every propagated record reaches each handler's own filter instance
+        # in turn (Logger-level filters, by contrast, do NOT apply to records
+        # from named child loggers during propagation -- verified directly
+        # against the stdlib, not assumed). With two handlers (console + file)
+        # each carrying their own SensitiveDataFilter, the three-regex
+        # redaction pass used to run twice per record -- pure wasted CPU that
+        # compounded into a multi-hour write backlog under this bot's log
+        # volume (proven root cause, live Runner, 2026-08-27). The same
+        # LogRecord instance is shared across every handler in one
+        # `Logger.callHandlers()` sweep, so a marker set here is visible to
+        # the second call for the same event without leaking across events
+        # (each `.info()`/`.warning()` call constructs a fresh record).
+        if getattr(record, "_credentials_redacted", False):
+            return True
         record.msg = self.redact(record.getMessage())
         record.args = ()
+        record._credentials_redacted = True
         return True
 
 
