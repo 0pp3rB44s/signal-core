@@ -5,7 +5,7 @@ import logging
 import pytest
 from unittest.mock import MagicMock
 
-from app.logger import setup_logging
+from app.logger import SensitiveDataFilter, setup_logging
 from clients.bitget_base_client import BitgetBaseClient
 
 
@@ -56,6 +56,36 @@ def test_private_response_error_uses_only_bounded_redacted_code_and_message():
     assert "must-never-escape" not in message
     assert "[REDACTED]" in message
     assert len(message) <= BitgetBaseClient._MAX_ERROR_MESSAGE_LENGTH
+
+
+def test_redact_regex_pass_runs_exactly_once_per_record(tmp_path, monkeypatch):
+    """SensitiveDataFilter.filter() runs on both the stream handler and the
+    file handler for every record (correct: Logger-level filters do NOT
+    apply to records from named child loggers during propagation, verified
+    directly against the stdlib -- so per-handler filters are the only way
+    to cover console output too). The expensive three-regex work inside
+    `redact()` used to run twice per record regardless -- pure wasted CPU
+    under this bot's log volume (proven root cause of a growing multi-hour
+    write backlog on the live Runner, 2026-08-27). `filter()` itself may
+    still be called twice (once per handler); `redact()` -- the actual
+    cost -- must run at most once per logical event."""
+    monkeypatch.chdir(tmp_path)
+    setup_logging("INFO")
+
+    redact_calls = []
+    original_redact = SensitiveDataFilter.redact.__func__
+
+    def counted(cls, message):
+        redact_calls.append(message)
+        return original_redact(cls, message)
+
+    monkeypatch.setattr(SensitiveDataFilter, "redact", classmethod(counted))
+
+    logging.getLogger("perf-test").info("token=plain-token")
+
+    assert len(redact_calls) == 1, (
+        f"expected exactly one redact() call per record, got {len(redact_calls)}"
+    )
 
 
 def test_private_non_json_response_body_is_never_copied():
