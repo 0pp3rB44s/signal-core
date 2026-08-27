@@ -306,6 +306,16 @@ if [ "$MODE" = "LIVE" ]; then
   # them. Use the same interpreter the engine itself runs under.
   EXT_PY=".venv/bin/python3"
   [ -x "$EXT_PY" ] || EXT_PY="/usr/bin/python3"
+  # dashboard_v3.panels.exchange needs Bitget credentials for its read-only
+  # (GET-only, guard-tested) account/position calls. live_agent.sh gives the
+  # engine these via env_guard.sh's guard_load_env; this watchdog is a
+  # separate process tree and inherits none of that. Export the same
+  # .env.live into THIS subshell only — set -a/+a scopes it to the
+  # environment, never the trading engine's own process, and a missing file
+  # degrades to "exchange unreachable" rather than aborting the watchdog.
+  if [ -f .env.live ]; then
+    set -a; . .env.live 2>/dev/null; set +a
+  fi
   EXT_ARGS=(--now "$NOW")
   [ $DRY_RUN -eq 1 ] && EXT_ARGS+=(--dry-run)
   [ $NO_DELIVER -eq 1 ] && EXT_ARGS+=(--no-deliver)
