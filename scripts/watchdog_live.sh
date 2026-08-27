@@ -301,13 +301,18 @@ fi
 # would just be noise in DRY_RUN/FORWARD_PAPER. Best-effort: a failure here
 # must never fail this script or block its own heartbeat write below.
 if [ "$MODE" = "LIVE" ]; then
+  # wd_extended.py imports dashboard_v3, which needs the project's own
+  # dependencies (pydantic, flask, ...) — the system python3 does not have
+  # them. Use the same interpreter the engine itself runs under.
+  EXT_PY=".venv/bin/python3"
+  [ -x "$EXT_PY" ] || EXT_PY="/usr/bin/python3"
   EXT_ARGS=(--now "$NOW")
   [ $DRY_RUN -eq 1 ] && EXT_ARGS+=(--dry-run)
   [ $NO_DELIVER -eq 1 ] && EXT_ARGS+=(--no-deliver)
   if command -v timeout >/dev/null 2>&1; then
-    timeout 45 /usr/bin/python3 scripts/wd_extended.py "${EXT_ARGS[@]}" 2>&1 | sed 's/^/  [ext] /' || true
+    timeout 45 "$EXT_PY" scripts/wd_extended.py "${EXT_ARGS[@]}" 2>&1 | sed 's/^/  [ext] /' || true
   else
-    /usr/bin/python3 scripts/wd_extended.py "${EXT_ARGS[@]}" 2>&1 | sed 's/^/  [ext] /' || true
+    "$EXT_PY" scripts/wd_extended.py "${EXT_ARGS[@]}" 2>&1 | sed 's/^/  [ext] /' || true
   fi
 fi
 
