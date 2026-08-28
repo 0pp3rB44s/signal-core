@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from typing import Any
 
 from dashboard_v3.core import sources as src
@@ -123,7 +125,15 @@ def build() -> dict[str, Any]:
     for c in conflicts:
         signals.add(Signal("conflict", c["title"], c["status"], c["detail"]))
 
+    runtime_roots = {
+        "dashboard_root": str(src.DASHBOARD_ROOT),
+        "production_root": str(src.BASE_PATH),
+        "isolated": src.ISOLATED_RUNTIME,
+        "prod_root_env": os.environ.get("CGC_PROD_ROOT", "") or None,
+    }
+
     return {
+        "runtime_roots": runtime_roots,
         "signals": signals,
         "status": signals.status,
         "files": files,
