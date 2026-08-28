@@ -26,7 +26,60 @@ from collections import deque
 
 from dashboard_v3.core.status import Status, freshness
 
-BASE_PATH = Path(__file__).resolve().parents[2]
+#: Where the dashboard's own code lives. Templates and static assets resolve
+#: from here automatically via Flask, so this is only for reporting.
+DASHBOARD_ROOT = Path(__file__).resolve().parents[2]
+
+#: Marks a directory as a real production checkout rather than an empty worktree.
+#: `state/` is the decisive one: a dashboard pointed at a fresh checkout would
+#: find no heartbeat, no watchdog status and no risk dataset, and would render a
+#: confident all-UNKNOWN page that looks exactly like a dead trading bot. That
+#: failure is worse than not starting, so it is refused.
+_PRODUCTION_MARKERS = ("state",)
+
+
+class ProductionRootError(RuntimeError):
+    """Raised when CGC_PROD_ROOT does not point at a production checkout."""
+
+
+def _resolve_prod_root() -> Path:
+    """Authoritative production data root.
+
+    The dashboard may run from an isolated checkout so that updating it never
+    moves the trading engine's working tree. When it does, it must still read
+    the *trading* runtime's state, logs and git metadata — not the empty
+    directories beside its own code. `CGC_PROD_ROOT` carries that path.
+
+    Unset, this falls back to the checkout containing this file, which is the
+    original single-checkout behaviour and keeps every existing deployment
+    working untouched.
+    """
+    override = os.environ.get("CGC_PROD_ROOT", "").strip()
+    if not override:
+        return DASHBOARD_ROOT
+    root = Path(override).expanduser()
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise ProductionRootError(f"CGC_PROD_ROOT={override!r} does not exist") from exc
+    if not root.is_dir():
+        raise ProductionRootError(f"CGC_PROD_ROOT={override!r} is not a directory")
+    missing = [m for m in _PRODUCTION_MARKERS if not (root / m).is_dir()]
+    if missing:
+        raise ProductionRootError(
+            f"CGC_PROD_ROOT={root} is not a production checkout (missing: {', '.join(missing)}). "
+            "Refusing to start rather than render an empty dashboard that looks like a dead bot."
+        )
+    return root
+
+
+#: Production data root. Every state/, logs/ and data_store/ read resolves here,
+#: and the git helpers report THIS repository — which is the trading runtime's
+#: SHA, the one an operator needs, not the dashboard's own.
+BASE_PATH = _resolve_prod_root()
+
+#: True when code and data live in different checkouts.
+ISOLATED_RUNTIME = BASE_PATH != DASHBOARD_ROOT
 
 #: Per-source staleness policy, in seconds. Chosen from the cadence each file is
 #: actually written at, not from a single global guess.
