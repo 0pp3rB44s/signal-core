@@ -65,6 +65,35 @@ NAV = [
 ]
 
 
+def _warm_cache() -> None:
+    """Build the expensive panels once, in the background, at startup.
+
+    Cold start cost ~16.6s on the first request (module imports plus an
+    uncached build of ten panels) and ~7.7s on the first request after a
+    restart. Warm requests are 30-240ms. Any health check with a short timeout
+    therefore saw a dead connection and reported HTTP 000 against a dashboard
+    that was actually fine — which is exactly how a working service gets
+    diagnosed as down. Warming removes the stall from the operator's path.
+
+    Failures are swallowed deliberately: a warm-up is an optimisation, and a
+    panel that cannot build yet must not stop the server from starting.
+    """
+    import threading
+
+    def run() -> None:
+        try:
+            assembly.build_all()
+            from dashboard_v3.panels import adaptive_trend as at
+            assembly.cached("adaptive_trend", at.build, ttl=30.0)
+        except Exception as exc:  # never fatal
+            log.warning("DASHBOARD_WARMUP_FAILED | %s: %s", type(exc).__name__, exc)
+
+    threading.Thread(target=run, name="dashboard-warmup", daemon=True).start()
+
+
+_warm_cache()
+
+
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
