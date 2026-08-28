@@ -46,7 +46,7 @@ from strategies.adaptive_trend_tsmom import (
     compute_atr,
     compute_momentum,
     initial_stop,
-    rank_candidates,
+    rank_candidates_ordered,
     size_position,
 )
 
@@ -250,7 +250,38 @@ def evaluate_universe(
             last_processed[symbol] = ev.last_processed_close_ms
 
     candidates = [ev.candidate for ev in evaluations if ev.candidate is not None]
-    winner = rank_candidates(candidates)
+    ranked = rank_candidates_ordered(candidates)
+
+    # Ranking by momentum strength alone does not consider executability: the
+    # strongest signal can still be rejected by size_position (e.g. exchange
+    # minimum notional would push effective risk over MAX_EFFECTIVE_RISK_PCT
+    # at current equity) while a lower-ranked, still-genuinely-qualified
+    # candidate would have sized fine. Previously the whole boundary produced
+    # nothing once the top candidate was rejected -- a real, observed,
+    # executable opportunity (ETHUSDT, 2026-08-27T10:00 UTC) was silently
+    # forfeited this way while SOLUSDT's rejection was the only thing
+    # evaluated. Walk the ranking in order and select the first candidate
+    # whose sizing is actually accepted; this changes nothing about
+    # size_position/MAX_EFFECTIVE_RISK_PCT itself, only how many ranked
+    # candidates get a chance to clear the same unmodified bar.
+    selected = None
+    for candidate in ranked:
+        stop = initial_stop(candidate.close, candidate.atr, candidate.side)
+        sizing = size_position(
+            equity=equity, entry_price=candidate.close, stop_price=stop,
+            exchange_min_notional=exchange_min_notional.get(candidate.symbol, 5.0),
+        )
+        if sizing.accepted:
+            selected = candidate
+            break
+    if selected is None and ranked:
+        # Nothing sized -- fall back to the top-ranked candidate so shadow
+        # observability still records *which* signal was strongest and why
+        # it (and, by construction, every candidate ranked below it) could
+        # not be sized, exactly as before this change.
+        selected = ranked[0]
+
+    winner = selected
     routed_reason = None
     winner_sizing = None
     if winner is not None:
@@ -261,8 +292,9 @@ def evaluate_universe(
             shadow_log=shadow_log,
         )
         # Recomputed here (pure, deterministic, identical inputs to the call
-        # inside route_selected_candidate above) so the caller can build a
-        # TradePlan without this module itself ever importing execution.* or
+        # inside route_selected_candidate above, and to the loop above when
+        # `selected_sizing` came from it) so the caller can build a TradePlan
+        # without this module itself ever importing execution.* or
         # clients.* -- the shadow-only import boundary this module is
         # AST-verified to hold stays intact.
         stop = initial_stop(winner.close, winner.atr, winner.side)
