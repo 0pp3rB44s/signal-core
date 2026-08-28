@@ -58,14 +58,49 @@ def _f(value: Any) -> float | None:
 
 
 def _ts(value: Any) -> datetime | None:
-    if not value:
+    """Parse a shadow-record timestamp.
+
+    Production writes epoch **milliseconds** as an integer (e.g. 1787889726776),
+    not the ISO string this originally assumed. Parsing only ISO silently
+    returned None for every real row, which rendered every timestamp as UNKNOWN
+    and made the staleness check unreachable — the panel looked fine and told
+    the operator nothing. Both forms are accepted, and the epoch/seconds
+    ambiguity is resolved by magnitude rather than by guessing.
+    """
+    if value in (None, ""):
         return None
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().lstrip("-").isdigit()):
+        n = float(value)
+        # ~1e12 is milliseconds since 1970; ~1e9 is seconds. Anything far below
+        # is not a timestamp we can interpret, so it stays UNKNOWN.
+        if n > 1e11:
+            n /= 1000.0
+        elif n < 1e8:
+            return None
+        try:
+            return datetime.fromtimestamp(n, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
         text = str(value).replace("Z", "+00:00")
         parsed = datetime.fromisoformat(text)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+#: What actually happened to a recorded decision, derived only from fields the
+#: strategy writes today. `decision` alone is not enough: production emits
+#: ACCOUNT_FREEZE_BLOCKED for both a weekly-freeze block and a sizing rejection,
+#: which are very different operator situations — one is the risk layer holding
+#: the account, the other is the account being too small to place a safe order.
+OUTCOME_RISK_BLOCKED = "RISK_BLOCKED"
+OUTCOME_SIZING_REJECTED = "SIZING_REJECTED"
+OUTCOME_EXECUTED = "EXECUTED"
+OUTCOME_UNKNOWN = "UNKNOWN"
+
+SIZING_REJECTIONS = frozenset({"ACCOUNT_TOO_SMALL_FOR_SAFE_ORDER"})
+RISK_REJECTIONS = frozenset({"weekly_freeze_active"})
 
 
 @dataclass(frozen=True)
@@ -91,6 +126,20 @@ class SymbolView:
         if self.mom is None:
             return None
         return abs(self.mom) >= MOM_THRESHOLD
+
+    @property
+    def outcome(self) -> str:
+        """Why this decision ended where it did, in operator terms."""
+        reason = (self.rejection_reason or "").strip()
+        if reason in SIZING_REJECTIONS:
+            return OUTCOME_SIZING_REJECTED
+        if reason in RISK_REJECTIONS:
+            return OUTCOME_RISK_BLOCKED
+        if self.decision == "EXECUTED":
+            return OUTCOME_EXECUTED
+        if self.decision:
+            return OUTCOME_RISK_BLOCKED
+        return OUTCOME_UNKNOWN
 
     @property
     def distance_from_threshold(self) -> float | None:

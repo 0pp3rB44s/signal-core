@@ -5,6 +5,13 @@
  <key>ProgramArguments</key><array><string>/bin/bash</string><string>__PROJECT_DIR__/deploy/launchd/dashboard_agent.sh</string></array>
  <key>WorkingDirectory</key><string>__PROJECT_DIR__</string>
  <key>RunAtLoad</key><true/>
+ <!-- The dashboard was the only cgc service without a restart policy. A single
+      clean exit on 2026-08-27T08:55:01Z left it down for 15 hours because launchd
+      had no instruction to bring it back. KeepAlive is unconditional here: unlike
+      the engine, an always-up read-only dashboard has no state that makes a
+      restart unsafe. ThrottleInterval stops a persistent failure hot-looping. -->
+ <key>KeepAlive</key><true/>
+ <key>ThrottleInterval</key><integer>30</integer>
  <key>StandardOutPath</key><string>__PROJECT_DIR__/logs/launchd_dashboard.out</string>
  <key>StandardErrorPath</key><string>__PROJECT_DIR__/logs/launchd_dashboard.err</string>
  <key>ProcessType</key><string>Background</string>
