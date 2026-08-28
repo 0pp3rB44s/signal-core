@@ -162,15 +162,25 @@ class SignalCandidate:
         return abs(self.mom) / atr_pct
 
 
-def rank_candidates(candidates: list[SignalCandidate]) -> SignalCandidate | None:
-    """Highest MOM_STRENGTH wins; ties broken BTC > ETH > SOL. Frozen rule --
-    never selects on historical profitability."""
-    if not candidates:
-        return None
+def rank_candidates_ordered(candidates: list[SignalCandidate]) -> list[SignalCandidate]:
+    """Full ranking, best first: highest MOM_STRENGTH wins, ties broken
+    BTC > ETH > SOL. Frozen rule -- never selects on historical
+    profitability. The single-winner `rank_candidates` below is this list's
+    first element; callers that need to fall through to the next-best
+    candidate when the top one turns out to be unexecutable (e.g. exchange
+    minimum notional would push it over MAX_EFFECTIVE_RISK_PCT) use this
+    instead of re-deriving the order."""
     return sorted(
         candidates,
         key=lambda c: (-c.mom_strength, _SYMBOL_TIE_BREAK.get(c.symbol, 99)),
-    )[0]
+    )
+
+
+def rank_candidates(candidates: list[SignalCandidate]) -> SignalCandidate | None:
+    """Highest MOM_STRENGTH wins; ties broken BTC > ETH > SOL. Frozen rule --
+    never selects on historical profitability."""
+    ordered = rank_candidates_ordered(candidates)
+    return ordered[0] if ordered else None
 
 
 @dataclass(slots=True)

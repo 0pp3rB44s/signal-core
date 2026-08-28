@@ -232,6 +232,72 @@ def test_evaluate_universe_routes_only_the_ranked_winner(tmp_path):
     assert rows[0]["symbol"] == "SOLUSDT"
 
 
+# --- evaluate_universe: falls through past an unexecutable top-ranked
+# candidate to the next-best one that actually sizes, instead of giving up
+# for the whole boundary (2026-08-27: SOLUSDT ranked highest and was
+# rejected by size_position at real production equity while ETHUSDT, ranked
+# below it, would have sized and executed fine -- the boundary produced zero
+# trade with no fallback in place) --------------------------------------
+
+def test_evaluate_universe_falls_through_to_next_executable_candidate(tmp_path):
+    # Real production numbers, reproduced with synthetic candles: a
+    # low-priced, wide-relative-ATR symbol ranks highest on raw momentum
+    # strength but is rejected by size_position at real equity; a
+    # high-priced, tight-relative-ATR symbol ranks lower but sizes fine.
+    wide_unexecutable = series([100.0] * WARMUP + [180.0])
+    tight_executable = series([80000.0] * WARMUP + [82560.0], high_pad=40.0, low_pad=40.0)
+
+    class MultiClient:
+        def get_candles(self, symbol, product_type, granularity="15m", limit=200):
+            rows = wide_unexecutable if symbol == "SOLUSDT" else tight_executable
+            return {"data": [[c.open_ms, c.open, c.high, c.low, c.close, 1, 1] for c in rows]}
+
+    log = ShadowDecisionLog(tmp_path / "shadow.jsonl")
+    now_ms = max(wide_unexecutable[-1].close_ms, tight_executable[-1].close_ms)
+    result = evaluate_universe(
+        client=MultiClient(), product_type="USDT-FUTURES",
+        symbols=("BTCUSDT", "SOLUSDT"), now_ms=now_ms,
+        last_processed={"BTCUSDT": None, "SOLUSDT": None},
+        # Real production equity -- the exact size that produced this defect.
+        equity=27.4437, exchange_min_notional={}, weekly_freeze_active=False,
+        runtime_sha="abc123", shadow_log=log,
+    )
+    # SOLUSDT ranks highest by momentum strength but must not be selected --
+    # it cannot be sized. BTCUSDT, ranked below it, is what actually routes.
+    assert result["winner_symbol"] == "BTCUSDT"
+    assert result["winner_sizing"] is not None
+    assert result["winner_sizing"].accepted is True
+    rows = log.read_all()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTCUSDT"
+
+
+def test_evaluate_universe_all_candidates_unexecutable_falls_back_to_top_ranked(tmp_path):
+    """When NOTHING sizes, shadow observability must still record the
+    strongest candidate and its real rejection reason -- unchanged from
+    before this fix."""
+    wide_unexecutable = series([100.0] * WARMUP + [180.0])
+
+    class OneSymbolClient:
+        def get_candles(self, symbol, product_type, granularity="15m", limit=200):
+            return {"data": [[c.open_ms, c.open, c.high, c.low, c.close, 1, 1]
+                              for c in wide_unexecutable]}
+
+    log = ShadowDecisionLog(tmp_path / "shadow.jsonl")
+    result = evaluate_universe(
+        client=OneSymbolClient(), product_type="USDT-FUTURES",
+        symbols=("SOLUSDT",), now_ms=wide_unexecutable[-1].close_ms,
+        last_processed={"SOLUSDT": None},
+        equity=27.4437, exchange_min_notional={}, weekly_freeze_active=False,
+        runtime_sha="abc123", shadow_log=log,
+    )
+    assert result["winner_symbol"] == "SOLUSDT"
+    assert result["winner_sizing"].accepted is False
+    rows = log.read_all()
+    assert len(rows) == 1
+    assert rows[0]["rejection_reason"] == "ACCOUNT_TOO_SMALL_FOR_SAFE_ORDER"
+
+
 def test_evaluate_universe_no_candidates_writes_no_shadow_record(tmp_path):
     flat = series([100.0] * (WARMUP + 1))
 
