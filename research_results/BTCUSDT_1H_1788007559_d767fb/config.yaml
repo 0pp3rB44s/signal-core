@@ -1,0 +1,44 @@
+# Trading Core V1 -- parameters only. NEVER put credentials in this file;
+# .env.live remains the sole source of secrets (see trading_core_v1/config.py).
+
+data:
+  symbol: BTCUSDT
+  product_type: USDT-FUTURES
+  timeframe: 1H
+  start: "2026-02-01T00:00:00Z"
+  end: "2026-08-29T00:00:00Z"
+  cache_dir: data_store/trading_core_v1/candles_cache
+
+risk:
+  risk_pct: 0.01
+  initial_equity: 10000
+  min_notional: 5
+  compounding: false
+
+# Bitget USDT-futures conservative defaults, reused from this repo's existing
+# research documentation (docs/RESEARCH_JOURNAL.md: "maker 2 bps and taker 6
+# bps per side") rather than invented here.
+costs:
+  maker_fee_bps: 2
+  taker_fee_bps: 6
+  slippage_bps: 2
+
+strategy:
+  name: baseline_ma_crossover
+  take_profit_r_multiple: 1.5
+  params:
+    fast_period: 20
+    slow_period: 50
+    atr_period: 14
+    stop_atr_multiple: 2.0
+
+execution:
+  mode: BACKTEST
+
+split:
+  train: 0.6
+  validation: 0.2
+  test: 0.2
+
+telegram:
+  enabled: false
