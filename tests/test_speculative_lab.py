@@ -1,6 +1,9 @@
 import pandas as pd
+import json
+import pytest
 
 from research.speculative_lab.run_hv_pilot import event_rows, nonoverlapping, slippage_bps
+from research.validation import validate_frozen
 
 
 def test_event_horizons_use_the_requested_forward_bar():
@@ -45,3 +48,19 @@ def test_nonoverlapping_events_respect_holding_horizon_per_symbol():
     })
     kept = nonoverlapping(data, 4)
     assert list(kept.index) == [0, 2, 3]
+
+
+def test_gap_through_stop_exits_at_worse_open(tmp_path, monkeypatch):
+    rows = []
+    for hour in range(27):
+        price = 85.0 if hour == 3 else 100.0
+        rows.append([hour * 3_600_000, price, price, price, price, 1, 100])
+    (tmp_path / "TEST_1H_180d.json").write_text(json.dumps(rows))
+    monkeypatch.setattr(validate_frozen, "CACHE", tmp_path)
+    validate_frozen.candle_frame.cache_clear()
+
+    result = validate_frozen.path_return("TEST", 0, 1.0)
+
+    assert result["stop_hit"] is True
+    assert result["gross_bps"] == pytest.approx(-1500.0)
+    assert result["gap_through_stop_bps"] == pytest.approx(500.0)

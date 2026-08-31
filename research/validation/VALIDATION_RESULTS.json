@@ -1,0 +1,104 @@
+{
+  "candidates": {
+    "primary_hv_a_volatility_expansion": {
+      "diagnostic_events": 14475,
+      "gap_hit_rate": 0.0002072538860103627,
+      "max_gap_through_stop_bps": 136.2425533975872,
+      "portfolio_stress": [
+        {
+          "accepted_trades": 413,
+          "conservative_drawdown_with_open_stop_risk_fraction": -0.153839346032125,
+          "cost_multiplier": 1.0,
+          "ending_equity_usdt": 117.77775318080748,
+          "geometric_daily_growth_fraction": 0.0009166824162314402,
+          "maximum_gap_through_stop_bps": 0.0,
+          "realized_exit_to_exit_drawdown_fraction": -0.133839346032125,
+          "skipped_capacity_or_symbol": 14062,
+          "total_return_fraction": 0.17777753180807476
+        },
+        {
+          "accepted_trades": 413,
+          "conservative_drawdown_with_open_stop_risk_fraction": -0.17291104697297854,
+          "cost_multiplier": 2.0,
+          "ending_equity_usdt": 110.07652108710708,
+          "geometric_daily_growth_fraction": 0.0005377399621531165,
+          "maximum_gap_through_stop_bps": 0.0,
+          "realized_exit_to_exit_drawdown_fraction": -0.15291104697297853,
+          "skipped_capacity_or_symbol": 14062,
+          "total_return_fraction": 0.10076521087107082
+        },
+        {
+          "accepted_trades": 413,
+          "conservative_drawdown_with_open_stop_risk_fraction": -0.19920348230788476,
+          "cost_multiplier": 3.0,
+          "ending_equity_usdt": 102.87547410889378,
+          "geometric_daily_growth_fraction": 0.00015875687449384834,
+          "maximum_gap_through_stop_bps": 0.0,
+          "realized_exit_to_exit_drawdown_fraction": -0.17920348230788474,
+          "skipped_capacity_or_symbol": 14062,
+          "total_return_fraction": 0.02875474108893794
+        }
+      ],
+      "stop_hit_rate": 0.1907426597582038,
+      "symbols": 82
+    },
+    "secondary_funding_crowding_continuation": {
+      "diagnostic_events": 247,
+      "gap_hit_rate": 0.0,
+      "max_gap_through_stop_bps": 0.0,
+      "portfolio_stress": [
+        {
+          "accepted_trades": 111,
+          "conservative_drawdown_with_open_stop_risk_fraction": -0.09558458686948078,
+          "cost_multiplier": 1.0,
+          "ending_equity_usdt": 142.42478534781517,
+          "geometric_daily_growth_fraction": 0.004177390884305687,
+          "maximum_gap_through_stop_bps": 0.0,
+          "realized_exit_to_exit_drawdown_fraction": -0.07558458686948077,
+          "skipped_capacity_or_symbol": 136,
+          "total_return_fraction": 0.42424785347815175
+        },
+        {
+          "accepted_trades": 111,
+          "conservative_drawdown_with_open_stop_risk_fraction": -0.10011971989047518,
+          "cost_multiplier": 2.0,
+          "ending_equity_usdt": 139.88537064259918,
+          "geometric_daily_growth_fraction": 0.003964456059554866,
+          "maximum_gap_through_stop_bps": 0.0,
+          "realized_exit_to_exit_drawdown_fraction": -0.08011971989047517,
+          "skipped_capacity_or_symbol": 136,
+          "total_return_fraction": 0.3988537064259918
+        },
+        {
+          "accepted_trades": 111,
+          "conservative_drawdown_with_open_stop_risk_fraction": -0.10463419343785806,
+          "cost_multiplier": 3.0,
+          "ending_equity_usdt": 137.39038716118844,
+          "geometric_daily_growth_fraction": 0.003751493513212578,
+          "maximum_gap_through_stop_bps": 0.0,
+          "realized_exit_to_exit_drawdown_fraction": -0.08463419343785805,
+          "skipped_capacity_or_symbol": 136,
+          "total_return_fraction": 0.3739038716118843
+        }
+      ],
+      "stop_hit_rate": 0.29959514170040485,
+      "symbols": 62
+    }
+  },
+  "classification": "DIAGNOSTIC_ONLY_CURRENT_SURVIVOR_UNIVERSE",
+  "freeze_timestamp_utc": "2026-08-31T17:57:10Z",
+  "historical_lookahead_blocker": "Bitget current contract response lacks usable historical membership and delisted contracts",
+  "historical_lookahead_removed": false,
+  "production_touched": false,
+  "prospective": {
+    "closed_events": 0,
+    "journal_exists": true,
+    "observations": 0,
+    "required_closed_each_candidate": 30,
+    "required_days": 30,
+    "shadow_ready": false
+  },
+  "real_orders_sent": 0,
+  "shadow_ready": false,
+  "spec_sha256": "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
+}

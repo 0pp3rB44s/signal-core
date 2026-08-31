@@ -1,0 +1,72 @@
+{
+  "freeze_timestamp_utc": "2026-08-31T17:57:10Z",
+  "optimization_after_freeze_allowed": false,
+  "market": "Bitget USDT perpetuals",
+  "eligibility": {
+    "evaluation": "point_in_time_cross_section_at_signal_time",
+    "normal_contract_required": true,
+    "minimum_completed_hourly_bars": 100,
+    "hv_a": {
+      "realized_volatility_percentile_min": 0.70,
+      "turnover_percentile_min": 0.60,
+      "spread_percentile_max": 0.50
+    },
+    "minimum_current_depth_usdt": 1000,
+    "historical_membership_substitution_allowed": false
+  },
+  "primary": {
+    "name": "hv_a_volatility_expansion",
+    "bar": "1H",
+    "trailing_window_bars": 72,
+    "minimum_window_bars": 48,
+    "absolute_return_z_min": 1.5,
+    "range_to_trailing_median_min": 2.5,
+    "direction": "sign_of_completed_signal_bar_return",
+    "simultaneous_signal_ranking": "descending_range_to_trailing_median_then_symbol",
+    "entry": "first_executable_taker_price_after_completed_signal_bar",
+    "hold_hours": 24,
+    "catastrophic_stop_fraction": 0.10
+  },
+  "secondary": {
+    "name": "funding_crowding_continuation",
+    "funding_rank_window": 90,
+    "funding_rank_min_observations": 30,
+    "positive_funding_percentile_min": 0.95,
+    "negative_funding_percentile_max": 0.05,
+    "price_extension_hours": 24,
+    "extension_vol_window": 30,
+    "absolute_extension_z_min": 1.5,
+    "direction": "same_as_price_extension",
+    "simultaneous_signal_ranking": "descending_absolute_extension_z_then_symbol",
+    "entry": "first_executable_taker_price_at_or_after_published_funding_event",
+    "hold_hours": 24,
+    "catastrophic_stop_fraction": 0.10
+  },
+  "execution": {
+    "taker_fee_bps_per_side": 6.0,
+    "cost_stress_multipliers": [1.0, 2.0, 3.0],
+    "gap_through_stop": "exit_at_first_bar_open_if_beyond_stop_else_at_stop",
+    "maker_credit_allowed": false,
+    "unknown_cost_is_zero_allowed": false
+  },
+  "portfolio": {
+    "initial_equity_usdt": 100.0,
+    "position_notional_fraction_of_equity": 0.10,
+    "maximum_concurrent_positions": 2,
+    "maximum_positions_per_symbol": 1,
+    "maximum_gross_exposure_fraction": 0.20,
+    "compounding": true,
+    "leverage_assumption": 1.0
+  },
+  "shadow_ready_minimum": {
+    "prospective_calendar_days": 30,
+    "prospective_closed_events_each_candidate": 30,
+    "positive_net_expectancy_at_cost_multiplier": 2.0,
+    "positive_return_ex_top_symbol_and_week": true,
+    "maximum_portfolio_drawdown_fraction": 0.10,
+    "point_in_time_eligibility_required": true,
+    "event_time_execution_observations_required": true
+  },
+  "real_orders_allowed": false,
+  "production_changes_allowed": false
+}
