@@ -9,7 +9,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.equity import portfolio_equity_drawdown_gate, resolve_account_equity
-from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore
+from clients.schemas import RiskVerdict, StrategyCandidate, StrategyScore, TradePlan
 from risk import symbol_expectancy
 from telemetry.close_record_sources import (
     ECONOMIC_CLOSE_EVENT_TYPES,
@@ -28,6 +28,9 @@ BETA_CLUSTERS = {
 }
 
 class RiskManager:
+    FUNDING_PILOT_STRATEGY = "funding_crowding_continuation_24h"
+    FUNDING_PILOT_SPEC_SHA256 = "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
+
     SAFE_ALPHA_MAX_LEVERAGE = 8
     SAFE_ALPHA_MAX_RISK_PCT = 0.75
     # Probe mode: a strategy flagged by the expectancy report or the coach
@@ -58,6 +61,61 @@ class RiskManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
+    def validate_funding_pilot_plan(
+        self,
+        plan: TradePlan,
+        *,
+        pilot_nav: float,
+        available_margin: float,
+        current_gross_notional: float,
+        current_position_count: int,
+        kill_switch_latched: bool,
+        native_stop_available: bool,
+    ) -> RiskVerdict:
+        """Fail-closed admission gate for the frozen, owner-authorized pilot."""
+        reasons: list[str] = []
+        if plan.strategy != self.FUNDING_PILOT_STRATEGY:
+            reasons.append("strategy is not the authorized funding pilot")
+        if plan.protection_mode != "STOP_ONLY_TIME_EXIT":
+            reasons.append("protection mode is not STOP_ONLY_TIME_EXIT")
+        if plan.frozen_spec_sha256 != self.FUNDING_PILOT_SPEC_SHA256:
+            reasons.append("frozen spec hash mismatch")
+        if not plan.pilot_authorized:
+            reasons.append("pilot authorization inactive")
+        if pilot_nav <= 0 or available_margin < 0:
+            reasons.append("pilot NAV or free margin unavailable")
+        if kill_switch_latched:
+            reasons.append("pilot kill switch latched")
+        if not native_stop_available:
+            reasons.append("exchange-native stop unavailable")
+        if plan.stop_loss <= 0:
+            reasons.append("catastrophic stop missing")
+        if plan.take_profits:
+            reasons.append("frozen pilot forbids take-profit")
+        if plan.scheduled_exit_at_ms <= int(time.time() * 1000):
+            reasons.append("scheduled time exit missing or stale")
+        if float(plan.leverage) != 1.0:
+            reasons.append("pilot leverage must be 1x")
+        single_cap = max(0.0, float(pilot_nav)) * 0.10
+        gross_cap = max(0.0, float(pilot_nav)) * 0.20
+        notional = float(plan.position_notional_usdt or 0.0)
+        if notional <= 0 or notional > single_cap + 1e-9:
+            reasons.append("position exceeds 10% current pilot NAV")
+        if current_position_count >= 2:
+            reasons.append("maximum two concurrent pilot positions")
+        if current_gross_notional + notional > gross_cap + 1e-9:
+            reasons.append("gross pilot exposure exceeds 20% current pilot NAV")
+        if available_margin + 1e-9 < notional:
+            reasons.append("insufficient free margin")
+        return RiskVerdict(
+            allowed=not reasons,
+            status="APPROVED" if not reasons else "REJECTED",
+            reasons=reasons or ["frozen funding pilot constraints satisfied"],
+            account_risk_pct=10.0,
+            leverage=1.0,
+            max_open_positions=2,
+        )
 
     def _log_risk_evaluation(
         self,

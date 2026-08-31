@@ -198,7 +198,17 @@ def _invalid_reason(plan: TradePlan, allowed_symbols: frozenset[str] | None) -> 
         return "planned_entry_invalid"
     if float(plan.stop_loss or 0) <= 0:
         return "stop_loss_invalid"
-    if not plan.take_profits or any(float(value) <= 0 for value in plan.take_profits):
+    authorized_stop_only = bool(
+        plan.strategy == "funding_crowding_continuation_24h"
+        and plan.protection_mode == "STOP_ONLY_TIME_EXIT"
+        and plan.frozen_spec_sha256 == "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
+        and plan.pilot_authorized
+        and plan.scheduled_exit_at_ms > 0
+        and not plan.take_profits
+    )
+    if not authorized_stop_only and (
+        not plan.take_profits or any(float(value) <= 0 for value in plan.take_profits)
+    ):
         return "take_profit_invalid"
     return ""
 

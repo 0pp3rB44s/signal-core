@@ -147,6 +147,25 @@ def _plan(symbol: str = "BTCUSDT", direction: str = "LONG") -> TradePlan:
     )
 
 
+def _funding_pilot_plan() -> TradePlan:
+    plan = _plan(symbol="DOGEUSDT")
+    plan.strategy = "funding_crowding_continuation_24h"
+    plan.take_profits = []
+    plan.leverage = 1.0
+    plan.position_notional_usdt = 2.744
+    plan.protection_mode = "STOP_ONLY_TIME_EXIT"
+    plan.scheduled_exit_at_ms = 4_000_000_000_000
+    plan.frozen_spec_sha256 = "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
+    plan.pilot_authorized = True
+    plan.pilot_nav = 27.44
+    plan.pilot_available_margin = 20.0
+    plan.pilot_current_gross_notional = 0.0
+    plan.pilot_current_position_count = 0
+    plan.pilot_kill_switch_latched = False
+    plan.native_stop_available = True
+    return plan
+
+
 def _service(monkeypatch, **setting_overrides) -> ExecutionService:
     monkeypatch.setattr(
         "execution.execution_service.resolve_account_equity", lambda _s: (1000.0, "test")
@@ -215,6 +234,40 @@ def test_live_entry_passes_a_deterministic_client_oid(monkeypatch, direction, ex
     intent = service.intent_store.get(kwargs["client_oid"])
     assert intent["state"] == "PROTECTED"
     assert intent["protection_state"] == "CONFIRMED"
+
+
+def test_funding_pilot_uses_canonical_entry_and_native_stop_without_tp(monkeypatch):
+    service = _service(
+        monkeypatch,
+        PRODUCTION_SYMBOL_ALLOWLIST="DOGEUSDT",
+        MAX_SYMBOLS=1,
+        EXECUTION_MIN_LIVE_NOTIONAL_USDT=1.0,
+    )
+    monkeypatch.setattr(
+        "execution.execution_service.resolve_account_equity", lambda _s: (27.44, "pilot-nav")
+    )
+    plan = _funding_pilot_plan()
+    service.client.get_all_positions.side_effect = [
+        {"data": []},
+        {"data": []},
+        {"data": [{"symbol": "DOGEUSDT", "holdSide": "long", "total": "0.02744", "openPriceAvg": "100", "markPrice": "100"}]},
+    ]
+    service.client.move_futures_stop_loss.return_value = {
+        "verified": True,
+        "placed": {"data": {"orderId": "stop-1"}},
+        "confirmed_stop": {"plan_order_id": "stop-1", "trigger_price": 95.0},
+        "verify": {"matched_order": {"plan_order_id": "stop-1"}},
+    }
+
+    reports = service.execute([plan])
+
+    assert reports[0].status == "EXECUTED"
+    service.client.move_futures_stop_loss.assert_called_once()
+    service.client.place_futures_protection_orders.assert_not_called()
+    stored = service.store.load(default=[])[-1]
+    assert stored["protection_mode"] == "STOP_ONLY_TIME_EXIT"
+    assert stored["take_profits"] == []
+    assert stored["entry_protection_verified"] is True
 
 
 def test_ambiguous_live_entry_never_posts_twice(monkeypatch):

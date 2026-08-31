@@ -91,12 +91,75 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
         result["recording_outcomes"] = outcomes
         return result
 
+    def process_stop_only_time_exits(self, *, now_ms: int | None = None) -> list[dict]:
+        """Own the frozen pilot's time exit without entering the TP lifecycle.
+
+        This deliberately operates only on persisted, hash-bound pilot rows.
+        Exchange position truth is checked before and after the reduce-only
+        close, then the remaining native stop is cancelled and absence checked.
+        """
+        current_ms = int(now_ms if now_ms is not None else datetime.now(timezone.utc).timestamp() * 1000)
+        positions = self.store.load(default=[])
+        outcomes: list[dict] = []
+        expected_hash = "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
+        changed = False
+        for position in positions:
+            if not isinstance(position, dict) or position.get("status") != "OPEN":
+                continue
+            if position.get("protection_mode") != "STOP_ONLY_TIME_EXIT":
+                continue
+            if (
+                position.get("strategy") != "funding_crowding_continuation_24h"
+                or position.get("frozen_spec_sha256") != expected_hash
+                or not position.get("pilot_authorized")
+            ):
+                outcomes.append({"symbol": position.get("symbol"), "status": "BLOCKED_IDENTITY"})
+                continue
+            exit_at = int(position.get("scheduled_exit_at_ms") or 0)
+            if exit_at <= 0 or current_ms < exit_at:
+                continue
+            symbol = str(position.get("symbol") or "").upper()
+            direction = str(position.get("direction") or "").upper()
+            close_result = self.client.close_futures_position_full(
+                symbol=symbol,
+                direction=direction,
+            )
+            if str((close_result or {}).get("status") or "").upper() != "CLOSED":
+                outcomes.append({"symbol": symbol, "status": "CLOSE_NOT_CONFIRMED", "result": close_result})
+                continue
+            cancel_result = self.client.cancel_all_futures_tpsl_orders(
+                symbol=symbol,
+                hold_side="long" if direction == "LONG" else "short",
+                plan_types=("loss_plan", "pos_loss"),
+            )
+            remaining = self.client.get_futures_protection_orders(
+                symbol=symbol,
+                hold_side="long" if direction == "LONG" else "short",
+            )
+            residual_stops = list((remaining or {}).get("stop_orders") or [])
+            if residual_stops:
+                outcomes.append({"symbol": symbol, "status": "STOP_CANCEL_NOT_CONFIRMED"})
+                continue
+            position["status"] = "CLOSED_TIME_EXIT"
+            position["closed_reason"] = "funding_pilot_24h_time_exit"
+            position["closed_at"] = datetime.now(timezone.utc).isoformat()
+            position["time_exit_close_result"] = close_result
+            position["time_exit_stop_cancel_result"] = cancel_result
+            changed = True
+            outcomes.append({"symbol": symbol, "status": "POSITION_CLOSED_STOP_CANCELLED"})
+        if changed:
+            self.store.save(positions)
+        return outcomes
+
     def sync(
         self,
         snapshots: list[MarketSnapshot],
         *,
         use_snapshot_context: bool = True,
     ) -> list[PositionUpdate]:
+        # Time exits are canonical PositionManager work and run before the
+        # legacy TP/BE/trailing lifecycle. Non-pilot rows are ignored.
+        self.process_stop_only_time_exits()
         recovery_stats = self.recover_provisional_close_rows()
         if recovery_stats.get("blocked"):
             self.log.critical("PERIODIC_CLOSE_RECOVERY_BLOCKED | %s", recovery_stats)

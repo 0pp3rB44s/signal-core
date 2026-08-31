@@ -167,6 +167,19 @@ class ExecutionService:
     # Regime diversification cap: with MAX_OPEN_POSITIONS total slots, no
     # single strategy may hold more than this many at once.
     MAX_OPEN_POSITIONS_PER_STRATEGY = 2
+    FUNDING_PILOT_STRATEGY = "funding_crowding_continuation_24h"
+    FUNDING_PILOT_SPEC_SHA256 = "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
+
+    @classmethod
+    def _is_authorized_stop_only_plan(cls, plan: TradePlan) -> bool:
+        return bool(
+            plan.strategy == cls.FUNDING_PILOT_STRATEGY
+            and plan.protection_mode == "STOP_ONLY_TIME_EXIT"
+            and plan.frozen_spec_sha256 == cls.FUNDING_PILOT_SPEC_SHA256
+            and plan.pilot_authorized
+            and not plan.take_profits
+            and plan.scheduled_exit_at_ms > 0
+        )
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -361,6 +374,36 @@ class ExecutionService:
 
     def execute(self, plans: list[TradePlan]) -> list[ExecutionReport]:
         if not self.settings.execution_enabled:
+            return []
+
+        # The strategy-specific adapter supplies current pilot ledger/exchange
+        # truth on the immutable plan. Admission still belongs to RiskManager;
+        # ExecutionService cannot self-approve this exceptional lifecycle.
+        from risk.risk_manager import RiskManager
+        admitted: list[TradePlan] = []
+        for candidate_plan in plans:
+            if candidate_plan.protection_mode != "STOP_ONLY_TIME_EXIT":
+                admitted.append(candidate_plan)
+                continue
+            verdict = RiskManager(self.settings).validate_funding_pilot_plan(
+                candidate_plan,
+                pilot_nav=float(candidate_plan.pilot_nav or 0.0),
+                available_margin=float(candidate_plan.pilot_available_margin),
+                current_gross_notional=float(candidate_plan.pilot_current_gross_notional or 0.0),
+                current_position_count=int(candidate_plan.pilot_current_position_count or 0),
+                kill_switch_latched=bool(candidate_plan.pilot_kill_switch_latched),
+                native_stop_available=bool(candidate_plan.native_stop_available),
+            )
+            if verdict.allowed:
+                admitted.append(candidate_plan)
+            else:
+                self.log.critical(
+                    "FUNDING_PILOT_RISK_REJECTED | symbol=%s | reasons=%s",
+                    candidate_plan.symbol,
+                    " | ".join(verdict.reasons),
+                )
+        plans = admitted
+        if not plans:
             return []
 
         # Housekeeping before selection. Everything below this line can return
@@ -816,7 +859,8 @@ class ExecutionService:
                 ]
                 valid_take_profits = [tp for tp in valid_take_profits if tp > 0]
 
-                if plan.stop_loss <= 0 or not valid_take_profits:
+                stop_only_time_exit = self._is_authorized_stop_only_plan(plan)
+                if plan.stop_loss <= 0 or (not valid_take_profits and not stop_only_time_exit):
                     self.log.critical(
                         "LIVE_ENTRY_BLOCKED_MISSING_PROTECTION | %s | direction=%s | stop_loss=%s | take_profits=%s",
                         plan.symbol,
@@ -857,12 +901,16 @@ class ExecutionService:
                     )
                     continue
 
-                if not hasattr(self.client, "place_futures_protection_orders"):
+                required_protection_method = (
+                    "move_futures_stop_loss" if stop_only_time_exit
+                    else "place_futures_protection_orders"
+                )
+                if not hasattr(self.client, required_protection_method):
                     reports.append(
                         self._report(
                             plan=plan,
                             status="SKIPPED",
-                            message="live order blocked: exchange SL/TP protection is not implemented yet",
+                            message=f"live order blocked: exchange protection method {required_protection_method} is unavailable",
                             planned_avg_entry=planned_avg_entry,
                             notional=live_notional,
                             leverage=effective_leverage,
@@ -1584,15 +1632,36 @@ class ExecutionService:
 
                     for protection_attempt in range(1, protection_attempts_allowed + 1):
                         try:
-                            protection_payload = self.client.place_futures_protection_orders(
-                                symbol=plan.symbol,
-                                direction=plan.direction,
-                                hold_side=hold_side,
-                                size=live_size,
-                                stop_loss=protect_stop_loss,
-                                take_profits=protect_take_profits,
-                                margin_mode="isolated",
-                            )
+                            if stop_only_time_exit:
+                                stop_result = self.client.move_futures_stop_loss(
+                                    symbol=plan.symbol,
+                                    direction=plan.direction,
+                                    hold_side=hold_side,
+                                    trigger_price=protect_stop_loss,
+                                    margin_mode="isolated",
+                                    cleanup_existing=False,
+                                    reason="funding_pilot_initial_catastrophic_stop",
+                                )
+                                matched = (stop_result.get("verify") or {}).get("matched_order") or {}
+                                protection_payload = {
+                                    "protection_verified": bool(stop_result.get("verified")),
+                                    "protection_integrity": "STOP_ONLY_NATIVE_VERIFIED" if stop_result.get("verified") else "STOP_ONLY_NATIVE_UNVERIFIED",
+                                    "stop_loss_verified": bool(stop_result.get("verified")),
+                                    "stop_loss": stop_result.get("confirmed_stop") or stop_result.get("placed"),
+                                    "stop_order_id": matched.get("plan_order_id"),
+                                    "take_profit_count": 0,
+                                    "expected_take_profit_count": 0,
+                                }
+                            else:
+                                protection_payload = self.client.place_futures_protection_orders(
+                                    symbol=plan.symbol,
+                                    direction=plan.direction,
+                                    hold_side=hold_side,
+                                    size=live_size,
+                                    stop_loss=protect_stop_loss,
+                                    take_profits=protect_take_profits,
+                                    margin_mode="isolated",
+                                )
                         except Exception as protection_exc:
                             protection_payload = {
                                 "status": "PROTECTION_PLACEMENT_EXCEPTION",
@@ -1611,7 +1680,9 @@ class ExecutionService:
                         expected_tp_count = int(
                             protection_payload.get("expected_take_profit_count") or len(valid_take_profits)
                         ) if protection_payload else len(valid_take_profits)
-                        has_tp = actual_tp_count >= expected_tp_count and expected_tp_count > 0
+                        has_tp = stop_only_time_exit or (
+                            actual_tp_count >= expected_tp_count and expected_tp_count > 0
+                        )
                         entry_protection_verified = bool(
                             protection_payload and protection_payload.get("protection_verified")
                         )
@@ -2011,6 +2082,14 @@ class ExecutionService:
                     else {}
                 ),
                 "strategy_id": str(plan.strategy or ""),
+                "protection_mode": plan.protection_mode,
+                "scheduled_exit_at_ms": plan.scheduled_exit_at_ms,
+                "frozen_spec_sha256": plan.frozen_spec_sha256,
+                "pilot_authorized": bool(plan.pilot_authorized),
+                "pilot_nav": plan.pilot_nav,
+                "pilot_available_margin": plan.pilot_available_margin,
+                "pilot_kill_switch_latched": bool(plan.pilot_kill_switch_latched),
+                "pilot_funding_usdt": 0.0,
                 "original_entry": planned_avg_entry,
                 "original_sl": protect_stop_loss,
                 "original_tp1": protect_take_profits[0] if protect_take_profits else None,

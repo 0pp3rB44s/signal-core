@@ -153,6 +153,19 @@ class TradePlan:
     # behouden blijft ook als de fill van het anker is weggedreven (bug
     # 2026-07-08: fill dreef structureel naar de stop -> mini-stops).
     geometry_entry: float = 0.0
+    # Additive protection contract. Existing strategies retain the historical
+    # SL+TP requirement; the sole authorized funding pilot may opt into the
+    # explicit stop-only/time-exit lifecycle.
+    protection_mode: str = "STOP_AND_TP"
+    scheduled_exit_at_ms: int = 0
+    frozen_spec_sha256: str = ""
+    pilot_authorized: bool = False
+    pilot_nav: float = 0.0
+    pilot_available_margin: float = -1.0
+    pilot_current_gross_notional: float = 0.0
+    pilot_current_position_count: int = 0
+    pilot_kill_switch_latched: bool = True
+    native_stop_available: bool = False
 
     def __post_init__(self) -> None:
         if not self.candidate_id or self.candidate_candle_open_timestamp_ms <= 0:
