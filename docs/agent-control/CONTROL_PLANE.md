@@ -54,6 +54,33 @@ proven and recorded:
 Current final status: `LIVE_PILOT_RELEASE_BLOCKED`. The strategy-specific
 authorization is recorded; it does not itself deploy software or send orders.
 
+### Implementation-phase update — 2026-08-31
+
+- Pilot starting equity: `27.44 USDT`
+- Compounding: `YES`, from current isolated pilot NAV
+- Maximum single position: `0.10 × CURRENT_PILOT_NAV` (initially `2.744 USDT`)
+- Maximum gross pilot exposure: `0.20 × CURRENT_PILOT_NAV`
+- Minimum-notional behavior: `SKIP`; exposure percentage may not be increased
+- Builder artifact: `9cbcbecab7cbb41654942883b45ef5f75c9923b0`
+- Independent verification report commit:
+  `090fb206c1a9b8197586a4f4defec53162d72cc7`
+- Independent verdict: `READY_FOR_FINAL_OWNER_LAUNCH_DECISION=NO`
+- Real orders sent: `0`
+
+The artifact provides a frozen-hash guard, isolated SQLite ledger, dynamic NAV
+sizing, shared-margin reservation, unknown-state refusal, native-stop lifecycle
+contract, duplicate/orphan detection, restart reconciliation, complete telemetry
+schema, and latched 5% kill-switch behavior. These paths passed deterministic
+tests only. They are not production-wired.
+
+The canonical `ExecutionService` requires take-profit protection for every live
+entry, while the frozen pilot specifies a 24-hour time exit and catastrophic
+stop without a take-profit. No production module imports `funding_pilot`, and
+there is no adapter through `RiskManager`, `ExecutionService`, and
+`PositionManager`. Direct Bitget routing would bypass mandatory safeguards and
+is prohibited. Release therefore remains `IMPLEMENTATION_BLOCKED`; simulated
+stop/recovery/kill/telemetry evidence is not represented as live verification.
+
 ## AgentC capital-growth research release
 
 - Authorization timestamp (UTC): `2026-08-31T17:19:11Z`
