@@ -160,12 +160,6 @@ class TradePlan:
     scheduled_exit_at_ms: int = 0
     frozen_spec_sha256: str = ""
     pilot_authorized: bool = False
-    pilot_nav: float = 0.0
-    pilot_available_margin: float = -1.0
-    pilot_current_gross_notional: float = 0.0
-    pilot_current_position_count: int = 0
-    pilot_kill_switch_latched: bool = True
-    native_stop_available: bool = False
 
     def __post_init__(self) -> None:
         if not self.candidate_id or self.candidate_candle_open_timestamp_ms <= 0:

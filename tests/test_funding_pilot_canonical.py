@@ -23,8 +23,6 @@ def plan(notional: float = 2.744) -> TradePlan:
         leverage=1, position_notional_usdt=notional, notes=[], reasons=[],
         protection_mode="STOP_ONLY_TIME_EXIT", scheduled_exit_at_ms=4_000_000_000_000,
         frozen_spec_sha256=SPEC, pilot_authorized=True,
-        pilot_nav=27.44, pilot_available_margin=20.0,
-        pilot_kill_switch_latched=False, native_stop_available=True,
     )
 
 
@@ -59,8 +57,10 @@ def test_position_manager_restart_loads_persisted_time_exit_then_closes_and_canc
     restarted.store = store
     restarted.client = MagicMock()
     restarted.client.close_futures_position_full.return_value = {"status": "CLOSED", "orderId": "close-1"}
+    restarted.client.get_all_positions.return_value = {"data": []}
     restarted.client.cancel_all_futures_tpsl_orders.return_value = {"cancelled": ["stop-1"]}
     restarted.client.get_futures_protection_orders.return_value = {"stop_orders": [], "take_profit_orders": []}
+    restarted.client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
 
     outcomes = restarted.process_stop_only_time_exits(now_ms=1001)
 
@@ -79,3 +79,21 @@ def test_position_manager_does_not_touch_adaptivetrend_rows():
     manager.client = MagicMock()
     assert manager.process_stop_only_time_exits(now_ms=2) == []
     manager.client.close_futures_position_full.assert_not_called()
+
+
+def test_time_exit_refuses_close_status_without_exchange_zero_proof():
+    row = {
+        "symbol": "DOGEUSDT", "direction": "LONG", "strategy": "funding_crowding_continuation_24h",
+        "status": "OPEN", "protection_mode": "STOP_ONLY_TIME_EXIT", "scheduled_exit_at_ms": 1,
+        "frozen_spec_sha256": SPEC, "pilot_authorized": True,
+    }
+    manager = object.__new__(PositionManager)
+    manager.store = MagicMock()
+    manager.store.load.return_value = [row]
+    manager.client = MagicMock()
+    manager.client.close_futures_position_full.return_value = {"status": "CLOSED"}
+    manager.client.get_all_positions.return_value = {"data": [{"symbol": "DOGEUSDT", "total": "0.1"}]}
+    assert manager.process_stop_only_time_exits(now_ms=2) == [
+        {"symbol": "DOGEUSDT", "status": "POSITION_ZERO_NOT_CONFIRMED"}
+    ]
+    manager.client.cancel_all_futures_tpsl_orders.assert_not_called()

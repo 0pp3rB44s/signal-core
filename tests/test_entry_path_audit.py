@@ -9,6 +9,8 @@ reduce-only close behaviour is unchanged.
 from __future__ import annotations
 
 import re
+import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -19,6 +21,9 @@ from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_i
 from clients.bitget_base_client import BitgetOrderSubmissionAmbiguous
 from clients.schemas import TradePlan
 from execution.execution_service import ExecutionService
+from funding_pilot.canonical import CanonicalFundingPilot
+from funding_pilot.core import ExchangeTruth, PilotConfig, PilotLedger, PilotRuntime, PilotSignal
+from execution.position_manager import PositionManager
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -157,12 +162,6 @@ def _funding_pilot_plan() -> TradePlan:
     plan.scheduled_exit_at_ms = 4_000_000_000_000
     plan.frozen_spec_sha256 = "cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13"
     plan.pilot_authorized = True
-    plan.pilot_nav = 27.44
-    plan.pilot_available_margin = 20.0
-    plan.pilot_current_gross_notional = 0.0
-    plan.pilot_current_position_count = 0
-    plan.pilot_kill_switch_latched = False
-    plan.native_stop_available = True
     return plan
 
 
@@ -247,6 +246,11 @@ def test_funding_pilot_uses_canonical_entry_and_native_stop_without_tp(monkeypat
         "execution.execution_service.resolve_account_equity", lambda _s: (27.44, "pilot-nav")
     )
     plan = _funding_pilot_plan()
+    service.funding_pilot_state_provider = lambda: {
+        "pilot_nav": 27.44, "available_margin": 20.0, "gross_notional": 0.0,
+        "position_count": 0, "kill_switch_latched": False,
+        "native_stop_available": True,
+    }
     service.client.get_all_positions.side_effect = [
         {"data": []},
         {"data": []},
@@ -268,6 +272,75 @@ def test_funding_pilot_uses_canonical_entry_and_native_stop_without_tp(monkeypat
     assert stored["protection_mode"] == "STOP_ONLY_TIME_EXIT"
     assert stored["take_profits"] == []
     assert stored["entry_protection_verified"] is True
+
+
+def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(monkeypatch, tmp_path):
+    service = _service(monkeypatch, PRODUCTION_SYMBOL_ALLOWLIST="DOGEUSDT", MAX_SYMBOLS=1,
+                       EXECUTION_MIN_LIVE_NOTIONAL_USDT=1.0)
+    monkeypatch.setattr("execution.execution_service.resolve_account_equity", lambda _s: (27.44, "pilot"))
+
+    class Harness:
+        def __init__(self):
+            self.state = ExchangeTruth(True, 100.0, 50.0, (), (), (), 20.0)
+        def truth(self): return self.state
+        def min_notional(self, _symbol): return 1.0
+        def decision_book(self, _symbol): return {"bid": 99.9, "ask": 100.1, "timestamp_ms": int(time.time() * 1000)}
+        def place_native_stop(self, **_kwargs): raise AssertionError("ExecutionService owns stop placement")
+        def verify_native_stop(self, **_kwargs): return {"verified": bool(self.state.pilot_stops)}
+        def cancel_working_order(self, _order): self.state = replace(self.state, pilot_working_orders=())
+        def close_reduce_only(self, _position, _reason): self.state = replace(self.state, pilot_positions=()); return {"status": "CLOSED"}
+        def cancel_stop(self, _stop): self.state = replace(self.state, pilot_stops=())
+
+    harness = Harness()
+    def submit(**_kwargs):
+        harness.state = replace(harness.state, pilot_positions=({
+            "symbol": "DOGEUSDT", "side": "LONG", "client_oid": "cgc-fcp-integrated",
+            "notional": 2.744, "unrealized_pnl": 0.0,
+        },))
+        return {"data": {"orderId": "entry-1"}}
+    def positions():
+        return {"data": [{"symbol": row["symbol"], "holdSide": "long", "total": "0.02744",
+                           "openPriceAvg": "100", "markPrice": "100"}
+                          for row in harness.state.pilot_positions]}
+    def stop(**_kwargs):
+        harness.state = replace(harness.state, pilot_stops=({
+            "symbol": "DOGEUSDT", "client_oid": "cgc-fcp-stop", "order_id": "stop-1", "stop_price": 90.0,
+        },))
+        return {"verified": True, "placed": {"data": {"orderId": "stop-1"}},
+                "confirmed_stop": {"plan_order_id": "stop-1", "trigger_price": 90.0},
+                "verify": {"matched_order": {"plan_order_id": "stop-1"}}}
+
+    service.client.get_all_positions.side_effect = positions
+    service.client.place_futures_market_order.side_effect = submit
+    service.client.move_futures_stop_loss.side_effect = stop
+    spec = Path(__file__).resolve().parents[1] / "research/validation/FROZEN_SPECS.json"
+    ledger = PilotLedger(tmp_path / "pilot.sqlite")
+    runtime = PilotRuntime(replace(PilotConfig(spec, tmp_path / "pilot.sqlite"), orders_enabled=True), ledger, harness)
+    manager = object.__new__(PositionManager)
+    canonical = CanonicalFundingPilot(runtime, service, manager)
+    now = int(time.time() * 1000)
+    report = canonical.process_signal(PilotSignal("sig-integrated", now, "DOGEUSDT", "LONG", 100.0, {"f": 1}))
+    assert report.status == "EXECUTED"
+    assert ledger.events("CANONICAL_OPEN")[0]["payload"]["stop_order_id"] == "stop-1"
+    assert canonical.recover()["scheduled_exits"]["DOGEUSDT"] == now + 86_400_000
+    manager.store = service.store
+    manager.client = MagicMock()
+    def close_position(**_kwargs):
+        harness.state = replace(harness.state, pilot_positions=())
+        return {"status": "CLOSED", "orderId": "exit-1"}
+    def cancel_protection(**_kwargs):
+        harness.state = replace(harness.state, pilot_stops=())
+        return {"cancelled": ["stop-1"]}
+    manager.client.close_futures_position_full.side_effect = close_position
+    manager.client.get_all_positions.side_effect = positions
+    manager.client.cancel_all_futures_tpsl_orders.side_effect = cancel_protection
+    manager.client.get_futures_protection_orders.return_value = {"stop_orders": [], "take_profit_orders": []}
+    manager.client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
+    assert canonical.process_time_exits(now_ms=now + 86_400_001) == [
+        {"symbol": "DOGEUSDT", "status": "POSITION_CLOSED_STOP_CANCELLED"}
+    ]
+    assert ledger.events("CANONICAL_TIME_EXIT")
+    assert not harness.state.pilot_positions and not harness.state.pilot_stops
 
 
 def test_ambiguous_live_entry_never_posts_twice(monkeypatch):

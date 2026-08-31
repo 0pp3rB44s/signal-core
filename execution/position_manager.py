@@ -127,6 +127,16 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             if str((close_result or {}).get("status") or "").upper() != "CLOSED":
                 outcomes.append({"symbol": symbol, "status": "CLOSE_NOT_CONFIRMED", "result": close_result})
                 continue
+            open_payload = self.client.get_all_positions()
+            live_rows = (open_payload or {}).get("data") or []
+            residual_positions = [
+                row for row in live_rows
+                if str(row.get("symbol") or "").upper() == symbol
+                and float(row.get("total") or row.get("size") or row.get("available") or 0) > 0
+            ]
+            if residual_positions:
+                outcomes.append({"symbol": symbol, "status": "POSITION_ZERO_NOT_CONFIRMED"})
+                continue
             cancel_result = self.client.cancel_all_futures_tpsl_orders(
                 symbol=symbol,
                 hold_side="long" if direction == "LONG" else "short",
@@ -139,6 +149,26 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             residual_stops = list((remaining or {}).get("stop_orders") or [])
             if residual_stops:
                 outcomes.append({"symbol": symbol, "status": "STOP_CANCEL_NOT_CONFIRMED"})
+                continue
+            pending_payload = self.client.get_pending_orders(limit=100)
+            pending_data = (pending_payload or {}).get("data")
+            if isinstance(pending_data, list):
+                pending_rows = pending_data
+            elif isinstance(pending_data, dict):
+                pending_rows = next(
+                    (pending_data.get(key) for key in ("entrustedList", "orderList", "list", "orders")
+                     if isinstance(pending_data.get(key), list)),
+                    [],
+                )
+            else:
+                pending_rows = []
+            pilot_pending = [
+                row for row in pending_rows
+                if str(row.get("symbol") or "").upper() == symbol
+                and str(row.get("clientOid") or row.get("client_oid") or "").startswith("cgc-fcp-")
+            ]
+            if pilot_pending:
+                outcomes.append({"symbol": symbol, "status": "WORKING_EXIT_ORDERS_REMAIN"})
                 continue
             position["status"] = "CLOSED_TIME_EXIT"
             position["closed_reason"] = "funding_pilot_24h_time_exit"

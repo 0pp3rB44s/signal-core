@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,6 +12,7 @@ from funding_pilot.core import (
     PilotRuntime,
     PilotSignal,
 )
+from funding_pilot.canonical import CanonicalFundingPilot
 
 
 class FakeExchange:
@@ -24,7 +26,7 @@ class FakeExchange:
     def decision_book(self, symbol): return {"bid": 99.0, "ask": 101.0, "timestamp_ms": 1}
     def submit_entry(self, **kwargs): self.calls.append(("entry", kwargs)); return {"order_id": "e1"}
     def place_native_stop(self, *, position, stop_price):
-        stop = {"symbol": position["symbol"], "side": position["side"], "stop_price": stop_price, "order_id": "s1"}
+        stop = {"symbol": position["symbol"], "side": position["side"], "stop_price": stop_price, "order_id": "s1", "client_oid": position["client_oid"]}
         self.state = replace(self.state, pilot_stops=(stop,))
         self.calls.append(("stop", stop))
         return stop
@@ -109,7 +111,7 @@ def test_native_stop_ack_duplicate_prevention_recovery_and_normal_exit(runtime):
 
 def test_duplicate_and_orphan_stops_fail_closed(runtime):
     pilot, exchange, _ = runtime
-    stop = {"symbol": "DOGEUSDT", "stop_price": 90.0}
+    stop = {"symbol": "DOGEUSDT", "stop_price": 90.0, "client_oid": "cgc-fcp-1"}
     exchange.state = replace(exchange.state, pilot_stops=(stop,))
     with pytest.raises(FailClosed, match="orphan pilot stop"):
         pilot.reconcile()
@@ -146,7 +148,7 @@ def test_live_kill_switch_cancels_flattens_verifies_and_latches(runtime):
     position = {"symbol": "DOGEUSDT", "side": "LONG", "entry_price": 100.0,
                 "client_oid": "cgc-fcp-1", "notional": 2.744, "unrealized_pnl": -1.40}
     order = {"symbol": "DOGEUSDT", "client_oid": "cgc-fcp-entry"}
-    stop = {"symbol": "DOGEUSDT", "stop_price": 90.0}
+    stop = {"symbol": "DOGEUSDT", "stop_price": 90.0, "client_oid": "cgc-fcp-stop"}
     exchange.state = replace(exchange.state, pilot_positions=(position,),
                              pilot_working_orders=(order,), pilot_stops=(stop,))
     # Fake cancellation mutates working-order truth for final verification.
@@ -155,3 +157,39 @@ def test_live_kill_switch_cancels_flattens_verifies_and_latches(runtime):
     pilot.reconcile()
     assert ledger.get("status") == "HALTED"
     assert not exchange.state.pilot_positions and not exchange.state.pilot_stops
+
+
+def test_canonical_adapter_derives_dynamic_size_from_reconciled_ledger(runtime):
+    pilot, _, ledger = runtime
+    pilot.config = replace(pilot.config, orders_enabled=True)
+    execution = MagicMock()
+    canonical = CanonicalFundingPilot(pilot, execution, MagicMock())
+    assert canonical.build_plan(signal()).position_notional_usdt == pytest.approx(2.744)
+    ledger.append("ECONOMICS", {"realized_pnl": 2.56, "fees": 0, "funding": 0, "other_costs": 0})
+    assert canonical.build_plan(signal()).position_notional_usdt == pytest.approx(3.0)
+    assert execution.funding_pilot_state_provider == canonical.authoritative_state
+
+
+def test_canonical_restart_recovers_exchange_schedule_hwm_and_latch(runtime):
+    pilot, exchange, ledger = runtime
+    pilot.config = replace(pilot.config, orders_enabled=True)
+    position = {"symbol": "DOGEUSDT", "client_oid": "cgc-fcp-1", "notional": 2.744, "unrealized_pnl": 0.0}
+    stop = {"symbol": "DOGEUSDT", "client_oid": "cgc-fcp-stop", "stop_price": 90.0}
+    exchange.state = replace(exchange.state, pilot_positions=(position,), pilot_stops=(stop,))
+    ledger.append("CANONICAL_OPEN", {"scheduled_exit_at_ms": 99_000, "notional": 2.744}, symbol="DOGEUSDT")
+    ledger.set("high_water_mark", 30.0)
+    restarted = PilotRuntime(pilot.config, PilotLedger(ledger.path), exchange)
+    recovered = CanonicalFundingPilot(restarted, MagicMock(), MagicMock()).recover()
+    assert recovered["scheduled_exits"] == {"DOGEUSDT": 99_000}
+    assert recovered["high_water_mark"] == 30.0
+    restarted.ledger.set("status", "HALTED")
+    with pytest.raises(FailClosed, match="pilot not ACTIVE"):
+        restarted.size(signal(), restarted.reconcile())
+
+
+def test_foreign_owned_state_fails_closed(runtime):
+    pilot, exchange, _ = runtime
+    foreign = {"symbol": "BTCUSDT", "client_oid": "adaptivetrend-1", "notional": 10, "unrealized_pnl": 0}
+    exchange.state = replace(exchange.state, pilot_positions=(foreign,))
+    with pytest.raises(FailClosed, match="identity uncertain"):
+        pilot.reconcile()

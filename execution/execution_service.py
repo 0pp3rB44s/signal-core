@@ -223,6 +223,10 @@ class ExecutionService:
         # Injected only by the integrated public-feed runtime. The executor
         # refuses MicroFlow if this immediate pre-submit revalidation is absent.
         self.microflow_entry_guard = None
+        # Installed only by the canonical funding-pilot runtime. The callable
+        # must reconcile isolated ledger state with fresh exchange truth. A
+        # TradePlan is never accepted as a source of pilot risk truth.
+        self.funding_pilot_state_provider = None
 
     @staticmethod
     def _exchange_rows(payload: dict | None) -> list[dict]:
@@ -385,14 +389,23 @@ class ExecutionService:
             if candidate_plan.protection_mode != "STOP_ONLY_TIME_EXIT":
                 admitted.append(candidate_plan)
                 continue
+            provider = self.funding_pilot_state_provider
+            if not callable(provider):
+                self.log.critical("FUNDING_PILOT_RISK_REJECTED | authoritative state provider missing")
+                continue
+            try:
+                authoritative = provider()
+            except Exception as exc:
+                self.log.critical("FUNDING_PILOT_RISK_REJECTED | reconciliation failed | error=%s", exc)
+                continue
             verdict = RiskManager(self.settings).validate_funding_pilot_plan(
                 candidate_plan,
-                pilot_nav=float(candidate_plan.pilot_nav or 0.0),
-                available_margin=float(candidate_plan.pilot_available_margin),
-                current_gross_notional=float(candidate_plan.pilot_current_gross_notional or 0.0),
-                current_position_count=int(candidate_plan.pilot_current_position_count or 0),
-                kill_switch_latched=bool(candidate_plan.pilot_kill_switch_latched),
-                native_stop_available=bool(candidate_plan.native_stop_available),
+                pilot_nav=float(authoritative["pilot_nav"]),
+                available_margin=float(authoritative["available_margin"]),
+                current_gross_notional=float(authoritative["gross_notional"]),
+                current_position_count=int(authoritative["position_count"]),
+                kill_switch_latched=bool(authoritative["kill_switch_latched"]),
+                native_stop_available=bool(authoritative["native_stop_available"]),
             )
             if verdict.allowed:
                 admitted.append(candidate_plan)
@@ -2086,9 +2099,6 @@ class ExecutionService:
                 "scheduled_exit_at_ms": plan.scheduled_exit_at_ms,
                 "frozen_spec_sha256": plan.frozen_spec_sha256,
                 "pilot_authorized": bool(plan.pilot_authorized),
-                "pilot_nav": plan.pilot_nav,
-                "pilot_available_margin": plan.pilot_available_margin,
-                "pilot_kill_switch_latched": bool(plan.pilot_kill_switch_latched),
                 "pilot_funding_usdt": 0.0,
                 "original_entry": planned_avg_entry,
                 "original_sl": protect_stop_loss,

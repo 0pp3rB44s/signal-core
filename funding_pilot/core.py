@@ -169,6 +169,10 @@ class PilotRuntime:
             raise FailClosed("account or margin truth unknown")
         if any(not str(position.get("client_oid") or "").startswith(OID_PREFIX) for position in truth.pilot_positions):
             raise FailClosed("pilot position identity uncertain")
+        if any(not str(order.get("client_oid") or "").startswith(OID_PREFIX) for order in truth.pilot_working_orders):
+            raise FailClosed("pilot working-order identity uncertain")
+        if any(not str(stop.get("client_oid") or "").startswith(OID_PREFIX) for stop in truth.pilot_stops):
+            raise FailClosed("pilot stop identity uncertain")
         economics = self.ledger.economics(truth)
         stop_by_symbol = {}
         for stop in truth.pilot_stops:
@@ -179,14 +183,24 @@ class PilotRuntime:
         for position in truth.pilot_positions:
             symbol = str(position.get("symbol") or "").upper()
             if symbol not in stop_by_symbol:
+                if self.config.orders_enabled:
+                    self.exchange.close_reduce_only(position, "reconciliation_unprotected_position")
+                    after_close = self.exchange.truth()
+                    if any(str(row.get("symbol") or "").upper() == symbol for row in after_close.pilot_positions):
+                        raise FailClosed(f"unprotected pilot position flatten unconfirmed: {symbol}")
                 raise FailClosed(f"orphan/unprotected pilot position: {symbol}")
         for symbol in stop_by_symbol:
             if symbol not in {str(p.get("symbol") or "").upper() for p in truth.pilot_positions}:
                 raise FailClosed(f"orphan pilot stop: {symbol}")
         hwm = max(float(self.ledger.get("high_water_mark") or 0), economics["nav"])
         self.ledger.set("high_water_mark", hwm)
-        self.ledger.append("RECONCILIATION", {"nav": economics["nav"], "positions": len(truth.pilot_positions),
-                                               "orders": len(truth.pilot_working_orders), "stops": len(truth.pilot_stops)})
+        self.ledger.append("RECONCILIATION", {
+            "nav": economics["nav"], "realized_pnl": economics["realized_pnl"],
+            "unrealized_pnl": economics["unrealized_pnl"], "fees": economics["fees"],
+            "funding": economics["funding"], "positions": list(truth.pilot_positions),
+            "working_orders": list(truth.pilot_working_orders), "native_stops": list(truth.pilot_stops),
+            "high_water_mark": hwm, "kill_switch_state": self.ledger.get("status"),
+        })
         if economics["nav"] <= hwm * (1 - self.config.kill_drawdown_fraction):
             self._kill(truth, economics["nav"], hwm)
         return {"truth": truth, "economics": economics, "high_water_mark": hwm}
