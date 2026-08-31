@@ -1,5 +1,59 @@
 # Release A control plane
 
+## Owner-authorized funding-crowding live pilot — blocked release
+
+- Authorization timestamp (UTC): `2026-08-31T18:09:45Z`
+- Owner decision: `SMALL_CAPPED_REAL_MONEY_LIVE_PILOT_AUTHORIZED`
+- Live pilot authorized: `YES_CONDITIONAL_ON_RELEASE_GATES`
+- Real-order authority: `YES_ONLY_FOR_FROZEN_24H_FUNDING_CROWDING_PILOT`
+- Authorized strategy: `24h funding-crowding continuation`
+- Frozen spec SHA-256: `cda7ecb21e6fd089ef98abb8047d409285825a37d6a2e87510d73cf653ea2e13`
+  (`VERIFIED` against `research/validation/FROZEN_SPECS.json`)
+- Leverage: `1x`
+- Pilot capital: `UNKNOWN_OWNER_MUST_SPECIFY_EXACT_USDT_ALLOCATION`
+- Target/max position notional: `approximately 10 USDT`; an exact enforceable
+  ceiling is required before launch
+- Maximum concurrent positions: `2`
+- Maximum gross exposure: `20% of pilot equity`
+- Portfolio kill switch: `5% drawdown`
+- Averaging down: `FORBIDDEN`
+- Martingale: `FORBIDDEN`
+- Exchange-native stop: `REQUIRED`
+- Capital scaling: `FORBIDDEN_WITHOUT_NEW_EXPLICIT_OWNER_DECISION`
+- AdaptiveTrend modification: `FORBIDDEN`
+- Alpha-logic modification during pilot: `FORBIDDEN`
+- Evidence purpose: approximately 30 days of real execution and PnL evidence;
+  authorization is not validation or production-readiness evidence
+
+Repository-level production isolation is `VERIFIED`: the frozen research spec
+is committed only in the physically separate
+`/Users/bryonprivee/Desktop/bitget_ai_agent/bitget_ai_agent_research_capital_growth_v3`
+worktree on `research/capital-growth-v3`. Runtime/deployment isolation is
+`NOT_YET_VERIFIED` because no pilot implementation or launch artifact exists.
+AdaptiveTrend and the production checkout were not modified.
+
+Release remains `BLOCKED`. No order may be sent until all of the following are
+proven and recorded:
+
+1. Owner specifies exact `PILOT_CAPITAL` and exact hard maximum position
+   notional; `approximately 10 USDT` is not an enforceable ceiling.
+2. An isolated pilot implementation is wired to the exact frozen-spec hash and
+   cannot route any other strategy.
+3. Exchange-native stop placement, acknowledgement, restart recovery, orphan
+   reconciliation, reduce-only exit, and duplicate-order prevention pass tests.
+4. The 5% portfolio drawdown kill switch blocks new entries and safely manages
+   existing protected exposure using exchange-truth equity/PnL.
+5. Required real evidence fields (signal/order/fill timestamps, prices, fees,
+   spread, slippage, funding, stop execution, PnL, equity, drawdown) are wired
+   and reconciled to exchange truth.
+6. An independent release verifier who did not build the pilot returns an
+   explicit safe-to-launch decision.
+7. Owner separately approves the verified deployment artifact and launch after
+   reviewing the implementation and independent report.
+
+Current final status: `LIVE_PILOT_RELEASE_BLOCKED`. The strategy-specific
+authorization is recorded; it does not itself deploy software or send orders.
+
 ## AgentC capital-growth research release
 
 - Authorization timestamp (UTC): `2026-08-31T17:19:11Z`
