@@ -51,6 +51,11 @@ reports/runtime_snapshots/
 
 # Generated reports / audits
 reports/
+
+# Reproducible public research caches and row-level outputs (summaries are tracked).
+research/data/speculative_v1/
+research/results/speculative_v1/events.csv
+research/results/speculative_v1/funding_events.csv
 full_tree.txt
 project_inventory.txt
 *.save

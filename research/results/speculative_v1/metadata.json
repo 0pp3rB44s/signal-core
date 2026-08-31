@@ -1,0 +1,36 @@
+{
+  "eligible_markets": 236,
+  "errors": {
+    "HSIUSDT": "only 11 bars",
+    "OKTAUSDT": "only 79 bars",
+    "PONSUSDT": "only 7 bars",
+    "VEEVUSDT": "only 79 bars",
+    "\u725b\u6765USDT": "only 29 bars"
+  },
+  "exchange": "Bitget",
+  "extended_validation_tiers": [
+    "HV_A"
+  ],
+  "fee_assumption_bps_per_side": 6.0,
+  "generated_utc": "2026-08-31T17:44:49.992627+00:00",
+  "granularity": "1H",
+  "limitations": [
+    "current-listed universe creates survivorship bias",
+    "current spread/depth snapshots are not historical event-time books",
+    "classification uses the recent 1000 bars; eligible tiers use the requested extended history when available",
+    "current tier assignment applied backward creates classification look-ahead",
+    "funding/OI, liquidation, listing and cross-venue mechanisms require separate datasets"
+  ],
+  "markets_scanned": 768,
+  "markets_with_history": 763,
+  "orders_allowed": false,
+  "product": "USDT-FUTURES",
+  "public_data_only": true,
+  "requested_validation_days": 180,
+  "tier_counts": {
+    "HV_A": 82,
+    "HV_B": 113,
+    "HV_C": 41,
+    "HV_D": 527
+  }
+}
