@@ -105,12 +105,25 @@ def run(settings: ReadOnlyBitgetSettings, *, client_factory=ReadOnlyBitgetClient
                              (("symbol","orderId"), ("symbol","planOrderId")))
         plan_ok = plan_ok and probe["endpoint_reachable"] and probe["schema_fields_present"]
         plans.extend(rows)
+    deduped = {}
+    for index, row in enumerate(plans):
+        identity = str(row.get("orderId") or row.get("planOrderId") or row.get("clientOid") or "")
+        key = identity or f"unidentified:{index}"
+        deduped.setdefault(key, row)
+    plans = list(deduped.values())
     result["PLAN_ORDER_CLASSIFICATION"] = {"endpoint_reachable":plan_ok,"record_count":len(plans),
         "classification_pass":plan_ok,"schema_fields_present":plan_ok}
-    stops=[row for row in plans if "loss" in str(row.get("planType") or row.get("plan_type") or "").lower()
-           or row.get("triggerPrice") not in (None, "")]
+    def is_native_stop(row):
+        semantics = " ".join(str(row.get(key) or "").lower()
+                             for key in ("planType","plan_type","orderType","type"))
+        explicit_loss_field = any(row.get(key) not in (None, "") for key in
+                                  ("stopLossTriggerPrice","lossTriggerPrice","stopLossPrice"))
+        return explicit_loss_field or "loss" in semantics or "stop" in semantics
+    stops=[row for row in plans if is_native_stop(row)]
     result["STOP_CLASSIFICATION"] = {"endpoint_reachable":plan_ok,"record_count":len(stops),
-        "classification_pass":plan_ok,"schema_fields_present":_schema(stops,(("symbol","triggerPrice"),))}
+        "classification_pass":plan_ok,"schema_fields_present":_schema(stops,(
+            ("symbol","triggerPrice"),("symbol","stopLossTriggerPrice"),
+            ("symbol","lossTriggerPrice"),("symbol","stopLossPrice")))}
     result["FILL_CLASSIFICATION"], _ = _probe("fills", lambda: client.get_order_history(limit=100),
         (("symbol","orderId"), ("symbol","clientOid")))
     result["FEE_CLASSIFICATION"], _ = _probe("fees", lambda: client.get_trade_fee_rate("BTCUSDT"),

@@ -58,12 +58,13 @@ No production configuration, AdaptiveTrend, `.env.live`, execution arming, order
 
 ## Tests and checks
 
-- Read-only verifier, funding runtime/parity, production settings security, and live launch-guard tests: 58 passed.
+- Read-only verifier, funding runtime/parity, production settings security, and live launch-guard tests: 61 passed.
 - `python3 -m compileall -q funding_pilot`: passed.
 - `git diff --check`: passed.
 - Mutation verbs and a GET request to a mutation endpoint are rejected before network transport.
 - Missing credentials fail validation before client construction.
 - Synthetic secret sentinels do not appear in verifier output.
+- Take-profit and generic conditional plans are not classified as native stops; explicit loss plans are, and duplicate plan rows are counted once by exchange identity.
 
 ## Deployed command
 

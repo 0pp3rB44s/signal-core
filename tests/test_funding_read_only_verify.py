@@ -60,12 +60,39 @@ class FakeReads:
         assert method=="GET"; return {"data":{"list":[]}}
 
 
+class FakePlans(FakeReads):
+    def __init__(self,settings,rows): super().__init__(settings); self.rows=rows
+    def get_tpsl_orders(self,**_): return {"data":{"entrustedList":list(self.rows)}}
+
+
 def test_safe_output_contains_no_secret_values(monkeypatch,capsys):
     settings=_settings(monkeypatch)
     code,result=run(settings,client_factory=lambda settings:FakeReads(settings))
     assert code==0 and result["BITGET_AUTH_READ_VERIFIED"] is True
     rendered=json.dumps(result)
     assert not any(value in rendered for value in SECRETS.values())
+
+
+@pytest.mark.parametrize("row",[
+    {"symbol":"BTCUSDT","orderId":"tp1","planType":"profit_plan","triggerPrice":"101"},
+    {"symbol":"BTCUSDT","orderId":"conditional1","planType":"normal_plan","triggerPrice":"101"},
+])
+def test_take_profit_and_generic_conditionals_are_not_native_stops(monkeypatch,row):
+    settings=_settings(monkeypatch)
+    code,result=run(settings,client_factory=lambda settings:FakePlans(settings,[row]))
+    assert code==0
+    assert result["PLAN_ORDER_CLASSIFICATION"]["record_count"]==1
+    assert result["STOP_CLASSIFICATION"]["record_count"]==0
+
+
+def test_explicit_loss_plan_is_one_deduplicated_native_stop(monkeypatch):
+    settings=_settings(monkeypatch)
+    row={"symbol":"BTCUSDT","orderId":"sl1","planType":"loss_plan","triggerPrice":"99"}
+    code,result=run(settings,client_factory=lambda settings:FakePlans(settings,[row]))
+    assert code==0
+    # The same row is returned for each queried plan category but counted once.
+    assert result["PLAN_ORDER_CLASSIFICATION"]["record_count"]==1
+    assert result["STOP_CLASSIFICATION"]["record_count"]==1
 
 
 def test_main_missing_credentials_does_not_print_secrets(monkeypatch,capsys):
