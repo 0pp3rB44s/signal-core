@@ -267,7 +267,7 @@ class CanonicalFundingPilot:
                     and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
                     for row in self.runtime.ledger.events("ECONOMICS")
                 )
-                if not reconciled:
+                if position_id and not reconciled:
                     self.runtime.ledger.append("EXIT_PENDING", {
                         "symbol": symbol, "entry_client_oid": oid,
                         "exchange_position_id": position_id,

@@ -299,6 +299,26 @@ def test_uncertain_live_exposure_is_owned_flattened_and_zero_proved(tmp_path):
     assert {kind for kind,_ in client.write_calls} == {"cancel_order","close","cancel_stop"}
 
 
+@pytest.mark.parametrize("artifact",["order","stop"])
+def test_uncertain_artifact_only_closes_without_impossible_economics_wait(tmp_path,artifact):
+    client,ledger=TransportHarness(),PilotLedger(tmp_path/f"{artifact}.sqlite")
+    oid="cgc-fcp-artifact"
+    ledger.append("ENTRY_INTENT",{"symbol":"DOGEUSDT","entry_client_oid":oid},symbol="DOGEUSDT")
+    ledger.append("ENTRY_TERMINAL",{"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "state":"HALTED_UNCERTAIN"},symbol="DOGEUSDT")
+    if artifact=="order": client.orders=[{"symbol":"DOGEUSDT","orderId":"o1","clientOid":oid}]
+    else:
+        ledger.append("STOP_ACK",{"symbol":"DOGEUSDT","entry_client_oid":oid,
+            "stop_order_id":"s1"},symbol="DOGEUSDT")
+        client.plans=[{"symbol":"DOGEUSDT","orderId":"s1","clientOid":oid}]
+    adapter=BitgetPilotExchangePort(client,ledger,armed_live=True)
+    config=replace(PilotConfig(SPEC,ledger.path),orders_enabled=True)
+    canonical=CanonicalFundingPilot(PilotRuntime(config,ledger,adapter),MagicMock(),MagicMock())
+    assert canonical.reconcile_uncertain_lifecycles()==[oid]
+    assert ledger.events("EXIT_PENDING")==[]
+    assert adapter._owned()=={}
+
+
 def test_two_partial_closes_have_distinct_exactly_once_identities(tmp_path):
     client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
     ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
