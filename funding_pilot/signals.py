@@ -94,10 +94,15 @@ class FrozenFundingCrowdingSignalPoller:
                 f"funding:{symbol}:{ts}", ts, symbol, decision["side"], decision["reference_price"],
                 {"funding_rate":rate, "funding_pct":decision["funding_pct"], "extension":extension})))
         candidates.sort(key=lambda x:(-x[0],x[1]))
-        self.last_audit = {"universe": sorted(eligible),
+        self.last_audit = {"point_in_time_universe": sorted(x[0] for x in features),
+                           "turnover_input": "ticker.usdtVolume",
+                           "turnover_values": {x[0]: x[2] for x in features},
+                           "universe": sorted(eligible),
                            "ranking": [row[1] for row in candidates],
                            "stale": sorted(stale),
-                           "selected": candidates[0][1] if candidates else None}
+                           "selected": candidates[0][1] if candidates else None,
+                           "selected_side": candidates[0][2].side if candidates else None,
+                           "signal_timestamp": candidates[0][2].timestamp_ms if candidates else None}
         if not candidates: return []
         signal=candidates[0][2]
         self.ledger.set(f"signal:{signal.symbol}:{signal.timestamp_ms}", "SEEN")

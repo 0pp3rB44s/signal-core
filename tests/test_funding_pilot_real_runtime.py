@@ -246,3 +246,82 @@ def test_rejected_intent_is_terminal_and_does_not_poison_next_attempt(tmp_path):
         canonical.process_signal(PilotSignal("reject", 2_000_000_000_000, "DOGEUSDT", "LONG", 100, {}))
     assert ledger.events("ENTRY_TERMINAL")[-1]["payload"]["state"] == "REJECTED"
     assert adapter._owned() == {}
+
+
+def test_post_execution_uncertainty_retains_ownership_until_safe_closed(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    oid="cgc-fcp-uncertain"
+    ledger.append("ENTRY_INTENT", {"symbol":"DOGEUSDT","entry_client_oid":oid}, symbol="DOGEUSDT")
+    ledger.append("ENTRY_TERMINAL", {"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "state":"HALTED_UNCERTAIN","reason":"persistence_unknown"}, symbol="DOGEUSDT")
+    adapter=BitgetPilotExchangePort(client, ledger)
+    assert adapter._owned()["DOGEUSDT"]["entry_client_oid"] == oid
+    ledger.append("ENTRY_TERMINAL", {"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "state":"SAFE_CLOSED"}, symbol="DOGEUSDT")
+    assert adapter._owned() == {}
+
+
+def test_two_partial_closes_have_distinct_exactly_once_identities(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
+        "exchange_position_id":"p1"}, symbol="DOGEUSDT")
+    client.history = [
+        {"positionId":"p1","closeOrderId":"partial-A","pnl":"1","openFee":"-.1","closeFee":"-.2"},
+        {"positionId":"p1","closeOrderId":"partial-B","pnl":"2","openFee":"-.1","closeFee":"-.3"},
+    ]
+    adapter=BitgetPilotExchangePort(client, ledger)
+    adapter.truth(); adapter.truth()
+    source_ids={row[0] for row in ledger.db.execute("SELECT source_id FROM economic_sources")}
+    assert {"realized_pnl:partial-A","realized_pnl:partial-B","closing_fee:partial-A","closing_fee:partial-B"} <= source_ids
+    economics=ledger.economics(adapter.truth())
+    assert economics["realized_pnl"] == pytest.approx(3)
+    assert economics["fees"] == pytest.approx(.6)
+
+
+def test_delayed_close_economics_survive_restart_and_finalize_once(tmp_path):
+    path=tmp_path/"pilot.sqlite"
+    client, ledger = TransportHarness(), PilotLedger(path)
+    oid="cgc-fcp-entry"; position_id="position-7"
+    ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "exchange_position_id":position_id,"scheduled_exit_at_ms":1}, symbol="DOGEUSDT")
+    local=[{"symbol":"DOGEUSDT","status":"OPEN","protection_mode":"STOP_ONLY_TIME_EXIT",
+            "exchange_entry_client_oid":oid,"exchange_position_id":position_id}]
+    manager=MagicMock(); manager.store.load.return_value=local
+    manager.process_stop_only_time_exits.return_value=[{
+        "symbol":"DOGEUSDT","status":"POSITION_CLOSED_STOP_CANCELLED","close_order_id":"close-response-id"}]
+    execution=MagicMock()
+    adapter=BitgetPilotExchangePort(client, ledger)
+    runtime=PilotRuntime(PilotConfig(SPEC,path), ledger, adapter)
+    canonical=CanonicalFundingPilot(runtime, execution, manager)
+    canonical.process_time_exits(now_ms=2)
+    assert len(ledger.events("EXIT_PENDING")) == 1
+    assert ledger.events("CANONICAL_TIME_EXIT") == []
+
+    # Process restart precedes delayed history. The exchange history identity
+    # intentionally differs from the close response identity.
+    restarted_ledger=PilotLedger(path)
+    client.history=[{"positionId":position_id,"closeOrderId":"history-partial-id",
+                     "pnl":"1.25","openFee":"0","closeFee":"-.05"}]
+    restarted_manager=MagicMock(); restarted_manager.store.load.return_value=[]
+    restarted_manager.process_stop_only_time_exits.return_value=[]
+    restarted=CanonicalFundingPilot(
+        PilotRuntime(PilotConfig(SPEC,path), restarted_ledger,
+                     BitgetPilotExchangePort(client,restarted_ledger)),
+        MagicMock(), restarted_manager)
+    restarted.process_time_exits(now_ms=3)
+    assert len(restarted_ledger.events("CANONICAL_TIME_EXIT")) == 1
+    restarted.process_time_exits(now_ms=4)
+    assert len(restarted_ledger.events("CANONICAL_TIME_EXIT")) == 1
+    assert restarted_ledger.economics(restarted.runtime.exchange.truth())["realized_pnl"] == pytest.approx(1.25)
+
+
+def test_authoritative_nav_drives_dynamic_single_and_gross_caps(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path/"pilot.sqlite")
+    ledger.append_economic_once("profit:1", {"realized_pnl":2,"fees":.2,"funding":.1,"other_costs":.1})
+    adapter=BitgetPilotExchangePort(client,ledger)
+    runtime=PilotRuntime(PilotConfig(SPEC,ledger.path),ledger,adapter)
+    state=runtime.reconcile()
+    assert state["economics"]["nav"] == pytest.approx(29.04)
+    signal=PilotSignal("s",1,"DOGEUSDT","LONG",100,{})
+    assert runtime.size(signal,state) == pytest.approx(2.904)
+    assert state["economics"]["nav"]*.20 == pytest.approx(5.808)

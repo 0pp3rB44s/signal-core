@@ -100,9 +100,19 @@ class CanonicalFundingPilot:
         def terminal_failed(reason: str) -> None:
             self.runtime.ledger.append("ENTRY_TERMINAL", {
                 "symbol": plan.symbol, "entry_client_oid": entry_oid,
-                "state": "FAILED", "reason": reason,
+                "state": "HALTED_UNCERTAIN", "reason": reason,
             }, signal_id=signal.signal_id, symbol=plan.symbol)
-        stored = self.execution_service.store.load(default=[])
+            self.runtime.ledger.set("status", "HALTED")
+        def post_execution(label: str, operation):
+            try:
+                return operation()
+            except Exception:
+                terminal_failed(label)
+                raise
+        stored = post_execution(
+            "position_manager_persistence_exception",
+            lambda: self.execution_service.store.load(default=[]),
+        )
         row = next(
             (item for item in reversed(stored)
              if item.get("plan_id") == plan.plan_id and item.get("status") == "OPEN"),
@@ -117,19 +127,19 @@ class CanonicalFundingPilot:
             terminal_failed("opening_fee_unavailable")
             raise FailClosed("pilot opening fee unavailable")
         fee_key = f"opening_fee:{entry_oid}"
-        self.runtime.ledger.append_economic_once(fee_key, {
+        post_execution("opening_fee_ingestion_exception", lambda: self.runtime.ledger.append_economic_once(fee_key, {
                 "realized_pnl": 0.0, "fees": abs(float(opening_fee)),
                 "funding": 0.0, "other_costs": 0.0,
                 "entry_client_oid": entry_oid,
-            }, symbol=plan.symbol)
-        self.runtime.ledger.append(
+            }, symbol=plan.symbol))
+        post_execution("stop_ack_persistence_exception", lambda: self.runtime.ledger.append(
             "STOP_ACK",
             {"symbol": plan.symbol, "entry_client_oid": entry_oid,
              "stop_order_id": stop_ack_id, "scheduled_exit_at_ms": plan.scheduled_exit_at_ms,
              "exchange_position_id": row.get("exchange_position_id"),
              "entry_order_id": row.get("exchange_entry_order_id")},
             signal_id=signal.signal_id, symbol=plan.symbol,
-        )
+        ))
         try:
             truth = self.runtime.exchange.truth()
         except Exception:
@@ -150,22 +160,32 @@ class CanonicalFundingPilot:
             # read-back fails. This second reconciliation prevents a transient
             # acknowledgement from becoming durable pilot state.
             if exchange_position:
-                self.runtime.exchange.close_reduce_only(exchange_position, "post_ack_stop_mismatch")
-                flattened = self.runtime.exchange.truth()
+                post_execution("stop_mismatch_flatten_exception", lambda:
+                    self.runtime.exchange.close_reduce_only(exchange_position, "post_ack_stop_mismatch"))
+                flattened = post_execution("stop_mismatch_reconciliation_exception",
+                                           self.runtime.exchange.truth)
                 if any(str(item.get("symbol") or "").upper() == plan.symbol for item in flattened.pilot_positions):
                     terminal_failed("stop_mismatch_flatten_unconfirmed")
                     raise FailClosed("post-ack stop mismatch flatten unconfirmed")
-                for order in flattened.pilot_working_orders:
-                    self.runtime.exchange.cancel_working_order(order)
-                for stop_order in flattened.pilot_stops:
-                    self.runtime.exchange.cancel_stop(stop_order)
-                final = self.runtime.exchange.truth()
-                if final.pilot_positions or final.pilot_working_orders or final.pilot_stops:
-                    terminal_failed("stop_mismatch_residual_exposure")
-                    raise FailClosed("post-ack stop mismatch residual exposure")
-            terminal_failed("stop_identity_not_reconciled_flattened")
+            flattened = post_execution("stop_mismatch_cleanup_truth_exception",
+                                       self.runtime.exchange.truth)
+            for order in flattened.pilot_working_orders:
+                post_execution("stop_mismatch_order_cancel_exception", lambda order=order:
+                               self.runtime.exchange.cancel_working_order(order))
+            for stop_order in flattened.pilot_stops:
+                post_execution("stop_mismatch_stop_cancel_exception", lambda stop_order=stop_order:
+                               self.runtime.exchange.cancel_stop(stop_order))
+            final = post_execution("stop_mismatch_final_truth_exception",
+                                   self.runtime.exchange.truth)
+            if final.pilot_positions or final.pilot_working_orders or final.pilot_stops:
+                terminal_failed("stop_mismatch_residual_exposure")
+                raise FailClosed("post-ack stop mismatch residual exposure")
+            self.runtime.ledger.append("ENTRY_TERMINAL", {
+                "symbol": plan.symbol, "entry_client_oid": entry_oid,
+                "state": "SAFE_CLOSED", "reason": "stop_identity_not_reconciled_flattened",
+            }, signal_id=signal.signal_id, symbol=plan.symbol)
             raise FailClosed("exchange-native stop identity not reconciled after entry; flattened")
-        self.runtime.ledger.append(
+        post_execution("scheduled_exit_registration_exception", lambda: self.runtime.ledger.append(
             "CANONICAL_OPEN",
             {
                 "plan_id": plan.plan_id, "symbol": plan.symbol,
@@ -177,7 +197,7 @@ class CanonicalFundingPilot:
                 "entry_order_id": row.get("exchange_entry_order_id"),
             },
             signal_id=signal.signal_id, symbol=plan.symbol,
-        )
+        ))
         return reports[0]
 
     def recover(self) -> dict:
@@ -233,17 +253,28 @@ class CanonicalFundingPilot:
         # Finalize earlier closes only after delayed exchange economics appear.
         for pending in self.runtime.ledger.events("EXIT_PENDING"):
             payload = pending["payload"]
+            entry_oid = str(payload.get("entry_client_oid") or "")
+            if any(str(row["payload"].get("entry_client_oid") or "") == entry_oid
+                   for row in self.runtime.ledger.events("CANONICAL_TIME_EXIT")):
+                continue
             self.runtime.exchange.truth()
-            close_id = str(payload.get("close_order_id") or "")
-            if close_id and self.runtime.ledger.db.execute(
-                "SELECT 1 FROM economic_sources WHERE source_id=?", (f"realized_pnl:{close_id}",)
-            ).fetchone():
+            position_id = str(payload.get("exchange_position_id") or "")
+            reconciled = any(
+                str(row["payload"].get("exchange_position_id") or "") == position_id
+                and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
+                for row in self.runtime.ledger.events("ECONOMICS")
+            )
+            if position_id and reconciled:
                 self.runtime.ledger.append("CANONICAL_TIME_EXIT", {
                     **payload, "state":"CLOSED",
                 }, symbol=str(pending.get("symbol") or ""))
         before = self.position_manager.store.load(default=[])
         entry_oid_by_symbol = {
             str(row.get("symbol") or "").upper(): str(row.get("exchange_entry_client_oid") or "")
+            for row in before if row.get("protection_mode") == "STOP_ONLY_TIME_EXIT" and row.get("status") == "OPEN"
+        }
+        position_id_by_symbol = {
+            str(row.get("symbol") or "").upper(): str(row.get("exchange_position_id") or "")
             for row in before if row.get("protection_mode") == "STOP_ONLY_TIME_EXIT" and row.get("status") == "OPEN"
         }
         outcomes = self.position_manager.process_stop_only_time_exits(now_ms=now_ms)
@@ -258,11 +289,15 @@ class CanonicalFundingPilot:
                 raise FailClosed("post-exit pilot working order remains")
             if any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_stops):
                 raise FailClosed("post-exit orphan stop remains")
-            terminal = {**outcome, "entry_client_oid": entry_oid_by_symbol.get(symbol)}
-            close_id = str(outcome.get("close_order_id") or "")
-            if close_id and self.runtime.ledger.db.execute(
-                "SELECT 1 FROM economic_sources WHERE source_id=?", (f"realized_pnl:{close_id}",)
-            ).fetchone():
+            terminal = {**outcome, "entry_client_oid": entry_oid_by_symbol.get(symbol),
+                        "exchange_position_id": position_id_by_symbol.get(symbol)}
+            position_id = position_id_by_symbol.get(symbol) or ""
+            reconciled = any(
+                str(row["payload"].get("exchange_position_id") or "") == position_id
+                and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
+                for row in self.runtime.ledger.events("ECONOMICS")
+            )
+            if position_id and reconciled:
                 self.runtime.ledger.append("CANONICAL_TIME_EXIT", {**terminal, "state":"CLOSED"}, symbol=symbol)
             else:
                 self.runtime.ledger.append("EXIT_PENDING", {**terminal, "state":"EXIT_PENDING"}, symbol=symbol)

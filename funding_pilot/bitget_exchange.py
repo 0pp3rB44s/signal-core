@@ -41,8 +41,14 @@ class BitgetPilotExchangePort:
                 continue
             lifecycle = lifecycles.setdefault(oid, {"entry_client_oid": oid})
             if event["kind"] in {"ENTRY_TERMINAL", "CANONICAL_TIME_EXIT"}:
-                lifecycle["closed"] = True
-                lifecycle["terminal_state"] = payload.get("state") or "CLOSED"
+                state = str(payload.get("state") or "CLOSED").upper()
+                lifecycle["terminal_state"] = state
+                # Post-execution uncertainty is deliberately non-terminal.  The
+                # exchange identity remains owned until zero exposure and zero
+                # pilot orders/protection have been proved.
+                lifecycle["closed"] = state in {
+                    "REJECTED", "CANCELLED", "SKIPPED_CONFLICT", "SAFE_CLOSED", "CLOSED"
+                }
                 continue
             lifecycle.update(payload)
             lifecycle["symbol"] = str(event.get("symbol") or payload.get("symbol") or "").upper()
