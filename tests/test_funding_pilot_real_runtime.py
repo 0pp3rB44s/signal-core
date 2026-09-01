@@ -289,6 +289,11 @@ def test_uncertain_live_exposure_is_owned_flattened_and_zero_proved(tmp_path):
     adapter=BitgetPilotExchangePort(client,ledger,armed_live=True)
     config=replace(PilotConfig(SPEC,ledger.path),orders_enabled=True)
     canonical=CanonicalFundingPilot(PilotRuntime(config,ledger,adapter),MagicMock(),MagicMock())
+    assert canonical.reconcile_uncertain_lifecycles() == []
+    assert ledger.events("EXIT_PENDING")
+    assert adapter._owned()["DOGEUSDT"]["entry_client_oid"] == oid
+    client.history=[{"positionId":"p1","closeOrderId":"recovery-close","pnl":"0",
+                     "openFee":"0","closeFee":"-.1"}]
     assert canonical.reconcile_uncertain_lifecycles() == [oid]
     assert adapter.truth().pilot_positions == adapter.truth().pilot_working_orders == adapter.truth().pilot_stops == ()
     assert {kind for kind,_ in client.write_calls} == {"cancel_order","close","cancel_stop"}

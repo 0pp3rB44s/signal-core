@@ -130,3 +130,15 @@ def test_recorded_snapshot_full_poller_golden_parity(tmp_path, monkeypatch):
     monkeypatch.setattr("funding_pilot.signals.time.time",lambda:(now+300_001)/1000)
     assert stale_poller() == []
     assert stale_poller.last_audit["stale"] == ["DOGEUSDT","ETHUSDT"]
+
+
+def test_research_minimum_100_completed_bars_remains_in_universe(tmp_path,monkeypatch):
+    now=2_000_000_000_000
+    class BoundarySnapshot(RecordedSnapshotClient):
+        symbols=["DOGEUSDT"]
+        def get_candles(self,**kwargs): return {"data":super().get_candles(**kwargs)["data"][-100:]}
+    monkeypatch.setattr("funding_pilot.signals.time.time",lambda:now/1000)
+    spec=__import__("pathlib").Path(__file__).resolve().parents[1]/"research/validation/FROZEN_SPECS.json"
+    poller=FrozenFundingCrowdingSignalPoller(client=BoundarySnapshot(now),ledger=PilotLedger(tmp_path/"b.sqlite"),spec_path=spec)
+    poller()
+    assert poller.last_audit["point_in_time_universe"] == ["DOGEUSDT"]

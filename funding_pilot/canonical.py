@@ -216,6 +216,26 @@ class CanonicalFundingPilot:
         truth = self.runtime.exchange.truth()
         closed = []
         for oid, symbol in uncertain.items():
+            pending = next((row for row in reversed(self.runtime.ledger.events("EXIT_PENDING"))
+                            if str(row["payload"].get("entry_client_oid") or "") == oid), None)
+            if pending:
+                payload = pending["payload"]
+                checkpoint = int(payload.get("economics_checkpoint_event_id") or 0)
+                position_id = str(payload.get("exchange_position_id") or "")
+                reconciled = any(
+                    int(row["id"]) > checkpoint
+                    and str(row["payload"].get("exchange_position_id") or "") == position_id
+                    and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
+                    for row in self.runtime.ledger.events("ECONOMICS")
+                )
+                if not reconciled:
+                    continue
+                self.runtime.ledger.append("ENTRY_TERMINAL", {
+                    "symbol": symbol, "entry_client_oid": oid, "state": "SAFE_CLOSED",
+                    "reason": "delayed_recovery_economics_reconciled",
+                }, symbol=symbol)
+                closed.append(oid)
+                continue
             positions = [row for row in truth.pilot_positions
                          if str(row.get("symbol") or "").upper() == symbol]
             live = bool(positions)
@@ -224,6 +244,9 @@ class CanonicalFundingPilot:
             if live or orders or stops:
                 if not self.runtime.config.orders_enabled:
                     continue
+                checkpoint = max((int(row["id"]) for row in self.runtime.ledger.events("ECONOMICS")), default=0)
+                position_id = str((positions[0] if positions else {}).get("positionId")
+                                  or (positions[0] if positions else {}).get("posId") or "")
                 for order in [row for row in truth.pilot_working_orders
                               if str(row.get("symbol") or "").upper() == symbol]:
                     self.runtime.exchange.cancel_working_order(order)
@@ -237,6 +260,20 @@ class CanonicalFundingPilot:
                 if (any(str(row.get("symbol") or "").upper() == symbol for row in final.pilot_positions)
                     or any(str(row.get("symbol") or "").upper() == symbol for row in final.pilot_working_orders)
                     or any(str(row.get("symbol") or "").upper() == symbol for row in final.pilot_stops)):
+                    continue
+                reconciled = any(
+                    int(row["id"]) > checkpoint
+                    and str(row["payload"].get("exchange_position_id") or "") == position_id
+                    and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
+                    for row in self.runtime.ledger.events("ECONOMICS")
+                )
+                if not reconciled:
+                    self.runtime.ledger.append("EXIT_PENDING", {
+                        "symbol": symbol, "entry_client_oid": oid,
+                        "exchange_position_id": position_id,
+                        "economics_checkpoint_event_id": checkpoint,
+                        "state": "RECOVERY_EXIT_PENDING",
+                    }, symbol=symbol)
                     continue
             self.runtime.ledger.append("ENTRY_TERMINAL", {
                 "symbol": symbol, "entry_client_oid": oid, "state": "SAFE_CLOSED",
