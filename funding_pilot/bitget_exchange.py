@@ -77,9 +77,12 @@ class BitgetPilotExchangePort:
             if not expected_position_id:
                 continue
             for row in _rows(self.client.get_position_history(symbol=symbol, limit=100)):
-                row_id = str(row.get("positionId") or row.get("id") or row.get("closeId") or "")
+                row_id = str(row.get("positionId") or row.get("posId") or "")
                 if not row_id or row_id != expected_position_id:
                     continue
+                close_event_id = str(row.get("closeOrderId") or row.get("orderId") or row.get("tradeId") or row.get("id") or row.get("closeId") or row.get("uTime") or "")
+                if not close_event_id:
+                    raise FailClosed(f"partial-close identity unavailable: {symbol}")
                 pnl = _number(row, "pnl", "realizedPnl", "netProfit")
                 open_fee = _number(row, "openFee", "open_fee")
                 close_fee = _number(row, "closeFee", "close_fee")
@@ -87,17 +90,14 @@ class BitgetPilotExchangePort:
                     raise FailClosed(f"closed fees/PnL incomplete: {symbol}")
                 items = (
                     (f"opening_fee:{identity.get('entry_client_oid')}", 0.0, abs(open_fee)),
-                    (f"closing_fee:{row_id}", 0.0, abs(close_fee)),
-                    (f"realized_pnl:{row_id}", pnl, 0.0),
+                    (f"closing_fee:{close_event_id}", 0.0, abs(close_fee)),
+                    (f"realized_pnl:{close_event_id}", pnl, 0.0),
                 )
                 for key, realized, fee in items:
-                    if self.ledger.get(key) == "INGESTED": continue
-                    self.ledger.append("ECONOMICS", {
+                    self.ledger.append_economic_once(key, {
                         "realized_pnl": realized, "fees": fee, "funding": 0.0,
                         "other_costs": 0.0, "exchange_position_id": row_id,
-                        "economic_item_id": key,
                     }, symbol=symbol)
-                    self.ledger.set(key, "INGESTED")
 
     def _ingest_open_funding(self, owned: dict[str, dict]) -> None:
         for symbol, identity in owned.items():
@@ -116,10 +116,8 @@ class BitgetPilotExchangePort:
                 if not bill_id or amount is None:
                     raise FailClosed(f"attributable funding row incomplete: {symbol}")
                 key = f"funding:{bill_id}"
-                if self.ledger.get(key) == "INGESTED": continue
-                self.ledger.append("ECONOMICS", {"realized_pnl":0.0, "fees":0.0,
+                self.ledger.append_economic_once(key, {"realized_pnl":0.0, "fees":0.0,
                     "funding":-amount, "other_costs":0.0, "exchange_position_id":position_id}, symbol=symbol)
-                self.ledger.set(key, "INGESTED")
 
     def truth(self) -> ExchangeTruth:
         equity, available = self._accounts()

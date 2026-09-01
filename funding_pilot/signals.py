@@ -32,6 +32,7 @@ def frozen_funding_decision(funding, opens):
 class FrozenFundingCrowdingSignalPoller:
     def __init__(self, *, client, ledger, spec_path):
         self.client, self.ledger, self.spec_path = client, ledger, spec_path
+        self.last_audit = {}
         verify_spec(spec_path)
 
     def _funding(self, symbol):
@@ -50,7 +51,7 @@ class FrozenFundingCrowdingSignalPoller:
             symbol = str(contract.get("symbol") or "").upper()
             if not symbol or str(contract.get("symbolStatus") or contract.get("status") or "normal").lower() != "normal":
                 continue
-            raw = (self.client.get_candles(symbol=symbol, product_type="USDT-FUTURES", granularity="1H", limit=200) or {}).get("data") or []
+            raw = (self.client.get_candles(symbol=symbol, product_type="USDT-FUTURES", granularity="1H", limit=1000) or {}).get("data") or []
             candles = sorted([(int(r[0]), float(r[1]), float(r[4]), float(r[6] if len(r)>6 else r[5])) for r in raw], key=lambda x:x[0])
             completed = [r for r in candles if r[0] + 3_600_000 <= now]
             if len(completed) < 100: continue
@@ -72,12 +73,13 @@ class FrozenFundingCrowdingSignalPoller:
         if not features: return []
         vols=[x[1] for x in features]; turns=[x[2] for x in features]; spreads=[x[3] for x in features]
         eligible=[x[0] for x in features if _pct_rank(vols,x[1])>=.70 and _pct_rank(turns,x[2])>=.60 and _pct_rank(spreads,x[3])<=.50]
-        candidates=[]
+        candidates=[]; stale=[]
         for symbol in eligible:
             funding=self._funding(symbol)
             if len(funding)<30: continue
             ts, rate=funding[-1]
-            if ts > now or now-ts > 300_000 or self.ledger.get(f"signal:{symbol}:{ts}") == "SEEN": continue
+            if ts > now or now-ts > 300_000 or self.ledger.get(f"signal:{symbol}:{ts}") == "SEEN":
+                stale.append(symbol); continue
             # Exact frozen research definition: 24h return across three 8h
             # funding observations; trailing 30-event volatility excludes now.
             opens=[]
@@ -92,6 +94,10 @@ class FrozenFundingCrowdingSignalPoller:
                 f"funding:{symbol}:{ts}", ts, symbol, decision["side"], decision["reference_price"],
                 {"funding_rate":rate, "funding_pct":decision["funding_pct"], "extension":extension})))
         candidates.sort(key=lambda x:(-x[0],x[1]))
+        self.last_audit = {"universe": sorted(eligible),
+                           "ranking": [row[1] for row in candidates],
+                           "stale": sorted(stale),
+                           "selected": candidates[0][1] if candidates else None}
         if not candidates: return []
         signal=candidates[0][2]
         self.ledger.set(f"signal:{signal.symbol}:{signal.timestamp_ms}", "SEEN")

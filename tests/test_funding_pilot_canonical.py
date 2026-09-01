@@ -68,7 +68,8 @@ def test_position_manager_restart_loads_persisted_time_exit_then_closes_and_canc
 
     outcomes = restarted.process_stop_only_time_exits(now_ms=1001)
 
-    assert outcomes == [{"symbol": "DOGEUSDT", "status": "POSITION_CLOSED_STOP_CANCELLED"}]
+    assert outcomes == [{"symbol": "DOGEUSDT", "status": "POSITION_CLOSED_STOP_CANCELLED",
+                         "close_order_id": "close-1"}]
     restarted.client.close_futures_position_full.assert_called_once_with(symbol="DOGEUSDT", direction="LONG")
     restarted.client.cancel_futures_plan_order.assert_called_once_with(
         symbol="DOGEUSDT", order_id="stop-1", plan_type="loss_plan"

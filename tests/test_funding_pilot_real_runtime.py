@@ -47,7 +47,7 @@ def test_real_adapter_read_truth_ownership_and_economics(tmp_path):
                                       "stop_order_id":"stop-1", "scheduled_exit_at_ms":999,
                                       "exchange_position_id":"p1"}, symbol="DOGEUSDT")
     client.positions[0]["positionId"] = "p1"
-    client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "pnl":"1.5", "openFee":"-0.1",
+    client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "orderId":"close-1", "pnl":"1.5", "openFee":"-0.1",
                        "closeFee":"-0.1", "totalFunding":"0.05", "utime":"1"}]
     truth = BitgetPilotExchangePort(client, ledger).truth()
     assert [row["symbol"] for row in truth.pilot_positions] == ["DOGEUSDT"]
@@ -218,10 +218,9 @@ def test_economics_overlap_and_restart_replay_are_exactly_once(tmp_path):
     client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
     ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
         "stop_order_id":"stop-1", "exchange_position_id":"p1"}, symbol="DOGEUSDT")
-    ledger.append("ECONOMICS", {"realized_pnl":0, "fees":0.1, "funding":0, "other_costs":0,
-                                 "economic_item_id":"opening_fee:cgc-fcp-entry"}, symbol="DOGEUSDT")
-    ledger.set("opening_fee:cgc-fcp-entry", "INGESTED")
-    client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "pnl":"1", "openFee":"-0.1",
+    ledger.append_economic_once("opening_fee:cgc-fcp-entry",
+        {"realized_pnl":0, "fees":0.1, "funding":0, "other_costs":0}, symbol="DOGEUSDT")
+    client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "closeOrderId":"close-1", "pnl":"1", "openFee":"-0.1",
                        "closeFee":"-0.2", "totalFunding":"-0.05"}]
     client.bills = [{"id":"fund-1", "positionId":"p1", "amount":"-0.05"}]
     adapter = BitgetPilotExchangePort(client, ledger)

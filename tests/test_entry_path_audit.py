@@ -319,6 +319,10 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
     manager.client = MagicMock()
     def close_position(**_kwargs):
         state["positions"] = []
+        service.client.get_position_history.return_value = {"data": {"list": [{
+            "symbol":"DOGEUSDT", "positionId":"pilot-pos-1", "closeOrderId":"exit-1",
+            "pnl":"0", "openFee":"-0.01", "closeFee":"-0.01", "totalFunding":"0",
+        }]}}
         return {"status": "CLOSED", "orderId": "exit-1"}
     def cancel_protection(**_kwargs):
         state["stops"] = []
@@ -328,9 +332,9 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
     manager.client.cancel_futures_plan_order.side_effect = cancel_protection
     manager.client.get_futures_protection_orders.return_value = {"stop_orders": [], "take_profit_orders": []}
     manager.client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
-    assert canonical.process_time_exits(now_ms=now + 86_400_001) == [
-        {"symbol": "DOGEUSDT", "status": "POSITION_CLOSED_STOP_CANCELLED"}
-    ]
+    outcomes = canonical.process_time_exits(now_ms=now + 86_400_001)
+    assert outcomes[0]["status"] == "POSITION_CLOSED_STOP_CANCELLED"
+    assert outcomes[0]["close_order_id"] == "exit-1"
     assert ledger.events("CANONICAL_TIME_EXIT")
     assert ledger.events("CANONICAL_TIME_EXIT")[-1]["payload"]["entry_client_oid"].startswith("cgc-fcp-")
     assert not state["positions"] and not state["stops"]

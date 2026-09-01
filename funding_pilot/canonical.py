@@ -97,6 +97,11 @@ class CanonicalFundingPilot:
                 "state": "REJECTED", "reason": "canonical_execution_not_executed",
             }, signal_id=signal.signal_id, symbol=plan.symbol)
             raise FailClosed("canonical execution did not produce a protected position")
+        def terminal_failed(reason: str) -> None:
+            self.runtime.ledger.append("ENTRY_TERMINAL", {
+                "symbol": plan.symbol, "entry_client_oid": entry_oid,
+                "state": "FAILED", "reason": reason,
+            }, signal_id=signal.signal_id, symbol=plan.symbol)
         stored = self.execution_service.store.load(default=[])
         row = next(
             (item for item in reversed(stored)
@@ -104,19 +109,19 @@ class CanonicalFundingPilot:
             None,
         )
         if not row or not row.get("entry_protection_verified"):
+            terminal_failed("protected_position_persistence_missing")
             raise FailClosed("protected position persistence not confirmed")
         stop_ack_id = str((row.get("protection_payload") or {}).get("stop_order_id") or "")
         opening_fee = row.get("confirmed_opening_fee_usdt")
         if opening_fee is None:
+            terminal_failed("opening_fee_unavailable")
             raise FailClosed("pilot opening fee unavailable")
         fee_key = f"opening_fee:{entry_oid}"
-        if self.runtime.ledger.get(fee_key) != "INGESTED":
-            self.runtime.ledger.append("ECONOMICS", {
+        self.runtime.ledger.append_economic_once(fee_key, {
                 "realized_pnl": 0.0, "fees": abs(float(opening_fee)),
                 "funding": 0.0, "other_costs": 0.0,
                 "entry_client_oid": entry_oid,
-            }, signal_id=signal.signal_id, symbol=plan.symbol)
-            self.runtime.ledger.set(fee_key, "INGESTED")
+            }, symbol=plan.symbol)
         self.runtime.ledger.append(
             "STOP_ACK",
             {"symbol": plan.symbol, "entry_client_oid": entry_oid,
@@ -125,7 +130,11 @@ class CanonicalFundingPilot:
              "entry_order_id": row.get("exchange_entry_order_id")},
             signal_id=signal.signal_id, symbol=plan.symbol,
         )
-        truth = self.runtime.exchange.truth()
+        try:
+            truth = self.runtime.exchange.truth()
+        except Exception:
+            terminal_failed("post_execution_reconciliation_exception")
+            raise
         exchange_position = next(
             (item for item in truth.pilot_positions
              if str(item.get("symbol") or "").upper() == plan.symbol), None,
@@ -144,6 +153,7 @@ class CanonicalFundingPilot:
                 self.runtime.exchange.close_reduce_only(exchange_position, "post_ack_stop_mismatch")
                 flattened = self.runtime.exchange.truth()
                 if any(str(item.get("symbol") or "").upper() == plan.symbol for item in flattened.pilot_positions):
+                    terminal_failed("stop_mismatch_flatten_unconfirmed")
                     raise FailClosed("post-ack stop mismatch flatten unconfirmed")
                 for order in flattened.pilot_working_orders:
                     self.runtime.exchange.cancel_working_order(order)
@@ -151,7 +161,9 @@ class CanonicalFundingPilot:
                     self.runtime.exchange.cancel_stop(stop_order)
                 final = self.runtime.exchange.truth()
                 if final.pilot_positions or final.pilot_working_orders or final.pilot_stops:
+                    terminal_failed("stop_mismatch_residual_exposure")
                     raise FailClosed("post-ack stop mismatch residual exposure")
+            terminal_failed("stop_identity_not_reconciled_flattened")
             raise FailClosed("exchange-native stop identity not reconciled after entry; flattened")
         self.runtime.ledger.append(
             "CANONICAL_OPEN",
@@ -218,6 +230,17 @@ class CanonicalFundingPilot:
         return {**state, "scheduled_exits": schedules}
 
     def process_time_exits(self, *, now_ms: int) -> list[dict]:
+        # Finalize earlier closes only after delayed exchange economics appear.
+        for pending in self.runtime.ledger.events("EXIT_PENDING"):
+            payload = pending["payload"]
+            self.runtime.exchange.truth()
+            close_id = str(payload.get("close_order_id") or "")
+            if close_id and self.runtime.ledger.db.execute(
+                "SELECT 1 FROM economic_sources WHERE source_id=?", (f"realized_pnl:{close_id}",)
+            ).fetchone():
+                self.runtime.ledger.append("CANONICAL_TIME_EXIT", {
+                    **payload, "state":"CLOSED",
+                }, symbol=str(pending.get("symbol") or ""))
         before = self.position_manager.store.load(default=[])
         entry_oid_by_symbol = {
             str(row.get("symbol") or "").upper(): str(row.get("exchange_entry_client_oid") or "")
@@ -235,7 +258,12 @@ class CanonicalFundingPilot:
                 raise FailClosed("post-exit pilot working order remains")
             if any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_stops):
                 raise FailClosed("post-exit orphan stop remains")
-            self.runtime.ledger.append("CANONICAL_TIME_EXIT", {
-                **outcome, "entry_client_oid": entry_oid_by_symbol.get(symbol), "state": "CLOSED",
-            }, symbol=symbol)
+            terminal = {**outcome, "entry_client_oid": entry_oid_by_symbol.get(symbol)}
+            close_id = str(outcome.get("close_order_id") or "")
+            if close_id and self.runtime.ledger.db.execute(
+                "SELECT 1 FROM economic_sources WHERE source_id=?", (f"realized_pnl:{close_id}",)
+            ).fetchone():
+                self.runtime.ledger.append("CANONICAL_TIME_EXIT", {**terminal, "state":"CLOSED"}, symbol=symbol)
+            else:
+                self.runtime.ledger.append("EXIT_PENDING", {**terminal, "state":"EXIT_PENDING"}, symbol=symbol)
         return outcomes

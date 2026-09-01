@@ -103,6 +103,8 @@ class PilotLedger:
             CREATE TABLE IF NOT EXISTS events(
               id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp_ms INTEGER NOT NULL,
               kind TEXT NOT NULL, signal_id TEXT, symbol TEXT, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS economic_sources(
+              source_id TEXT PRIMARY KEY, event_id INTEGER NOT NULL);
         """)
         self.db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('starting_equity',?)", (str(starting_equity),))
         self.db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('high_water_mark',?)", (str(starting_equity),))
@@ -115,6 +117,28 @@ class PilotLedger:
             (int(time.time() * 1000), kind, signal_id, symbol.upper(), json.dumps(payload, sort_keys=True)),
         )
         self.db.commit()
+
+    def append_economic_once(self, source_id: str, payload: dict, *, symbol: str = "") -> bool:
+        """Atomically persist an economic item and its dedupe identity."""
+        if not source_id:
+            raise FailClosed("economic source identity missing")
+        body = dict(payload)
+        body["economic_item_id"] = source_id
+        with self.db:
+            existing = self.db.execute(
+                "SELECT 1 FROM economic_sources WHERE source_id=?", (source_id,)
+            ).fetchone()
+            if existing:
+                return False
+            cursor = self.db.execute(
+                "INSERT INTO events(timestamp_ms,kind,signal_id,symbol,payload) VALUES(?,?,?,?,?)",
+                (int(time.time()*1000), "ECONOMICS", "", symbol.upper(), json.dumps(body, sort_keys=True)),
+            )
+            self.db.execute(
+                "INSERT INTO economic_sources(source_id,event_id) VALUES(?,?)",
+                (source_id, int(cursor.lastrowid)),
+            )
+        return True
 
     def events(self, kind: str | None = None) -> list[dict]:
         query, args = "SELECT * FROM events", ()

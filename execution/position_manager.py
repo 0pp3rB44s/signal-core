@@ -189,7 +189,8 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             position["time_exit_close_result"] = close_result
             position["time_exit_stop_cancel_result"] = cancel_result
             changed = True
-            outcomes.append({"symbol": symbol, "status": "POSITION_CLOSED_STOP_CANCELLED"})
+            outcomes.append({"symbol": symbol, "status": "POSITION_CLOSED_STOP_CANCELLED",
+                             "close_order_id": (close_result or {}).get("orderId") or (close_result or {}).get("order_id")})
         if changed:
             self.store.save(positions)
         return outcomes
