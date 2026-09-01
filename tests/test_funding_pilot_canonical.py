@@ -50,6 +50,7 @@ def test_position_manager_restart_loads_persisted_time_exit_then_closes_and_canc
         "symbol": "DOGEUSDT", "direction": "LONG", "strategy": "funding_crowding_continuation_24h",
         "status": "OPEN", "protection_mode": "STOP_ONLY_TIME_EXIT", "scheduled_exit_at_ms": 1000,
         "frozen_spec_sha256": SPEC, "pilot_authorized": True,
+        "exchange_position_id": "p1", "protection_payload": {"stop_order_id": "stop-1"},
     }
     store = MagicMock()
     store.load.return_value = [row]
@@ -57,8 +58,11 @@ def test_position_manager_restart_loads_persisted_time_exit_then_closes_and_canc
     restarted.store = store
     restarted.client = MagicMock()
     restarted.client.close_futures_position_full.return_value = {"status": "CLOSED", "orderId": "close-1"}
-    restarted.client.get_all_positions.return_value = {"data": []}
-    restarted.client.cancel_all_futures_tpsl_orders.return_value = {"cancelled": ["stop-1"]}
+    restarted.client.get_all_positions.side_effect = [
+        {"data": [{"symbol": "DOGEUSDT", "positionId": "p1", "total": "1"}]},
+        {"data": []},
+    ]
+    restarted.client.cancel_futures_plan_order.return_value = {"cancelled": ["stop-1"]}
     restarted.client.get_futures_protection_orders.return_value = {"stop_orders": [], "take_profit_orders": []}
     restarted.client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
 
@@ -66,7 +70,9 @@ def test_position_manager_restart_loads_persisted_time_exit_then_closes_and_canc
 
     assert outcomes == [{"symbol": "DOGEUSDT", "status": "POSITION_CLOSED_STOP_CANCELLED"}]
     restarted.client.close_futures_position_full.assert_called_once_with(symbol="DOGEUSDT", direction="LONG")
-    restarted.client.cancel_all_futures_tpsl_orders.assert_called_once()
+    restarted.client.cancel_futures_plan_order.assert_called_once_with(
+        symbol="DOGEUSDT", order_id="stop-1", plan_type="loss_plan"
+    )
     assert row["status"] == "CLOSED_TIME_EXIT"
     store.save.assert_called_once()
 
@@ -86,14 +92,18 @@ def test_time_exit_refuses_close_status_without_exchange_zero_proof():
         "symbol": "DOGEUSDT", "direction": "LONG", "strategy": "funding_crowding_continuation_24h",
         "status": "OPEN", "protection_mode": "STOP_ONLY_TIME_EXIT", "scheduled_exit_at_ms": 1,
         "frozen_spec_sha256": SPEC, "pilot_authorized": True,
+        "exchange_position_id": "p1", "protection_payload": {"stop_order_id": "stop-1"},
     }
     manager = object.__new__(PositionManager)
     manager.store = MagicMock()
     manager.store.load.return_value = [row]
     manager.client = MagicMock()
     manager.client.close_futures_position_full.return_value = {"status": "CLOSED"}
-    manager.client.get_all_positions.return_value = {"data": [{"symbol": "DOGEUSDT", "total": "0.1"}]}
+    manager.client.get_all_positions.side_effect = [
+        {"data": [{"symbol": "DOGEUSDT", "positionId": "p1", "total": "0.1"}]},
+        {"data": [{"symbol": "DOGEUSDT", "positionId": "p1", "total": "0.1"}]},
+    ]
     assert manager.process_stop_only_time_exits(now_ms=2) == [
         {"symbol": "DOGEUSDT", "status": "POSITION_ZERO_NOT_CONFIRMED"}
     ]
-    manager.client.cancel_all_futures_tpsl_orders.assert_not_called()
+    manager.client.cancel_futures_plan_order.assert_not_called()

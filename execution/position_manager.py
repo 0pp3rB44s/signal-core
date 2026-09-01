@@ -120,6 +120,17 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
                 continue
             symbol = str(position.get("symbol") or "").upper()
             direction = str(position.get("direction") or "").upper()
+            expected_position_id = str(position.get("exchange_position_id") or "")
+            before_payload = self.client.get_all_positions()
+            before_rows = (before_payload or {}).get("data") or []
+            matching = [row for row in before_rows if str(row.get("symbol") or "").upper() == symbol]
+            if (
+                not expected_position_id
+                or len(matching) != 1
+                or str(matching[0].get("positionId") or matching[0].get("posId") or matching[0].get("id") or "") != expected_position_id
+            ):
+                outcomes.append({"symbol": symbol, "status": "OWNERSHIP_AMBIGUOUS_NO_MUTATION"})
+                continue
             close_result = self.client.close_futures_position_full(
                 symbol=symbol,
                 direction=direction,
@@ -137,10 +148,12 @@ class PositionManager(ClosedTradeWriterMixin, PositionReconcilerMixin, TpSlLifec
             if residual_positions:
                 outcomes.append({"symbol": symbol, "status": "POSITION_ZERO_NOT_CONFIRMED"})
                 continue
-            cancel_result = self.client.cancel_all_futures_tpsl_orders(
-                symbol=symbol,
-                hold_side="long" if direction == "LONG" else "short",
-                plan_types=("loss_plan", "pos_loss"),
+            stop_id = str((position.get("protection_payload") or {}).get("stop_order_id") or "")
+            if not stop_id:
+                outcomes.append({"symbol": symbol, "status": "PILOT_STOP_ID_UNKNOWN"})
+                continue
+            cancel_result = self.client.cancel_futures_plan_order(
+                symbol=symbol, order_id=stop_id, plan_type="loss_plan",
             )
             remaining = self.client.get_futures_protection_orders(
                 symbol=symbol,

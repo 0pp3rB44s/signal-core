@@ -57,13 +57,13 @@ class BitgetPilotExchangePort:
 
     def _ingest_closed_economics(self, owned: dict[str, dict]) -> None:
         for symbol, identity in owned.items():
+            expected_position_id = str(identity.get("exchange_position_id") or "")
+            if not expected_position_id:
+                continue
             for row in _rows(self.client.get_position_history(symbol=symbol, limit=100)):
                 row_id = str(row.get("positionId") or row.get("id") or row.get("closeId") or "")
-                expected_position_id = str(identity.get("exchange_position_id") or "")
-                if expected_position_id and row_id and row_id != expected_position_id:
+                if not row_id or row_id != expected_position_id:
                     continue
-                if not expected_position_id and not str(identity.get("entry_client_oid") or "").startswith(OID_PREFIX):
-                    raise FailClosed(f"closed economics ownership ambiguous: {symbol}")
                 dedupe = f"economics:{symbol}:{row_id or row.get('utime') or row.get('cTime')}"
                 if self.ledger.get(dedupe) == "INGESTED":
                     continue
@@ -114,6 +114,12 @@ class BitgetPilotExchangePort:
             oid = str(identity.get("entry_client_oid") or "")
             if not oid.startswith(OID_PREFIX):
                 raise FailClosed(f"owned position identity ambiguous: {symbol}")
+            expected_position_id = str(identity.get("exchange_position_id") or "")
+            actual_position_id = str(row.get("positionId") or row.get("posId") or row.get("id") or "")
+            if not expected_position_id:
+                raise FailClosed(f"SKIP_SIGNAL_SHARED_EXPOSURE_CONFLICT: {symbol}")
+            if not actual_position_id or actual_position_id != expected_position_id:
+                raise FailClosed(f"pilot position exchange identity mismatch: {symbol}")
             size = _number(row, "total", "size", "available")
             entry = _number(row, "openPriceAvg", "averageOpenPrice", "entryPrice")
             unrealized = _number(row, "unrealizedPL", "unrealizedPnl", "upl")

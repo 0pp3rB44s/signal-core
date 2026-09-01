@@ -98,7 +98,9 @@ class CanonicalFundingPilot:
         self.runtime.ledger.append(
             "STOP_ACK",
             {"symbol": plan.symbol, "entry_client_oid": entry_oid,
-             "stop_order_id": stop_ack_id, "scheduled_exit_at_ms": plan.scheduled_exit_at_ms},
+             "stop_order_id": stop_ack_id, "scheduled_exit_at_ms": plan.scheduled_exit_at_ms,
+             "exchange_position_id": row.get("exchange_position_id"),
+             "entry_order_id": row.get("exchange_entry_order_id")},
             signal_id=signal.signal_id, symbol=plan.symbol,
         )
         truth = self.runtime.exchange.truth()
@@ -123,8 +125,10 @@ class CanonicalFundingPilot:
                     raise FailClosed("post-ack stop mismatch flatten unconfirmed")
                 for order in flattened.pilot_working_orders:
                     self.runtime.exchange.cancel_working_order(order)
+                for stop_order in flattened.pilot_stops:
+                    self.runtime.exchange.cancel_stop(stop_order)
                 final = self.runtime.exchange.truth()
-                if final.pilot_positions or final.pilot_working_orders:
+                if final.pilot_positions or final.pilot_working_orders or final.pilot_stops:
                     raise FailClosed("post-ack stop mismatch residual exposure")
             raise FailClosed("exchange-native stop identity not reconciled after entry; flattened")
         self.runtime.ledger.append(

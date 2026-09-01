@@ -5,6 +5,7 @@ from pathlib import Path
 from funding_pilot.bitget_exchange import BitgetPilotExchangePort
 from funding_pilot.canonical import CanonicalFundingPilot
 from funding_pilot.core import PilotConfig, PilotLedger, PilotRuntime, PilotSignal
+from funding_pilot.signals import FrozenFundingCrowdingSignalPoller
 
 
 class CanonicalFundingPilotRunner:
@@ -16,7 +17,9 @@ class CanonicalFundingPilotRunner:
         config = PilotConfig(spec_path=spec_path, state_path=ledger_path, orders_enabled=self.armed_live)
         self.runtime = PilotRuntime(config, self.ledger, self.exchange)
         self.canonical = CanonicalFundingPilot(self.runtime, execution_service, position_manager)
-        self.signal_poller = signal_poller
+        self.signal_poller = signal_poller or FrozenFundingCrowdingSignalPoller(
+            client=execution_service.client, ledger=self.ledger, spec_path=spec_path,
+        )
 
     def startup(self):
         recovered = self.canonical.recover()

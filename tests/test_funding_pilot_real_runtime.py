@@ -43,7 +43,9 @@ def test_real_adapter_read_truth_ownership_and_economics(tmp_path):
     client.plans = [{"symbol":"DOGEUSDT", "orderId":"stop-1", "triggerPrice":"9"},
                     {"symbol":"BTCUSDT", "orderId":"adaptive-stop", "clientOid":"adaptivetrend-stop"}]
     ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
-                                      "stop_order_id":"stop-1", "scheduled_exit_at_ms":999}, symbol="DOGEUSDT")
+                                      "stop_order_id":"stop-1", "scheduled_exit_at_ms":999,
+                                      "exchange_position_id":"p1"}, symbol="DOGEUSDT")
+    client.positions[0]["positionId"] = "p1"
     client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "pnl":"1.5", "openFee":"-0.1",
                        "closeFee":"-0.1", "totalFunding":"0.05", "utime":"1"}]
     truth = BitgetPilotExchangePort(client, ledger).truth()
@@ -104,7 +106,7 @@ def test_real_adapter_path_flattens_when_acknowledged_stop_is_missing(tmp_path):
     execution.entry_submitter.client_oid_for.return_value = "cgc-fcp-entry"
     def execute(_plans):
         client.positions = [{"symbol":"DOGEUSDT", "total":"0.02744", "openPriceAvg":"100",
-                             "markPrice":"100", "unrealizedPL":"0"}]
+                             "markPrice":"100", "unrealizedPL":"0", "positionId":"p1"}]
         report = MagicMock(); report.status = "EXECUTED"
         return [report]
     execution.execute.side_effect = execute
@@ -121,7 +123,7 @@ def test_real_adapter_path_flattens_when_acknowledged_stop_is_missing(tmp_path):
         plan_id = execution.execute.call_args.args[0][0].plan_id
         return [{"plan_id":plan_id, "status":"OPEN", "entry_protection_verified":True,
                  "protection_payload":{"stop_order_id":"missing-stop"},
-                 "exchange_entry_client_oid":"cgc-fcp-entry"}]
+                 "exchange_entry_client_oid":"cgc-fcp-entry", "exchange_position_id":"p1"}]
     execution.store.load.side_effect = load
     with pytest.raises(FailClosed, match="flattened"):
         canonical.process_signal(signal)
@@ -132,9 +134,10 @@ def test_real_adapter_path_flattens_when_acknowledged_stop_is_missing(tmp_path):
 def test_real_adapter_path_kill_switch_cancels_flattens_verifies_and_latches(tmp_path):
     client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
     ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
-                                      "stop_order_id":"stop-1", "scheduled_exit_at_ms":999}, symbol="DOGEUSDT")
+                                      "stop_order_id":"stop-1", "scheduled_exit_at_ms":999,
+                                      "exchange_position_id":"p1"}, symbol="DOGEUSDT")
     client.positions = [{"symbol":"DOGEUSDT", "total":"0.02744", "openPriceAvg":"100",
-                         "markPrice":"100", "unrealizedPL":"-1.4"}]
+                         "markPrice":"100", "unrealizedPL":"-1.4", "positionId":"p1"}]
     client.orders = [{"symbol":"DOGEUSDT", "orderId":"working-1", "clientOid":"cgc-fcp-exit"}]
     client.plans = [{"symbol":"DOGEUSDT", "orderId":"stop-1", "triggerPrice":"90"}]
     adapter = BitgetPilotExchangePort(client, ledger, armed_live=True)
@@ -145,3 +148,25 @@ def test_real_adapter_path_kill_switch_cancels_flattens_verifies_and_latches(tmp
     assert adapter.truth().pilot_working_orders == ()
     assert adapter.truth().pilot_stops == ()
     assert {kind for kind, _ in client.write_calls} == {"cancel_order", "close", "cancel_stop"}
+
+
+def test_same_symbol_unproven_position_conflict_fails_without_mutation(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("ENTRY_INTENT", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+                                    "scheduled_exit_at_ms":999}, symbol="DOGEUSDT")
+    client.positions = [{"symbol":"DOGEUSDT", "positionId":"adaptive-pos", "total":"1",
+                         "openPriceAvg":"100", "markPrice":"100", "unrealizedPL":"0"}]
+    adapter = BitgetPilotExchangePort(client, ledger, armed_live=True)
+    with pytest.raises(FailClosed, match="SKIP_SIGNAL_SHARED_EXPOSURE_CONFLICT"):
+        adapter.truth()
+    assert client.write_calls == []
+
+
+def test_foreign_same_symbol_history_is_not_ingested_without_exact_position_id(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("ENTRY_INTENT", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+                                    "scheduled_exit_at_ms":999}, symbol="DOGEUSDT")
+    client.history = [{"symbol":"DOGEUSDT", "positionId":"adaptive-closed", "pnl":"99",
+                       "openFee":"-1", "closeFee":"-1", "totalFunding":"1"}]
+    BitgetPilotExchangePort(client, ledger).truth()
+    assert ledger.events("ECONOMICS") == []

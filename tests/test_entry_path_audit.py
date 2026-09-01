@@ -283,7 +283,8 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
     state = {"positions": [], "stops": []}
     def submit(**_kwargs):
         state["positions"] = [{"symbol": "DOGEUSDT", "holdSide": "long", "total": "0.02744",
-                               "openPriceAvg": "100", "markPrice": "100", "unrealizedPL": "0"}]
+                               "openPriceAvg": "100", "markPrice": "100", "unrealizedPL": "0",
+                               "positionId": "pilot-pos-1"}]
         return {"data": {"orderId": "entry-1"}}
     def positions():
         return {"data": list(state["positions"])}
@@ -323,7 +324,7 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
         return {"cancelled": ["stop-1"]}
     manager.client.close_futures_position_full.side_effect = close_position
     manager.client.get_all_positions.side_effect = positions
-    manager.client.cancel_all_futures_tpsl_orders.side_effect = cancel_protection
+    manager.client.cancel_futures_plan_order.side_effect = cancel_protection
     manager.client.get_futures_protection_orders.return_value = {"stop_orders": [], "take_profit_orders": []}
     manager.client.get_pending_orders.return_value = {"data": {"entrustedList": []}}
     assert canonical.process_time_exits(now_ms=now + 86_400_001) == [
