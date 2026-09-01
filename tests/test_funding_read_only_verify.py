@@ -1,0 +1,76 @@
+import json
+
+import pytest
+from pydantic import ValidationError
+
+from app.config import Settings
+from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS
+from funding_pilot.read_only_verify import (ReadOnlyBitgetClient, ReadOnlyBitgetSettings,
+    ReadOnlyTransportViolation, main, run)
+
+
+SECRETS={"BITGET_API_KEY":"key-never-print","BITGET_API_SECRET":"secret-never-print",
+         "BITGET_API_PASSPHRASE":"pass-never-print"}
+
+
+def _settings(monkeypatch):
+    for key,value in SECRETS.items(): monkeypatch.setenv(key,value)
+    monkeypatch.setenv("APP_ENV","production"); monkeypatch.setenv("APP_MODE","live")
+    monkeypatch.setenv("ENABLED_STRATEGIES","invalid-production-strategy")
+    return ReadOnlyBitgetSettings()
+
+
+def test_read_only_loader_ignores_live_strategy_admission(monkeypatch):
+    settings=_settings(monkeypatch)
+    assert settings.bitget_api_key.get_secret_value()==SECRETS["BITGET_API_KEY"]
+    approved=",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS)
+    live={"APP_ENV":"production","APP_MODE":"live","EXECUTION_ENABLED":True,
+          "EXECUTION_MODE":"LIVE","FORWARD_PAPER_ONLY":False,"MAX_OPEN_POSITIONS":2,
+          "EXECUTION_MAX_PER_CYCLE":2,"MAX_SYMBOLS":len(OWNER_APPROVED_PRODUCTION_SYMBOLS),"ALLOW_AUTO_WATCHLIST_REFRESH":False,
+          "EXECUTION_REQUIRE_CONFIRMATION":True,"EXECUTION_MARGIN_MODE":"isolated",
+          "PRODUCTION_SYMBOL_ALLOWLIST":approved,"STRATEGY_ISOLATION_ENABLED":True,
+          "ENABLED_STRATEGIES":"invalid-production-strategy"}
+    with pytest.raises(ValidationError,match="microflow_scalper_v1"):
+        Settings(**live)
+
+
+def test_missing_credential_fails_closed(monkeypatch):
+    for key in SECRETS: monkeypatch.delenv(key,raising=False)
+    with pytest.raises(ValidationError): ReadOnlyBitgetSettings()
+
+
+def test_transport_rejects_every_mutating_verb_without_network(monkeypatch):
+    client=object.__new__(ReadOnlyBitgetClient)
+    for method in ("POST","PUT","PATCH","DELETE"):
+        with pytest.raises(ReadOnlyTransportViolation): client._request(method,"/mutation")
+    with pytest.raises(ReadOnlyTransportViolation):
+        client._request("GET","/api/v2/mix/order/place-order")
+    with pytest.raises(ReadOnlyTransportViolation): client._assert_order_transport_allowed()
+
+
+class FakeReads:
+    def __init__(self,settings): self.settings=settings
+    def get_accounts(self): return {"data":[{"marginCoin":"USDT"}]}
+    def get_all_positions(self): return {"data":[]}
+    def get_pending_orders(self,**_): return {"data":{"entrustedList":[]}}
+    def get_tpsl_orders(self,**_): return {"data":{"entrustedList":[]}}
+    def get_order_history(self,**_): return {"data":{"orderList":[]}}
+    def get_trade_fee_rate(self,_): return {"data":[{"makerFeeRate":"x","takerFeeRate":"x"}]}
+    def _request(self,method,*_,**__):
+        assert method=="GET"; return {"data":{"list":[]}}
+
+
+def test_safe_output_contains_no_secret_values(monkeypatch,capsys):
+    settings=_settings(monkeypatch)
+    code,result=run(settings,client_factory=lambda settings:FakeReads(settings))
+    assert code==0 and result["BITGET_AUTH_READ_VERIFIED"] is True
+    rendered=json.dumps(result)
+    assert not any(value in rendered for value in SECRETS.values())
+
+
+def test_main_missing_credentials_does_not_print_secrets(monkeypatch,capsys):
+    for key in SECRETS: monkeypatch.delenv(key,raising=False)
+    assert main()==2
+    output=capsys.readouterr().out
+    assert "BITGET_AUTH_READ_VERIFIED" in output
+    assert not any(value in output for value in SECRETS.values())
