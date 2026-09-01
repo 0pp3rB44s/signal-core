@@ -261,6 +261,19 @@ def test_post_execution_uncertainty_retains_ownership_until_safe_closed(tmp_path
     assert adapter._owned() == {}
 
 
+def test_uncertain_lifecycle_zero_proof_reconciler_is_restart_safe(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path/"pilot.sqlite")
+    oid="cgc-fcp-uncertain"
+    ledger.append("ENTRY_INTENT", {"symbol":"DOGEUSDT","entry_client_oid":oid}, symbol="DOGEUSDT")
+    ledger.append("ENTRY_TERMINAL", {"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "state":"HALTED_UNCERTAIN"}, symbol="DOGEUSDT")
+    adapter=BitgetPilotExchangePort(client,ledger)
+    canonical=CanonicalFundingPilot(PilotRuntime(PilotConfig(SPEC,ledger.path),ledger,adapter),MagicMock(),MagicMock())
+    assert canonical.reconcile_uncertain_lifecycles() == [oid]
+    assert adapter._owned() == {}
+    assert canonical.reconcile_uncertain_lifecycles() == []
+
+
 def test_two_partial_closes_have_distinct_exactly_once_identities(tmp_path):
     client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
     ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
@@ -313,6 +326,26 @@ def test_delayed_close_economics_survive_restart_and_finalize_once(tmp_path):
     restarted.process_time_exits(now_ms=4)
     assert len(restarted_ledger.events("CANONICAL_TIME_EXIT")) == 1
     assert restarted_ledger.economics(restarted.runtime.exchange.truth())["realized_pnl"] == pytest.approx(1.25)
+
+
+def test_prior_partial_close_cannot_finalize_delayed_final_exit(tmp_path):
+    path=tmp_path/"pilot.sqlite"; client=TransportHarness(); ledger=PilotLedger(path)
+    oid="cgc-fcp-entry"; pid="p1"
+    ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "exchange_position_id":pid}, symbol="DOGEUSDT")
+    ledger.append_economic_once("realized_pnl:partial-A", {"realized_pnl":1,"fees":0,"funding":0,
+        "other_costs":0,"exchange_position_id":pid}, symbol="DOGEUSDT")
+    checkpoint=max(row["id"] for row in ledger.events("ECONOMICS"))
+    ledger.append("EXIT_PENDING", {"symbol":"DOGEUSDT","entry_client_oid":oid,
+        "exchange_position_id":pid,"economics_checkpoint_event_id":checkpoint}, symbol="DOGEUSDT")
+    manager=MagicMock(); manager.store.load.return_value=[]; manager.process_stop_only_time_exits.return_value=[]
+    canonical=CanonicalFundingPilot(PilotRuntime(PilotConfig(SPEC,path),ledger,
+        BitgetPilotExchangePort(client,ledger)),MagicMock(),manager)
+    canonical.process_time_exits(now_ms=1)
+    assert ledger.events("CANONICAL_TIME_EXIT") == []
+    client.history=[{"positionId":pid,"closeOrderId":"final-B","pnl":"2","openFee":"0","closeFee":"-.2"}]
+    canonical.process_time_exits(now_ms=2)
+    assert len(ledger.events("CANONICAL_TIME_EXIT")) == 1
 
 
 def test_authoritative_nav_drives_dynamic_single_and_gross_caps(tmp_path):

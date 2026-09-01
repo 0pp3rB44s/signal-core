@@ -39,6 +39,39 @@ class RecordedSnapshotClient:
                         for i,rate in enumerate(rates)]}
 
 
+def research_full_pipeline(snapshot, now):
+    """Independent pandas replay of the frozen research selection pipeline."""
+    rows=[]; series={}
+    for symbol in snapshot.symbols:
+        candles=sorted((int(r[0]),float(r[1]),float(r[4])) for r in snapshot.get_candles(symbol=symbol)["data"])
+        candles=[r for r in candles if r[0]+3_600_000<=now]
+        closes=pd.Series([r[2] for r in candles]); returns=closes.pct_change().dropna().tail(72)
+        rows.append({"symbol":symbol,"vol":float((returns.pow(2).mean()-returns.mean()**2)**.5),
+                     "turnover":float(snapshot.turnover[symbol]),"spread":snapshot.spreads[symbol]})
+        series[symbol]=candles
+    frame=pd.DataFrame(rows)
+    for column in ("vol","turnover","spread"): frame[column+"_pct"]=frame[column].rank(pct=True)
+    eligible=frame[(frame.vol_pct>=.70)&(frame.turnover_pct>=.60)&(frame.spread_pct<=.50)].symbol.tolist()
+    candidates=[]
+    for symbol in eligible:
+        rates=[(now-(89-i)*28_800_000,(i+1)/1_000_000 if symbol=="DOGEUSDT" else 0.0) for i in range(90)]
+        opens=[]
+        for ts,_ in rates: opens.append([r[1] for r in series[symbol] if r[0]<=ts][-1])
+        f=pd.DataFrame({"ts":[x[0] for x in rates],"funding":[x[1] for x in rates],"entry":opens})
+        f["pct"]=f.funding.rolling(90,min_periods=30).rank(pct=True)
+        f["ret24"]=f.entry/f.entry.shift(3)-1
+        f["vol24"]=f.ret24.rolling(30,min_periods=20).std().shift(1)
+        f["extension"]=f.ret24/f.vol24
+        last=f.iloc[-1]
+        if (last.pct>=.95 and last.extension>=1.5) or (last.pct<=.05 and last.extension<=-1.5):
+            candidates.append((abs(last.extension),symbol,"LONG" if last.extension>0 else "SHORT",int(last.ts)))
+    candidates.sort(key=lambda row:(-row[0],row[1]))
+    return {"point_in_time_universe":sorted(frame.symbol),"turnover_input":"ticker.usdtVolume",
+            "turnover_values":dict(zip(frame.symbol,frame.turnover)),"universe":sorted(eligible),
+            "ranking":[x[1] for x in candidates],"stale":[],
+            "selected":candidates[0][1],"selected_side":candidates[0][2],"signal_timestamp":candidates[0][3]}
+
+
 @pytest.mark.parametrize("direction", [1, -1])
 def test_pure_production_formula_matches_frozen_pandas_research_formula(direction):
     n = 90
@@ -76,14 +109,22 @@ def test_recorded_snapshot_full_poller_golden_parity(tmp_path, monkeypatch):
     poller=FrozenFundingCrowdingSignalPoller(client=RecordedSnapshotClient(now), ledger=ledger, spec_path=spec)
     signals=poller()
     assert len(signals) == 1
-    assert poller.last_audit == {
+    recorded_golden = {
         "point_in_time_universe": ["ADAUSDT","DOGEUSDT","ETHUSDT","SOLUSDT","XRPUSDT"],
         "turnover_input": "ticker.usdtVolume",
         "turnover_values": {"ADAUSDT":100.0,"DOGEUSDT":500.0,"ETHUSDT":400.0,"SOLUSDT":300.0,"XRPUSDT":200.0},
         "universe": ["DOGEUSDT","ETHUSDT"], "ranking": ["DOGEUSDT"], "stale": [],
         "selected": "DOGEUSDT", "selected_side": "LONG", "signal_timestamp": now,
     }
+    assert research_full_pipeline(RecordedSnapshotClient(now),now) == recorded_golden
+    assert poller.last_audit == research_full_pipeline(RecordedSnapshotClient(now),now)
     assert (signals[0].symbol, signals[0].side, signals[0].timestamp_ms) == ("DOGEUSDT","LONG",now)
     # The exact same recorded event is stale after its durable checkpoint.
     assert poller() == []
     assert poller.last_audit["stale"] == ["DOGEUSDT"]
+    # Independently exercise the wall-clock stale boundary, not only SEEN dedupe.
+    stale_ledger=PilotLedger(tmp_path/"stale.sqlite")
+    stale_poller=FrozenFundingCrowdingSignalPoller(client=RecordedSnapshotClient(now),ledger=stale_ledger,spec_path=spec)
+    monkeypatch.setattr("funding_pilot.signals.time.time",lambda:(now+300_001)/1000)
+    assert stale_poller() == []
+    assert stale_poller.last_audit["stale"] == ["DOGEUSDT","ETHUSDT"]

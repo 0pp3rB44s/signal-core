@@ -73,6 +73,7 @@ class CanonicalFundingPilot:
         )
 
     def process_signal(self, signal: PilotSignal):
+        self.reconcile_uncertain_lifecycles()
         plan = self.build_plan(signal)
         entry_oid = self.execution_service.entry_submitter.client_oid_for(plan)
         if not entry_oid.startswith("cgc-fcp-"):
@@ -83,13 +84,18 @@ class CanonicalFundingPilot:
              "scheduled_exit_at_ms": plan.scheduled_exit_at_ms},
             signal_id=signal.signal_id, symbol=plan.symbol,
         )
+        def terminal_failed(reason: str) -> None:
+            self.runtime.ledger.append("ENTRY_TERMINAL", {
+                "symbol": plan.symbol, "entry_client_oid": entry_oid,
+                "state": "HALTED_UNCERTAIN", "reason": reason,
+            }, signal_id=signal.signal_id, symbol=plan.symbol)
+            self.runtime.ledger.set("status", "HALTED")
         try:
             reports = self.execution_service.execute([plan])
         except Exception as exc:
-            self.runtime.ledger.append("ENTRY_TERMINAL", {
-                "symbol": plan.symbol, "entry_client_oid": entry_oid,
-                "state": "FAILED", "reason": type(exc).__name__,
-            }, signal_id=signal.signal_id, symbol=plan.symbol)
+            # ExecutionService exceptions may occur after an exchange fill. An
+            # ambiguous exception therefore retains ownership until zero proof.
+            terminal_failed(f"execution_exception:{type(exc).__name__}")
             raise
         if not reports or reports[0].status != "EXECUTED":
             self.runtime.ledger.append("ENTRY_TERMINAL", {
@@ -97,12 +103,6 @@ class CanonicalFundingPilot:
                 "state": "REJECTED", "reason": "canonical_execution_not_executed",
             }, signal_id=signal.signal_id, symbol=plan.symbol)
             raise FailClosed("canonical execution did not produce a protected position")
-        def terminal_failed(reason: str) -> None:
-            self.runtime.ledger.append("ENTRY_TERMINAL", {
-                "symbol": plan.symbol, "entry_client_oid": entry_oid,
-                "state": "HALTED_UNCERTAIN", "reason": reason,
-            }, signal_id=signal.signal_id, symbol=plan.symbol)
-            self.runtime.ledger.set("status", "HALTED")
         def post_execution(label: str, operation):
             try:
                 return operation()
@@ -200,8 +200,37 @@ class CanonicalFundingPilot:
         ))
         return reports[0]
 
+    def reconcile_uncertain_lifecycles(self) -> list[str]:
+        """Close uncertain ownership only after authoritative per-symbol zero proof."""
+        uncertain = {}
+        for row in self.runtime.ledger.events("ENTRY_TERMINAL"):
+            payload = row["payload"]
+            oid = str(payload.get("entry_client_oid") or "")
+            state = str(payload.get("state") or "").upper()
+            if state == "HALTED_UNCERTAIN":
+                uncertain[oid] = str(row.get("symbol") or "").upper()
+            elif state in {"SAFE_CLOSED", "CLOSED", "REJECTED", "CANCELLED"}:
+                uncertain.pop(oid, None)
+        if not uncertain:
+            return []
+        truth = self.runtime.exchange.truth()
+        closed = []
+        for oid, symbol in uncertain.items():
+            live = any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_positions)
+            orders = any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_working_orders)
+            stops = any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_stops)
+            if live or orders or stops:
+                continue
+            self.runtime.ledger.append("ENTRY_TERMINAL", {
+                "symbol": symbol, "entry_client_oid": oid, "state": "SAFE_CLOSED",
+                "reason": "authoritative_zero_reconciliation",
+            }, symbol=symbol)
+            closed.append(oid)
+        return closed
+
     def recover(self) -> dict:
         """Reconcile restart truth and restore scheduled exits from the ledger."""
+        self.reconcile_uncertain_lifecycles()
         state = self.authoritative_state()
         opens = self.runtime.ledger.events("CANONICAL_OPEN")
         truth = self.runtime.exchange.truth()
@@ -260,6 +289,8 @@ class CanonicalFundingPilot:
             self.runtime.exchange.truth()
             position_id = str(payload.get("exchange_position_id") or "")
             reconciled = any(
+                int(row["id"]) > int(payload.get("economics_checkpoint_event_id") or 0)
+                and
                 str(row["payload"].get("exchange_position_id") or "") == position_id
                 and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
                 for row in self.runtime.ledger.events("ECONOMICS")
@@ -269,6 +300,9 @@ class CanonicalFundingPilot:
                     **payload, "state":"CLOSED",
                 }, symbol=str(pending.get("symbol") or ""))
         before = self.position_manager.store.load(default=[])
+        economics_checkpoint_event_id = max(
+            (int(row["id"]) for row in self.runtime.ledger.events("ECONOMICS")), default=0
+        )
         entry_oid_by_symbol = {
             str(row.get("symbol") or "").upper(): str(row.get("exchange_entry_client_oid") or "")
             for row in before if row.get("protection_mode") == "STOP_ONLY_TIME_EXIT" and row.get("status") == "OPEN"
@@ -290,9 +324,12 @@ class CanonicalFundingPilot:
             if any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_stops):
                 raise FailClosed("post-exit orphan stop remains")
             terminal = {**outcome, "entry_client_oid": entry_oid_by_symbol.get(symbol),
-                        "exchange_position_id": position_id_by_symbol.get(symbol)}
+                        "exchange_position_id": position_id_by_symbol.get(symbol),
+                        "economics_checkpoint_event_id": economics_checkpoint_event_id}
             position_id = position_id_by_symbol.get(symbol) or ""
             reconciled = any(
+                int(row["id"]) > economics_checkpoint_event_id
+                and
                 str(row["payload"].get("exchange_position_id") or "") == position_id
                 and str(row["payload"].get("economic_item_id") or "").startswith("realized_pnl:")
                 for row in self.runtime.ledger.events("ECONOMICS")
