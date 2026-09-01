@@ -56,19 +56,16 @@ class FrozenFundingCrowdingSignalPoller:
             completed = [r for r in candles if r[0] + 3_600_000 <= now]
             if len(completed) < 100: continue
             closes = [r[2] for r in completed]
-            returns = [closes[i]/closes[i-1]-1 for i in range(1,len(closes)) if closes[i-1]>0]
-            book = (self.client.get_orderbook(symbol=symbol, product_type="USDT-FUTURES", limit=50) or {}).get("data") or {}
-            bids, asks = book.get("bids") or [], book.get("asks") or []
-            if not bids or not asks: continue
-            bid, ask = float(bids[0][0]), float(asks[0][0]); mid=(bid+ask)/2
-            depth = sum(float(x[0])*float(x[1]) for x in bids+asks)
-            if depth < 1000 or mid <= 0: continue
+            returns = [math.log(closes[i]/closes[i-1]) for i in range(1,len(closes)) if closes[i-1]>0 and closes[i]>0]
             ticker_payload = self.client._request("GET", "/api/v2/mix/market/ticker",
                 params={"symbol":symbol, "productType":"USDT-FUTURES"}, private=False)
             ticker_data = (ticker_payload or {}).get("data") or []
             ticker = ticker_data[0] if isinstance(ticker_data, list) and ticker_data else ticker_data
             turnover24 = float((ticker or {}).get("usdtVolume") or 0)
-            features.append((symbol, statistics.pstdev(returns[-72:]), turnover24, (ask-bid)/mid))
+            bid, ask = float((ticker or {}).get("bidPr") or 0), float((ticker or {}).get("askPr") or 0)
+            spread = (ask-bid)/((ask+bid)/2) if bid>0 and ask>=bid else math.inf
+            if len(returns) < 168: continue
+            features.append((symbol, statistics.stdev(returns[-168:])*math.sqrt(24), turnover24, spread))
             series[symbol] = completed
         if not features: return []
         vols=[x[1] for x in features]; turns=[x[2] for x in features]; spreads=[x[3] for x in features]

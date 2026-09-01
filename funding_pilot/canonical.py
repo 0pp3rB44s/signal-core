@@ -216,11 +216,28 @@ class CanonicalFundingPilot:
         truth = self.runtime.exchange.truth()
         closed = []
         for oid, symbol in uncertain.items():
-            live = any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_positions)
+            positions = [row for row in truth.pilot_positions
+                         if str(row.get("symbol") or "").upper() == symbol]
+            live = bool(positions)
             orders = any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_working_orders)
             stops = any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_stops)
             if live or orders or stops:
-                continue
+                if not self.runtime.config.orders_enabled:
+                    continue
+                for order in [row for row in truth.pilot_working_orders
+                              if str(row.get("symbol") or "").upper() == symbol]:
+                    self.runtime.exchange.cancel_working_order(order)
+                for position in positions:
+                    self.runtime.exchange.close_reduce_only(position, "uncertain_lifecycle_recovery")
+                after = self.runtime.exchange.truth()
+                for stop in [row for row in after.pilot_stops
+                             if str(row.get("symbol") or "").upper() == symbol]:
+                    self.runtime.exchange.cancel_stop(stop)
+                final = self.runtime.exchange.truth()
+                if (any(str(row.get("symbol") or "").upper() == symbol for row in final.pilot_positions)
+                    or any(str(row.get("symbol") or "").upper() == symbol for row in final.pilot_working_orders)
+                    or any(str(row.get("symbol") or "").upper() == symbol for row in final.pilot_stops)):
+                    continue
             self.runtime.ledger.append("ENTRY_TERMINAL", {
                 "symbol": symbol, "entry_client_oid": oid, "state": "SAFE_CLOSED",
                 "reason": "authoritative_zero_reconciliation",

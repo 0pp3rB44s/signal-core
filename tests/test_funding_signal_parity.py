@@ -32,7 +32,9 @@ class RecordedSnapshotClient:
     def _request(self, _method, path, *, params, **_):
         symbol=params["symbol"]
         if path.endswith("ticker"):
-            return {"data":[{"usdtVolume":str(self.turnover[symbol])}]}
+            spread=self.spreads[symbol]
+            return {"data":[{"usdtVolume":str(self.turnover[symbol]),
+                             "bidPr":str(100*(1-spread/2)),"askPr":str(100*(1+spread/2))}]}
         rates=[0.0]*90
         if symbol == "DOGEUSDT": rates=[(i+1)/1_000_000 for i in range(90)]
         return {"data":[{"fundingTime":str(self.now-(89-i)*28_800_000),"fundingRate":str(rate)}
@@ -45,8 +47,8 @@ def research_full_pipeline(snapshot, now):
     for symbol in snapshot.symbols:
         candles=sorted((int(r[0]),float(r[1]),float(r[4])) for r in snapshot.get_candles(symbol=symbol)["data"])
         candles=[r for r in candles if r[0]+3_600_000<=now]
-        closes=pd.Series([r[2] for r in candles]); returns=closes.pct_change().dropna().tail(72)
-        rows.append({"symbol":symbol,"vol":float((returns.pow(2).mean()-returns.mean()**2)**.5),
+        closes=pd.Series([r[2] for r in candles]); returns=(closes/closes.shift(1)).apply(math.log).dropna().tail(168)
+        rows.append({"symbol":symbol,"vol":float(returns.std()*math.sqrt(24)),
                      "turnover":float(snapshot.turnover[symbol]),"spread":snapshot.spreads[symbol]})
         series[symbol]=candles
     frame=pd.DataFrame(rows)
