@@ -17,7 +17,7 @@ SPEC = Path(__file__).resolve().parents[1] / "research/validation/FROZEN_SPECS.j
 class TransportHarness:
     """Mocked transport below the real Bitget adapter, never the adapter itself."""
     def __init__(self):
-        self.positions, self.orders, self.plans, self.history = [], [], [], []
+        self.positions, self.orders, self.plans, self.history, self.bills = [], [], [], [], []
         self.write_calls = []
     def get_accounts(self):
         return {"data": [{"marginCoin": "USDT", "accountEquity": "100", "available": "80"}]}
@@ -25,6 +25,7 @@ class TransportHarness:
     def get_pending_orders(self, **_): return {"data": {"entrustedList": list(self.orders)}}
     def get_tpsl_orders(self, **_): return {"data": {"entrustedList": list(self.plans)}}
     def get_position_history(self, **_): return {"data": {"list": list(self.history)}}
+    def _request(self, *_args, **_kwargs): return {"data": {"list": list(self.bills)}}
     def _min_notional(self, _symbol): return 1.0
     def get_orderbook(self, **_): return {"data": {"bids": [["99", "1"]], "asks": [["101", "1"]]}}
     def verify_active_stop_loss(self, **_): return {"verified": bool(self.plans)}
@@ -55,7 +56,7 @@ def test_real_adapter_read_truth_ownership_and_economics(tmp_path):
     economics = ledger.economics(truth)
     assert economics["realized_pnl"] == pytest.approx(1.5)
     assert economics["fees"] == pytest.approx(0.2)
-    assert economics["funding"] == pytest.approx(0.05)
+    assert economics["funding"] == pytest.approx(-0.05)
 
 
 def test_real_adapter_is_hard_disarmed_and_foreign_state_is_never_mutated(tmp_path):
@@ -123,7 +124,8 @@ def test_real_adapter_path_flattens_when_acknowledged_stop_is_missing(tmp_path):
         plan_id = execution.execute.call_args.args[0][0].plan_id
         return [{"plan_id":plan_id, "status":"OPEN", "entry_protection_verified":True,
                  "protection_payload":{"stop_order_id":"missing-stop"},
-                 "exchange_entry_client_oid":"cgc-fcp-entry", "exchange_position_id":"p1"}]
+                 "exchange_entry_client_oid":"cgc-fcp-entry", "exchange_position_id":"p1",
+                 "confirmed_opening_fee_usdt":0.01}]
     execution.store.load.side_effect = load
     with pytest.raises(FailClosed, match="flattened"):
         canonical.process_signal(signal)
@@ -170,3 +172,43 @@ def test_foreign_same_symbol_history_is_not_ingested_without_exact_position_id(t
                        "openFee":"-1", "closeFee":"-1", "totalFunding":"1"}]
     BitgetPilotExchangePort(client, ledger).truth()
     assert ledger.events("ECONOMICS") == []
+
+
+@pytest.mark.parametrize("kind", ["entry", "reduce_only", "stop", "plan", "multiple"])
+def test_every_foreign_same_symbol_order_kind_is_a_no_mutation_conflict(tmp_path, kind):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("ENTRY_INTENT", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+                                    "scheduled_exit_at_ms":999}, symbol="DOGEUSDT")
+    regular = {"symbol":"DOGEUSDT", "orderId":"foreign-1", "clientOid":"adaptive-1"}
+    plan = {"symbol":"DOGEUSDT", "orderId":"foreign-plan", "clientOid":"adaptive-plan"}
+    if kind == "reduce_only": regular["reduceOnly"] = "YES"
+    if kind in {"entry", "reduce_only"}: client.orders = [regular]
+    elif kind in {"stop", "plan"}: client.plans = [plan]
+    else: client.orders, client.plans = [regular, {**regular, "orderId":"foreign-2"}], [plan]
+    with pytest.raises(FailClosed, match="SKIP_SIGNAL_SHARED_EXPOSURE_CONFLICT"):
+        BitgetPilotExchangePort(client, ledger, armed_live=True).truth()
+    assert client.write_calls == []
+
+
+def test_newer_stop_ack_identity_cannot_be_overwritten_by_older_open_event(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+                                      "stop_order_id":"old", "exchange_position_id":"p1"}, symbol="DOGEUSDT")
+    ledger.append("STOP_ACK", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+                               "stop_order_id":"new", "exchange_position_id":"p1"}, symbol="DOGEUSDT")
+    assert BitgetPilotExchangePort(client, ledger)._owned()["DOGEUSDT"]["stop_order_id"] == "new"
+
+
+def test_open_position_accrued_funding_updates_current_nav_before_close(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+        "stop_order_id":"stop-1", "exchange_position_id":"p1"}, symbol="DOGEUSDT")
+    client.positions = [{"symbol":"DOGEUSDT", "positionId":"p1", "total":"0.02744",
+        "openPriceAvg":"100", "markPrice":"100", "unrealizedPL":"0"}]
+    client.plans = [{"symbol":"DOGEUSDT", "orderId":"stop-1"}]
+    client.bills = [{"id":"bill-1", "positionId":"p1", "amount":"-0.10"}]
+    adapter = BitgetPilotExchangePort(client, ledger)
+    truth = adapter.truth()
+    economics = ledger.economics(truth)
+    assert economics["funding"] == pytest.approx(0.10)
+    assert economics["nav"] == pytest.approx(27.34)

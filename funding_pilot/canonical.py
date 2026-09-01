@@ -95,6 +95,17 @@ class CanonicalFundingPilot:
         if not row or not row.get("entry_protection_verified"):
             raise FailClosed("protected position persistence not confirmed")
         stop_ack_id = str((row.get("protection_payload") or {}).get("stop_order_id") or "")
+        opening_fee = row.get("confirmed_opening_fee_usdt")
+        if opening_fee is None:
+            raise FailClosed("pilot opening fee unavailable")
+        fee_key = f"opening_fee:{entry_oid}"
+        if self.runtime.ledger.get(fee_key) != "INGESTED":
+            self.runtime.ledger.append("ECONOMICS", {
+                "realized_pnl": 0.0, "fees": abs(float(opening_fee)),
+                "funding": 0.0, "other_costs": 0.0,
+                "entry_client_oid": entry_oid,
+            }, signal_id=signal.signal_id, symbol=plan.symbol)
+            self.runtime.ledger.set(fee_key, "INGESTED")
         self.runtime.ledger.append(
             "STOP_ACK",
             {"symbol": plan.symbol, "entry_client_oid": entry_oid,

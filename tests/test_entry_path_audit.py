@@ -314,6 +314,7 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
     report = canonical.process_signal(PilotSignal("sig-integrated", now, "DOGEUSDT", "LONG", 100.0, {"f": 1}))
     assert report.status == "EXECUTED"
     assert ledger.events("CANONICAL_OPEN")[0]["payload"]["stop_order_id"] == "stop-1"
+    assert ledger.economics(exchange.truth())["fees"] == pytest.approx(0.01)
     assert canonical.recover()["scheduled_exits"]["DOGEUSDT"] == now + 86_400_000
     manager.client = MagicMock()
     def close_position(**_kwargs):

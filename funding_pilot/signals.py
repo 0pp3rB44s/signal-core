@@ -7,8 +7,26 @@ from funding_pilot.core import PilotSignal, verify_spec
 
 
 def _pct_rank(values, value):
-    ordered = sorted(values)
-    return sum(x <= value for x in ordered) / len(ordered)
+    less = sum(x < value for x in values)
+    equal = sum(x == value for x in values)
+    return (less + (equal + 1) / 2) / len(values)
+
+
+def frozen_funding_decision(funding, opens):
+    """Shared pure implementation of the frozen research event formula."""
+    if len(funding) < 30 or len(opens) != len(funding): return None
+    ts, rate = funding[-1]
+    pct = _pct_rank([x[1] for x in funding[-90:]], rate)
+    rets = [opens[i]/opens[i-3]-1 if i>=3 and opens[i-3]>0 else math.nan for i in range(len(opens))]
+    history = [x for x in rets[max(0,len(rets)-31):-1] if math.isfinite(x)]
+    if len(history)<20 or not math.isfinite(rets[-1]): return None
+    vol=statistics.stdev(history)
+    if vol<=0: return None
+    extension=rets[-1]/vol
+    if not ((pct>=.95 and extension>=1.5) or (pct<=.05 and extension<=-1.5)): return None
+    return {"timestamp_ms":ts, "funding_rate":rate, "funding_pct":pct,
+            "extension":extension, "side":"LONG" if extension>0 else "SHORT",
+            "reference_price":opens[-1]}
 
 
 class FrozenFundingCrowdingSignalPoller:
@@ -44,7 +62,8 @@ class FrozenFundingCrowdingSignalPoller:
             bid, ask = float(bids[0][0]), float(asks[0][0]); mid=(bid+ask)/2
             depth = sum(float(x[0])*float(x[1]) for x in bids+asks)
             if depth < 1000 or mid <= 0: continue
-            features.append((symbol, statistics.pstdev(returns[-72:]), completed[-1][3], (ask-bid)/mid))
+            turnover24 = sum(row[3] for row in completed[-24:])
+            features.append((symbol, statistics.pstdev(returns[-72:]), turnover24, (ask-bid)/mid))
             series[symbol] = completed
         if not features: return []
         vols=[x[1] for x in features]; turns=[x[2] for x in features]; spreads=[x[3] for x in features]
@@ -54,9 +73,7 @@ class FrozenFundingCrowdingSignalPoller:
             funding=self._funding(symbol)
             if len(funding)<30: continue
             ts, rate=funding[-1]
-            if ts > now or self.ledger.get(f"signal:{symbol}:{ts}") == "SEEN": continue
-            window=[x[1] for x in funding[-90:]]
-            pct=_pct_rank(window, rate)
+            if ts > now or now-ts > 300_000 or self.ledger.get(f"signal:{symbol}:{ts}") == "SEEN": continue
             # Exact frozen research definition: 24h return across three 8h
             # funding observations; trailing 30-event volatility excludes now.
             opens=[]
@@ -64,17 +81,12 @@ class FrozenFundingCrowdingSignalPoller:
             for event_ts,_ in funding:
                 prior=[c[1] for c in candles if c[0] <= event_ts]
                 opens.append(prior[-1] if prior else math.nan)
-            rets=[opens[i]/opens[i-3]-1 if i>=3 and opens[i-3]>0 else math.nan for i in range(len(opens))]
-            history=[x for x in rets[max(0,len(rets)-31):-1] if math.isfinite(x)]
-            if len(history)<20 or not math.isfinite(rets[-1]): continue
-            vol=statistics.stdev(history)
-            if vol<=0: continue
-            extension=rets[-1]/vol
-            if not ((pct>=.95 and extension>=1.5) or (pct<=.05 and extension<=-1.5)): continue
-            side="LONG" if extension>0 else "SHORT"
+            decision=frozen_funding_decision(funding, opens)
+            if decision is None: continue
+            extension=decision["extension"]
             candidates.append((abs(extension), symbol, PilotSignal(
-                f"funding:{symbol}:{ts}", ts, symbol, side, opens[-1],
-                {"funding_rate":rate, "funding_pct":pct, "extension":extension})))
+                f"funding:{symbol}:{ts}", ts, symbol, decision["side"], decision["reference_price"],
+                {"funding_rate":rate, "funding_pct":decision["funding_pct"], "extension":extension})))
         candidates.sort(key=lambda x:(-x[0],x[1]))
         if not candidates: return []
         signal=candidates[0][2]

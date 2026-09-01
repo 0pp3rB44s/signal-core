@@ -31,14 +31,32 @@ class BitgetPilotExchangePort:
         self.client, self.ledger, self.armed_live = client, ledger, bool(armed_live)
 
     def _owned(self) -> dict[str, dict]:
-        owned = {}
-        for kind in ("ENTRY_INTENT", "STOP_ACK", "CANONICAL_OPEN"):
-            for event in self.ledger.events(kind):
-                payload = event["payload"]
+        relevant = [row for row in self.ledger.events()
+                    if row["kind"] in {"ENTRY_INTENT", "STOP_ACK", "CANONICAL_OPEN", "CANONICAL_TIME_EXIT"}]
+        lifecycles = {}
+        for event in sorted(relevant, key=lambda row: int(row["id"])):
+            payload = event["payload"]
+            oid = str(payload.get("entry_client_oid") or "")
+            if event["kind"] == "CANONICAL_TIME_EXIT":
                 symbol = str(event.get("symbol") or payload.get("symbol") or "").upper()
-                if symbol:
-                    owned[symbol] = {**owned.get(symbol, {}), **payload}
-        return owned
+                for lifecycle in lifecycles.values():
+                    if lifecycle.get("symbol") == symbol:
+                        lifecycle["closed"] = True
+                continue
+            if not oid.startswith(OID_PREFIX):
+                continue
+            lifecycle = lifecycles.setdefault(oid, {"entry_client_oid": oid})
+            lifecycle.update(payload)
+            lifecycle["symbol"] = str(event.get("symbol") or payload.get("symbol") or "").upper()
+            lifecycle["last_event_id"] = int(event["id"])
+        active = [row for row in lifecycles.values() if not row.get("closed")]
+        by_symbol = {}
+        for lifecycle in active:
+            symbol = lifecycle["symbol"]
+            if symbol in by_symbol:
+                raise FailClosed(f"multiple active pilot lifecycles: {symbol}")
+            by_symbol[symbol] = lifecycle
+        return by_symbol
 
     @staticmethod
     def _oid(row) -> str:
@@ -75,15 +93,38 @@ class BitgetPilotExchangePort:
                     raise FailClosed(f"closed fees/funding/PnL incomplete: {symbol}")
                 self.ledger.append("ECONOMICS", {
                     "realized_pnl": pnl, "fees": abs(open_fee) + abs(close_fee),
-                    "funding": funding, "other_costs": 0.0,
+                    "funding": -funding, "other_costs": 0.0,
                     "exchange_position_id": row_id,
                 }, symbol=symbol)
                 self.ledger.set(dedupe, "INGESTED")
+
+    def _ingest_open_funding(self, owned: dict[str, dict]) -> None:
+        for symbol, identity in owned.items():
+            position_id = str(identity.get("exchange_position_id") or "")
+            if not position_id:
+                continue
+            payload = self.client._request("GET", "/api/v2/mix/account/bill",
+                params={"productType":"USDT-FUTURES", "businessType":"funding_fee",
+                        "symbol":symbol, "pageSize":"100"}, private=True)
+            for row in _rows(payload):
+                row_position = str(row.get("positionId") or row.get("posId") or "")
+                if row_position != position_id:
+                    continue
+                bill_id = str(row.get("id") or row.get("billId") or row.get("cTime") or "")
+                amount = _number(row, "amount", "funding", "fundingFee")
+                if not bill_id or amount is None:
+                    raise FailClosed(f"attributable funding row incomplete: {symbol}")
+                key = f"funding:{bill_id}"
+                if self.ledger.get(key) == "INGESTED": continue
+                self.ledger.append("ECONOMICS", {"realized_pnl":0.0, "fees":0.0,
+                    "funding":-amount, "other_costs":0.0, "exchange_position_id":position_id}, symbol=symbol)
+                self.ledger.set(key, "INGESTED")
 
     def truth(self) -> ExchangeTruth:
         equity, available = self._accounts()
         owned = self._owned()
         self._ingest_closed_economics(owned)
+        self._ingest_open_funding(owned)
         all_positions = _rows(self.client.get_all_positions())
         pending = _rows(self.client.get_pending_orders(limit=100))
         plans = []
@@ -105,6 +146,17 @@ class BitgetPilotExchangePort:
             or str(row.get("orderId") or row.get("planOrderId") or "")
             in {str(v.get("stop_order_id") or "") for v in owned.values()}
         )
+        for symbol, identity in owned.items():
+            for row in pending:
+                if str(row.get("symbol") or "").upper() == symbol and not self._oid(row).startswith(OID_PREFIX):
+                    raise FailClosed(f"SKIP_SIGNAL_SHARED_EXPOSURE_CONFLICT: foreign order {symbol}")
+            known_stop_id = str(identity.get("stop_order_id") or "")
+            for row in plans:
+                if str(row.get("symbol") or "").upper() != symbol:
+                    continue
+                order_id = str(row.get("orderId") or row.get("planOrderId") or "")
+                if not self._oid(row).startswith(OID_PREFIX) and order_id != known_stop_id:
+                    raise FailClosed(f"SKIP_SIGNAL_SHARED_EXPOSURE_CONFLICT: foreign plan {symbol}")
         pilot_positions = []
         for row in all_positions:
             symbol = str(row.get("symbol") or "").upper()
