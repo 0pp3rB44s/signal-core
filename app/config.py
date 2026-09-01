@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     scan_on_start: bool = Field(default=True, alias="SCAN_ON_START")
     scan_loop_enabled: bool = Field(default=True, alias="SCAN_LOOP_ENABLED")
     scan_interval_sec: int = Field(default=60, alias="SCAN_INTERVAL_SEC")
+    funding_pilot_runtime_enabled: bool = Field(default=False, alias="FUNDING_PILOT_RUNTIME_ENABLED")
 
     sweep_pivot_lookback: int = Field(default=12, alias="SWEEP_PIVOT_LOOKBACK")
     sweep_recent_bars: int = Field(default=6, alias="SWEEP_RECENT_BARS")

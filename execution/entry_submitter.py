@@ -125,6 +125,9 @@ class EntryOrderSubmitter:
     # --- public API ------------------------------------------------------
 
     def client_oid_for(self, plan: Any, leg: str = ENTRY_LEG_MARKET) -> str:
+        bot_identity = self.bot_identity
+        if getattr(plan, "strategy", "") == "funding_crowding_continuation_24h":
+            bot_identity = "cgc-fcp"
         return derive_entry_client_oid(
             plan_id=getattr(plan, "plan_id", ""),
             candidate_id=getattr(plan, "candidate_id", ""),
@@ -132,7 +135,7 @@ class EntryOrderSubmitter:
             direction=getattr(plan, "direction", ""),
             strategy=getattr(plan, "strategy", ""),
             leg=leg,
-            bot_identity=self.bot_identity,
+            bot_identity=bot_identity,
         )
 
     def submit_entry(

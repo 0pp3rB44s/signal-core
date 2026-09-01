@@ -490,6 +490,21 @@ class StartupRunner:
             funnel_telemetry=self.funnel_telemetry,
         )
         self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
+        self.funding_pilot_runtime = None
+        if (
+            settings.funding_pilot_runtime_enabled
+            and self.execution_service is not None
+            and self.position_manager is not None
+        ):
+            from funding_pilot.runner import CanonicalFundingPilotRunner
+            repo_root = Path(__file__).resolve().parents[1]
+            self.funding_pilot_runtime = CanonicalFundingPilotRunner(
+                execution_service=self.execution_service,
+                position_manager=self.position_manager,
+                spec_path=repo_root / "research/validation/FROZEN_SPECS.json",
+                ledger_path=repo_root / "state/funding_pilot.sqlite",
+                armed_live=False,
+            )
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
         self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
         self.signal_cooldown_minutes = 30
@@ -768,6 +783,11 @@ class StartupRunner:
             return False
 
     def _position_monitor_cycle(self) -> None:
+        if self.funding_pilot_runtime is not None:
+            try:
+                self.funding_pilot_runtime.tick()
+            except Exception as exc:
+                self.log.critical("FUNDING_PILOT_TICK_HALTED | error=%s", exc)
         with self._position_snapshots_lock:
             snapshots = list(self._position_snapshots)
         if snapshots:

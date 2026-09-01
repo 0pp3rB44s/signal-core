@@ -74,6 +74,15 @@ class CanonicalFundingPilot:
 
     def process_signal(self, signal: PilotSignal):
         plan = self.build_plan(signal)
+        entry_oid = self.execution_service.entry_submitter.client_oid_for(plan)
+        if not entry_oid.startswith("cgc-fcp-"):
+            raise FailClosed("pilot entry ownership namespace unavailable")
+        self.runtime.ledger.append(
+            "ENTRY_INTENT",
+            {"plan_id": plan.plan_id, "symbol": plan.symbol, "entry_client_oid": entry_oid,
+             "scheduled_exit_at_ms": plan.scheduled_exit_at_ms},
+            signal_id=signal.signal_id, symbol=plan.symbol,
+        )
         reports = self.execution_service.execute([plan])
         if not reports or reports[0].status != "EXECUTED":
             raise FailClosed("canonical execution did not produce a protected position")
@@ -85,6 +94,13 @@ class CanonicalFundingPilot:
         )
         if not row or not row.get("entry_protection_verified"):
             raise FailClosed("protected position persistence not confirmed")
+        stop_ack_id = str((row.get("protection_payload") or {}).get("stop_order_id") or "")
+        self.runtime.ledger.append(
+            "STOP_ACK",
+            {"symbol": plan.symbol, "entry_client_oid": entry_oid,
+             "stop_order_id": stop_ack_id, "scheduled_exit_at_ms": plan.scheduled_exit_at_ms},
+            signal_id=signal.signal_id, symbol=plan.symbol,
+        )
         truth = self.runtime.exchange.truth()
         exchange_position = next(
             (item for item in truth.pilot_positions
@@ -94,13 +110,23 @@ class CanonicalFundingPilot:
             (item for item in truth.pilot_stops
              if str(item.get("symbol") or "").upper() == plan.symbol), None,
         )
-        persisted_stop_id = str((row.get("protection_payload") or {}).get("stop_order_id") or "")
+        persisted_stop_id = stop_ack_id
         exchange_stop_id = str((exchange_stop or {}).get("order_id") or (exchange_stop or {}).get("plan_order_id") or "")
         if not exchange_position or not exchange_stop or not persisted_stop_id or persisted_stop_id != exchange_stop_id:
             # ExecutionService already owns immediate flatten when placement or
             # read-back fails. This second reconciliation prevents a transient
             # acknowledgement from becoming durable pilot state.
-            raise FailClosed("exchange-native stop identity not reconciled after entry")
+            if exchange_position:
+                self.runtime.exchange.close_reduce_only(exchange_position, "post_ack_stop_mismatch")
+                flattened = self.runtime.exchange.truth()
+                if any(str(item.get("symbol") or "").upper() == plan.symbol for item in flattened.pilot_positions):
+                    raise FailClosed("post-ack stop mismatch flatten unconfirmed")
+                for order in flattened.pilot_working_orders:
+                    self.runtime.exchange.cancel_working_order(order)
+                final = self.runtime.exchange.truth()
+                if final.pilot_positions or final.pilot_working_orders:
+                    raise FailClosed("post-ack stop mismatch residual exposure")
+            raise FailClosed("exchange-native stop identity not reconciled after entry; flattened")
         self.runtime.ledger.append(
             "CANONICAL_OPEN",
             {
@@ -108,6 +134,9 @@ class CanonicalFundingPilot:
                 "scheduled_exit_at_ms": plan.scheduled_exit_at_ms,
                 "notional": plan.position_notional_usdt,
                 "stop_order_id": (row.get("protection_payload") or {}).get("stop_order_id"),
+                "entry_client_oid": row.get("exchange_entry_client_oid"),
+                "exchange_position_id": row.get("exchange_position_id"),
+                "entry_order_id": row.get("exchange_entry_order_id"),
             },
             signal_id=signal.signal_id, symbol=plan.symbol,
         )
@@ -122,7 +151,43 @@ class CanonicalFundingPilot:
         for position in truth.pilot_positions:
             symbol = str(position.get("symbol") or "").upper()
             if symbol not in schedules:
+                self.runtime.ledger.set("status", "HALTED")
                 raise FailClosed(f"open pilot position has no durable schedule: {symbol}")
+        local = self.position_manager.store.load(default=[])
+        live_symbols = {str(row.get("symbol") or "").upper() for row in truth.pilot_positions}
+        changed = False
+        for row in local:
+            if row.get("protection_mode") == "STOP_ONLY_TIME_EXIT" and row.get("status") == "OPEN":
+                symbol = str(row.get("symbol") or "").upper()
+                if symbol not in live_symbols:
+                    row["status"] = "CLOSED_RECOVERED_EXCHANGE_FLAT"
+                    changed = True
+        local_open = {str(row.get("symbol") or "").upper() for row in local
+                      if row.get("protection_mode") == "STOP_ONLY_TIME_EXIT" and row.get("status") == "OPEN"}
+        for exchange_position in truth.pilot_positions:
+            symbol = str(exchange_position.get("symbol") or "").upper()
+            if symbol in local_open:
+                continue
+            stop = next((item for item in truth.pilot_stops
+                         if str(item.get("symbol") or "").upper() == symbol), None)
+            if not stop:
+                self.runtime.ledger.set("status", "HALTED")
+                raise FailClosed(f"restart position has no native stop: {symbol}")
+            local.append({
+                "symbol": symbol, "direction": str(exchange_position.get("side") or exchange_position.get("direction") or "").upper(),
+                "strategy": "funding_crowding_continuation_24h", "status": "OPEN",
+                "protection_mode": "STOP_ONLY_TIME_EXIT", "scheduled_exit_at_ms": schedules[symbol],
+                "frozen_spec_sha256": FROZEN_SPEC_SHA256, "pilot_authorized": True,
+                "exchange_avg_entry": exchange_position.get("entry_price"),
+                "confirmed_position_size": exchange_position.get("size"),
+                "position_notional_usdt": exchange_position.get("notional"),
+                "stop_loss": stop.get("stop_price") or stop.get("triggerPrice"),
+                "protection_payload": {"stop_order_id": stop.get("order_id")},
+                "entry_protection_verified": True, "recovered_from_exchange": True,
+            })
+            changed = True
+        if changed:
+            self.position_manager.store.save(local)
         return {**state, "scheduled_exits": schedules}
 
     def process_time_exits(self, *, now_ms: int) -> list[dict]:
