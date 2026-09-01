@@ -56,7 +56,7 @@ def test_real_adapter_read_truth_ownership_and_economics(tmp_path):
     economics = ledger.economics(truth)
     assert economics["realized_pnl"] == pytest.approx(1.5)
     assert economics["fees"] == pytest.approx(0.2)
-    assert economics["funding"] == pytest.approx(-0.05)
+    assert economics["funding"] == pytest.approx(0.0)
 
 
 def test_real_adapter_is_hard_disarmed_and_foreign_state_is_never_mutated(tmp_path):
@@ -212,3 +212,38 @@ def test_open_position_accrued_funding_updates_current_nav_before_close(tmp_path
     economics = ledger.economics(truth)
     assert economics["funding"] == pytest.approx(0.10)
     assert economics["nav"] == pytest.approx(27.34)
+
+
+def test_economics_overlap_and_restart_replay_are_exactly_once(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",
+        "stop_order_id":"stop-1", "exchange_position_id":"p1"}, symbol="DOGEUSDT")
+    ledger.append("ECONOMICS", {"realized_pnl":0, "fees":0.1, "funding":0, "other_costs":0,
+                                 "economic_item_id":"opening_fee:cgc-fcp-entry"}, symbol="DOGEUSDT")
+    ledger.set("opening_fee:cgc-fcp-entry", "INGESTED")
+    client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "pnl":"1", "openFee":"-0.1",
+                       "closeFee":"-0.2", "totalFunding":"-0.05"}]
+    client.bills = [{"id":"fund-1", "positionId":"p1", "amount":"-0.05"}]
+    adapter = BitgetPilotExchangePort(client, ledger)
+    first = ledger.economics(adapter.truth())
+    restarted = BitgetPilotExchangePort(client, PilotLedger(ledger.path))
+    second = restarted.ledger.economics(restarted.truth())
+    assert first == second
+    assert second["fees"] == pytest.approx(0.3)
+    assert second["funding"] == pytest.approx(0.05)
+    assert second["realized_pnl"] == pytest.approx(1.0)
+
+
+def test_rejected_intent_is_terminal_and_does_not_poison_next_attempt(tmp_path):
+    client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
+    adapter = BitgetPilotExchangePort(client, ledger, armed_live=True)
+    runtime = PilotRuntime(replace(PilotConfig(SPEC, tmp_path / "pilot.sqlite"), orders_enabled=True), ledger, adapter)
+    execution = MagicMock(); execution.client = client
+    execution.entry_submitter.client_oid_for.return_value = "cgc-fcp-rejected"
+    execution.execute.return_value = []
+    positions = MagicMock(); positions.store.load.return_value = []
+    canonical = CanonicalFundingPilot(runtime, execution, positions)
+    with pytest.raises(FailClosed, match="did not produce"):
+        canonical.process_signal(PilotSignal("reject", 2_000_000_000_000, "DOGEUSDT", "LONG", 100, {}))
+    assert ledger.events("ENTRY_TERMINAL")[-1]["payload"]["state"] == "REJECTED"
+    assert adapter._owned() == {}

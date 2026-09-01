@@ -32,20 +32,18 @@ class BitgetPilotExchangePort:
 
     def _owned(self) -> dict[str, dict]:
         relevant = [row for row in self.ledger.events()
-                    if row["kind"] in {"ENTRY_INTENT", "STOP_ACK", "CANONICAL_OPEN", "CANONICAL_TIME_EXIT"}]
+                    if row["kind"] in {"ENTRY_INTENT", "ENTRY_TERMINAL", "STOP_ACK", "CANONICAL_OPEN", "CANONICAL_TIME_EXIT"}]
         lifecycles = {}
         for event in sorted(relevant, key=lambda row: int(row["id"])):
             payload = event["payload"]
             oid = str(payload.get("entry_client_oid") or "")
-            if event["kind"] == "CANONICAL_TIME_EXIT":
-                symbol = str(event.get("symbol") or payload.get("symbol") or "").upper()
-                for lifecycle in lifecycles.values():
-                    if lifecycle.get("symbol") == symbol:
-                        lifecycle["closed"] = True
-                continue
             if not oid.startswith(OID_PREFIX):
                 continue
             lifecycle = lifecycles.setdefault(oid, {"entry_client_oid": oid})
+            if event["kind"] in {"ENTRY_TERMINAL", "CANONICAL_TIME_EXIT"}:
+                lifecycle["closed"] = True
+                lifecycle["terminal_state"] = payload.get("state") or "CLOSED"
+                continue
             lifecycle.update(payload)
             lifecycle["symbol"] = str(event.get("symbol") or payload.get("symbol") or "").upper()
             lifecycle["last_event_id"] = int(event["id"])
@@ -82,21 +80,24 @@ class BitgetPilotExchangePort:
                 row_id = str(row.get("positionId") or row.get("id") or row.get("closeId") or "")
                 if not row_id or row_id != expected_position_id:
                     continue
-                dedupe = f"economics:{symbol}:{row_id or row.get('utime') or row.get('cTime')}"
-                if self.ledger.get(dedupe) == "INGESTED":
-                    continue
                 pnl = _number(row, "pnl", "realizedPnl", "netProfit")
                 open_fee = _number(row, "openFee", "open_fee")
                 close_fee = _number(row, "closeFee", "close_fee")
-                funding = _number(row, "totalFunding", "funding", "fundingFee")
-                if None in (pnl, open_fee, close_fee, funding):
-                    raise FailClosed(f"closed fees/funding/PnL incomplete: {symbol}")
-                self.ledger.append("ECONOMICS", {
-                    "realized_pnl": pnl, "fees": abs(open_fee) + abs(close_fee),
-                    "funding": -funding, "other_costs": 0.0,
-                    "exchange_position_id": row_id,
-                }, symbol=symbol)
-                self.ledger.set(dedupe, "INGESTED")
+                if None in (pnl, open_fee, close_fee):
+                    raise FailClosed(f"closed fees/PnL incomplete: {symbol}")
+                items = (
+                    (f"opening_fee:{identity.get('entry_client_oid')}", 0.0, abs(open_fee)),
+                    (f"closing_fee:{row_id}", 0.0, abs(close_fee)),
+                    (f"realized_pnl:{row_id}", pnl, 0.0),
+                )
+                for key, realized, fee in items:
+                    if self.ledger.get(key) == "INGESTED": continue
+                    self.ledger.append("ECONOMICS", {
+                        "realized_pnl": realized, "fees": fee, "funding": 0.0,
+                        "other_costs": 0.0, "exchange_position_id": row_id,
+                        "economic_item_id": key,
+                    }, symbol=symbol)
+                    self.ledger.set(key, "INGESTED")
 
     def _ingest_open_funding(self, owned: dict[str, dict]) -> None:
         for symbol, identity in owned.items():

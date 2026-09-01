@@ -83,8 +83,19 @@ class CanonicalFundingPilot:
              "scheduled_exit_at_ms": plan.scheduled_exit_at_ms},
             signal_id=signal.signal_id, symbol=plan.symbol,
         )
-        reports = self.execution_service.execute([plan])
+        try:
+            reports = self.execution_service.execute([plan])
+        except Exception as exc:
+            self.runtime.ledger.append("ENTRY_TERMINAL", {
+                "symbol": plan.symbol, "entry_client_oid": entry_oid,
+                "state": "FAILED", "reason": type(exc).__name__,
+            }, signal_id=signal.signal_id, symbol=plan.symbol)
+            raise
         if not reports or reports[0].status != "EXECUTED":
+            self.runtime.ledger.append("ENTRY_TERMINAL", {
+                "symbol": plan.symbol, "entry_client_oid": entry_oid,
+                "state": "REJECTED", "reason": "canonical_execution_not_executed",
+            }, signal_id=signal.signal_id, symbol=plan.symbol)
             raise FailClosed("canonical execution did not produce a protected position")
         stored = self.execution_service.store.load(default=[])
         row = next(
@@ -194,6 +205,7 @@ class CanonicalFundingPilot:
                 "protection_mode": "STOP_ONLY_TIME_EXIT", "scheduled_exit_at_ms": schedules[symbol],
                 "frozen_spec_sha256": FROZEN_SPEC_SHA256, "pilot_authorized": True,
                 "exchange_avg_entry": exchange_position.get("entry_price"),
+                "exchange_entry_client_oid": exchange_position.get("client_oid"),
                 "confirmed_position_size": exchange_position.get("size"),
                 "position_notional_usdt": exchange_position.get("notional"),
                 "stop_loss": stop.get("stop_price") or stop.get("triggerPrice"),
@@ -206,6 +218,11 @@ class CanonicalFundingPilot:
         return {**state, "scheduled_exits": schedules}
 
     def process_time_exits(self, *, now_ms: int) -> list[dict]:
+        before = self.position_manager.store.load(default=[])
+        entry_oid_by_symbol = {
+            str(row.get("symbol") or "").upper(): str(row.get("exchange_entry_client_oid") or "")
+            for row in before if row.get("protection_mode") == "STOP_ONLY_TIME_EXIT" and row.get("status") == "OPEN"
+        }
         outcomes = self.position_manager.process_stop_only_time_exits(now_ms=now_ms)
         for outcome in outcomes:
             if outcome.get("status") != "POSITION_CLOSED_STOP_CANCELLED":
@@ -218,5 +235,7 @@ class CanonicalFundingPilot:
                 raise FailClosed("post-exit pilot working order remains")
             if any(str(row.get("symbol") or "").upper() == symbol for row in truth.pilot_stops):
                 raise FailClosed("post-exit orphan stop remains")
-            self.runtime.ledger.append("CANONICAL_TIME_EXIT", outcome, symbol=symbol)
+            self.runtime.ledger.append("CANONICAL_TIME_EXIT", {
+                **outcome, "entry_client_oid": entry_oid_by_symbol.get(symbol), "state": "CLOSED",
+            }, symbol=symbol)
         return outcomes

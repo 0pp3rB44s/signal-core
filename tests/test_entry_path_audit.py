@@ -332,6 +332,7 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
         {"symbol": "DOGEUSDT", "status": "POSITION_CLOSED_STOP_CANCELLED"}
     ]
     assert ledger.events("CANONICAL_TIME_EXIT")
+    assert ledger.events("CANONICAL_TIME_EXIT")[-1]["payload"]["entry_client_oid"].startswith("cgc-fcp-")
     assert not state["positions"] and not state["stops"]
 
 

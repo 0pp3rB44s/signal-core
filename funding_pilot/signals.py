@@ -62,7 +62,11 @@ class FrozenFundingCrowdingSignalPoller:
             bid, ask = float(bids[0][0]), float(asks[0][0]); mid=(bid+ask)/2
             depth = sum(float(x[0])*float(x[1]) for x in bids+asks)
             if depth < 1000 or mid <= 0: continue
-            turnover24 = sum(row[3] for row in completed[-24:])
+            ticker_payload = self.client._request("GET", "/api/v2/mix/market/ticker",
+                params={"symbol":symbol, "productType":"USDT-FUTURES"}, private=False)
+            ticker_data = (ticker_payload or {}).get("data") or []
+            ticker = ticker_data[0] if isinstance(ticker_data, list) and ticker_data else ticker_data
+            turnover24 = float((ticker or {}).get("usdtVolume") or 0)
             features.append((symbol, statistics.pstdev(returns[-72:]), turnover24, (ask-bid)/mid))
             series[symbol] = completed
         if not features: return []
