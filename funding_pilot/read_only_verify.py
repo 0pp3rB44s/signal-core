@@ -90,6 +90,37 @@ def _probe(name: str, call: Callable[[], object], alternatives=()) -> tuple[dict
                 "error_type": type(exc).__name__}, []
 
 
+def _funding_probe(client, settings) -> dict:
+    """Read and classify exact futures funding-fee bills.
+
+    Bitget V2 names this business type ``contract_settle_fee`` and envelopes
+    account bills under ``data.bills``. An empty bills list is a valid result.
+    """
+    try:
+        payload = client._request("GET", "/api/v2/mix/account/bill", params={
+            "productType": settings.bitget_product_type,
+            "businessType": "contract_settle_fee",
+            "limit": "100",
+        }, private=True)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or not isinstance(data.get("bills"), list):
+            return {"endpoint_reachable": True, "record_count": 0,
+                    "classification_pass": False, "schema_fields_present": False}
+        raw = data["bills"]
+        if any(not isinstance(row, dict) for row in raw):
+            return {"endpoint_reachable": True, "record_count": 0,
+                    "classification_pass": False, "schema_fields_present": False}
+        funding = [row for row in raw
+                   if str(row.get("businessType") or "").lower() == "contract_settle_fee"]
+        schema = _schema(funding, (("billId", "amount", "businessType", "cTime"),))
+        return {"endpoint_reachable": True, "record_count": len(funding),
+                "classification_pass": schema, "schema_fields_present": schema}
+    except Exception as exc:
+        return {"endpoint_reachable": False, "record_count": 0,
+                "classification_pass": False, "schema_fields_present": False,
+                "error_type": type(exc).__name__}
+
+
 def run(settings: ReadOnlyBitgetSettings, *, client_factory=ReadOnlyBitgetClient) -> tuple[int, dict]:
     client = client_factory(settings=settings)
     result = {"READ_ONLY_SETTINGS_DECOUPLED": True, "READ_ONLY_TRANSPORT_ENFORCED": True}
@@ -128,10 +159,7 @@ def run(settings: ReadOnlyBitgetSettings, *, client_factory=ReadOnlyBitgetClient
         (("symbol","orderId"), ("symbol","clientOid")))
     result["FEE_CLASSIFICATION"], _ = _probe("fees", lambda: client.get_trade_fee_rate("BTCUSDT"),
         (("makerFeeRate","takerFeeRate"), ("makerFee","takerFee")))
-    result["FUNDING_CLASSIFICATION"], _ = _probe("funding", lambda: client._request("GET",
-        "/api/v2/mix/account/bill", params={"productType":settings.bitget_product_type,
-        "businessType":"funding_fee","pageSize":"100"}, private=True),
-        (("id","amount"), ("billId","amount")))
+    result["FUNDING_CLASSIFICATION"] = _funding_probe(client, settings)
     passed = all(value.get("classification_pass", False) for key,value in result.items()
                  if key.endswith("_CLASSIFICATION"))
     result["BITGET_AUTH_READ_VERIFIED"] = passed

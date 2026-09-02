@@ -49,7 +49,7 @@ def test_transport_rejects_every_mutating_verb_without_network(monkeypatch):
 
 
 class FakeReads:
-    def __init__(self,settings): self.settings=settings
+    def __init__(self,settings): self.settings=settings; self.bill_payload={"data":{"bills":[]}}
     def get_accounts(self): return {"data":[{"marginCoin":"USDT"}]}
     def get_all_positions(self): return {"data":[]}
     def get_pending_orders(self,**_): return {"data":{"entrustedList":[]}}
@@ -57,7 +57,7 @@ class FakeReads:
     def get_order_history(self,**_): return {"data":{"orderList":[]}}
     def get_trade_fee_rate(self,_): return {"data":[{"makerFeeRate":"x","takerFeeRate":"x"}]}
     def _request(self,method,*_,**__):
-        assert method=="GET"; return {"data":{"list":[]}}
+        assert method=="GET"; return self.bill_payload
 
 
 class FakePlans(FakeReads):
@@ -101,3 +101,63 @@ def test_main_missing_credentials_does_not_print_secrets(monkeypatch,capsys):
     output=capsys.readouterr().out
     assert "BITGET_AUTH_READ_VERIFIED" in output
     assert not any(value in output for value in SECRETS.values())
+
+
+def _run_with_bills(monkeypatch, bills):
+    settings=_settings(monkeypatch)
+    def factory(settings):
+        client=FakeReads(settings); client.bill_payload={"data":{"bills":bills,"endId":"end"}}
+        return client
+    return run(settings,client_factory=factory)
+
+
+def test_valid_funding_bill_response(monkeypatch):
+    row={"billId":"fund-1","symbol":"BTCUSDT","amount":"-0.1","fee":"0",
+         "businessType":"contract_settle_fee","coin":"USDT","cTime":"1"}
+    code,result=_run_with_bills(monkeypatch,[row])
+    assert code==0
+    assert result["FUNDING_CLASSIFICATION"]=={
+        "endpoint_reachable":True,"record_count":1,
+        "classification_pass":True,"schema_fields_present":True}
+
+
+def test_empty_funding_history_is_valid(monkeypatch):
+    code,result=_run_with_bills(monkeypatch,[])
+    assert code==0
+    assert result["FUNDING_CLASSIFICATION"]["record_count"]==0
+    assert result["FUNDING_CLASSIFICATION"]["classification_pass"] is True
+
+
+def test_old_wrong_business_type_fails_closed(monkeypatch):
+    settings=_settings(monkeypatch)
+    class BusinessTypeGuard(FakeReads):
+        def _request(self,method,path,*,params,**kwargs):
+            if params.get("businessType") != "contract_settle_fee":
+                raise RuntimeError("Parameter businessType error")
+            return {"data":{"bills":[]}}
+    guard=BusinessTypeGuard(settings)
+    with pytest.raises(RuntimeError,match="businessType"):
+        guard._request("GET","/api/v2/mix/account/bill",
+                       params={"businessType":"funding_fee"},private=True)
+    code,result=run(settings,client_factory=lambda settings:guard)
+    assert code==0
+    assert result["FUNDING_CLASSIFICATION"]["endpoint_reachable"] is True
+
+
+def test_mixed_bills_count_only_actual_funding(monkeypatch):
+    bills=[
+        {"billId":"fee","amount":"0","fee":"-.1","businessType":"open_long","cTime":"1"},
+        {"billId":"pnl","amount":"1","fee":"0","businessType":"close_long","cTime":"2"},
+        {"billId":"fund","amount":"-.1","fee":"0","businessType":"contract_settle_fee","cTime":"3"},
+        {"billId":"transfer","amount":"5","fee":"0","businessType":"trans_from_exchange","cTime":"4"},
+    ]
+    code,result=_run_with_bills(monkeypatch,bills)
+    assert code==0
+    assert result["FUNDING_CLASSIFICATION"]["record_count"]==1
+    assert result["FUNDING_CLASSIFICATION"]["classification_pass"] is True
+
+
+def test_funding_bill_missing_required_schema_fails(monkeypatch):
+    code,result=_run_with_bills(monkeypatch,[{"businessType":"contract_settle_fee","amount":"-.1"}])
+    assert code==2
+    assert result["FUNDING_CLASSIFICATION"]["schema_fields_present"] is False
