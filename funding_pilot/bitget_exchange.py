@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 
 from funding_pilot.core import ExchangeTruth, FailClosed, OID_PREFIX, PilotLedger
+from funding_pilot.funding_bills import FundingBillSchemaError, fetch_funding_bills
 
 
 def _rows(payload):
@@ -40,6 +41,7 @@ class BitgetPilotExchangePort:
             if not oid.startswith(OID_PREFIX):
                 continue
             lifecycle = lifecycles.setdefault(oid, {"entry_client_oid": oid})
+            lifecycle.setdefault("ownership_started_at_ms", int(event["timestamp_ms"]))
             if event["kind"] in {"ENTRY_TERMINAL", "CANONICAL_TIME_EXIT"}:
                 state = str(payload.get("state") or "CLOSED").upper()
                 lifecycle["terminal_state"] = state
@@ -106,18 +108,32 @@ class BitgetPilotExchangePort:
                     }, symbol=symbol)
 
     def _ingest_open_funding(self, owned: dict[str, dict]) -> None:
+        if not owned:
+            return
+        try:
+            product_type = getattr(getattr(self.client, "settings", None),
+                                   "bitget_product_type", "USDT-FUTURES")
+            rows = fetch_funding_bills(self.client, product_type=product_type)
+        except FundingBillSchemaError as exc:
+            raise FailClosed("funding bill schema unavailable") from exc
         for symbol, identity in owned.items():
             position_id = str(identity.get("exchange_position_id") or "")
             if not position_id:
                 continue
-            payload = self.client._request("GET", "/api/v2/mix/account/bill",
-                params={"productType":"USDT-FUTURES", "businessType":"funding_fee",
-                        "symbol":symbol, "pageSize":"100"}, private=True)
-            for row in _rows(payload):
+            for row in rows:
                 row_position = str(row.get("positionId") or row.get("posId") or "")
-                if row_position != position_id:
+                row_symbol = str(row.get("symbol") or "").upper()
+                try:
+                    created_ms = int(row.get("cTime"))
+                except (TypeError, ValueError):
+                    raise FailClosed(f"attributable funding timestamp invalid: {symbol}") from None
+                exact_position = (bool(row_position) and row_position == position_id
+                                  and row_symbol == symbol)
+                lifecycle_window = (not row_position and row_symbol == symbol and
+                    created_ms >= int(identity.get("ownership_started_at_ms") or 0))
+                if not (exact_position or lifecycle_window):
                     continue
-                bill_id = str(row.get("id") or row.get("billId") or row.get("cTime") or "")
+                bill_id = str(row.get("billId") or "")
                 amount = _number(row, "amount", "funding", "fundingFee")
                 if not bill_id or amount is None:
                     raise FailClosed(f"attributable funding row incomplete: {symbol}")

@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from clients.bitget_rest import BitgetRestClient
 from funding_pilot.bitget_exchange import _rows
+from funding_pilot.funding_bills import fetch_funding_bills
 
 
 class ReadOnlyBitgetSettings(BaseSettings):
@@ -97,24 +98,9 @@ def _funding_probe(client, settings) -> dict:
     account bills under ``data.bills``. An empty bills list is a valid result.
     """
     try:
-        payload = client._request("GET", "/api/v2/mix/account/bill", params={
-            "productType": settings.bitget_product_type,
-            "businessType": "contract_settle_fee",
-            "limit": "100",
-        }, private=True)
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict) or not isinstance(data.get("bills"), list):
-            return {"endpoint_reachable": True, "record_count": 0,
-                    "classification_pass": False, "schema_fields_present": False}
-        raw = data["bills"]
-        if any(not isinstance(row, dict) for row in raw):
-            return {"endpoint_reachable": True, "record_count": 0,
-                    "classification_pass": False, "schema_fields_present": False}
-        funding = [row for row in raw
-                   if str(row.get("businessType") or "").lower() == "contract_settle_fee"]
-        schema = _schema(funding, (("billId", "amount", "businessType", "cTime"),))
+        funding = fetch_funding_bills(client, product_type=settings.bitget_product_type)
         return {"endpoint_reachable": True, "record_count": len(funding),
-                "classification_pass": schema, "schema_fields_present": schema}
+                "classification_pass": True, "schema_fields_present": True}
     except Exception as exc:
         return {"endpoint_reachable": False, "record_count": 0,
                 "classification_pass": False, "schema_fields_present": False,

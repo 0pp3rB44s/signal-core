@@ -298,6 +298,7 @@ def test_integrated_authoritative_canonical_pilot_entry_and_stop_reconciliation(
     service.client.get_all_positions.side_effect = positions
     service.client.get_accounts.return_value = {"data": [{"marginCoin":"USDT", "accountEquity":"100", "available":"50"}]}
     service.client.get_position_history.return_value = {"data": {"list": []}}
+    service.client._request.return_value = {"data": {"bills": []}}
     service.client.get_tpsl_orders.side_effect = lambda **_kwargs: {"data": {"entrustedList": list(state["stops"])}}
     service.client.get_orderbook.return_value = {"data": {"bids": [["99.9", "1"]], "asks": [["100.1", "1"]]}}
     service.client._min_notional.return_value = 1.0

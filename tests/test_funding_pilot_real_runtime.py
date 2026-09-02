@@ -25,7 +25,10 @@ class TransportHarness:
     def get_pending_orders(self, **_): return {"data": {"entrustedList": list(self.orders)}}
     def get_tpsl_orders(self, **_): return {"data": {"entrustedList": list(self.plans)}}
     def get_position_history(self, **_): return {"data": {"list": list(self.history)}}
-    def _request(self, *_args, **_kwargs): return {"data": {"list": list(self.bills)}}
+    def _request(self, method, path, *, params, **_kwargs):
+        assert method == "GET" and path == "/api/v2/mix/account/bill"
+        assert params == {"productType":"USDT-FUTURES","businessType":"contract_settle_fee","limit":"100"}
+        return {"data": {"bills": list(self.bills)}}
     def _min_notional(self, _symbol): return 1.0
     def get_orderbook(self, **_): return {"data": {"bids": [["99", "1"]], "asks": [["101", "1"]]}}
     def verify_active_stop_loss(self, **_): return {"verified": bool(self.plans)}
@@ -206,12 +209,54 @@ def test_open_position_accrued_funding_updates_current_nav_before_close(tmp_path
     client.positions = [{"symbol":"DOGEUSDT", "positionId":"p1", "total":"0.02744",
         "openPriceAvg":"100", "markPrice":"100", "unrealizedPL":"0"}]
     client.plans = [{"symbol":"DOGEUSDT", "orderId":"stop-1"}]
-    client.bills = [{"id":"bill-1", "positionId":"p1", "amount":"-0.10"}]
+    client.bills = [{"billId":"bill-1", "positionId":"p1", "symbol":"DOGEUSDT",
+                     "amount":"-0.10", "businessType":"contract_settle_fee", "cTime":"9999999999999"}]
     adapter = BitgetPilotExchangePort(client, ledger)
     truth = adapter.truth()
     economics = ledger.economics(truth)
     assert economics["funding"] == pytest.approx(0.10)
     assert economics["nav"] == pytest.approx(27.34)
+
+
+def test_live_adapter_filters_mixed_bills_and_dedupes_funding(tmp_path):
+    client,ledger=TransportHarness(),PilotLedger(tmp_path/"pilot.sqlite")
+    ledger.append("CANONICAL_OPEN",{"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
+        "exchange_position_id":"p1"},symbol="DOGEUSDT")
+    client.bills=[
+        {"billId":"fee","positionId":"p1","symbol":"DOGEUSDT","amount":"0","fee":"-.1",
+         "businessType":"open_long","cTime":"9999999999999"},
+        {"billId":"pnl","positionId":"p1","symbol":"DOGEUSDT","amount":"1","fee":"0",
+         "businessType":"close_long","cTime":"9999999999999"},
+        {"billId":"transfer","symbol":"DOGEUSDT","amount":"5","fee":"0",
+         "businessType":"trans_from_exchange","cTime":"9999999999999"},
+        {"billId":"fund","positionId":"p1","symbol":"DOGEUSDT","amount":"-.1","fee":"0",
+         "businessType":"contract_settle_fee","cTime":"9999999999999"},
+    ]
+    adapter=BitgetPilotExchangePort(client,ledger)
+    adapter.truth(); adapter.truth()
+    funding=[row for row in ledger.events("ECONOMICS")
+             if str(row["payload"].get("economic_item_id") or "").startswith("funding:")]
+    assert len(funding)==1 and funding[0]["payload"]["economic_item_id"]=="funding:fund"
+    assert ledger.economics(adapter.truth())["funding"]==pytest.approx(.1)
+
+
+def test_official_bill_without_position_id_uses_exact_symbol_lifecycle_window(tmp_path):
+    client,ledger=TransportHarness(),PilotLedger(tmp_path/"pilot.sqlite")
+    ledger.append("CANONICAL_OPEN",{"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
+        "exchange_position_id":"p1"},symbol="DOGEUSDT")
+    start=ledger.events("CANONICAL_OPEN")[0]["timestamp_ms"]
+    client.bills=[
+        {"billId":"old","symbol":"DOGEUSDT","amount":"-.9","businessType":"contract_settle_fee",
+         "cTime":str(start-1)},
+        {"billId":"other","symbol":"BTCUSDT","amount":"-.8","businessType":"contract_settle_fee",
+         "cTime":str(start+1)},
+        {"billId":"owned","symbol":"DOGEUSDT","amount":"-.1","businessType":"contract_settle_fee",
+         "cTime":str(start+1)},
+    ]
+    adapter=BitgetPilotExchangePort(client,ledger); adapter.truth(); adapter.truth()
+    sources={row[0] for row in ledger.db.execute("SELECT source_id FROM economic_sources")}
+    assert "funding:owned" in sources
+    assert "funding:old" not in sources and "funding:other" not in sources
 
 
 def test_economics_overlap_and_restart_replay_are_exactly_once(tmp_path):
@@ -222,7 +267,8 @@ def test_economics_overlap_and_restart_replay_are_exactly_once(tmp_path):
         {"realized_pnl":0, "fees":0.1, "funding":0, "other_costs":0}, symbol="DOGEUSDT")
     client.history = [{"symbol":"DOGEUSDT", "positionId":"p1", "closeOrderId":"close-1", "pnl":"1", "openFee":"-0.1",
                        "closeFee":"-0.2", "totalFunding":"-0.05"}]
-    client.bills = [{"id":"fund-1", "positionId":"p1", "amount":"-0.05"}]
+    client.bills = [{"billId":"fund-1", "positionId":"p1", "symbol":"DOGEUSDT",
+                     "amount":"-0.05", "businessType":"contract_settle_fee", "cTime":"9999999999999"}]
     adapter = BitgetPilotExchangePort(client, ledger)
     first = ledger.economics(adapter.truth())
     restarted = BitgetPilotExchangePort(client, PilotLedger(ledger.path))
