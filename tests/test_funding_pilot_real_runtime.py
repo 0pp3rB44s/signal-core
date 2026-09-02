@@ -259,6 +259,36 @@ def test_official_bill_without_position_id_uses_exact_symbol_lifecycle_window(tm
     assert "funding:old" not in sources and "funding:other" not in sources
 
 
+def test_conflicting_exchange_position_fails_before_any_funding_write(tmp_path):
+    client,ledger=TransportHarness(),PilotLedger(tmp_path/"pilot.sqlite")
+    ledger.append("CANONICAL_OPEN",{"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
+        "exchange_position_id":"pilot-p1"},symbol="DOGEUSDT")
+    client.positions=[{"symbol":"DOGEUSDT","positionId":"foreign-p2","total":"1",
+        "openPriceAvg":"10","markPrice":"10","unrealizedPL":"0"}]
+    client.bills=[{"billId":"foreign-funding","symbol":"DOGEUSDT","amount":"-.7",
+        "businessType":"contract_settle_fee","cTime":"9999999999999"}]
+    with pytest.raises(FailClosed,match="position exchange identity mismatch"):
+        BitgetPilotExchangePort(client,ledger).truth()
+    assert ledger.events("ECONOMICS")==[]
+    assert list(ledger.db.execute("SELECT source_id FROM economic_sources"))==[]
+
+
+def test_pre_confirmation_bill_is_not_in_pilot_funding_window(tmp_path):
+    client,ledger=TransportHarness(),PilotLedger(tmp_path/"pilot.sqlite")
+    ledger.append("ENTRY_INTENT",{"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry"},symbol="DOGEUSDT")
+    ledger.append("CANONICAL_OPEN",{"symbol":"DOGEUSDT","entry_client_oid":"cgc-fcp-entry",
+        "exchange_position_id":"p1"},symbol="DOGEUSDT")
+    events=ledger.events(); ledger.db.execute("UPDATE events SET timestamp_ms=1000 WHERE id=?",(events[0]["id"],))
+    ledger.db.execute("UPDATE events SET timestamp_ms=2000 WHERE id=?",(events[1]["id"],)); ledger.db.commit()
+    client.bills=[
+        {"billId":"between","symbol":"DOGEUSDT","amount":"-.9","businessType":"contract_settle_fee","cTime":"1500"},
+        {"billId":"after","symbol":"DOGEUSDT","amount":"-.1","businessType":"contract_settle_fee","cTime":"2001"},
+    ]
+    BitgetPilotExchangePort(client,ledger).truth()
+    sources={row[0] for row in ledger.db.execute("SELECT source_id FROM economic_sources")}
+    assert sources=={"funding:after"}
+
+
 def test_economics_overlap_and_restart_replay_are_exactly_once(tmp_path):
     client, ledger = TransportHarness(), PilotLedger(tmp_path / "pilot.sqlite")
     ledger.append("CANONICAL_OPEN", {"symbol":"DOGEUSDT", "entry_client_oid":"cgc-fcp-entry",

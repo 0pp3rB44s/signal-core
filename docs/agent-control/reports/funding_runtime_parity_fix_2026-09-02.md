@@ -53,11 +53,13 @@ No frozen strategy, production settings, `.env.live`, AdaptiveTrend, execution a
 
 ## Tests and checks
 
-- Funding verifier, live adapter, economics ledger, NAV/compounding, replay/idempotency, restart recovery, position economics, portfolio, configuration-security, and live launch-guard suites: 203 passed.
+- Funding verifier, live adapter, economics ledger, NAV/compounding, replay/idempotency, restart recovery, position economics, portfolio, configuration-security, and live launch-guard suites: 205 passed.
 - Mixed bills: only exact `contract_settle_fee` records booked.
 - Empty funding history: valid.
 - Exact `billId` repeated across polls/restart: booked once.
 - Official bill rows without `positionId`: older and foreign-symbol funding excluded; owned lifecycle row included.
+- Hostile same-symbol position-identity mismatch: fails before any economic event/source write, including across restart.
+- Timestamp fallback begins at durable `CANONICAL_OPEN`, excluding bills between entry intent and confirmed open.
 - `python3 -m compileall -q funding_pilot`: passed.
 - `git diff --check`: passed.
 - Credentials, environment files, network, and exchange order operations: not accessed.

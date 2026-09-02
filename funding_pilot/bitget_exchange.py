@@ -53,6 +53,8 @@ class BitgetPilotExchangePort:
                 }
                 continue
             lifecycle.update(payload)
+            if event["kind"] == "CANONICAL_OPEN":
+                lifecycle["confirmed_open_at_ms"] = int(event["timestamp_ms"])
             lifecycle["symbol"] = str(event.get("symbol") or payload.get("symbol") or "").upper()
             lifecycle["last_event_id"] = int(event["id"])
         active = [row for row in lifecycles.values() if not row.get("closed")]
@@ -129,8 +131,9 @@ class BitgetPilotExchangePort:
                     raise FailClosed(f"attributable funding timestamp invalid: {symbol}") from None
                 exact_position = (bool(row_position) and row_position == position_id
                                   and row_symbol == symbol)
-                lifecycle_window = (not row_position and row_symbol == symbol and
-                    created_ms >= int(identity.get("ownership_started_at_ms") or 0))
+                confirmed_open_ms = int(identity.get("confirmed_open_at_ms") or 0)
+                lifecycle_window = (not row_position and row_symbol == symbol
+                    and confirmed_open_ms > 0 and created_ms >= confirmed_open_ms)
                 if not (exact_position or lifecycle_window):
                     continue
                 bill_id = str(row.get("billId") or "")
@@ -144,8 +147,6 @@ class BitgetPilotExchangePort:
     def truth(self) -> ExchangeTruth:
         equity, available = self._accounts()
         owned = self._owned()
-        self._ingest_closed_economics(owned)
-        self._ingest_open_funding(owned)
         all_positions = _rows(self.client.get_all_positions())
         pending = _rows(self.client.get_pending_orders(limit=100))
         plans = []
@@ -230,6 +231,10 @@ class BitgetPilotExchangePort:
                     raise FailClosed(f"protected production margin unknown: {symbol}")
                 margin = abs(size * mark / leverage)
             protected_margin += abs(margin)
+        # Economic writes occur only after all exchange ownership, identity,
+        # same-symbol conflict, order, and stop checks have passed.
+        self._ingest_closed_economics(owned)
+        self._ingest_open_funding(owned)
         return ExchangeTruth(True, equity, available, tuple(pilot_positions), pilot_orders,
                              tuple(normalized_stops), protected_margin)
 
