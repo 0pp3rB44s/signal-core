@@ -234,6 +234,24 @@ class Settings(BaseSettings):
         default=False, alias="ADAPTIVE_TREND_LIVE_ENTRY_ENABLED"
     )
 
+    # Default OFF. Strategy-specific retirement switch, independent of and
+    # orthogonal to adaptive_trend_live_entry_enabled above -- that flag
+    # governs whether entries were ever turned on; this one governs whether
+    # they must now stop. When true: no new adaptive_trend_tsmom_v1 entry may
+    # reach order submission (enforced in execution_service.py's HYBRID SAFE
+    # MODE gate and defensively in execution/adaptive_trend_entry.py), with an
+    # explicit ADAPTIVE_TREND_RETIRED skip reason -- never silently folded
+    # into the generic "unsupported strategy" path. Existing position
+    # protection, reconciliation, and trailing-stop management for any
+    # already-open adaptive_trend_tsmom_v1 position are unaffected: this flag
+    # only gates new entries, mirroring RiskManager._microflow_retirement_gate
+    # in spirit but kept configurable (default False) rather than
+    # hardcoded, since -- unlike microflow_scalper_v1 -- this strategy is not
+    # unconditionally retired.
+    adaptive_trend_retired: bool = Field(
+        default=False, alias="ADAPTIVE_TREND_RETIRED"
+    )
+
     maker_entry_enabled: bool = Field(default=False, alias="MAKER_ENTRY_ENABLED")
     # Hybride: vult de maker-limit niet, dan alsnog een market-order (taker)
     # i.p.v. de trade skippen. True = nooit een trade missen + fee besparen waar
