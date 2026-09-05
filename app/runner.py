@@ -1024,6 +1024,7 @@ class StartupRunner:
                     winner_sizing=adaptive_trend_scan_result.get("winner_sizing"),
                     weekly_freeze_active=weekly_freeze_active,
                     execution_service=self.execution_service,
+                    retired=self.settings.adaptive_trend_retired,
                 )
 
             try:
