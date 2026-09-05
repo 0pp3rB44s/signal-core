@@ -7,13 +7,13 @@ explicit call site so that boundary stays true: nothing in the pure
 signal-evaluation path can ever submit an order, only this orchestration
 layer can, and only when the caller (app/runner.py) chooses to invoke it.
 
-Current status: reachable but INERT. `ExecutionService.execute()` still
-runs the plan through the unmodified HYBRID SAFE MODE gate
-(execution/execution_service.py), which does not recognise
-"adaptive_trend_tsmom_v1" as a supported strategy and unconditionally
-SKIPs it there -- before any entry order, before any protection call. That
-gate is intentionally untouched by this module. Live order eligibility is a
-separate, later, explicit decision, not a side effect of this file existing.
+Current status: reachable, and live-eligible once ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=true
+(execution/execution_service.py's HYBRID SAFE MODE gate recognises
+"adaptive_trend_tsmom_v1" via is_trailing_stop_only_strategy() + that flag --
+see is_adaptive_trend_live there). That gate is the authoritative live-entry
+switch; ADAPTIVE_TREND_RETIRED (checked here and, defensively, in that same
+gate) is a separate, later off switch for when the strategy is withdrawn --
+neither flag substitutes for the other.
 """
 
 from __future__ import annotations
@@ -31,13 +31,15 @@ logger = logging.getLogger("adaptive_trend")
 def submit_adaptive_trend_entry(
     *, winner: SignalCandidate | None, winner_sizing: SizingResult | None,
     weekly_freeze_active: bool, execution_service: ExecutionService,
+    retired: bool = False,
 ) -> ExecutionReport | None:
     """Build a TradePlan for the ranked winner and route it through the real
     execution path, if -- and only if -- there is a winner with accepted
-    sizing AND the weekly freeze is not active. Returns None otherwise (no
-    winner, sizing rejected, or frozen -- the same conditions under which
-    route_selected_candidate would have logged a rejection-reason shadow
-    record instead of an actionable one).
+    sizing AND the weekly freeze is not active AND the strategy is not
+    retired. Returns None otherwise (no winner, sizing rejected, frozen, or
+    retired -- the same conditions under which route_selected_candidate
+    would have logged a rejection-reason shadow record instead of an
+    actionable one).
 
     `weekly_freeze_active` is checked here independently of the caller's own
     ADAPTIVE_TREND_LIVE_ENTRY_ENABLED gate -- the feature flag is not a
@@ -46,12 +48,23 @@ def submit_adaptive_trend_entry(
     weekly_freeze_active there only changes shadow-record observability, not
     sizing). Both gates must independently hold for an entry to happen.
 
+    `retired` defaults False and is expected to be passed as
+    settings.adaptive_trend_retired by the caller. This is a defensive,
+    early check: the authoritative enforcement is execution_service.execute()'s
+    own ADAPTIVE_TREND_RETIRED gate (checked before its hybrid-strategy gate,
+    with the same explicit skip reason), which fires regardless of whether
+    this parameter is ever passed correctly -- so a caller that forgets this
+    argument does not reopen new entries.
+
     Never raises: a failure here must not be allowed to look like "silently
     did nothing" nor crash the caller's cycle. Any exception is logged and
     swallowed, matching the fail-safe contract of every other independent
     block in the scan cycle.
     """
     if winner is None or winner_sizing is None or not winner_sizing.accepted:
+        return None
+    if retired:
+        logger.info("ADAPTIVE_TREND_RETIRED | symbol=%s | stage=entry_call_site", winner.symbol)
         return None
     if weekly_freeze_active:
         logger.info(

@@ -63,6 +63,11 @@ MUTABLE_NON_SECRET_KEYS = frozenset({
     # False in app/config.py; this only lets the controlled tool flip it, it
     # does not change the default and does not restart or launch anything.
     "ADAPTIVE_TREND_LIVE_ENTRY_ENABLED",
+    # Added 2026-09-05: AdaptiveTrend's strategy-specific retirement switch.
+    # Defaults False in app/config.py (not retired); this only lets the
+    # controlled tool flip it, it does not change the default and does not
+    # restart or launch anything.
+    "ADAPTIVE_TREND_RETIRED",
 })
 
 # Reviewed additive keys introduced after existing Runner env files were
@@ -79,6 +84,9 @@ ADDITIVE_NON_SECRET_KEYS = frozenset({
     # Added 2026-08-24: absent from .env.live today (defaults False), so it
     # must be additive to be settable at all via this tool.
     "ADAPTIVE_TREND_LIVE_ENTRY_ENABLED",
+    # Added 2026-09-05: absent from .env.live today (defaults False), so it
+    # must be additive to be settable at all via this tool.
+    "ADAPTIVE_TREND_RETIRED",
 })
 
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")

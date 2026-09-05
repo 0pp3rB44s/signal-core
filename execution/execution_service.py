@@ -566,6 +566,27 @@ class ExecutionService:
                 )
                 plan.strategy = "execution_unknown_strategy"
 
+            # ADAPTIVE_TREND retirement: checked first, before the hybrid gate
+            # below, so a retirement can never be silently reclassified as
+            # "unsupported strategy" -- it gets its own explicit skip reason.
+            # This only ever turns an approval into a rejection for this one
+            # strategy_id; every other strategy's behaviour here is unchanged.
+            # Existing position protection/reconciliation/trailing for any
+            # already-open adaptive_trend_tsmom_v1 position lives entirely
+            # outside execute() (the new-entry path) and is unaffected.
+            if is_trailing_stop_only_strategy(plan.strategy) and bool(self.settings.adaptive_trend_retired):
+                reports.append(
+                    self._report(
+                        plan=plan,
+                        status="SKIPPED",
+                        message="ADAPTIVE_TREND_RETIRED",
+                        planned_avg_entry=planned_avg_entry,
+                        notional=min(plan.position_notional_usdt, hard_cap_notional),
+                        leverage=plan.leverage,
+                    )
+                )
+                continue
+
             # HYBRID SAFE MODE: live execution gate.
             # Allowed: liquidity sweep reversals + momentum breakout/breakdown + strict trend-continuation entries + low_vol_reclaim/reclaim.
             # Blocked: all unsupported strategies. When ENABLED_STRATEGIES is set
