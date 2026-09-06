@@ -191,7 +191,10 @@ class MicroflowSymbolState:
         previous = self.previous_book
         flows = {f"{window // 1000}s": self.flow(local_ts_ms, window) for window in WINDOWS_MS}
         return {
-            "schema_version": "microflow_state_v1",
+            # v2: collector.py adds receive_monotonic_ms on top of this dict before writing
+            # it (additive; timestamp_exchange/timestamp_local below are unchanged). v1 rows
+            # lack that field entirely and are not rewritten.
+            "schema_version": "microflow_state_v2",
             "timestamp_exchange": self.last_book_ts_ms,
             "timestamp_local": local_ts_ms,
             "symbol": self.symbol,

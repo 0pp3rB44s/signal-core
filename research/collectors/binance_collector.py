@@ -32,6 +32,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 from microflow.segments import ImmutableSegmentWriter
@@ -40,7 +41,13 @@ log = logging.getLogger("research.binance")
 
 WS_BASE = "wss://fstream.binance.com"
 REST_BASE = "https://fapi.binance.com"
-SCHEMA = "research_binance_v1"
+# v2 adds, additively, on top of v1: receive_monotonic_ms / write_monotonic_ms (a
+# time.monotonic()-based channel alongside the existing wall-clock ones -- it never
+# replaces them) and connection_id (persisted on every WS-sourced row so a row can be
+# joined back to the connection epoch that produced it). v1 rows lack these fields
+# entirely; they are not rewritten or reinterpreted. See CLEAN-EPOCH plan for how a
+# future collection run marks itself as unambiguously post-hardening.
+SCHEMA = "research_binance_v2"
 EXCHANGE = "binance-usdm"
 
 #: Binance publishes OI on a slow cadence and rate-limits REST. 60 s per symbol is safe and is not
@@ -131,6 +138,7 @@ class BinanceResearchCollector:
         self.liq_writer = mk("liquidations", "liq")
         self.oi_writer = mk("open_interest", "oi")
         self.health_writer = mk("health", "health")
+        self.reconnect_writer = mk("reconnects", "reconnect")
         self.counts = {"trade": 0, "book": 0, "mark": 0, "liq": 0, "oi": 0, "depth": 0}
         self.parse_failures = 0
         self.dropped = 0
@@ -161,6 +169,97 @@ class BinanceResearchCollector:
         # we resume from the last id we actually wrote, so a slow tick cannot silently skip trades.
         self._trade_cursor: dict[str, int] = {}
         self._same_ms: set[tuple] = set()
+        # time.monotonic() reference for the whole process, used only to detect wall-clock
+        # slew/step behaviour (health()'s wall_monotonic_divergence_s) -- never to timestamp
+        # rows. Distinct from the per-connection reference set in begin_connection().
+        self._monotonic_start_ms = time.monotonic() * 1000
+        self.connection_id: str = ""
+        self.connection_started_wall_ms = 0
+        self.connection_started_monotonic_ms = 0.0
+        self.begin_connection()
+
+    # --- connection identity / reconnect diagnostics -----------------------
+
+    def begin_connection(self) -> str:
+        """Mint a new connection epoch. Every row written from here on carries it, so a
+        reconnect boundary is a join key instead of something inferred from timestamps."""
+        self.connection_id = f"{EXCHANGE}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        self.connection_started_wall_ms = int(time.time() * 1000)
+        self.connection_started_monotonic_ms = time.monotonic() * 1000
+        return self.connection_id
+
+    def record_reconnect(self, *, primary_exception: BaseException,
+                         ping_exception: BaseException | None = None,
+                         disconnect_wall_ms: int | None = None,
+                         disconnect_monotonic_ms: float | None = None,
+                         close_code=None, close_reason=None) -> dict:
+        """Structured gap marker. The ORIGINAL failure is `primary_exception` -- never the
+        ping fallback's -- so this must be called with the exception that actually broke
+        the connection, not whatever `ws.ping()` raised while probing it (see recv_once).
+        Mints and assigns the NEXT connection_id as a side effect, matching MicroFlow's
+        assign-on-open behaviour on the Bitget side.
+        """
+        prev_connection_id = self.connection_id
+        reconnect_start_wall_ms = int(time.time() * 1000)
+        reconnect_start_monotonic_ms = time.monotonic() * 1000
+        next_connection_id = self.begin_connection()
+        record = {
+            "schema_version": f"{SCHEMA}_reconnect",
+            "exchange": EXCHANGE,
+            "event_type": "reconnect",
+            "prev_connection_id": prev_connection_id,
+            "next_connection_id": next_connection_id,
+            "disconnect_wall_ms": disconnect_wall_ms,
+            "disconnect_monotonic_ms": disconnect_monotonic_ms,
+            "reconnect_start_wall_ms": reconnect_start_wall_ms,
+            "reconnect_start_monotonic_ms": reconnect_start_monotonic_ms,
+            "original_exception_type": type(primary_exception).__name__,
+            "original_exception_message": str(primary_exception)[:500],
+            "ping_fallback_exception_type": (
+                type(ping_exception).__name__ if ping_exception is not None else None),
+            "ping_fallback_exception_message": (
+                str(ping_exception)[:500] if ping_exception is not None else None),
+            # websocket-client's sync WebSocketConnectionClosedException does not reliably
+            # carry the server close frame's code/reason (unlike Bitget's WebSocketApp
+            # on_close callback, which gets both directly) -- reported honestly as None
+            # rather than guessed.
+            "close_code": close_code,
+            "close_reason": close_reason,
+            "write_timestamp_ms": int(time.time() * 1000),
+            "research_only": True,
+        }
+        try:
+            self.reconnect_writer.append(record)
+        except Exception:
+            log.exception("RESEARCH_BINANCE_RECONNECT_RECORD_WRITE_FAILED")
+        return record
+
+    def recv_once(self, ws) -> None:
+        """Read and dispatch one frame. Raises iff the connection is actually dead.
+
+        The old inline version of this logic (`try: recv() except: try: ping() except:
+        raise`) let a FAILED ping's own exception replace the ORIGINAL recv() failure via
+        the bare `raise` inside its except clause -- so the reconnect log recorded "socket
+        is already closed" (the ping's error) instead of the real cause, in 94.9% of the
+        1,791 historical reconnects. `raise recv_exc from ping_exc` fixes this: recv_exc
+        propagates as the reported exception, unchanged, with ping_exc attached as
+        `__cause__` for secondary diagnostics rather than as a replacement.
+
+        A ping that SUCCEEDS is treated as before: the read is assumed transient and the
+        loop continues without reconnecting.
+        """
+        try:
+            self.handle_message(ws.recv())
+        except Exception as recv_exc:
+            ping_exc = None
+            try:
+                ws.ping()
+            except Exception as pe:
+                ping_exc = pe
+            if ping_exc is not None:
+                raise recv_exc from ping_exc
+            log.warning("RESEARCH_BINANCE_RECV_TRANSIENT | error=%s: %s",
+                        type(recv_exc).__name__, recv_exc)
 
     # --- streams ----------------------------------------------------------
 
@@ -176,9 +275,16 @@ class BinanceResearchCollector:
         parts.append("!forceOrder@arr")          # all-market, one stream, no per-symbol subscribe
         return "/stream?streams=" + "/".join(parts)
 
-    def handle_message(self, raw: str, *, now_ms: int | None = None) -> int:
-        """Parse one frame. Returns rows written. Never raises."""
+    def handle_message(self, raw: str, *, now_ms: int | None = None,
+                       monotonic_ms: float | None = None) -> int:
+        """Parse one frame. Returns rows written. Never raises.
+
+        `monotonic_ms` is captured back-to-back with `now_ms` in real use (see run()) so the
+        two clocks describe the same instant. It is additive: it never substitutes for
+        `now_ms`/`event_timestamp_ms`, both of which are still written unchanged.
+        """
         now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        monotonic_ms = monotonic_ms if monotonic_ms is not None else time.monotonic() * 1000
         try:
             frame = json.loads(raw)
         except Exception:
@@ -199,24 +305,28 @@ class BinanceResearchCollector:
                     # Binance flags the BUYER as maker; aggressor is the opposite side.
                     buyer_is_maker=payload.get("m"),
                     aggressor_side=("sell" if payload.get("m") else "buy"),
-                    trade_id=payload.get("a"), trade_time_ms=payload.get("T")))
+                    trade_id=payload.get("a"), trade_time_ms=payload.get("T")),
+                    monotonic_ms=monotonic_ms)
             if kind == "bookTicker":
                 return self._write("book", self.book_writer, payload, now_ms, dict(
                     symbol=payload.get("s"), best_bid=_f(payload.get("b")), bid_qty=_f(payload.get("B")),
                     best_ask=_f(payload.get("a")), ask_qty=_f(payload.get("A")),
-                    transaction_time_ms=payload.get("T")))
+                    transaction_time_ms=payload.get("T")),
+                    monotonic_ms=monotonic_ms)
             if kind == "markPriceUpdate":
                 return self._write("mark", self.mark_writer, payload, now_ms, dict(
                     symbol=payload.get("s"), mark_price=_f(payload.get("p")),
                     index_price=_f(payload.get("i")), estimated_settle=_f(payload.get("P")),
-                    funding_rate=_f(payload.get("r")), next_funding_ms=payload.get("T")))
+                    funding_rate=_f(payload.get("r")), next_funding_ms=payload.get("T")),
+                    monotonic_ms=monotonic_ms)
             if kind == "depthUpdate":
                 return self._write("depth", self.depth_writer, payload, now_ms, dict(
                     symbol=payload.get("s"),
                     first_update_id=payload.get("U"), final_update_id=payload.get("u"),
                     prev_final_update_id=payload.get("pu"),
                     bids=payload.get("b"), asks=payload.get("a"),
-                    transaction_time_ms=payload.get("T")))
+                    transaction_time_ms=payload.get("T")),
+                    monotonic_ms=monotonic_ms)
             if kind == "forceOrder":
                 order = payload.get("o") or {}
                 self.liq_events_total += 1
@@ -228,7 +338,8 @@ class BinanceResearchCollector:
                     order_status=order.get("X"), last_filled_qty=_f(order.get("l")),
                     filled_accumulated_qty=_f(order.get("z")),
                     notional=(_f(order.get("ap")) or 0) * (_f(order.get("z")) or 0),
-                    trade_time_ms=order.get("T")))
+                    trade_time_ms=order.get("T")),
+                    monotonic_ms=monotonic_ms)
         except Exception:
             log.exception("RESEARCH_BINANCE_WRITE_FAILED")
             self.parse_failures += 1
@@ -261,7 +372,8 @@ class BinanceResearchCollector:
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:32]
         return (EXCHANGE, key, symbol, "fp", fingerprint)
 
-    def _write(self, key: str, writer, payload: dict, now_ms: int, fields: dict) -> int:
+    def _write(self, key: str, writer, payload: dict, now_ms: int, fields: dict, *,
+              monotonic_ms: float) -> int:
         event_ms = payload.get("E")
         symbol = fields.get("symbol") or ""
         if len(self._seen) >= MAX_QUEUE:
@@ -296,6 +408,11 @@ class BinanceResearchCollector:
             "event_timestamp_ms": event_ms,
             "receive_timestamp_ms": now_ms,
             "write_timestamp_ms": int(time.time() * 1000),
+            # Additive timing channel: time.monotonic()-based, never a substitute for the
+            # wall-clock/exchange fields above. See module docstring / SCHEMA comment.
+            "receive_monotonic_ms": monotonic_ms,
+            "write_monotonic_ms": time.monotonic() * 1000,
+            "connection_id": self.connection_id,
             "raw": payload,
             "research_only": True,
             **fields,
@@ -317,6 +434,7 @@ class BinanceResearchCollector:
                 self.rate_limited_skips += 1
                 continue
             started = int(time.time() * 1000)
+            started_mono = time.monotonic() * 1000
             try:
                 oi = fetch("/fapi/v1/openInterest", {"symbol": symbol})
                 pi = fetch("/fapi/v1/premiumIndex", {"symbol": symbol})
@@ -329,6 +447,7 @@ class BinanceResearchCollector:
                 self.oi_errors += 1
                 continue
             completed = int(time.time() * 1000)
+            completed_mono = time.monotonic() * 1000
             amount = _f((oi or {}).get("openInterest"))
             mark = _f((pi or {}).get("markPrice"))
             index = _f((pi or {}).get("indexPrice"))
@@ -342,7 +461,9 @@ class BinanceResearchCollector:
                     "event_timestamp_ms": int(_f((oi or {}).get("time")) or _f((pi or {}).get("time")) or completed),
                     "receive_timestamp_ms": completed,
                     "write_timestamp_ms": int(time.time() * 1000),
+                    "write_monotonic_ms": time.monotonic() * 1000,
                     "fetch_started_ms": started, "fetch_completed_ms": completed,
+                    "fetch_started_monotonic_ms": started_mono, "fetch_completed_monotonic_ms": completed_mono,
                     "open_interest": amount, "mark_price": mark, "index_price": index,
                     "funding_rate": _f((pi or {}).get("lastFundingRate")),
                     "next_funding_ms": int(_f((pi or {}).get("nextFundingTime")) or 0) or None,
@@ -379,6 +500,7 @@ class BinanceResearchCollector:
                 self.rate_limited_skips += 1
                 continue
             started = int(time.time() * 1000)
+            started_mono = time.monotonic() * 1000
             cursor = self._trade_cursor.get(symbol)
             params = {"symbol": symbol, "limit": AGG_TRADE_LIMIT}
             if cursor is not None:
@@ -396,6 +518,7 @@ class BinanceResearchCollector:
             if len(self.symbols) > 1:
                 time.sleep(REST_INTER_REQUEST_S)  # stagger the sweep instead of bursting it
             completed = int(time.time() * 1000)
+            completed_mono = time.monotonic() * 1000
             if not isinstance(rows, list):
                 self.trade_errors += 1
                 continue
@@ -422,7 +545,10 @@ class BinanceResearchCollector:
                         "event_timestamp_ms": int(event_ms),
                         "receive_timestamp_ms": completed,
                         "write_timestamp_ms": int(time.time() * 1000),
+                        "write_monotonic_ms": time.monotonic() * 1000,
                         "fetch_started_ms": started, "fetch_completed_ms": completed,
+                        "fetch_started_monotonic_ms": started_mono,
+                        "fetch_completed_monotonic_ms": completed_mono,
                         "price": _f(row.get("p")), "quantity": _f(row.get("q")),
                         # Binance flags the BUYER as maker; the aggressor is the opposite side.
                         "buyer_is_maker": row.get("m"),
@@ -464,6 +590,7 @@ class BinanceResearchCollector:
                 self.rate_limited_skips += 1
                 continue
             started = int(time.time() * 1000)
+            started_mono = time.monotonic() * 1000
             try:
                 pi = fetch("/fapi/v1/premiumIndex", {"symbol": symbol})
             except RateLimited as exc:
@@ -475,6 +602,7 @@ class BinanceResearchCollector:
                 self.mark_errors += 1
                 continue
             completed = int(time.time() * 1000)
+            completed_mono = time.monotonic() * 1000
             mark = _f((pi or {}).get("markPrice"))
             if mark is None:
                 self.mark_errors += 1
@@ -495,7 +623,10 @@ class BinanceResearchCollector:
                     "event_timestamp_ms": event_ms,
                     "receive_timestamp_ms": completed,
                     "write_timestamp_ms": int(time.time() * 1000),
+                    "write_monotonic_ms": time.monotonic() * 1000,
                     "fetch_started_ms": started, "fetch_completed_ms": completed,
+                    "fetch_started_monotonic_ms": started_mono,
+                    "fetch_completed_monotonic_ms": completed_mono,
                     "mark_price": mark, "index_price": index,
                     "estimated_settle": _f((pi or {}).get("estimatedSettlePrice")),
                     "funding_rate": _f((pi or {}).get("lastFundingRate")),
@@ -607,12 +738,31 @@ class BinanceResearchCollector:
             return "HEALTHY_NO_EVENTS_OBSERVED"
         return "NO_DELIVERY_PROVEN"
 
+    def clock_health(self) -> dict:
+        """Wall-clock vs monotonic-clock divergence since process start.
+
+        time.monotonic() never slews or steps; time.time() can (that is exactly what the
+        data-integrity audit found: 7 multi-second correction episodes over ~117h). Any
+        growth in this divergence, on THIS process, is direct proof of a wall-clock
+        adjustment -- independent of trusting either exchange's clock.
+        """
+        now_mono_ms = time.monotonic() * 1000
+        wall_elapsed_s = (int(time.time() * 1000) - self.started_ms) / 1000.0
+        monotonic_elapsed_s = (now_mono_ms - self._monotonic_start_ms) / 1000.0
+        return {
+            "wall_elapsed_s": wall_elapsed_s,
+            "monotonic_elapsed_s": monotonic_elapsed_s,
+            "wall_monotonic_divergence_s": wall_elapsed_s - monotonic_elapsed_s,
+        }
+
     def health(self) -> dict:
         lat = sorted(self.latencies[-5000:])
         now = int(time.time() * 1000)
         return {
             "schema_version": f"{SCHEMA}_health", "exchange": EXCHANGE,
             "write_timestamp_ms": now, "uptime_s": (now - self.started_ms) / 1000.0,
+            "connection_id": self.connection_id,
+            **self.clock_health(),
             "rows": dict(self.counts),
             "streams": self.per_stream_health(),
             "book_stream_health": self.stream_health("book"),
@@ -644,7 +794,7 @@ class BinanceResearchCollector:
     def close(self) -> None:
         self.stop_event.set()
         for w in (self.trade_writer, self.book_writer, self.depth_writer, self.mark_writer,
-                  self.liq_writer, self.oi_writer, self.health_writer):
+                  self.liq_writer, self.oi_writer, self.health_writer, self.reconnect_writer):
             try:
                 w.close()
             except Exception:
@@ -671,13 +821,7 @@ def run(symbols: tuple[str, ...], data_dir: Path) -> None:  # pragma: no cover -
             while not c.stop_event.is_set():
                 if time.time() - opened > RECONNECT_SECONDS:
                     break
-                try:
-                    c.handle_message(ws.recv())
-                except Exception:
-                    try:
-                        ws.ping()
-                    except Exception:
-                        raise
+                c.recv_once(ws)
                 if time.time() - last_health > 60:
                     last_health = time.time()
                     h = c.health()
@@ -691,7 +835,17 @@ def run(symbols: tuple[str, ...], data_dir: Path) -> None:  # pragma: no cover -
         except Exception as exc:
             c.ws_errors += 1
             c.reconnects += 1
-            log.warning("RESEARCH_BINANCE_RECONNECT | error=%s", exc)
+            disconnect_wall_ms = int(time.time() * 1000)
+            disconnect_monotonic_ms = time.monotonic() * 1000
+            ping_exc = exc.__cause__
+            log.warning("RESEARCH_BINANCE_RECONNECT | error=%s: %s | ping_fallback_error=%s",
+                        type(exc).__name__, exc, ping_exc)
+            try:
+                c.record_reconnect(primary_exception=exc, ping_exception=ping_exc,
+                                   disconnect_wall_ms=disconnect_wall_ms,
+                                   disconnect_monotonic_ms=disconnect_monotonic_ms)
+            except Exception:
+                log.exception("RESEARCH_BINANCE_RECONNECT_RECORD_FAILED")
             if c.stop_event.wait(5.0):
                 break
     c.close()

@@ -196,3 +196,140 @@ def test_collector_module_cannot_import_execution_or_credentials():
                for alias in node.names}
     imports |= {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert not any(name.startswith(("execution", "planning", "risk", "clients")) for name in imports)
+
+
+# --- collector hardening: monotonic timestamps, reconnect markers, clock health ----------
+#
+# Symmetric with the Binance research collector's hardening. MicroFlow already had a
+# connection_id (assigned per-connection since before this patch); what it lacked was a
+# monotonic receive timestamp and a structured, joinable reconnect/gap record -- both added
+# here without touching the exchange/wall-clock fields it already wrote correctly.
+
+
+def test_monotonic_receive_timestamp_is_written_on_new_trade_and_book_records(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    trade_rows, book_rows = [], []
+    collector.trade_writer.append = lambda r: trade_rows.append(r)
+    collector.state_writer.append = lambda r: book_rows.append(r)
+    collector.handle_payload(trade("buy", "t1", 99_000, size=1, price=100), local_ts_ms=100_000)
+    collector.handle_payload(book(), local_ts_ms=100_000)
+    assert "receive_monotonic_ms" in trade_rows[0]
+    assert isinstance(trade_rows[0]["receive_monotonic_ms"], float)
+    assert "receive_monotonic_ms" in book_rows[0]
+    collector.candidate_writer.close()
+
+
+def test_monotonic_timestamp_is_additive_not_a_replacement(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    trade_rows = []
+    collector.trade_writer.append = lambda r: trade_rows.append(r)
+    collector.handle_payload(trade("buy", "t1", 99_000, size=1, price=100), local_ts_ms=100_000)
+    r = trade_rows[0]
+    # every field the schema had before this patch is still there, unchanged
+    assert r["timestamp_exchange"] == 99_000
+    assert r["timestamp_local"] == 100_000
+    assert "receive_monotonic_ms" in r
+    collector.candidate_writer.close()
+
+
+def test_monotonic_receive_values_do_not_decrease_within_one_session(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    rows = []
+    collector.trade_writer.append = lambda r: rows.append(r)
+    for i in range(20):
+        collector.handle_payload(
+            trade("buy", f"t{i}", 99_000 + i, size=1, price=100), local_ts_ms=100_000 + i)
+    values = [r["receive_monotonic_ms"] for r in rows]
+    assert values == sorted(values), "monotonic receive timestamps went backward in one process"
+    collector.candidate_writer.close()
+
+
+def test_connection_id_changes_after_a_reconnect(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    try:
+        first = FakeWSForReconnect()
+        collector.ws = first
+        collector._on_open(first)
+        first_id = collector.connection_id
+        assert first_id
+
+        collector._on_close(first, 1006, "dropped")
+
+        second = FakeWSForReconnect()
+        collector.ws = second
+        collector._on_open(second)
+        assert collector.connection_id != first_id
+    finally:
+        collector.stop()
+
+
+def test_reconnect_marker_records_prev_and_next_connection_id_and_close_info(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    rows = []
+    collector.reconnect_writer.append = lambda r: rows.append(r)
+    try:
+        first = FakeWSForReconnect()
+        collector.ws = first
+        collector._on_open(first)
+        first_id = collector.connection_id
+
+        collector._on_error(first, RuntimeError("connection reset by peer"))
+        collector._on_close(first, 1006, "abnormal closure")
+
+        second = FakeWSForReconnect()
+        collector.ws = second
+        collector._on_open(second)
+
+        assert len(rows) == 1
+        record = rows[0]
+        assert record["prev_connection_id"] == first_id
+        assert record["next_connection_id"] == collector.connection_id
+        assert record["close_code"] == 1006
+        assert record["close_reason"] == "abnormal closure"
+        assert record["last_error_type"] == "RuntimeError"
+        assert "connection reset by peer" in record["last_error_message"]
+    finally:
+        collector.stop()
+
+
+def test_no_reconnect_marker_is_written_for_the_very_first_connection(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    rows = []
+    collector.reconnect_writer.append = lambda r: rows.append(r)
+    try:
+        first = FakeWSForReconnect()
+        collector.ws = first
+        collector._on_open(first)
+        assert rows == [], "there is no previous connection for the first _on_open"
+    finally:
+        collector.stop()
+
+
+def test_clock_health_exposes_wall_and_monotonic_elapsed(tmp_path: Path):
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    status = collector.status()
+    for key in ("wall_elapsed_s", "monotonic_elapsed_s", "wall_monotonic_divergence_s"):
+        assert key in status
+
+
+def test_legacy_shaped_rows_remain_writable_by_the_segment_writer(tmp_path: Path):
+    """No reader in this repo re-parses MicroFlow's own historical segments, so there is no
+    reader contract to break -- but the writer must still accept a pre-hardening (v1-shaped)
+    row lacking every new field, proving the change is additive at the storage layer too."""
+    collector = MicroflowCollector(symbols=("BTCUSDT",), data_dir=tmp_path)
+    legacy_row = {"schema_version": "microflow_trade_v1", "timestamp_exchange": 1,
+                 "timestamp_local": 2, "symbol": "BTCUSDT", "price": 1.0, "size": 1.0,
+                 "aggressor_side": "buy", "trade_id": "x", "connection_id": "c",
+                 "quality": {"stream_gaps": 0}}
+    collector.trade_writer.append(legacy_row)  # must not raise
+    collector.trade_writer.close()
+
+
+class FakeWSForReconnect:
+    """Minimal fake matching what _on_open needs: a send() that succeeds."""
+
+    def send(self, payload: str) -> None:
+        pass
+
+    def close(self) -> None:
+        pass

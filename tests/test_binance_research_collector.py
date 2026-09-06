@@ -249,3 +249,157 @@ def test_a_dead_endpoint_is_counted_not_raised(c):
         raise RuntimeError("down")
     assert c.poll_open_interest_once(fetch=boom) == 0
     assert c.oi_errors == len(SYMBOLS)
+
+
+# --- collector hardening: monotonic timestamps, connection id, exception preservation ----
+#
+# Added for the research-collector-hardening pass. The two MUST_FIX items being tested here
+# are: (1) every row also carries a time.monotonic()-based receive timestamp, additive to the
+# existing wall/exchange clocks, so a future pipeline can detect wall-clock slew directly
+# instead of inferring it; (2) a reconnect's ORIGINAL recv() exception must survive even when
+# the ping fallback probe also fails, which previously replaced it with "socket is already
+# closed" in 94.9% of the 1,791 historical reconnects analyzed in the data-integrity audit.
+
+
+def test_monotonic_receive_timestamp_is_written_on_new_ws_records(c):
+    rows = []
+    c.book_writer.append = lambda r: rows.append(r)
+    c.handle_message(_book())
+    assert "receive_monotonic_ms" in rows[0]
+    assert isinstance(rows[0]["receive_monotonic_ms"], float)
+
+
+def test_monotonic_timestamp_is_additive_not_a_replacement(c):
+    rows = []
+    c.book_writer.append = lambda r: rows.append(r)
+    c.handle_message(_book(E=1_500), now_ms=1_600)
+    r = rows[0]
+    # every field the schema had before this patch is still there, unchanged
+    assert r["event_timestamp_ms"] == 1_500
+    assert r["receive_timestamp_ms"] == 1_600
+    assert r["write_timestamp_ms"] >= 0
+    # and the new channel is genuinely additional, not a rename
+    assert "receive_monotonic_ms" in r and "write_monotonic_ms" in r
+
+
+def test_monotonic_receive_values_do_not_decrease_within_one_session(c):
+    rows = []
+    c.book_writer.append = lambda r: rows.append(r)
+    for i in range(20):
+        c.handle_message(_book(u=100 + i))
+    values = [r["receive_monotonic_ms"] for r in rows]
+    assert values == sorted(values), "monotonic receive timestamps went backward in one process"
+
+
+def test_rest_rows_also_carry_monotonic_fetch_timestamps(c):
+    import time as _t
+    rows = []
+    c.mark_writer.append = lambda r: rows.append(r)
+
+    def fetch(path, params):
+        return {"markPrice": "10", "indexPrice": "9.9", "lastFundingRate": "0.0001",
+                "nextFundingTime": 1, "time": int(_t.time() * 1000)}
+
+    c.poll_mark_once(fetch=fetch)
+    assert len(rows) == len(SYMBOLS)
+    for r in rows:
+        assert "fetch_started_monotonic_ms" in r and "fetch_completed_monotonic_ms" in r
+        assert r["fetch_completed_monotonic_ms"] >= r["fetch_started_monotonic_ms"]
+        # existing wall-clock fields are untouched
+        assert "fetch_started_ms" in r and "fetch_completed_ms" in r
+
+
+def test_connection_id_is_assigned_and_persisted_on_every_row(c):
+    first_id = c.connection_id
+    assert first_id
+    rows = []
+    c.book_writer.append = lambda r: rows.append(r)
+    c.handle_message(_book())
+    assert rows[0]["connection_id"] == first_id
+
+
+def test_connection_id_changes_after_a_recorded_reconnect(c):
+    first_id = c.connection_id
+    record = c.record_reconnect(primary_exception=RuntimeError("boom"))
+    assert c.connection_id != first_id
+    assert record["prev_connection_id"] == first_id
+    assert record["next_connection_id"] == c.connection_id
+
+    second_id = c.connection_id
+    record2 = c.record_reconnect(primary_exception=RuntimeError("boom again"))
+    assert record2["prev_connection_id"] == second_id
+    assert record2["next_connection_id"] == c.connection_id
+    assert record2["next_connection_id"] != record["next_connection_id"]
+
+
+def test_original_recv_exception_survives_even_when_ping_fallback_also_fails(c):
+    class DeadSocket:
+        def recv(self):
+            raise ValueError("original recv failure: connection reset")
+
+        def ping(self):
+            raise OSError("socket is already closed.")
+
+    with pytest.raises(ValueError) as excinfo:
+        c.recv_once(DeadSocket())
+    assert "original recv failure" in str(excinfo.value)
+    # the ping fallback's failure is retained too, but as the cause -- never as a replacement
+    assert isinstance(excinfo.value.__cause__, OSError)
+    assert "socket is already closed" in str(excinfo.value.__cause__)
+
+
+def test_a_successful_ping_after_a_transient_recv_error_does_not_raise(c):
+    class FlakySocket:
+        def recv(self):
+            raise TimeoutError("temporary read timeout")
+
+        def ping(self):
+            return None  # socket is still alive
+
+    c.recv_once(FlakySocket())  # must not raise
+
+
+def test_record_reconnect_preserves_both_exceptions_separately(c):
+    primary = ConnectionResetError("connection reset by peer")
+    secondary = OSError("socket is already closed.")
+    record = c.record_reconnect(primary_exception=primary, ping_exception=secondary)
+    assert record["original_exception_type"] == "ConnectionResetError"
+    assert "connection reset by peer" in record["original_exception_message"]
+    assert record["ping_fallback_exception_type"] == "OSError"
+    assert "socket is already closed" in record["ping_fallback_exception_message"]
+
+
+def test_reconnect_record_has_disconnect_and_reconnect_timing(c):
+    record = c.record_reconnect(primary_exception=RuntimeError("x"),
+                                disconnect_wall_ms=1_000, disconnect_monotonic_ms=2_000.0)
+    assert record["disconnect_wall_ms"] == 1_000
+    assert record["disconnect_monotonic_ms"] == 2_000.0
+    assert record["reconnect_start_wall_ms"] >= 0
+    assert record["reconnect_start_monotonic_ms"] >= 0
+
+
+def test_clock_health_exposes_wall_and_monotonic_elapsed(c):
+    h = c.health()
+    for key in ("wall_elapsed_s", "monotonic_elapsed_s", "wall_monotonic_divergence_s"):
+        assert key in h
+    assert h["connection_id"] == c.connection_id
+
+
+def test_legacy_shaped_rows_remain_writable_by_the_segment_writer(c):
+    """No reader in this repo re-parses these collectors' own historical segments, so there
+    is no reader contract to break -- but the writer itself must still happily accept a
+    pre-hardening (v1-shaped) row that lacks every new field, proving the change is additive
+    at the storage layer as well as the schema layer."""
+    legacy_row = {"schema_version": "research_binance_v1_book", "exchange": "binance-usdm",
+                 "symbol": "BTCUSDT", "event_timestamp_ms": 1, "receive_timestamp_ms": 2,
+                 "write_timestamp_ms": 3, "raw": {}, "research_only": True}
+    c.book_writer.append(legacy_row)  # must not raise
+
+
+def test_collectors_remain_research_only_after_hardening():
+    """Re-assert the isolation invariant after this patch: no execution/order import crept
+    in alongside uuid (the only new stdlib import this patch adds)."""
+    for name in _imports(REPO / "research/collectors/binance_collector.py"):
+        root = name.split(".")[0]
+        assert root not in {"execution", "app", "risk", "planning", "strategies"}
+        assert "order" not in name.lower()

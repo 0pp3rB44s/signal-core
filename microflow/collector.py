@@ -66,10 +66,10 @@ class MicroflowCollector:
         self.states = {symbol: MicroflowSymbolState(symbol) for symbol in self.symbols}
         self.samplers = {symbol: CandidateEpisodeSampler() for symbol in self.symbols}
         self.state_writer = ImmutableSegmentWriter(
-            self.data_dir / "state", schema_version="microflow_state_v1", symbols=self.symbols
+            self.data_dir / "state", schema_version="microflow_state_v2", symbols=self.symbols
         )
         self.trade_writer = ImmutableSegmentWriter(
-            self.data_dir / "trades", schema_version="microflow_trade_v1", symbols=self.symbols
+            self.data_dir / "trades", schema_version="microflow_trade_v2", symbols=self.symbols
         )
         self.candidate_writer = ImmutableSegmentWriter(
             self.data_dir / "candidates", schema_version="microflow_candidate_v1", symbols=self.symbols
@@ -78,6 +78,13 @@ class MicroflowCollector:
         # reads it, and disabling it cannot change what the bot trades.
         self.near_miss_writer = ImmutableSegmentWriter(
             self.data_dir / "near_miss", schema_version="microflow_near_miss_v1", symbols=self.symbols
+        )
+        # New in the collector-hardening pass: a structured gap/reconnect marker, symmetric
+        # with the Binance research collector's reconnect_writer. Bitget's WebSocketApp gives
+        # real close code/reason directly (unlike Binance's sync client), so this record is
+        # actually more complete than the Binance side's for those two fields.
+        self.reconnect_writer = ImmutableSegmentWriter(
+            self.data_dir / "reconnects", schema_version="microflow_reconnect_v1", symbols=self.symbols
         )
         self.near_miss = NearMissTracker(FrozenResearchSpec())
         self.near_miss_rows = 0
@@ -101,6 +108,14 @@ class MicroflowCollector:
         self._last_channel_ts: dict[tuple[str, str], int] = {}
         self._latest_snapshots: dict[str, dict] = {}
         self._snapshot_lock = threading.Lock()
+        # Clock-health reference for this process (time.monotonic() vs time.time()),
+        # symmetric with the Binance research collector's clock_health().
+        self._started_wall_ms = int(time.time() * 1000)
+        self._started_monotonic_ms = time.monotonic() * 1000
+        # Consumed by _on_open to build one structured reconnect record per disconnect.
+        # None until the first _on_close (the very first connection has no "previous" one).
+        self._pending_disconnect: dict | None = None
+        self._last_error: BaseException | None = None
 
     def latest_snapshot(self, symbol: str) -> dict | None:
         """Return the latest complete public snapshot for a pre-submit gate."""
@@ -117,8 +132,10 @@ class MicroflowCollector:
             self.stream_gaps[symbol] += 1
         self._last_channel_ts[key] = timestamp_ms
 
-    def handle_payload(self, payload: dict, *, local_ts_ms: int | None = None) -> int:
+    def handle_payload(self, payload: dict, *, local_ts_ms: int | None = None,
+                       monotonic_ts_ms: float | None = None) -> int:
         now_ms = int(local_ts_ms or time.time() * 1000)
+        mono_ms = float(monotonic_ts_ms) if monotonic_ts_ms is not None else time.monotonic() * 1000
         self.last_frame_local_ms = now_ms
         self.frames += 1
         event = payload.get("event")
@@ -147,9 +164,12 @@ class MicroflowCollector:
                     continue
                 self._record_channel_time(symbol, channel, trade_ts)
                 self.trade_writer.append({
-                    "schema_version": "microflow_trade_v1",
+                    "schema_version": "microflow_trade_v2",
                     "timestamp_exchange": trade_ts,
                     "timestamp_local": now_ms,
+                    # Additive time.monotonic() channel; timestamp_exchange/timestamp_local
+                    # above are unchanged and remain the source of truth for those clocks.
+                    "receive_monotonic_ms": mono_ms,
                     "symbol": symbol,
                     "price": float(row["price"]),
                     "size": float(row["size"]),
@@ -172,6 +192,9 @@ class MicroflowCollector:
             )
             self._record_channel_time(symbol, channel, exchange_ts)
             snapshot = state.snapshot(local_ts_ms=now_ms, connection_id=self.connection_id)
+            # Additive time.monotonic() channel, added post-hoc rather than threading a new
+            # parameter through MicroflowSymbolState.snapshot()'s existing contract.
+            snapshot["receive_monotonic_ms"] = mono_ms
             snapshot["quality"]["stream_gaps"] = self.stream_gaps[symbol]
             with self._snapshot_lock:
                 self._latest_snapshots[symbol] = snapshot
@@ -237,6 +260,23 @@ class MicroflowCollector:
             log.warning("MICROFLOW_FRAME_REJECTED | error=%s", exc)
             return 0
 
+    def clock_health(self) -> dict:
+        """Wall-clock vs monotonic-clock divergence since process start.
+
+        Symmetric with the Binance research collector's clock_health(): time.monotonic()
+        never slews or steps, so any growth in this divergence is direct, self-contained
+        proof of a wall-clock adjustment on this machine, independent of trusting Bitget's
+        own clock.
+        """
+        now_mono_ms = time.monotonic() * 1000
+        wall_elapsed_s = (int(time.time() * 1000) - self._started_wall_ms) / 1000.0
+        monotonic_elapsed_s = (now_mono_ms - self._started_monotonic_ms) / 1000.0
+        return {
+            "wall_elapsed_s": wall_elapsed_s,
+            "monotonic_elapsed_s": monotonic_elapsed_s,
+            "wall_monotonic_divergence_s": wall_elapsed_s - monotonic_elapsed_s,
+        }
+
     def status(self) -> dict:
         now_ms = int(time.time() * 1000)
         return {
@@ -245,6 +285,7 @@ class MicroflowCollector:
             "pid": os.getpid(),
             "read_only": True,
             "orders_allowed": False,
+            **self.clock_health(),
             "ws_url": self.ws_url,
             "book_channel": "books5",
             "trade_channel": "trade",
@@ -300,11 +341,47 @@ class MicroflowCollector:
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=5.0)
 
+    def _record_reconnect_if_pending(self, next_connection_id: str) -> None:
+        """Consume the disconnect info _on_close staged and write one structured record.
+
+        Nothing is written for the very first connection (no prior disconnect exists).
+        Bitget's WebSocketApp gives real close code/reason directly here, unlike the
+        Binance sync client's exception model, so this record is more complete than the
+        Binance side's for those two fields -- reported as-is, not padded to look symmetric.
+        """
+        pending = self._pending_disconnect
+        if pending is None:
+            return
+        self._pending_disconnect = None
+        record = {
+            "schema_version": "microflow_reconnect_v1",
+            "exchange": "bitget",
+            "event_type": "reconnect",
+            "prev_connection_id": pending["prev_connection_id"],
+            "next_connection_id": next_connection_id,
+            "disconnect_wall_ms": pending["disconnect_wall_ms"],
+            "disconnect_monotonic_ms": pending["disconnect_monotonic_ms"],
+            "reconnect_start_wall_ms": int(time.time() * 1000),
+            "reconnect_start_monotonic_ms": time.monotonic() * 1000,
+            "close_code": pending["close_code"],
+            "close_reason": pending["close_reason"],
+            "last_error_type": pending["last_error_type"],
+            "last_error_message": pending["last_error_message"],
+            "write_timestamp_ms": int(time.time() * 1000),
+            "research_only": True,
+        }
+        try:
+            self.reconnect_writer.append(record)
+        except Exception:
+            log.exception("MICROFLOW_RECONNECT_RECORD_WRITE_FAILED")
+
     def _on_open(self, ws) -> None:
         # Defensive: a previous connection must never outlive this one, even if
         # its close callback was skipped.
         self._stop_active_heartbeat()
-        self.connection_id = str(uuid.uuid4())
+        new_connection_id = str(uuid.uuid4())
+        self._record_reconnect_if_pending(new_connection_id)
+        self.connection_id = new_connection_id
         self.subscription_acks.clear()
         try:
             ws.send(json.dumps(subscription_payload(self.symbols), separators=(",", ":")))
@@ -336,10 +413,24 @@ class MicroflowCollector:
 
     def _on_error(self, _ws, error) -> None:
         log.warning("MICROFLOW_WS_ERROR | error=%s", error)
+        # Consumed (and cleared) by the next _on_close. Unlike the Binance recv/ping path,
+        # there is no secondary-failure step here that could overwrite this -- websocket-
+        # client's run_forever() calls on_error with whatever broke the read loop directly.
+        self._last_error = error
 
     def _on_close(self, _ws, code, reason) -> None:
         log.warning("MICROFLOW_WS_CLOSE | code=%s | reason=%s", code, reason)
         self._stop_active_heartbeat()
+        self._pending_disconnect = {
+            "prev_connection_id": self.connection_id,
+            "disconnect_wall_ms": int(time.time() * 1000),
+            "disconnect_monotonic_ms": time.monotonic() * 1000,
+            "close_code": code,
+            "close_reason": reason,
+            "last_error_type": type(self._last_error).__name__ if self._last_error else None,
+            "last_error_message": str(self._last_error) if self._last_error else None,
+        }
+        self._last_error = None
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -373,6 +464,7 @@ class MicroflowCollector:
         self.trade_writer.close()
         self.near_miss_writer.close()
         self.candidate_writer.close()
+        self.reconnect_writer.close()
         self._write_status()
 
 
