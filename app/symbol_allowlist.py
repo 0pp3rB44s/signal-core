@@ -29,6 +29,25 @@ OWNER_APPROVED_PRODUCTION_SYMBOLS = (
     "NEARUSDT",
 )
 
+#: low_vol_reclaim_v2's own validated universe, distinct from the current
+#: OWNER_APPROVED_PRODUCTION_SYMBOLS above. This is the exact 8-symbol set
+#: behind the strategy's only real track record (49 exchange-confirmed LIVE
+#: closes at SHA cd9d8300861af7a69d67947f69fe75802eeb4b5d, 2026-08-12): gross
+#: +0.15 bps/trade, net -11.84 bps/trade. The allowlist has moved on since
+#: (see OWNER_APPROVED_PRODUCTION_SYMBOLS); only 5 of these 8 still overlap.
+#: Restoring low_vol_reclaim_v2 onto the newer 12-symbol set would be restoring
+#: the code, not its evidence -- so this strategy keeps its own allowlist.
+LOW_VOL_RECLAIM_V2_APPROVED_SYMBOLS = (
+    "BTCUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "XLMUSDT",
+    "AVAXUSDT",
+    "DOGEUSDT",
+    "SEIUSDT",
+    "TRXUSDT",
+)
+
 #: Owner-approved in principle but withheld from execution, with the reason.
 #: WIFUSDT measured 6.91-7.01 bps across seven readings over twelve hours
 #: against the unchanged 5.0 bps execution limit — a structural gap, not a
@@ -70,6 +89,7 @@ def canonical_symbol_csv(value: str, *, required: bool = False) -> str:
 
 __all__ = [
     "OWNER_APPROVED_PRODUCTION_SYMBOLS",
+    "LOW_VOL_RECLAIM_V2_APPROVED_SYMBOLS",
     "SymbolAllowlistError",
     "canonical_symbol_csv",
     "parse_symbol_allowlist",

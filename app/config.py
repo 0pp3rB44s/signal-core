@@ -3,7 +3,11 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.symbol_allowlist import OWNER_APPROVED_PRODUCTION_SYMBOLS, parse_symbol_allowlist
+from app.symbol_allowlist import (
+    LOW_VOL_RECLAIM_V2_APPROVED_SYMBOLS,
+    OWNER_APPROVED_PRODUCTION_SYMBOLS,
+    parse_symbol_allowlist,
+)
 
 #: Owner-approved two-position portfolio for this release. Pinned to exact
 #: values rather than an upper bound: 0, 1 or 3 must all fail closed, so a
@@ -16,6 +20,13 @@ LIVE_MAX_OPEN_POSITIONS = 2
 #: raising MAX_LEVERAGE does not hand them a wider permission.
 MICROFLOW_MAX_ALLOWED_LEVERAGE = 10.0
 LIVE_MAX_EXECUTIONS_PER_CYCLE = 2
+
+#: low_vol_reclaim_v2's own leverage ceiling. Verified directly in app/config.py
+#: at SHA cd9d8300861af7a69d67947f69fe75802eeb4b5d: DEFAULT_LEVERAGE=MAX_LEVERAGE=5.0.
+#: This is the strategy's proven historical value, not a re-derived or assumed
+#: one -- leverage is a deployment decision, not edge, so it is pinned rather
+#: than allowed to silently drift toward MICROFLOW_MAX_ALLOWED_LEVERAGE above.
+LOW_VOL_RECLAIM_V2_MAX_ALLOWED_LEVERAGE = 5.0
 
 
 class Settings(BaseSettings):
@@ -400,11 +411,22 @@ class Settings(BaseSettings):
             if self.execution_margin_mode.strip().lower() != "isolated":
                 raise ValueError("LIVE requires EXECUTION_MARGIN_MODE=isolated")
             if self.is_production:
-                if tuple(symbols) != OWNER_APPROVED_PRODUCTION_SYMBOLS:
+                # low_vol_reclaim_v2 carries its own, older, evidence-backed
+                # allowlist (see LOW_VOL_RECLAIM_V2_APPROVED_SYMBOLS): its only
+                # real track record was measured on those 8 symbols, and the
+                # owner-approved universe has since moved on to a different
+                # 12-symbol set with just 5 names overlapping. Every other
+                # production strategy still requires the current universe.
+                expected_symbols = (
+                    LOW_VOL_RECLAIM_V2_APPROVED_SYMBOLS
+                    if self.enabled_strategy_set == {"low_vol_reclaim_v2"}
+                    else OWNER_APPROVED_PRODUCTION_SYMBOLS
+                )
+                if tuple(symbols) != expected_symbols:
                     raise ValueError(
                         "production LIVE requires exactly the owner-approved allowlist "
-                        f"({len(OWNER_APPROVED_PRODUCTION_SYMBOLS)} symbols): "
-                        + ",".join(OWNER_APPROVED_PRODUCTION_SYMBOLS)
+                        f"({len(expected_symbols)} symbols): "
+                        + ",".join(expected_symbols)
                     )
                 if not self.strategy_isolation_enabled:
                     raise ValueError("production LIVE requires STRATEGY_ISOLATION_ENABLED=true")
@@ -438,10 +460,25 @@ class Settings(BaseSettings):
                             "production LIVE requires ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=true "
                             "for adaptive_trend_tsmom_v1"
                         )
+                elif self.enabled_strategy_set == {"low_vol_reclaim_v2"}:
+                    # Restored per the 2026-09 Sunday recovery review as an
+                    # OPERATIONAL_REFERENCE_ONLY capability: its own real trade
+                    # evidence (49 exchange-confirmed LIVE closes) showed gross
+                    # ~0 bps/trade and net -11.84 bps/trade, i.e. no proven
+                    # edge. This branch makes the strategy deployable again
+                    # without silently granting it a wider symbol set or
+                    # higher leverage than it was ever validated on. It does
+                    # NOT change SUNDAY_REAL_MONEY_RECOMMENDATION=DO_NOT_ENABLE.
+                    if self.max_leverage > LOW_VOL_RECLAIM_V2_MAX_ALLOWED_LEVERAGE:
+                        raise ValueError(
+                            "MAX_LEVERAGE may not exceed "
+                            f"{LOW_VOL_RECLAIM_V2_MAX_ALLOWED_LEVERAGE:g} for "
+                            "low_vol_reclaim_v2 (verified historical value)"
+                        )
                 else:
                     raise ValueError(
-                        "production LIVE allowlist must be exactly microflow_scalper_v1 "
-                        "or adaptive_trend_tsmom_v1"
+                        "production LIVE allowlist must be exactly microflow_scalper_v1, "
+                        "adaptive_trend_tsmom_v1, or low_vol_reclaim_v2"
                     )
                 if self.max_leverage > MICROFLOW_MAX_ALLOWED_LEVERAGE:
                     raise ValueError(
