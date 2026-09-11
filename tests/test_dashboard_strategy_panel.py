@@ -12,12 +12,19 @@ Two failure modes are guarded here, and they are not the same:
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from dashboard_v3.core import sources as src
 from dashboard_v3.core.status import Status
 from dashboard_v3.panels import strategy as sp
+
+# build_economics() filters to a rolling window_days=30 relative to wall-clock "now"
+# (see dashboard_v3/panels/strategy.py). A fixed historical literal here ages out of
+# that window after enough real time passes -- compute one relative timestamp instead,
+# comfortably inside the default window regardless of when the suite runs.
+_FIXTURE_TIMESTAMP = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
 
 
 class _Loaded:
@@ -50,18 +57,18 @@ def feed(monkeypatch):
 
 
 def _cand(strategy, cid):
-    return {"timestamp": "2026-08-10T00:00:00+00:00", "candidate_id": cid, "strategy": strategy}
+    return {"timestamp": _FIXTURE_TIMESTAMP, "candidate_id": cid, "strategy": strategy}
 
 
 def _plan(strategy, cid, verdict="EXECUTABLE", reasons=""):
-    return {"timestamp": "2026-08-10T00:00:00+00:00", "candidate_id": cid,
+    return {"timestamp": _FIXTURE_TIMESTAMP, "candidate_id": cid,
             "plan_id": "p" + cid, "strategy": strategy, "verdict": verdict, "reasons": reasons}
 
 
 def _close(strategy, lifecycle, gross, fees, funding, net, **extra):
     row = {
         "event_type": "CLOSE", "status": "CLOSED", "strategy": strategy,
-        "position_lifecycle_id": lifecycle, "closed_at": "2026-08-10T00:00:00+00:00",
+        "position_lifecycle_id": lifecycle, "closed_at": _FIXTURE_TIMESTAMP,
         "gross_pnl": gross, "fees": fees, "funding": funding, "net_pnl": net,
         "sync_source": "bitget_position_history", "data_confidence": "EXCHANGE_TRUTH",
     }
