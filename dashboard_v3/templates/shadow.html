@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}Sunday Shadow{% endblock %}
+{% block heading %}Sunday Shadow{% endblock %}
+
+{% set s = shadow %}
+{% set rt = s.runtime %}
+{% set sm = s.summary %}
+{% set eq = s.execution_quality %}
+{% set mp = s.metrics_panel %}
+{% set psafe = s.production_safety %}
+{% set rsafe = s.real_exchange_safety %}
+{% set open_trades = s.open_trades %}
+{% set closed_trades = s.closed_trades %}
+{% set open_trades_provenance = s.open_trades_provenance %}
+{% set closed_trades_provenance = s.closed_trades_provenance %}
+{% set hardening_boundary_sha = s.hardening_boundary_sha %}
+
+{% block verdict %}
+<div class="verdict t-{{ tone(s.overall) }}">
+  <h2>{{ glyph(s.overall) }} SUNDAY SHADOW — {{ status_label(s.overall) }}</h2>
+  {% if not s.root_available %}
+  <p><strong>Shadow root unavailable:</strong> {{ s.root_error }}</p>
+  {% else %}
+  <p>{{ rt.status_reason }}</p>
+  {% endif %}
+  <p class="s">MODE {{ sm.mode }} · PROVEN_ALPHA {{ sm.proven_alpha }} · PROVEN_NET_EDGE {{ sm.proven_net_edge }} — hypothetical figures, not a live-trading result.</p>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="card">
+  <h2>Shadow engine</h2>
+  <div class="grid g4">
+    {{ metric("Engine status", status_label(rt.status)) }}
+    {{ metric("PID", rt.pid or "UNKNOWN") }}
+    {{ metric("Runtime SHA", (rt.runtime_sha[:12] + "…") if rt.runtime_sha else "UNKNOWN") }}
+    {{ metric("Expected SHA", sm.expected_sha) }}
+    {{ metric("SHA match", rt.sha_match) }}
+    {{ metric("Last successful scan", dt_utc(rt.last_successful_scan_utc) if rt.last_successful_scan_utc else "UNKNOWN", ago(rt.seconds_since_last_scan) ~ " ago" if rt.seconds_since_last_scan is not none else None) }}
+    {{ metric("Market data receiving", "YES" if rt.market_data_receiving else ("NO" if rt.market_data_receiving is not none else "UNKNOWN")) }}
+    {{ metric("Signal loop running", "YES" if rt.signal_loop_running else ("NO" if rt.signal_loop_running is not none else "UNKNOWN")) }}
+  </div>
+  {{ provenance(rt.heartbeat_prov) }}
+</div>
+
+<div class="card">
+  <h2>Shadow trades — summary</h2>
+  <div class="grid g4">
+    {{ metric("Opened total", sm.trades_opened_total) }}
+    {{ metric("Closed total", sm.trades_closed_total) }}
+    {{ metric("Currently open", sm.trades_currently_open) }}
+    {{ metric("Winners / Losers", (sm.winners|string) ~ " / " ~ (sm.losers|string)) }}
+    {{ metric("Cumulative gross PnL", money(sm.cumulative_gross_pnl)) }}
+    {{ metric("Cumulative net PnL", money(sm.cumulative_net_pnl)) }}
+    {{ metric("Max closed gain", money((closed_trades|selectattr('net_pnl','ne',None)|map(attribute='net_pnl')|max) if closed_trades and (closed_trades|selectattr('net_pnl','ne',None)|list) else None)) }}
+    {{ metric("Max closed loss", money((closed_trades|selectattr('net_pnl','ne',None)|map(attribute='net_pnl')|min) if closed_trades and (closed_trades|selectattr('net_pnl','ne',None)|list) else None)) }}
+  </div>
+  <p class="s">Small-sample statistics. Not a proof of profitability.</p>
+</div>
+
+<div class="card">
+  <h2>Open shadow positions ({{ open_trades|length }})</h2>
+  {% if open_trades %}
+  <table class="tbl">
+    <thead><tr>
+      <th>Symbol</th><th>Dir</th><th>Strategy</th><th>Signal→Fill bps</th><th>Spread bps</th>
+      <th>SL</th><th>TP</th><th>Mark</th><th>MFE%</th><th>MAE%</th><th>Age</th><th>Hardening</th>
+    </tr></thead>
+    <tbody>
+      {% for t in open_trades %}
+      <tr>
+        <td>{{ t.symbol }}</td><td>{{ t.direction }}</td><td>{{ t.strategy }}</td>
+        <td>{{ num(t.signal_to_fill_bps) }}</td><td>{{ num(t.spread_bps) }}</td>
+        <td>{{ num(t.stop_loss, 6) }}</td><td>{{ num(t.take_profit, 6) }}</td>
+        <td>{{ num(t.current_mark_price, 6) }}</td>
+        <td>{{ pct_raw(t.latest_mfe_pct) }}</td><td>{{ pct_raw(t.latest_mae_pct) }}</td>
+        <td>{{ ago(t.trade_age_seconds) }}</td>
+        <td><span class="tag">{{ t.hardening }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  {{ empty("Geen open shadow-posities.") }}
+  {% endif %}
+  {{ provenance(open_trades_provenance) }}
+</div>
+
+<div class="card">
+  <h2>Closed shadow trades ({{ closed_trades|length }})</h2>
+  {% if closed_trades %}
+  <table class="tbl">
+    <thead><tr>
+      <th>Close</th><th>Symbol</th><th>Dir</th><th>Strategy</th><th>Signal→Fill bps</th>
+      <th>Spread bps</th><th>Exit</th><th>Gross</th><th>Net</th><th>R</th><th>MFE%</th><th>MAE%</th>
+      <th>Commit</th><th>Hardening</th>
+    </tr></thead>
+    <tbody>
+      {% for t in closed_trades %}
+      <tr class="{{ 'row-pre' if t.hardening == 'PRE_HARDENING' else '' }}">
+        <td>{{ dt_utc(t.exit_timestamp) if t.exit_timestamp else "UNKNOWN" }}</td>
+        <td>{{ t.symbol }}</td><td>{{ t.direction }}</td><td>{{ t.strategy }}</td>
+        <td>{{ num(t.signal_to_fill_bps) }}</td><td>{{ num(t.spread_bps) }}</td>
+        <td>{{ t.final_exit_reason or "UNKNOWN" }}</td>
+        <td>{{ money(t.gross_pnl) }}</td><td>{{ money(t.net_pnl) }}</td>
+        <td>{{ num(t.result_r) }}</td>
+        <td>{{ pct_raw(t.mfe_pct) }}</td><td>{{ pct_raw(t.mae_pct) }}</td>
+        <td><code>{{ (t.git_commit or "")[:10] }}</code></td>
+        <td><span class="tag {{ 'warn' if t.hardening == 'PRE_HARDENING' else '' }}">{{ t.hardening }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="s">PRE_HARDENING rows (highlighted) predate commit {{ hardening_boundary_sha }} and must not be read as evidence of the hardened runtime's behaviour.</p>
+  {% else %}
+  {{ empty("Nog geen closed shadow trades.") }}
+  {% endif %}
+  {{ provenance(closed_trades_provenance) }}
+</div>
+
+<div class="card">
+  <h2>OI / flow metrics — post-hardening trades</h2>
+  <div class="grid g4">
+    {{ metric("Post-fix trades total", mp.post_fix_trades_total) }}
+    {{ metric("With metrics", mp.post_fix_trades_with_metrics) }}
+    {{ metric("Without metrics", mp.post_fix_trades_without_metrics) }}
+    {{ metric("Availability rate", pct(mp.metrics_availability_rate) if mp.metrics_availability_rate is not none else "UNKNOWN") }}
+  </div>
+  <p><strong>{{ mp.validation_status }}</strong></p>
+  {% if mp.rows %}
+  <table class="tbl">
+    <thead><tr><th>Symbol</th><th>OI</th><th>ΔOI 5m</th><th>ΔOI 15m</th><th>Taker buy/sell</th><th>Top-trader L/S</th><th>Global L/S</th></tr></thead>
+    <tbody>
+      {% for t in mp.rows %}
+      <tr><td>{{ t.symbol }}</td><td>{{ num(t.open_interest) }}</td>
+        <td>{{ num(t.open_interest_change_5m) }}</td><td>{{ num(t.open_interest_change_15m) }}</td>
+        <td>{{ num(t.taker_buy_sell_volume_ratio) }}</td><td>{{ num(t.top_trader_long_short_ratio) }}</td>
+        <td>{{ num(t.global_long_short_ratio) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Execution quality</h2>
+  <div class="grid g2">
+    <div>
+      <h3>All shadow trades (n={{ eq.all.n }})</h3>
+      <div class="grid g4">
+        {{ metric("Latest", num(eq.all.signal_to_fill.latest)) }}
+        {{ metric("Avg", num(eq.all.signal_to_fill.avg)) }}
+        {{ metric("Median", num(eq.all.signal_to_fill.median)) }}
+        {{ metric("P25 / P75", num(eq.all.signal_to_fill.p25) ~ " / " ~ num(eq.all.signal_to_fill.p75)) }}
+        {{ metric("Avg spread bps", num(eq.all.spread_avg)) }}
+        {{ metric("Median spread bps", num(eq.all.spread_median)) }}
+        {{ metric("Favorable / Adverse", (eq.all.favorable_fill_count|string) ~ " / " ~ (eq.all.adverse_fill_count|string)) }}
+      </div>
+    </div>
+    <div>
+      <h3>Post-hardening only (n={{ eq.post_hardening.n }})</h3>
+      <div class="grid g4">
+        {{ metric("Latest", num(eq.post_hardening.signal_to_fill.latest)) }}
+        {{ metric("Avg", num(eq.post_hardening.signal_to_fill.avg)) }}
+        {{ metric("Median", num(eq.post_hardening.signal_to_fill.median)) }}
+        {{ metric("P25 / P75", num(eq.post_hardening.signal_to_fill.p25) ~ " / " ~ num(eq.post_hardening.signal_to_fill.p75)) }}
+      </div>
+    </div>
+  </div>
+  <p class="s">Historical adverse-selection reference: {{ eq.historical_reference_bps }} bps — {{ eq.reference_label }}. Measured historically on displacement/chasing-style entries; not a universal constant.</p>
+</div>
+
+<div class="card">
+  <h2>Real exchange safety</h2>
+  <div class="grid g4">
+    {{ metric("Exchange state source", rsafe.source) }}
+    {{ metric("Freshness", rsafe.freshness) }}
+    {{ metric("Last known local position status", rsafe.last_known_position_status or "UNKNOWN") }}
+  </div>
+  <p class="s">{{ rsafe.note }}</p>
+</div>
+
+<div class="card">
+  <h2>Production safety</h2>
+  <div class="grid g4">
+    {{ metric("Production SHA", (psafe.production_sha[:12] + "…") if psafe.production_sha else "UNKNOWN") }}
+    {{ metric("Expected production SHA", psafe.expected_production_sha[:12] ~ "…") }}
+    {{ metric("SHA match", "YES" if psafe.production_sha_match else ("NO" if psafe.production_sha_match is not none else "UNKNOWN")) }}
+    {{ metric("Engine running", "YES" if psafe.production_engine_running else "NO") }}
+    {{ metric("live.stop present", "YES" if psafe.live_stop_present else "NO") }}
+    {{ metric("supervisor.stop present", "YES" if psafe.supervisor_stop_present else "NO") }}
+    {{ metric("Worktree clean", "YES" if psafe.production_worktree_clean else ("NO" if psafe.production_worktree_clean is not none else "UNKNOWN")) }}
+  </div>
+</div>
+
+{% endblock %}

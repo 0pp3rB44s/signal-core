@@ -62,6 +62,7 @@ NAV = [
     ("incidents", "Incidents", "/incidents"),
     ("health", "Data Health", "/health"),
     ("watchdog", "Watchdog", "/watchdog"),
+    ("shadow", "Sunday Shadow", "/shadow"),
 ]
 
 
@@ -337,6 +338,20 @@ def health():
 def watchdog():
     """Production watchdog status: read-only view of state/watchdog_status.json."""
     return _page("watchdog.html", "watchdog")
+
+
+@app.route("/shadow")
+@login_required
+def shadow_page():
+    """Sunday shadow run: dedicated observability, separate from production data.
+
+    Rendered even when d (assembly.build_all()) has nothing shadow-specific in
+    it - this page carries its own payload and does not depend on the
+    production panel set.
+    """
+    from dashboard_v3.panels import shadow as shadow_panel
+    return _page("shadow.html", "shadow",
+                 shadow=assembly.cached("shadow", shadow_panel.build, ttl=15.0))
 
 
 # --- read-only JSON -----------------------------------------------------
