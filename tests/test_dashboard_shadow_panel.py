@@ -215,8 +215,8 @@ def test_pre_hardening_trade_is_never_classified_post(tmp_path, monkeypatch):
     _write_shadow_root(tmp_path, outcomes_rows=[_ROW_PRE])
     closed, _ = shadow.load_closed_trades()
     assert closed[0]["hardening"] == "PRE_HARDENING"
-    metrics = shadow.build_metrics_panel(closed)
-    assert metrics["post_fix_trades_total"] == 0
+    metrics = shadow.build_metrics_panel([], closed)
+    assert metrics["post_fix_trades_opened_total"] == 0
     assert metrics["validation_status"] == "WAITING_FOR_FIRST_ORGANIC_POST_FIX_TRADE"
 
 
@@ -235,10 +235,59 @@ def test_metrics_available_when_post_hardening_trade_has_metrics(tmp_path, monke
     _write_shadow_root(tmp_path, outcomes_rows=[_ROW_WIN])
     closed, _ = shadow.load_closed_trades()
     assert closed[0]["hardening"] == "POST_HARDENING"
-    metrics = shadow.build_metrics_panel(closed)
-    assert metrics["post_fix_trades_total"] == 1
+    metrics = shadow.build_metrics_panel([], closed)
+    assert metrics["post_fix_trades_opened_total"] == 1
+    assert metrics["post_fix_trades_closed_total"] == 1
+    assert metrics["post_fix_trades_currently_open"] == 0
     assert metrics["post_fix_trades_with_metrics"] == 1
     assert metrics["metrics_availability_rate"] == 1.0
+
+
+def test_open_post_fix_trade_counts_toward_metrics_without_closing(tmp_path, monkeypatch):
+    """The bug this test exists for: entry-time metrics context is captured at
+    TRADE_OPENED, not at close. A post-fix trade that is still open, with
+    metrics_available=True, must already count as opened-with-metrics -
+    validation must not wait for it to close."""
+    monkeypatch.setattr(ssrc, "SHADOW_ROOT", tmp_path)
+    monkeypatch.setattr(shadow, "HARDENING_BOUNDARY_SHA", "commitA")
+    monkeypatch.setattr(ssrc, "is_ancestor", lambda older, newer: "YES" if older == newer else "NO")
+    _write_shadow_root(tmp_path, outcomes_rows=[])
+    open_trade = {
+        "trade_id": "t1", "symbol": "AAVEUSDT", "hardening": "POST_HARDENING",
+        "git_commit": "commitA", "signal_to_fill_bps": 5.9, "spread_bps": 0.8,
+        "metrics_available": True, "open_interest": 437355.6,
+    }
+    metrics = shadow.build_metrics_panel([open_trade], [])
+    assert metrics["post_fix_trades_opened_total"] == 1
+    assert metrics["post_fix_trades_currently_open"] == 1
+    assert metrics["post_fix_trades_closed_total"] == 0
+    assert metrics["post_fix_trades_with_metrics"] == 1
+    assert metrics["validation_status"] == "METRICS_OBSERVED_ON_POST_FIX_TRADES"
+
+
+def test_open_trade_decision_timestamp_is_not_aliased_to_signal_timestamp(tmp_path, monkeypatch):
+    """decision_timestamp and signal_timestamp are distinct real fields -
+    portfolio selection can run minutes after the signal was first seen. An
+    earlier version of this code aliased decision_timestamp to
+    signal_timestamp's value, silently discarding the real field."""
+    monkeypatch.setattr(ssrc, "SHADOW_ROOT", tmp_path)
+    monkeypatch.setattr(ssrc, "is_ancestor", lambda older, newer: "UNKNOWN")
+    events = [
+        {"trade_id": "t1", "event_type": "TRADE_OPENED", "sequence": 0,
+         "timestamp": "2026-09-12T18:47:00+00:00",
+         "payload": {"symbol": "AAVEUSDT", "direction": "LONG",
+                     "signal_timestamp": "2026-09-12T18:30:00+00:00",
+                     "decision_timestamp": "2026-09-12T18:47:00.713276+00:00"}},
+    ]
+    (tmp_path / "state").mkdir()
+    (tmp_path / "data_store").mkdir()
+    (tmp_path / "data_store" / "forward_paper_outcomes.csv").write_text("git_commit\n")
+    (tmp_path / "data_store" / "forward_paper_events.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in events))
+    open_trades, _ = shadow.load_open_trades()
+    assert open_trades[0]["signal_timestamp"] == "2026-09-12T18:30:00+00:00"
+    assert open_trades[0]["decision_timestamp"] == "2026-09-12T18:47:00.713276+00:00"
+    assert open_trades[0]["decision_timestamp"] != open_trades[0]["signal_timestamp"]
 
 
 def test_signal_to_fill_aggregation_percentiles(tmp_path, monkeypatch):
@@ -246,12 +295,25 @@ def test_signal_to_fill_aggregation_percentiles(tmp_path, monkeypatch):
     monkeypatch.setattr(ssrc, "is_ancestor", lambda older, newer: "UNKNOWN")
     _write_shadow_root(tmp_path, outcomes_rows=[_ROW_WIN, _ROW_LOSS])
     closed, _ = shadow.load_closed_trades()
-    eq = shadow.build_execution_quality(closed)
-    assert eq["all"]["n"] == 2
-    assert eq["all"]["signal_to_fill"]["avg"] == pytest.approx((5.0 + -3.0) / 2)
-    assert eq["all"]["favorable_fill_count"] == 1  # -3.0 <= 0
-    assert eq["all"]["adverse_fill_count"] == 1    # 5.0 > 0
+    eq = shadow.build_execution_quality([], closed)
+    assert eq["all_opened"]["n"] == 2
+    assert eq["all_opened"]["signal_to_fill"]["avg"] == pytest.approx((5.0 + -3.0) / 2)
+    assert eq["all_opened"]["favorable_fill_count"] == 1  # -3.0 <= 0
+    assert eq["all_opened"]["adverse_fill_count"] == 1    # 5.0 > 0
     assert eq["reference_label"] == "REFERENCE_ONLY_NOT_UNIVERSAL"
+
+
+def test_execution_quality_combines_open_and_closed_trades(tmp_path, monkeypatch):
+    """signal_to_fill_bps exists on open trades too (captured at entry) - the
+    'all opened' bucket must include them, not just closed trades."""
+    monkeypatch.setattr(ssrc, "SHADOW_ROOT", tmp_path)
+    monkeypatch.setattr(ssrc, "is_ancestor", lambda older, newer: "UNKNOWN")
+    _write_shadow_root(tmp_path, outcomes_rows=[_ROW_WIN])  # signal_to_fill_bps=5.0
+    closed, _ = shadow.load_closed_trades()
+    open_trade = {"symbol": "X", "hardening": "UNKNOWN", "signal_to_fill_bps": 3.0, "spread_bps": 1.0}
+    eq = shadow.build_execution_quality([open_trade], closed)
+    assert eq["all_opened"]["n"] == 2
+    assert eq["all_opened"]["signal_to_fill"]["avg"] == pytest.approx((5.0 + 3.0) / 2)
 
 
 # --- tolerance ---------------------------------------------------------

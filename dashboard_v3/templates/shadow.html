@@ -77,11 +77,35 @@
         <td>{{ num(t.current_mark_price, 6) }}</td>
         <td>{{ pct_raw(t.latest_mfe_pct) }}</td><td>{{ pct_raw(t.latest_mae_pct) }}</td>
         <td>{{ ago(t.trade_age_seconds) }}</td>
-        <td><span class="tag">{{ t.hardening }}</span></td>
+        <td><span class="tag {{ 'warn' if t.hardening == 'PRE_HARDENING' else '' }}">{{ t.hardening }}</span></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <details class="explain">
+    <summary>Decision timestamps &amp; entry-time metrics per open position</summary>
+    <table class="tbl">
+      <thead><tr><th>Symbol</th><th>Source candle</th><th>Signal ts</th><th>Decision ts</th>
+        <th>Metrics avail.</th><th>Metrics age (s)</th><th>Metrics stale</th>
+        <th>OI</th><th>ΔOI 5m</th><th>ΔOI 15m</th><th>Taker buy/sell</th>
+        <th>Top-trader L/S</th><th>Global L/S</th></tr></thead>
+      <tbody>
+        {% for t in open_trades %}
+        <tr><td>{{ t.symbol }}</td>
+          <td>{{ t.source_candle_timestamp }}</td>
+          <td>{{ dt_utc(t.signal_timestamp) if t.signal_timestamp else "UNKNOWN" }}</td>
+          <td>{{ dt_utc(t.decision_timestamp) if t.decision_timestamp else "UNKNOWN" }}</td>
+          <td>{{ "YES" if t.metrics_available else ("NO" if t.metrics_available is not none else "UNKNOWN") }}</td>
+          <td>{{ num(t.metrics_age_seconds) }}</td>
+          <td>{{ "YES" if t.metrics_stale else ("NO" if t.metrics_stale is not none else "UNKNOWN") }}</td>
+          <td>{{ num(t.open_interest) }}</td><td>{{ num(t.open_interest_change_5m) }}</td>
+          <td>{{ num(t.open_interest_change_15m) }}</td><td>{{ num(t.taker_buy_sell_volume_ratio) }}</td>
+          <td>{{ num(t.top_trader_long_short_ratio) }}</td><td>{{ num(t.global_long_short_ratio) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
   {% else %}
   {{ empty("Geen open shadow-posities.") }}
   {% endif %}
@@ -121,9 +145,12 @@
 </div>
 
 <div class="card">
-  <h2>OI / flow metrics — post-hardening trades</h2>
+  <h2>OI / flow metrics — post-hardening trades (open + closed)</h2>
+  <p class="s">Entry-time metrics context is captured once, at trade open — a trade does not need to close for its telemetry to count here.</p>
   <div class="grid g4">
-    {{ metric("Post-fix trades total", mp.post_fix_trades_total) }}
+    {{ metric("Opened total", mp.post_fix_trades_opened_total) }}
+    {{ metric("Currently open", mp.post_fix_trades_currently_open) }}
+    {{ metric("Closed total", mp.post_fix_trades_closed_total) }}
     {{ metric("With metrics", mp.post_fix_trades_with_metrics) }}
     {{ metric("Without metrics", mp.post_fix_trades_without_metrics) }}
     {{ metric("Availability rate", pct(mp.metrics_availability_rate) if mp.metrics_availability_rate is not none else "UNKNOWN") }}
@@ -131,10 +158,11 @@
   <p><strong>{{ mp.validation_status }}</strong></p>
   {% if mp.rows %}
   <table class="tbl">
-    <thead><tr><th>Symbol</th><th>OI</th><th>ΔOI 5m</th><th>ΔOI 15m</th><th>Taker buy/sell</th><th>Top-trader L/S</th><th>Global L/S</th></tr></thead>
+    <thead><tr><th>Symbol</th><th>Open/Closed</th><th>OI</th><th>ΔOI 5m</th><th>ΔOI 15m</th><th>Taker buy/sell</th><th>Top-trader L/S</th><th>Global L/S</th></tr></thead>
     <tbody>
       {% for t in mp.rows %}
-      <tr><td>{{ t.symbol }}</td><td>{{ num(t.open_interest) }}</td>
+      <tr><td>{{ t.symbol }}</td><td>{{ "CLOSED" if t.exit_timestamp is defined else "OPEN" }}</td>
+        <td>{{ num(t.open_interest) }}</td>
         <td>{{ num(t.open_interest_change_5m) }}</td><td>{{ num(t.open_interest_change_15m) }}</td>
         <td>{{ num(t.taker_buy_sell_volume_ratio) }}</td><td>{{ num(t.top_trader_long_short_ratio) }}</td>
         <td>{{ num(t.global_long_short_ratio) }}</td></tr>
@@ -146,18 +174,27 @@
 
 <div class="card">
   <h2>Execution quality</h2>
-  <div class="grid g2">
+  <p class="s">Includes open trades' entry-side telemetry — signal_to_fill_bps is captured at entry and does not require a close.</p>
+  <div class="grid g3">
     <div>
-      <h3>All shadow trades (n={{ eq.all.n }})</h3>
+      <h3>All opened, any lineage (n={{ eq.all_opened.n }})</h3>
       <div class="grid g4">
-        {{ metric("Latest", num(eq.all.signal_to_fill.latest)) }}
-        {{ metric("Avg", num(eq.all.signal_to_fill.avg)) }}
-        {{ metric("Median", num(eq.all.signal_to_fill.median)) }}
-        {{ metric("P25 / P75", num(eq.all.signal_to_fill.p25) ~ " / " ~ num(eq.all.signal_to_fill.p75)) }}
-        {{ metric("Avg spread bps", num(eq.all.spread_avg)) }}
-        {{ metric("Median spread bps", num(eq.all.spread_median)) }}
-        {{ metric("Favorable / Adverse", (eq.all.favorable_fill_count|string) ~ " / " ~ (eq.all.adverse_fill_count|string)) }}
+        {{ metric("Latest", num(eq.all_opened.signal_to_fill.latest)) }}
+        {{ metric("Avg", num(eq.all_opened.signal_to_fill.avg)) }}
+        {{ metric("Median", num(eq.all_opened.signal_to_fill.median)) }}
+        {{ metric("P25 / P75", num(eq.all_opened.signal_to_fill.p25) ~ " / " ~ num(eq.all_opened.signal_to_fill.p75)) }}
+        {{ metric("Avg spread bps", num(eq.all_opened.spread_avg)) }}
+        {{ metric("Median spread bps", num(eq.all_opened.spread_median)) }}
+        {{ metric("Favorable / Adverse", (eq.all_opened.favorable_fill_count|string) ~ " / " ~ (eq.all_opened.adverse_fill_count|string)) }}
       </div>
+    </div>
+    <div>
+      <h3>Pre-hardening only (n={{ eq.pre_hardening.n }})</h3>
+      <div class="grid g4">
+        {{ metric("Avg", num(eq.pre_hardening.signal_to_fill.avg)) }}
+        {{ metric("Median", num(eq.pre_hardening.signal_to_fill.median)) }}
+      </div>
+      <p class="s">Not evidence of the hardened runtime's execution quality.</p>
     </div>
     <div>
       <h3>Post-hardening only (n={{ eq.post_hardening.n }})</h3>

@@ -299,7 +299,11 @@ def load_open_trades() -> tuple[list[dict[str, Any]], Any]:
             "direction": payload.get("direction"),
             "strategy": payload.get("strategy"),
             "source_candle_timestamp": payload.get("candidate_candle_open_timestamp_ms"),
-            "decision_timestamp": payload.get("signal_timestamp"),
+            # signal_timestamp and decision_timestamp are distinct fields in the
+            # real schema (decision can trail signal by minutes, once portfolio
+            # selection runs across several candidates) - never conflate them.
+            "signal_timestamp": payload.get("signal_timestamp"),
+            "decision_timestamp": payload.get("decision_timestamp"),
             "signal_price": _num(payload.get("planned_entry")),
             "intended_entry_price": _num(payload.get("planned_entry")),
             "hypothetical_fill_price": _num(payload.get("simulated_fill")),
@@ -315,6 +319,18 @@ def load_open_trades() -> tuple[list[dict[str, Any]], Any]:
             "latest_mfe_pct": None,
             "latest_mae_pct": None,
             "latest_excursion_at": None,
+            # Entry-time metrics context - captured once, at TRADE_OPENED, not
+            # something that only exists once a trade closes.
+            "metrics_available": _bool(payload.get("metrics_available")),
+            "metrics_stale": _bool(payload.get("metrics_stale")),
+            "metrics_age_seconds": _num(payload.get("metrics_age_seconds")),
+            "binance_metrics_timestamp": payload.get("binance_metrics_timestamp"),
+            "open_interest": _num(payload.get("open_interest")),
+            "open_interest_change_5m": _num(payload.get("open_interest_change_5m")),
+            "open_interest_change_15m": _num(payload.get("open_interest_change_15m")),
+            "taker_buy_sell_volume_ratio": _num(payload.get("taker_buy_sell_volume_ratio")),
+            "top_trader_long_short_ratio": _num(payload.get("top_trader_long_short_ratio")),
+            "global_long_short_ratio": _num(payload.get("global_long_short_ratio")),
         }
         for event in events_sorted:
             etype = event.get("event_type")
@@ -341,46 +357,76 @@ def load_open_trades() -> tuple[list[dict[str, Any]], Any]:
 
 
 # --- aggregation -------------------------------------------------------
+#
+# Entry-time telemetry (signal_to_fill_bps, spread_bps, metrics_available, OI,
+# etc.) is captured once, at TRADE_OPENED - it does not require a trade to
+# close. Every function below that aggregates "post-fix trades" or execution
+# quality therefore takes BOTH open and closed trades, never closed alone.
 
-def build_execution_quality(closed: list[dict[str, Any]]) -> dict[str, Any]:
+def _all_opened(open_trades: list[dict[str, Any]], closed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return list(open_trades) + list(closed)
+
+
+def build_execution_quality(open_trades: list[dict[str, Any]],
+                             closed: list[dict[str, Any]]) -> dict[str, Any]:
     def stats_for(rows: list[dict[str, Any]]) -> dict[str, Any]:
         s2f = [r["signal_to_fill_bps"] for r in rows if r.get("signal_to_fill_bps") is not None]
         spread = [r["spread_bps"] for r in rows if r.get("spread_bps") is not None]
-        s2f_stats = _stats(s2f)
         return {
             "n": len(rows),
-            "signal_to_fill": s2f_stats,
+            "signal_to_fill": _stats(s2f),
             "spread_avg": (sum(spread) / len(spread)) if spread else None,
             "spread_median": _percentile(spread, 0.5),
             "favorable_fill_count": sum(1 for v in s2f if v is not None and v <= 0),
             "adverse_fill_count": sum(1 for v in s2f if v is not None and v > 0),
         }
 
-    post = [r for r in closed if r["hardening"] == "POST_HARDENING"]
+    opened = _all_opened(open_trades, closed)
+    pre = [r for r in opened if r["hardening"] == "PRE_HARDENING"]
+    post = [r for r in opened if r["hardening"] == "POST_HARDENING"]
     return {
-        "all": stats_for(closed),
+        "all_opened": stats_for(opened),
+        "pre_hardening": stats_for(pre),
         "post_hardening": stats_for(post),
         "historical_reference_bps": HISTORICAL_ADVERSE_SELECTION_REFERENCE_BPS,
         "reference_label": "REFERENCE_ONLY_NOT_UNIVERSAL",
     }
 
 
-def build_metrics_panel(closed: list[dict[str, Any]]) -> dict[str, Any]:
-    post = [r for r in closed if r["hardening"] == "POST_HARDENING"]
-    with_metrics = [r for r in post if r.get("metrics_available") is True]
-    if not post:
+def build_metrics_panel(open_trades: list[dict[str, Any]],
+                         closed: list[dict[str, Any]]) -> dict[str, Any]:
+    """POST_FIX_* counters over every post-fix trade ever OPENED - open or
+    closed - never gated on a trade having closed. Definitions:
+      OPENED_TOTAL   = post-fix trades opened (open + closed)
+      CURRENTLY_OPEN = post-fix trades not yet closed
+      CLOSED_TOTAL   = post-fix trades already closed
+      WITH_METRICS   = post-fix OPENED trades whose entry-time metrics
+                       context was successfully captured (metrics_available
+                       True at TRADE_OPENED)
+      WITHOUT_METRICS = post-fix OPENED trades lacking that context
+    """
+    post_open = [r for r in open_trades if r["hardening"] == "POST_HARDENING"]
+    post_closed = [r for r in closed if r["hardening"] == "POST_HARDENING"]
+    post_all = post_open + post_closed
+    with_metrics = [r for r in post_all if r.get("metrics_available") is True]
+    without_metrics = [r for r in post_all if r.get("metrics_available") is not True]
+
+    if not post_all:
         validation_status = "WAITING_FOR_FIRST_ORGANIC_POST_FIX_TRADE"
     elif with_metrics:
         validation_status = "METRICS_OBSERVED_ON_POST_FIX_TRADES"
     else:
         validation_status = "POST_FIX_TRADES_EXIST_BUT_NO_METRICS_YET"
+
     return {
-        "post_fix_trades_total": len(post),
+        "post_fix_trades_opened_total": len(post_all),
+        "post_fix_trades_currently_open": len(post_open),
+        "post_fix_trades_closed_total": len(post_closed),
         "post_fix_trades_with_metrics": len(with_metrics),
-        "post_fix_trades_without_metrics": len(post) - len(with_metrics),
-        "metrics_availability_rate": (len(with_metrics) / len(post)) if post else None,
+        "post_fix_trades_without_metrics": len(without_metrics),
+        "metrics_availability_rate": (len(with_metrics) / len(post_all)) if post_all else None,
         "validation_status": validation_status,
-        "rows": with_metrics,
+        "rows": post_all,
     }
 
 
@@ -495,8 +541,8 @@ def build() -> dict[str, Any]:
     runtime = load_runtime()
     closed, closed_prov = load_closed_trades()
     open_trades, open_prov = load_open_trades()
-    execution_quality = build_execution_quality(closed)
-    metrics_panel = build_metrics_panel(closed)
+    execution_quality = build_execution_quality(open_trades, closed)
+    metrics_panel = build_metrics_panel(open_trades, closed)
     summary = build_summary(runtime, closed, open_trades)
     prod_safety = build_production_safety()
     real_safety = build_real_exchange_safety()
