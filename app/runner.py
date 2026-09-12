@@ -29,6 +29,7 @@ from execution.position_manager import PositionManager
 from execution.portfolio_selector import select_execution_winner
 from telemetry.ranked_plans import RankedPlanLogger
 from execution.runtime_lock import trading_state_lock
+from binance_metrics_context.provider import BinanceMetricsContextProvider
 from forward_paper.service import ForwardPaperService
 from execution.state_store import JsonStateStore
 from planning.trade_planner import TradePlanner
@@ -488,6 +489,11 @@ class StartupRunner:
             outcomes_path=settings.forward_paper_outcomes_path,
             quality_path=settings.forward_paper_quality_path,
             funnel_telemetry=self.funnel_telemetry,
+            metrics_provider=(
+                BinanceMetricsContextProvider()
+                if settings.forward_paper_metrics_context_enabled
+                else None
+            ),
         )
         self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
         self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")

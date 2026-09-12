@@ -233,3 +233,91 @@ def test_config_identity_never_serializes_secrets(tmp_path):
 
     serialized = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
     assert all(value not in serialized for value in secrets.values())
+
+
+def test_metrics_context_defaults_to_unavailable_when_no_provider_configured(tmp_path):
+    """No metrics_provider wired -- SUNDAY_SHADOW_TELEMETRY_FINALIZATION's default OFF
+    state. Must not error, must not omit the fields, must report unavailable."""
+    service = _service(tmp_path)
+    service.process([_plan()], [_snapshot(1_000, close=100.0, high=100.0, low=100.0)])
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    assert opened["payload"]["metrics_available"] is False
+    assert opened["payload"]["open_interest"] is None
+
+
+def test_metrics_context_flows_from_provider_into_trade_opened_payload(tmp_path):
+    from binance_metrics_context.causal import MetricsRow
+    from binance_metrics_context.provider import BinanceMetricsContextProvider
+
+    provider = BinanceMetricsContextProvider(
+        fetch_open_interest=lambda symbol, period: [MetricsRow(0, 5000.0)],
+        fetch_taker_buy_sell_ratio=lambda symbol, period: [MetricsRow(0, 1.4)],
+        fetch_top_trader_ratio=lambda symbol, period: [MetricsRow(0, 1.8)],
+        fetch_global_ratio=lambda symbol, period: [MetricsRow(0, 0.95)],
+    )
+    service = ForwardPaperService(
+        _settings(), events_path=tmp_path / "events.jsonl",
+        outcomes_path=tmp_path / "outcomes.csv", quality_path=tmp_path / "quality.json",
+        git_commit="test-commit", metrics_provider=provider,
+    )
+    # signal at 6 minutes -> the t=0 bucket (period 5m, closes at 5m) is causally valid
+    service.process([_plan()], [_snapshot(6 * 60_000, close=100.0, high=100.0, low=100.0)])
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+    assert payload["metrics_available"] is True
+    assert payload["open_interest"] == 5000.0
+    assert payload["taker_buy_sell_volume_ratio"] == 1.4
+    assert payload["top_trader_long_short_ratio"] == 1.8
+    assert payload["global_long_short_ratio"] == 0.95
+    assert payload["binance_metrics_timestamp"] == 0
+
+
+def test_metrics_context_surfaces_in_outcomes_csv(tmp_path):
+    from binance_metrics_context.causal import MetricsRow
+    from binance_metrics_context.provider import BinanceMetricsContextProvider
+
+    provider = BinanceMetricsContextProvider(
+        fetch_open_interest=lambda symbol, period: [MetricsRow(0, 5000.0)],
+        fetch_taker_buy_sell_ratio=lambda symbol, period: [],
+        fetch_top_trader_ratio=lambda symbol, period: [],
+        fetch_global_ratio=lambda symbol, period: [],
+    )
+    service = ForwardPaperService(
+        _settings(), events_path=tmp_path / "events.jsonl",
+        outcomes_path=tmp_path / "outcomes.csv", quality_path=tmp_path / "quality.json",
+        git_commit="test-commit", metrics_provider=provider,
+    )
+    service.process([_plan()], [_snapshot(6 * 60_000, close=100.0, high=100.0, low=100.0)])
+    service.process([], [_snapshot(7 * 60_000, close=101.0, high=101.1, low=100.4)])
+    service.process([], [_snapshot(8 * 60_000, close=102.0, high=102.1, low=100.4)])
+    service.process([], [_snapshot(9 * 60_000, close=103.0, high=103.1, low=100.4)])
+
+    outcomes = list(csv.DictReader((tmp_path / "outcomes.csv").open()))
+    assert len(outcomes) == 1
+    assert float(outcomes[0]["open_interest"]) == pytest.approx(5000.0)
+    assert outcomes[0]["metrics_available"] == "True"
+
+
+def test_a_failing_metrics_provider_never_blocks_shadow_trade_creation(tmp_path):
+    """A provider that raises must not be allowed to reach open_trade() and
+    prevent a paper trade from opening -- telemetry can never gate the shadow
+    system it is only observing."""
+    class _ExplodingProvider:
+        def get_context(self, symbol, signal_time_ms):
+            raise RuntimeError("Binance is on fire")
+
+    service = ForwardPaperService(
+        _settings(), events_path=tmp_path / "events.jsonl",
+        outcomes_path=tmp_path / "outcomes.csv", quality_path=tmp_path / "quality.json",
+        git_commit="test-commit", metrics_provider=_ExplodingProvider(),
+    )
+    service.process([_plan()], [_snapshot(1_000, close=100.0, high=100.0, low=100.0)])
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next((e for e in events if e["event_type"] == "TRADE_OPENED"), None)
+    assert opened is not None, "trade must still open even though the metrics provider raised"
+    assert opened["payload"]["metrics_available"] is False

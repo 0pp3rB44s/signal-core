@@ -296,6 +296,14 @@ class Settings(BaseSettings):
     forward_paper_events_path: str = Field(default="data_store/forward_paper_events.jsonl", alias="FORWARD_PAPER_EVENTS_PATH")
     forward_paper_outcomes_path: str = Field(default="data_store/forward_paper_outcomes.csv", alias="FORWARD_PAPER_OUTCOMES_PATH")
     forward_paper_quality_path: str = Field(default="reports/forward_paper_data_quality.json", alias="FORWARD_PAPER_QUALITY_PATH")
+    # SUNDAY_SHADOW_TELEMETRY_FINALIZATION: telemetry only, off by default. When
+    # true, each forward-paper TRADE_OPENED event additionally records the
+    # causally-known Binance OI/positioning/taker-flow context at signal time
+    # (binance_metrics_context/). Never consulted by any trade decision; a
+    # Binance outage degrades to metrics_available=false, never blocks a signal.
+    forward_paper_metrics_context_enabled: bool = Field(
+        default=False, alias="FORWARD_PAPER_METRICS_CONTEXT_ENABLED"
+    )
 
     # NON-PRODUCTION engineering test strategy. It exists only to validate that the
     # paper execution lifecycle can open, manage, close, persist and restore a
