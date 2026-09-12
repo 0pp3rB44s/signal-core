@@ -256,6 +256,7 @@ class ForwardPaperEventStore:
 OUTCOME_FIELDS = [
     "schema_version", "dataset", "identity_status", "candidate_id", "candidate_candle_open_timestamp_ms", "trade_id", "plan_id", "strategy", "symbol", "direction",
     "timeframe", "regime", "session", "config_version_hash", "git_commit", "signal_timestamp",
+    "decision_timestamp",
     "entry_timestamp", "planned_entry", "simulated_fill", "initial_stop", "initial_targets",
     "initial_risk_price", "initial_risk_currency", "initial_risk_r", "expected_reward_to_risk", "expected_move_bps",
     "spread_bps", "signal_to_fill_bps", "binance_metrics_timestamp", "open_interest",
@@ -447,6 +448,7 @@ class ForwardPaperReconstructor:
             "config_version_hash": entry["config_version_hash"],
             "git_commit": entry["git_commit"],
             "signal_timestamp": entry["signal_timestamp"],
+            "decision_timestamp": entry.get("decision_timestamp", ""),
             "entry_timestamp": opened["timestamp"],
             "planned_entry": entry["planned_entry"],
             "simulated_fill": fill,

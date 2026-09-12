@@ -4,6 +4,7 @@ import csv
 import json
 import multiprocessing
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -307,7 +308,7 @@ def test_a_failing_metrics_provider_never_blocks_shadow_trade_creation(tmp_path)
     prevent a paper trade from opening -- telemetry can never gate the shadow
     system it is only observing."""
     class _ExplodingProvider:
-        def get_context(self, symbol, signal_time_ms):
+        def get_context(self, symbol, decision_time_ms):
             raise RuntimeError("Binance is on fire")
 
     service = ForwardPaperService(
@@ -370,3 +371,58 @@ def test_signal_to_fill_bps_surfaces_in_outcomes_csv(tmp_path):
     outcomes = list(csv.DictReader((tmp_path / "outcomes.csv").open()))
     assert len(outcomes) == 1
     assert float(outcomes[0]["signal_to_fill_bps"]) == pytest.approx(50.0)
+
+
+def test_fast_lane_trade_receives_metrics_context_using_decision_time_not_source_candle(tmp_path):
+    """SUNDAY_SHADOW_HARDENING end-to-end proof: the source candle (this
+    snapshot's own timestamp) is old -- t=0 -- exactly like a slower 15m
+    primary snapshot backing a faster 5m fast-lane candidate. The injected
+    clock puts the real DECISION moment 20 minutes later. A Binance bucket
+    that closed after the source candle but before the decision moment must
+    be found and attached to the trade -- this is precisely the real
+    scenario observed live (both real Sunday-shadow trades so far showed
+    metrics_available=false because the old code used the source candle,
+    not the decision time, as the causal reference)."""
+    from binance_metrics_context.causal import MetricsRow
+    from binance_metrics_context.provider import BinanceMetricsContextProvider
+
+    # Bucket: starts at 600s, closes at 900s (period=5m=300s) -- after the
+    # source candle (t=0s) but before the injected decision time (t=1200s).
+    provider = BinanceMetricsContextProvider(
+        fetch_open_interest=lambda symbol, period: [MetricsRow(600_000, 4321.0)],
+        fetch_taker_buy_sell_ratio=lambda symbol, period: [],
+        fetch_top_trader_ratio=lambda symbol, period: [],
+        fetch_global_ratio=lambda symbol, period: [],
+    )
+    decision_time = datetime.fromtimestamp(1200, tz=timezone.utc)  # +20 minutes
+    service = ForwardPaperService(
+        _settings(), events_path=tmp_path / "events.jsonl",
+        outcomes_path=tmp_path / "outcomes.csv", quality_path=tmp_path / "quality.json",
+        git_commit="test-commit", metrics_provider=provider,
+        clock=lambda: decision_time,
+    )
+    service.process([_plan()], [_snapshot(1_000, close=100.0, high=100.0, low=100.0)])
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+    assert payload["signal_timestamp"] == "1970-01-01T00:00:01+00:00"    # SOURCE_CANDLE_TIMESTAMP: old
+    assert payload["decision_timestamp"] == "1970-01-01T00:20:00+00:00"  # DECISION_TIMESTAMP: later
+    assert payload["metrics_available"] is True
+    assert payload["open_interest"] == 4321.0
+
+
+def test_decision_timestamp_defaults_to_real_wall_clock_when_clock_not_overridden(tmp_path):
+    """No injected clock -- decision_timestamp must be a real, current UTC
+    timestamp, not the (possibly old) source candle time, confirming the
+    default constructor argument is wired correctly end to end."""
+    before = datetime.now(timezone.utc)
+    service = _service(tmp_path)
+    service.process([_plan()], [_snapshot(1_000, close=100.0, high=100.0, low=100.0)])
+    after = datetime.now(timezone.utc)
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    decision_ts = datetime.fromisoformat(opened["payload"]["decision_timestamp"])
+    assert before <= decision_ts <= after
+    assert opened["payload"]["signal_timestamp"] == "1970-01-01T00:00:01+00:00"

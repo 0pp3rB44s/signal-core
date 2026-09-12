@@ -9,7 +9,12 @@ slow or down.
 The short TTL cache exists only to avoid re-fetching the same symbol's data
 for every signal in a burst -- it does not change causal correctness, since
 `build_metrics_context` still re-filters the (possibly cached) rows against
-each call's own `signal_time_ms`.
+each call's own `decision_time_ms`.
+
+SUNDAY_SHADOW_HARDENING: `get_context()`'s second argument is the caller's
+DECISION_TIMESTAMP (wall-clock commit time), not the source signal candle's
+own timestamp -- see causal.py's module docstring for why that distinction
+is load-bearing.
 """
 from __future__ import annotations
 
@@ -61,7 +66,7 @@ class BinanceMetricsContextProvider:
         self._cache[symbol] = (now, raw)
         return raw
 
-    def get_context(self, symbol: str, signal_time_ms: int) -> MetricsContext:
+    def get_context(self, symbol: str, decision_time_ms: int) -> MetricsContext:
         try:
             raw = self._raw_rows(symbol)
             return build_metrics_context(
@@ -70,7 +75,7 @@ class BinanceMetricsContextProvider:
                 top_trader_ratio_rows=raw["top_trader"],
                 global_ratio_rows=raw["global"],
                 period_ms=self._period_ms,
-                signal_time_ms=signal_time_ms,
+                decision_time_ms=decision_time_ms,
                 max_fresh_age_s=self._max_fresh_age_s,
             )
         except Exception:  # noqa: BLE001 -- telemetry-only, must never block a signal

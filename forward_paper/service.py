@@ -61,6 +61,7 @@ class ForwardPaperService:
         git_commit: str | None = None,
         funnel_telemetry: FunnelTelemetry | None = None,
         metrics_provider: BinanceMetricsContextProvider | None = None,
+        clock=lambda: datetime.now(timezone.utc),
     ) -> None:
         self.settings = settings
         self.store = ForwardPaperEventStore(events_path)
@@ -72,6 +73,9 @@ class ForwardPaperService:
         # Never consulted by any trade decision -- see binance_metrics_context/provider.py
         # for the fail-open guarantee (a Binance outage never blocks a paper trade).
         self.metrics_provider = metrics_provider
+        # SUNDAY_SHADOW_HARDENING: injectable so tests can control DECISION_TIMESTAMP
+        # (see open_trade()) without monkeypatching the datetime module globally.
+        self._clock = clock
 
     def process(self, plans: list[TradePlan], snapshots: list[MarketSnapshot], *, scan_id: str | None = None) -> None:
         if not self.settings.forward_paper_enabled:
@@ -105,8 +109,19 @@ class ForwardPaperService:
     def open_trade(self, plan: TradePlan, snapshot: MarketSnapshot) -> str | None:
         if not plan.candidate_id or not plan.plan_id:
             raise ValueError("schema v2 forward-paper plan requires candidate_id and plan_id")
-        timestamp = _iso_from_snapshot(snapshot)
-        metrics_context = self._metrics_context_at(plan.symbol, timestamp)
+        timestamp = _iso_from_snapshot(snapshot)  # SOURCE_CANDLE_TIMESTAMP -- audit only, below
+        # DECISION_TIMESTAMP: the actual wall-clock moment this method commits to the
+        # hypothetical entry. SUNDAY_SHADOW_HARDENING: previously the metrics-context
+        # lookup used the source candle's own (older) timestamp above -- a fast-lane
+        # (5m) signal built on a slower (15m) snapshot could be 15-20+ minutes stale
+        # relative to real "now", which made every freshly-fetched Binance bucket look
+        # "not yet closed" against that stale reference and produced
+        # metrics_available=false even when causally-valid data existed at the true
+        # decision moment. The no-lookahead rule itself (bucket must fully close
+        # before the reference time) is unchanged; only which timestamp is the
+        # reference changed.
+        decision_timestamp = self._clock().isoformat()
+        metrics_context = self._metrics_context_at(plan.symbol, decision_timestamp)
         planned_entry = sum(plan.entry_prices) / len(plan.entry_prices) if plan.entry_prices else 0.0
         simulated_fill = _float(snapshot.primary.latest_close)
         stop = _float(plan.stop_loss)
@@ -157,6 +172,7 @@ class ForwardPaperService:
             "plan_id": plan_id,
             "trade_id": trade_id,
             "signal_timestamp": timestamp,
+            "decision_timestamp": decision_timestamp,
             "regime": regime,
             "session": _session(timestamp),
             "config_version_hash": self.config_hash,
@@ -416,15 +432,19 @@ class ForwardPaperService:
             "event_type": event_type, "timestamp": timestamp, "payload": payload,
         })
 
-    def _metrics_context_at(self, symbol: str, signal_timestamp_iso: str) -> dict[str, Any]:
+    def _metrics_context_at(self, symbol: str, decision_timestamp_iso: str) -> dict[str, Any]:
         """Telemetry only -- never consulted by any trade decision. Fails open
         to UNAVAILABLE on any error, including a disabled provider, so a
-        Binance outage or misconfiguration can never block a paper signal."""
+        Binance outage or misconfiguration can never block a paper signal.
+
+        `decision_timestamp_iso` must be DECISION_TIMESTAMP (wall-clock commit
+        time), not the source signal candle's own timestamp -- see the
+        SUNDAY_SHADOW_HARDENING note in open_trade()."""
         if self.metrics_provider is None:
             return _METRICS_UNAVAILABLE.as_payload()
         try:
-            signal_time_ms = int(datetime.fromisoformat(signal_timestamp_iso).timestamp() * 1000)
-            return self.metrics_provider.get_context(symbol, signal_time_ms).as_payload()
+            decision_time_ms = int(datetime.fromisoformat(decision_timestamp_iso).timestamp() * 1000)
+            return self.metrics_provider.get_context(symbol, decision_time_ms).as_payload()
         except Exception:  # noqa: BLE001 -- telemetry-only, must never block a signal
             return _METRICS_UNAVAILABLE.as_payload()
 

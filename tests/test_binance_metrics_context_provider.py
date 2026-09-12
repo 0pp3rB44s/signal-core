@@ -15,7 +15,7 @@ def test_get_context_returns_populated_result_from_fetchers():
         fetch_top_trader_ratio=lambda symbol, period: [MetricsRow(0, 1.5)],
         fetch_global_ratio=lambda symbol, period: [MetricsRow(0, 0.9)],
     )
-    ctx = provider.get_context("BTCUSDT", signal_time_ms=6 * 60_000)
+    ctx = provider.get_context("BTCUSDT", decision_time_ms=6 * 60_000)
     assert ctx.metrics_available is True
     assert ctx.open_interest == 100.0
     assert ctx.taker_buy_sell_volume_ratio == 1.2
@@ -31,7 +31,7 @@ def test_fetch_exception_is_swallowed_and_reports_unavailable():
         fetch_top_trader_ratio=lambda s, period: [],
         fetch_global_ratio=lambda s, period: [],
     )
-    ctx = provider.get_context("BTCUSDT", signal_time_ms=1_000_000)
+    ctx = provider.get_context("BTCUSDT", decision_time_ms=1_000_000)
     assert ctx.metrics_available is False
 
 
@@ -51,12 +51,12 @@ def test_repeated_calls_within_ttl_do_not_refetch():
         fetch_top_trader_ratio=lambda s, period: [],
         fetch_global_ratio=lambda s, period: [],
     )
-    provider.get_context("BTCUSDT", signal_time_ms=6 * 60_000)
-    provider.get_context("BTCUSDT", signal_time_ms=7 * 60_000)
+    provider.get_context("BTCUSDT", decision_time_ms=6 * 60_000)
+    provider.get_context("BTCUSDT", decision_time_ms=7 * 60_000)
     assert calls["n"] == 1  # second call served from cache
 
     now["t"] += 120.0  # advance past the 60s TTL
-    provider.get_context("BTCUSDT", signal_time_ms=8 * 60_000)
+    provider.get_context("BTCUSDT", decision_time_ms=8 * 60_000)
     assert calls["n"] == 2  # cache expired, refetched
 
 
@@ -73,6 +73,6 @@ def test_different_symbols_are_cached_independently():
         fetch_top_trader_ratio=lambda s, period: [],
         fetch_global_ratio=lambda s, period: [],
     )
-    provider.get_context("BTCUSDT", signal_time_ms=6 * 60_000)
-    provider.get_context("ETHUSDT", signal_time_ms=6 * 60_000)
+    provider.get_context("BTCUSDT", decision_time_ms=6 * 60_000)
+    provider.get_context("ETHUSDT", decision_time_ms=6 * 60_000)
     assert calls == ["BTCUSDT", "ETHUSDT"]
