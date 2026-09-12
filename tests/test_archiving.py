@@ -31,7 +31,15 @@ def make_config(tmp_path: Path, **overrides) -> ArchiverConfig:
     return ArchiverConfig.from_env(env)
 
 
-def fixture_orderbook(symbol="BTCUSDT", ts=1789000000000):
+# Computed once at import time, not a frozen historical literal: the archiver's own
+# staleness gate (lag_ms > 30_000) compares against wall-clock "now", so a fixed past
+# constant ages out of a fresh "OK" status after enough real time passes. Fixed once
+# per test run (not per-call) so repeated default calls still compare equal, which the
+# dedupe test below depends on.
+FIXTURE_TS_MS = int(time.time() * 1000)
+
+
+def fixture_orderbook(symbol="BTCUSDT", ts=FIXTURE_TS_MS):
     bids = [{"price": 100.0 - i * 0.1, "size": 40.0 if i == 3 else 5.0} for i in range(20)]
     asks = [{"price": 100.1 + i * 0.1, "size": 25.0 if i == 2 else 4.0} for i in range(20)]
     bid_depth = sum(r["price"] * r["size"] for r in bids)
@@ -102,9 +110,9 @@ def test_config_validation_rejects_bad_values(tmp_path: Path) -> None:
 
 def test_orderbook_record_fields_and_quality(tmp_path: Path) -> None:
     record = build_record(fixture_orderbook(), "USDT-FUTURES",
-                          depth_levels=15, recv_ts_ms=1789000000500)
+                          depth_levels=15, recv_ts_ms=FIXTURE_TS_MS + 500)
     assert record["exchange"] == "BITGET" and record["symbol"] == "BTCUSDT"
-    assert record["exchange_ts_ms"] == 1789000000000
+    assert record["exchange_ts_ms"] == FIXTURE_TS_MS
     assert record["quality"]["status"] == "OK"
     assert record["quality"]["exchange_lag_ms"] == 500
     assert len(record["bids"]) == 15 and len(record["asks"]) == 15
