@@ -128,6 +128,17 @@ class ForwardPaperService:
         expected_move_bps = abs(targets[0] - simulated_fill) / simulated_fill * 10_000
         entry_slippage = (simulated_fill - planned_entry) * position_size
         entry_slippage_pct = ((simulated_fill - planned_entry) / planned_entry * 100) if planned_entry else 0.0
+        # Direction-aware adverse-selection measurement, in the same unit and sign
+        # convention as the historical 13.8bps "signal-to-fill movement" figure
+        # (STRATEGY_HISTORY.md): positive means the fill was worse than the signal
+        # price for THIS trade's direction, regardless of which way price moved.
+        # entry_slippage_pct above is direction-agnostic (just fill-vs-planned) and
+        # is kept unchanged for existing consumers; this is purely additive.
+        if planned_entry and direction in {"LONG", "SHORT"}:
+            raw_move_bps = (simulated_fill - planned_entry) / planned_entry * 10_000
+            signal_to_fill_bps = raw_move_bps if direction == "LONG" else -raw_move_bps
+        else:
+            signal_to_fill_bps = 0.0
         fee_rate = float(self.settings.forward_paper_roundtrip_fee_bps) / 10_000
         entry_fee = float(plan.position_notional_usdt) * fee_rate / 2
         regime = self._regime(snapshot)
@@ -152,6 +163,7 @@ class ForwardPaperService:
             "entry_fee": entry_fee,
             "entry_slippage": entry_slippage,
             "entry_slippage_pct": entry_slippage_pct,
+            "signal_to_fill_bps": signal_to_fill_bps,
             "volatility_rank": _float(getattr(snapshot, "volatility_rank", 0.0)),
             "strategy_score": _float(plan.score),
             "strategy_features": {
