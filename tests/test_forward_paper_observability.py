@@ -321,3 +321,52 @@ def test_a_failing_metrics_provider_never_blocks_shadow_trade_creation(tmp_path)
     opened = next((e for e in events if e["event_type"] == "TRADE_OPENED"), None)
     assert opened is not None, "trade must still open even though the metrics provider raised"
     assert opened["payload"]["metrics_available"] is False
+def test_signal_to_fill_bps_is_adverse_selection_signed_for_long(tmp_path):
+    """A LONG that fills higher than the planned entry paid more -- adverse,
+    so signal_to_fill_bps must be positive, in the same sign convention as the
+    historical 13.8bps 'signal-to-fill movement' figure (STRATEGY_HISTORY.md)."""
+    service = _service(tmp_path)
+    plan = _plan()  # entry_prices=[100.0], direction=LONG
+    service.process([plan], [_snapshot(1_000, close=100.5, high=100.5, low=100.5)])
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    assert opened["payload"]["planned_entry"] == pytest.approx(100.0)
+    assert opened["payload"]["simulated_fill"] == pytest.approx(100.5)
+    assert opened["payload"]["signal_to_fill_bps"] == pytest.approx(50.0)
+
+
+def test_signal_to_fill_bps_is_adverse_selection_signed_for_short(tmp_path):
+    """A SHORT that fills lower than the planned entry sold for less -- also
+    adverse -- so signal_to_fill_bps must be positive here too, even though
+    the raw price move (fill - planned) is negative."""
+    service = _service(tmp_path)
+    plan = TradePlan(
+        candidate_id="candidate-test-short", candidate_candle_open_timestamp_ms=1_700_000_000_000,
+        plan_id=deterministic_plan_id("candidate-test-short"),
+        symbol="BTCUSDT", strategy="momentum_breakdown", direction="SHORT",
+        verdict="EXECUTABLE", score=82.0, entry_prices=[100.0], stop_loss=101.0,
+        take_profits=[99.0, 98.0, 97.0], risk_reward_ratio=3.0,
+        account_risk_pct=0.75, leverage=5.0, position_notional_usdt=100.0,
+        notes=["spread_bps=2.0", "pressure_score=70"], reasons=["test"],
+    )
+    service.process([plan], [_snapshot(1_000, close=99.5, high=99.5, low=99.5)])
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    assert opened["payload"]["planned_entry"] == pytest.approx(100.0)
+    assert opened["payload"]["simulated_fill"] == pytest.approx(99.5)
+    assert opened["payload"]["signal_to_fill_bps"] == pytest.approx(50.0)
+
+
+def test_signal_to_fill_bps_surfaces_in_outcomes_csv(tmp_path):
+    service = _service(tmp_path)
+    plan = _plan()
+    service.process([plan], [_snapshot(1_000, close=100.5, high=100.5, low=100.5)])
+    service.process([], [_snapshot(2_000, close=101.0, high=101.1, low=100.4)])
+    service.process([], [_snapshot(3_000, close=102.0, high=102.1, low=100.4)])
+    service.process([], [_snapshot(4_000, close=103.0, high=103.1, low=100.4)])
+
+    outcomes = list(csv.DictReader((tmp_path / "outcomes.csv").open()))
+    assert len(outcomes) == 1
+    assert float(outcomes[0]["signal_to_fill_bps"]) == pytest.approx(50.0)
