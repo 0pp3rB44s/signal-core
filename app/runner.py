@@ -1890,20 +1890,36 @@ class StartupRunner:
                 # any other symbol's plan -- open_trade() falls back to the
                 # prior (candle-close) behavior when no reference is
                 # available, so this is purely additive.
-                decision_reference_prices: dict[str, tuple[float, str]] = {}
+                # TELEMETRY_QUOTE_LOCAL_RECEIPT_2026-09-13: the exchange's own
+                # `ts` field (used below as the causal reference timestamp)
+                # is not clock-synced with this host -- observed ~3.7-4.0s
+                # ahead of local UTC in FINAL_CAUSAL_SHADOW_EPOCH trades. That
+                # is exchange-clock skew, not a reordering defect: this loop
+                # runs, and completes, strictly before forward_paper.process()
+                # is called below (single-threaded, sequential). To make that
+                # provable from recorded data alone (not just code-reading),
+                # capture our own local wall-clock immediately before and
+                # after each request. quote_received_local_timestamp is the
+                # one that matters for causality: it must always be <= the
+                # decision_timestamp stamped later inside open_trade().
+                decision_reference_prices: dict[str, tuple[float, str, str, str]] = {}
                 executable_symbols = {
                     plan.symbol for plan in paper_plans if plan.verdict == "EXECUTABLE"
                 }
                 for symbol in executable_symbols:
+                    quote_request_local_iso = datetime.now(timezone.utc).isoformat()
                     try:
                         quote = self.fetcher.client.get_symbol_price(symbol=symbol)
+                        quote_received_local_iso = datetime.now(timezone.utc).isoformat()
                         rows = quote.get("data") or []
                         row = rows[0] if isinstance(rows, list) and rows else {}
                         price = float(row.get("markPrice") or row.get("price") or 0.0)
                         if price > 0:
                             ts_ms = int(row.get("ts") or int(time.time() * 1000))
                             ts_iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
-                            decision_reference_prices[symbol] = (price, ts_iso)
+                            decision_reference_prices[symbol] = (
+                                price, ts_iso, quote_request_local_iso, quote_received_local_iso,
+                            )
                     except Exception as exc:
                         self.log.info("FORWARD_PAPER_DECISION_QUOTE_UNAVAILABLE | %s | error=%s", symbol, exc)
                 self.forward_paper.process(

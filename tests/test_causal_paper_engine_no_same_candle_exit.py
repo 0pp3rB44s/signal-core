@@ -448,7 +448,7 @@ def test_simulated_fill_uses_decision_reference_price_when_available(tmp_path):
     ref_ts = "2026-01-01T00:05:00+00:00"
     service.process(
         [plan], [entry_snapshot], scan_id="scan-open",
-        decision_reference_prices={symbol: (100.8, ref_ts)},
+        decision_reference_prices={symbol: (100.8, ref_ts, "2026-01-01T00:04:59.500000+00:00", "2026-01-01T00:04:59.900000+00:00")},
     )
 
     trade_id = next(iter(service.open_states().keys()))
@@ -483,6 +483,9 @@ def test_simulated_fill_falls_back_to_candle_close_without_a_reference(tmp_path)
     assert payload["signal_candle_close_price"] == 100.0
     assert payload["decision_reference_price"] is None
     assert payload["decision_reference_timestamp"] is None
+    assert payload["decision_reference_exchange_timestamp"] is None
+    assert payload["quote_request_local_timestamp"] is None
+    assert payload["quote_received_local_timestamp"] is None
     assert payload["signal_to_decision_bps"] is None
 
 
@@ -500,7 +503,7 @@ def test_decision_reference_fill_short_direction_sign_convention(tmp_path):
     # POSITIVE here, matching signal_to_fill_bps's own sign rule exactly.
     service.process(
         [plan], [entry_snapshot], scan_id="scan-open",
-        decision_reference_prices={symbol: (99.2, ref_ts)},
+        decision_reference_prices={symbol: (99.2, ref_ts, "2026-01-01T00:04:59.500000+00:00", "2026-01-01T00:04:59.900000+00:00")},
     )
     trade_id = next(iter(service.open_states().keys()))
     events = [e for e in service.store.read_events() if e["trade_id"] == trade_id]
@@ -520,7 +523,7 @@ def test_stale_fill_fix_preserves_existing_causal_exit_fixes(tmp_path):
     plan = _plan(symbol, "LONG", entry=100.0, stop=95.0, targets=[104.0])  # far enough that candle T triggers profit-lock, not TP1
     service.process(
         [plan], [entry_snapshot], scan_id="scan-open",
-        decision_reference_prices={symbol: (100.5, "2026-01-01T00:05:00+00:00")},
+        decision_reference_prices={symbol: (100.5, "2026-01-01T00:05:00+00:00", "2026-01-01T00:04:59.500000+00:00", "2026-01-01T00:04:59.900000+00:00")},
     )
     state = _open_state(service, symbol)
     assert state["terminal_status"] == "OPEN", "entry candle must still be ineligible for its own exit evaluation"
@@ -541,7 +544,7 @@ def test_deterministic_replay_with_decision_reference_fill(tmp_path):
     plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[104.0])
     service.process(
         [plan], [entry_snapshot], scan_id="scan-open",
-        decision_reference_prices={symbol: (100.8, "2026-01-01T00:05:00+00:00")},
+        decision_reference_prices={symbol: (100.8, "2026-01-01T00:05:00+00:00", "2026-01-01T00:04:59.500000+00:00", "2026-01-01T00:04:59.900000+00:00")},
     )
     first = service.trade_states()
     second = service.trade_states()
@@ -559,3 +562,65 @@ def test_decision_reference_quote_endpoint_is_unauthenticated_public_call():
 
     source = inspect.getsource(BitgetMarketClientMixin.get_symbol_price)
     assert "private=False" in source
+
+
+def test_decision_reference_exchange_timestamp_is_an_explicit_alias(tmp_path):
+    """decision_reference_timestamp is the exchange's own self-reported clock
+    (observed running a few seconds ahead of local UTC in production -- clock
+    skew, not a causality bug). decision_reference_exchange_timestamp makes
+    that provenance explicit so the two clocks are never conflated."""
+    service = _service(tmp_path)
+    symbol = "UUUUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[104.0])
+    ref_ts = "2026-01-01T00:05:00+00:00"
+    service.process(
+        [plan], [entry_snapshot], scan_id="scan-open",
+        decision_reference_prices={symbol: (100.8, ref_ts, "2026-01-01T00:04:59.500000+00:00", "2026-01-01T00:04:59.900000+00:00")},
+    )
+    trade_id = next(iter(service.open_states().keys()))
+    events = [e for e in service.store.read_events() if e["trade_id"] == trade_id]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+    assert payload["decision_reference_exchange_timestamp"] == ref_ts
+    assert payload["decision_reference_exchange_timestamp"] == payload["decision_reference_timestamp"]
+
+
+def test_quote_received_local_timestamp_proves_no_lookahead(tmp_path):
+    """TELEMETRY_QUOTE_LOCAL_RECEIPT_2026-09-13: quote_received_local_timestamp
+    is captured on THIS host's clock, strictly before decision_timestamp is
+    stamped (see app/runner.py's quote-fetch loop, which completes before
+    forward_paper.process() is ever called). This test proves that ordering
+    holds against the real clock -- bounding decision_timestamp between two
+    real datetime.now(UTC) reads taken immediately around service.process(),
+    then asserting the recorded quote_received_local_timestamp falls at or
+    before that window's start, independent of any exchange clock skew."""
+    from datetime import datetime, timezone
+
+    service = _service(tmp_path)
+    symbol = "VVVUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[104.0])
+
+    quote_received_local = datetime.now(timezone.utc).isoformat()
+    before_process = datetime.now(timezone.utc)
+    service.process(
+        [plan], [entry_snapshot], scan_id="scan-open",
+        decision_reference_prices={symbol: (100.8, "2026-01-01T00:05:00+00:00", quote_received_local, quote_received_local)},
+    )
+    after_process = datetime.now(timezone.utc)
+
+    trade_id = next(iter(service.open_states().keys()))
+    events = [e for e in service.store.read_events() if e["trade_id"] == trade_id]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+
+    assert payload["quote_received_local_timestamp"] == quote_received_local
+    assert payload["quote_request_local_timestamp"] == quote_received_local
+    decision_dt = datetime.fromisoformat(payload["decision_timestamp"])
+    assert before_process <= decision_dt <= after_process
+    # The causality property the mission asked to prove: the locally-captured
+    # quote receipt must be at or before the moment this trade's own
+    # decision_timestamp was stamped.
+    quote_received_dt = datetime.fromisoformat(payload["quote_received_local_timestamp"])
+    assert quote_received_dt <= decision_dt

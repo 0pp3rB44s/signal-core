@@ -83,7 +83,7 @@ class ForwardPaperService:
         snapshots: list[MarketSnapshot],
         *,
         scan_id: str | None = None,
-        decision_reference_prices: dict[str, tuple[float, str]] | None = None,
+        decision_reference_prices: dict[str, tuple[float, str, str, str]] | None = None,
     ) -> None:
         if not self.settings.forward_paper_enabled:
             return
@@ -119,7 +119,7 @@ class ForwardPaperService:
         plan: TradePlan,
         snapshot: MarketSnapshot,
         *,
-        decision_reference: tuple[float, str] | None = None,
+        decision_reference: tuple[float, str, str, str] | None = None,
     ) -> str | None:
         if not plan.candidate_id or not plan.plan_id:
             raise ValueError("schema v2 forward-paper plan requires candidate_id and plan_id")
@@ -149,9 +149,15 @@ class ForwardPaperService:
         # gracefully rather than ever blocking a paper trade.
         signal_candle_close_price = _float(snapshot.primary.latest_close)
         if decision_reference is not None:
-            decision_reference_price, decision_reference_timestamp = decision_reference
+            (
+                decision_reference_price,
+                decision_reference_timestamp,
+                quote_request_local_timestamp,
+                quote_received_local_timestamp,
+            ) = decision_reference
         else:
             decision_reference_price, decision_reference_timestamp = None, None
+            quote_request_local_timestamp, quote_received_local_timestamp = None, None
         simulated_fill = decision_reference_price if decision_reference_price else signal_candle_close_price
         stop = _float(plan.stop_loss)
         targets = [_float(target) for target in plan.take_profits if _float(target) > 0]
@@ -220,6 +226,18 @@ class ForwardPaperService:
             "signal_candle_close_price": signal_candle_close_price,
             "decision_reference_timestamp": decision_reference_timestamp,
             "decision_reference_price": decision_reference_price,
+            # TELEMETRY_QUOTE_LOCAL_RECEIPT_2026-09-13: decision_reference_timestamp
+            # above is the exchange's own self-reported clock (observed running a
+            # few seconds ahead of local UTC -- clock skew, not a causality bug).
+            # decision_reference_exchange_timestamp is an explicit alias making that
+            # provenance unambiguous. The two *_local_timestamp fields are captured
+            # on THIS host's clock, in this same call, strictly before
+            # decision_timestamp above is stamped -- they are what actually proves
+            # no lookahead (quote_received_local_timestamp <= decision_timestamp),
+            # independent of any exchange clock skew.
+            "decision_reference_exchange_timestamp": decision_reference_timestamp,
+            "quote_request_local_timestamp": quote_request_local_timestamp,
+            "quote_received_local_timestamp": quote_received_local_timestamp,
             "signal_to_decision_bps": signal_to_decision_bps,
             "regime": regime,
             "session": _session(timestamp),
