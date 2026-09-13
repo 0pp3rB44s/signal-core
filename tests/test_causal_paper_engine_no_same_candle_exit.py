@@ -431,3 +431,131 @@ def test_deterministic_replay_with_repriced_stop(tmp_path):
     first = service.trade_states()
     second = service.trade_states()
     assert first == second
+
+
+# --- CAUSAL_PAPER_ENGINE_FIX_2026-09-13_STALE_FILL: simulated_fill prefers a
+# fresh, causal quote fetched at decision time over the stale trigger-candle
+# close ---
+
+
+def test_simulated_fill_uses_decision_reference_price_when_available(tmp_path):
+    service = _service(tmp_path)
+    symbol = "PPPUSDT"
+    # Candle close (stale) is 100.0; the fresh decision-time quote is 100.8 --
+    # a genuinely different, later-known price.
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[104.0])
+    ref_ts = "2026-01-01T00:05:00+00:00"
+    service.process(
+        [plan], [entry_snapshot], scan_id="scan-open",
+        decision_reference_prices={symbol: (100.8, ref_ts)},
+    )
+
+    trade_id = next(iter(service.open_states().keys()))
+    events = [e for e in service.store.read_events() if e["trade_id"] == trade_id]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+    assert payload["simulated_fill"] == 100.8
+    assert payload["signal_candle_close_price"] == 100.0
+    assert payload["decision_reference_price"] == 100.8
+    assert payload["decision_reference_timestamp"] == ref_ts
+    assert payload["signal_to_decision_bps"] is not None
+    # LONG: price rose (100.0 -> 100.8), which is unfavorable (worse fill),
+    # so signal_to_decision_bps must be positive under the established
+    # direction-aware sign convention (matching signal_to_fill_bps).
+    assert payload["signal_to_decision_bps"] > 0
+
+
+def test_simulated_fill_falls_back_to_candle_close_without_a_reference(tmp_path):
+    """A missing/failed decision-time quote (e.g. network hiccup) must never
+    block a paper trade -- falls back to the prior (candle-close) behavior."""
+    service = _service(tmp_path)
+    symbol = "QQQUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[104.0])
+    service.process([plan], [entry_snapshot], scan_id="scan-open")  # no decision_reference_prices at all
+
+    trade_id = next(iter(service.open_states().keys()))
+    events = [e for e in service.store.read_events() if e["trade_id"] == trade_id]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+    assert payload["simulated_fill"] == 100.0
+    assert payload["signal_candle_close_price"] == 100.0
+    assert payload["decision_reference_price"] is None
+    assert payload["decision_reference_timestamp"] is None
+    assert payload["signal_to_decision_bps"] is None
+
+
+def test_decision_reference_fill_short_direction_sign_convention(tmp_path):
+    service = _service(tmp_path)
+    symbol = "RRRUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=100.2, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "SHORT", entry=100.0, stop=103.0, targets=[96.0])
+    ref_ts = "2026-01-01T00:05:00+00:00"
+    # Price fell (100.0 -> 99.2) between signal and decision. Under the same
+    # "positive = worse fill for this direction" convention signal_to_fill_bps
+    # already uses: a SHORT that will now fill at 99.2 instead of the 100.0
+    # signal price is entering after most of the downmove already happened --
+    # worse (less room left to profit) -- so signal_to_decision_bps must be
+    # POSITIVE here, matching signal_to_fill_bps's own sign rule exactly.
+    service.process(
+        [plan], [entry_snapshot], scan_id="scan-open",
+        decision_reference_prices={symbol: (99.2, ref_ts)},
+    )
+    trade_id = next(iter(service.open_states().keys()))
+    events = [e for e in service.store.read_events() if e["trade_id"] == trade_id]
+    opened = next(e for e in events if e["event_type"] == "TRADE_OPENED")
+    payload = opened["payload"]
+    assert payload["simulated_fill"] == 99.2
+    assert payload["signal_to_decision_bps"] > 0
+
+
+def test_stale_fill_fix_preserves_existing_causal_exit_fixes(tmp_path):
+    """A decision-reference fill must not disturb the entry-candle-ineligible
+    guard or the repriced-stop-same-candle guard -- both already proven in
+    this file; this pins that the NEW fill-price source doesn't bypass them."""
+    service = _service(tmp_path)
+    symbol = "SSSUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=105.0, low=90.0, close=100.0)  # would trip stop AND tp if evaluated
+    plan = _plan(symbol, "LONG", entry=100.0, stop=95.0, targets=[104.0])  # far enough that candle T triggers profit-lock, not TP1
+    service.process(
+        [plan], [entry_snapshot], scan_id="scan-open",
+        decision_reference_prices={symbol: (100.5, "2026-01-01T00:05:00+00:00")},
+    )
+    state = _open_state(service, symbol)
+    assert state["terminal_status"] == "OPEN", "entry candle must still be ineligible for its own exit evaluation"
+
+    # Re-deliver the same (now non-entry) candle to confirm the repriced-stop
+    # guard is unaffected by which fill source was used.
+    next_snapshot = _snapshot(symbol, NEXT_TS, open_=100.2, high=103.0, low=99.9, close=101.0)
+    service.update_market([next_snapshot], scan_id="scan-candle-t")
+    state = _open_state(service, symbol)
+    assert state["profit_lock"] is True
+    assert state["terminal_status"] == "OPEN", "repriced stop must still not trigger on the same candle that repriced it"
+
+
+def test_deterministic_replay_with_decision_reference_fill(tmp_path):
+    service = _service(tmp_path)
+    symbol = "TTTUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[104.0])
+    service.process(
+        [plan], [entry_snapshot], scan_id="scan-open",
+        decision_reference_prices={symbol: (100.8, "2026-01-01T00:05:00+00:00")},
+    )
+    first = service.trade_states()
+    second = service.trade_states()
+    assert first == second
+
+
+def test_decision_reference_quote_endpoint_is_unauthenticated_public_call():
+    """Structural guard: the fresh quote used for the fill must come from the
+    same public, unauthenticated endpoint already relied on elsewhere
+    (execution/entry_routing.py) -- never a private/authenticated call, and
+    never anything that could place, cancel, or modify an order."""
+    import inspect
+
+    from clients.bitget_market_client import BitgetMarketClientMixin
+
+    source = inspect.getsource(BitgetMarketClientMixin.get_symbol_price)
+    assert "private=False" in source

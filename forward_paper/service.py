@@ -77,7 +77,14 @@ class ForwardPaperService:
         # (see open_trade()) without monkeypatching the datetime module globally.
         self._clock = clock
 
-    def process(self, plans: list[TradePlan], snapshots: list[MarketSnapshot], *, scan_id: str | None = None) -> None:
+    def process(
+        self,
+        plans: list[TradePlan],
+        snapshots: list[MarketSnapshot],
+        *,
+        scan_id: str | None = None,
+        decision_reference_prices: dict[str, tuple[float, str]] | None = None,
+    ) -> None:
         if not self.settings.forward_paper_enabled:
             return
         snapshot_map = {snapshot.symbol: snapshot for snapshot in snapshots}
@@ -94,7 +101,8 @@ class ForwardPaperService:
             if snapshot is None:
                 self._reject(plan, "missing_market_snapshot")
                 continue
-            trade_id = self.open_trade(plan, snapshot)
+            decision_reference = (decision_reference_prices or {}).get(plan.symbol)
+            trade_id = self.open_trade(plan, snapshot, decision_reference=decision_reference)
             if trade_id:
                 if self.funnel_telemetry is not None:
                     self.funnel_telemetry.record(
@@ -106,7 +114,13 @@ class ForwardPaperService:
                 capacity -= 1
         self._reconstruct_and_link(lifecycle_scan_id)
 
-    def open_trade(self, plan: TradePlan, snapshot: MarketSnapshot) -> str | None:
+    def open_trade(
+        self,
+        plan: TradePlan,
+        snapshot: MarketSnapshot,
+        *,
+        decision_reference: tuple[float, str] | None = None,
+    ) -> str | None:
         if not plan.candidate_id or not plan.plan_id:
             raise ValueError("schema v2 forward-paper plan requires candidate_id and plan_id")
         timestamp = _iso_from_snapshot(snapshot)  # SOURCE_CANDLE_TIMESTAMP -- audit only, below
@@ -123,7 +137,22 @@ class ForwardPaperService:
         decision_timestamp = self._clock().isoformat()
         metrics_context = self._metrics_context_at(plan.symbol, decision_timestamp)
         planned_entry = sum(plan.entry_prices) / len(plan.entry_prices) if plan.entry_prices else 0.0
-        simulated_fill = _float(snapshot.primary.latest_close)
+        # CAUSAL_PAPER_ENGINE_FIX_2026-09-13_STALE_FILL: the trigger candle's
+        # own close was previously used as simulated_fill regardless of how
+        # much real time had passed since that candle was captured (observed
+        # live: up to ~17-19 minutes). signal_candle_close_price preserves
+        # that original value for analytics; simulated_fill now prefers a
+        # fresh, causal quote fetched by the caller at (or immediately
+        # before) decision_timestamp -- see app/runner.py's call site -- and
+        # only falls back to the stale candle close when no such quote is
+        # available (network hiccup, missing symbol), so this degrades
+        # gracefully rather than ever blocking a paper trade.
+        signal_candle_close_price = _float(snapshot.primary.latest_close)
+        if decision_reference is not None:
+            decision_reference_price, decision_reference_timestamp = decision_reference
+        else:
+            decision_reference_price, decision_reference_timestamp = None, None
+        simulated_fill = decision_reference_price if decision_reference_price else signal_candle_close_price
         stop = _float(plan.stop_loss)
         targets = [_float(target) for target in plan.take_profits if _float(target) > 0]
         direction = str(plan.direction or "").upper()
@@ -162,6 +191,21 @@ class ForwardPaperService:
             signal_to_fill_bps = raw_move_bps if direction == "LONG" else -raw_move_bps
         else:
             signal_to_fill_bps = 0.0
+        # How much of the signal's own edge had already evaporated between the
+        # trigger candle's close and the fresh, at-decision-time quote --
+        # independent of signal_to_fill_bps above, which measures fill vs the
+        # planned LIMIT price, not vs the signal's own reference price.
+        if (
+            decision_reference_price is not None
+            and signal_candle_close_price
+            and direction in {"LONG", "SHORT"}
+        ):
+            raw_decision_move_bps = (
+                (decision_reference_price - signal_candle_close_price) / signal_candle_close_price * 10_000
+            )
+            signal_to_decision_bps = raw_decision_move_bps if direction == "LONG" else -raw_decision_move_bps
+        else:
+            signal_to_decision_bps = None
         fee_rate = float(self.settings.forward_paper_roundtrip_fee_bps) / 10_000
         entry_fee = float(plan.position_notional_usdt) * fee_rate / 2
         regime = self._regime(snapshot)
@@ -173,6 +217,10 @@ class ForwardPaperService:
             "trade_id": trade_id,
             "signal_timestamp": timestamp,
             "decision_timestamp": decision_timestamp,
+            "signal_candle_close_price": signal_candle_close_price,
+            "decision_reference_timestamp": decision_reference_timestamp,
+            "decision_reference_price": decision_reference_price,
+            "signal_to_decision_bps": signal_to_decision_bps,
             "regime": regime,
             "session": _session(timestamp),
             "config_version_hash": self.config_hash,

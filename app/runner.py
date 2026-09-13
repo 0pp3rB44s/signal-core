@@ -1876,7 +1876,40 @@ class StartupRunner:
                     key=lambda plan: (plan.verdict == "EXECUTABLE", plan.score),
                     reverse=True,
                 )
-                self.forward_paper.process(paper_plans, snapshots, scan_id=scan_id)
+                # CAUSAL_PAPER_ENGINE_FIX_2026-09-13_STALE_FILL: open_trade()
+                # used to price simulated_fill off the same market snapshot
+                # captured earlier in this scan cycle (during the per-symbol
+                # watchlist loop / fast-lane pass), while decision_timestamp is
+                # only read when open_trade() actually runs -- observed live
+                # up to ~17-19 minutes later. Fetch one fresh, causal,
+                # public (unauthenticated) quote per about-to-open symbol,
+                # right before the decision commits, using the exact
+                # get_symbol_price() pattern execution/entry_routing.py
+                # already relies on for entry-lifecycle quotes. Best-effort:
+                # a fetch failure for one symbol must never block the scan or
+                # any other symbol's plan -- open_trade() falls back to the
+                # prior (candle-close) behavior when no reference is
+                # available, so this is purely additive.
+                decision_reference_prices: dict[str, tuple[float, str]] = {}
+                executable_symbols = {
+                    plan.symbol for plan in paper_plans if plan.verdict == "EXECUTABLE"
+                }
+                for symbol in executable_symbols:
+                    try:
+                        quote = self.fetcher.client.get_symbol_price(symbol=symbol)
+                        rows = quote.get("data") or []
+                        row = rows[0] if isinstance(rows, list) and rows else {}
+                        price = float(row.get("markPrice") or row.get("price") or 0.0)
+                        if price > 0:
+                            ts_ms = int(row.get("ts") or int(time.time() * 1000))
+                            ts_iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+                            decision_reference_prices[symbol] = (price, ts_iso)
+                    except Exception as exc:
+                        self.log.info("FORWARD_PAPER_DECISION_QUOTE_UNAVAILABLE | %s | error=%s", symbol, exc)
+                self.forward_paper.process(
+                    paper_plans, snapshots, scan_id=scan_id,
+                    decision_reference_prices=decision_reference_prices,
+                )
             except Exception as exc:
                 # Paper telemetry must never interrupt scans or weaken live
                 # execution safety. Corruption fails the paper writer closed.
