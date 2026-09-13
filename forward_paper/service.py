@@ -314,7 +314,21 @@ class ForwardPaperService:
             self._append(trade_id, state["plan_id"], "MAE_UPDATE", timestamp, {"price": adverse_price, "excursion_pct": adverse_pct}, candidate_id=state["candidate_id"])
             state["mae_pct"] = adverse_pct
 
-        stop_touched = low <= state["stop"] if direction == "LONG" else high >= state["stop"]
+        # CAUSAL_PAPER_ENGINE_FIX_2026-09-13_SECONDARY: a stop created or moved
+        # by THIS candle's own information (TP1 breakeven, profit-lock) must
+        # not be tested against that same candle's high/low. Proven live
+        # (DOGEUSDT, 2026-09-13T13:15:00Z): PROFIT_LOCK_ACTIVATED/STOP_UPDATED
+        # fired on one scan cycle, and because the primary candle had not yet
+        # advanced, the very next scan cycle re-evaluated the identical candle
+        # -- now against the newly-repriced stop -- and closed instantly. The
+        # candle's adverse extreme could have printed before the favorable one
+        # that triggered the reprice; OHLC alone cannot tell. A stop is only
+        # eligible for its own touch-test starting with a candle strictly
+        # after the one that last set it (entry counts as the first "set").
+        stop_touched = (
+            timestamp > state["stop_candle_timestamp"]
+            and (low <= state["stop"] if direction == "LONG" else high >= state["stop"])
+        )
         if stop_touched:
             self._append(trade_id, state["plan_id"], "SL_TOUCH", timestamp, {"price": state["stop"], "mark_price": mark}, candidate_id=state["candidate_id"])
             self._close(trade_id, state, timestamp, state["stop"], "STOP_LOSS")
@@ -352,6 +366,7 @@ class ForwardPaperService:
                     self._append(trade_id, state["plan_id"], "BREAK_EVEN_ACTIVATED", timestamp, {"stop": be_stop, "mark_price": mark}, candidate_id=state["candidate_id"])
                     self._append(trade_id, state["plan_id"], "STOP_UPDATED", timestamp, {"old_stop": state["stop"], "new_stop": be_stop, "reason": "TP1_FEE_BE"}, candidate_id=state["candidate_id"])
                     state["stop"] = be_stop
+                    state["stop_candle_timestamp"] = timestamp
             if state["remaining_size"] <= 1e-12:
                 self._close(trade_id, state, timestamp, target, f"TP{index + 1}", remaining_size=0.0)
                 return
@@ -363,6 +378,7 @@ class ForwardPaperService:
                 if be_stop is not None:
                     self._append(trade_id, state["plan_id"], "PROFIT_LOCK_ACTIVATED", timestamp, {"stop": be_stop, "mark_price": mark}, candidate_id=state["candidate_id"])
                     self._append(trade_id, state["plan_id"], "STOP_UPDATED", timestamp, {"old_stop": state["stop"], "new_stop": be_stop, "reason": "PROFIT_LOCK_FEE_BE"}, candidate_id=state["candidate_id"])
+                    state["stop_candle_timestamp"] = timestamp
 
     def _partial(
         self, trade_id: str, state: dict[str, Any], timestamp: str, price: float,
@@ -406,6 +422,12 @@ class ForwardPaperService:
                 # TRADE_OPENED itself (opened["timestamp"], i.e. signal_timestamp)
                 # priced the entry -- see the guard in _update_trade().
                 "entry_candle_timestamp": opened["timestamp"],
+                # CAUSAL_PAPER_ENGINE_FIX_2026-09-13_SECONDARY: the candle as of
+                # which the CURRENT state["stop"] value took effect. Starts at
+                # the entry candle (the initial stop is priced at entry) and
+                # advances to whichever candle's STOP_UPDATED event last moved
+                # it -- see the guard in _update_trade().
+                "stop_candle_timestamp": opened["timestamp"],
                 "fill": float(payload["simulated_fill"]), "stop": float(payload["initial_stop"]),
                 "targets": [float(value) for value in payload["initial_targets"]],
                 "initial_size": float(payload["position_size"]),
@@ -441,6 +463,7 @@ class ForwardPaperService:
                     }
                 elif event_type == "STOP_UPDATED":
                     state["stop"] = float(data["new_stop"])
+                    state["stop_candle_timestamp"] = event["timestamp"]
                 elif event_type == "MFE_UPDATE":
                     state["mfe_pct"] = max(state["mfe_pct"], float(data["excursion_pct"]))
                 elif event_type == "MAE_UPDATE":

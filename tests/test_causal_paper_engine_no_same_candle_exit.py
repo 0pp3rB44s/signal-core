@@ -296,3 +296,138 @@ def test_full_partial_exit_recovery_closes_even_without_a_fresh_candle(tmp_path)
     final_state = service.trade_states()[trade_id]
     assert final_state["terminal_status"] == "CLOSED"
     assert final_state["final_exit_reason"] == "TP1"
+
+
+# --- CAUSAL_PAPER_ENGINE_FIX_2026-09-13_SECONDARY: a repriced stop must not
+# be tested against the same candle that repriced it ---
+
+
+def test_pre_existing_stop_can_trigger_on_candle_t(tmp_path):
+    """A stop that has been in place since entry (never repriced) must still
+    be testable on any genuinely later candle -- the new guard must not
+    over-block ordinary, already-covered stop touches."""
+    service = _service(tmp_path)
+    symbol = "KKKUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.5, high=100.5, low=99.6, close=100.0)  # does not reach stop=99.0
+    plan = _plan(symbol, "LONG", entry=100.0, stop=99.0, targets=[103.0])
+    service.process([plan], [entry_snapshot], scan_id="scan-open")
+
+    next_snapshot = _snapshot(symbol, NEXT_TS, open_=99.8, high=99.9, low=98.5, close=98.7)
+    service.update_market([next_snapshot], scan_id="scan-next-candle")
+
+    state = _open_state(service, symbol)
+    assert state["terminal_status"] == "CLOSED"
+    assert state["final_exit_reason"] == "STOP_LOSS"
+
+
+def test_profit_lock_repriced_stop_cannot_trigger_on_the_same_candle(tmp_path):
+    """Reproduces the live DOGEUSDT finding: PROFIT_LOCK_ACTIVATED and the
+    resulting new stop must not be touch-tested using the very candle whose
+    favorable excursion triggered the reprice."""
+    service = _service(tmp_path)
+    symbol = "LLLUSDT"
+    # LONG entry at 100, TP1 far away (110) so profit-lock (not TP) is what
+    # activates. The SAME candle's own high (103) both (a) triggers
+    # profit-lock (favorable_pct=3% >= 60% of the 10%-to-TP1 distance is NOT
+    # met here -- use a closer TP1 to make the arithmetic land) and (b), if
+    # tested, would touch the resulting protective stop (fee-adjusted near
+    # breakeven, ~100).
+    plan = _plan(symbol, "LONG", entry=100.0, stop=95.0, targets=[104.0])
+    first_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.2, low=99.7, close=100.0)
+    service.process([plan], [first_snapshot], scan_id="scan-open")
+
+    # Candle T (genuinely post-entry): favorable excursion big enough to
+    # activate profit-lock (high=103 -> 3% >= 60% * 4% distance-to-TP1 = 2.4%),
+    # AND that same candle's own low (99.9) would touch a fee-adjusted-near-
+    # breakeven stop if it were allowed to be tested.
+    candle_t = _snapshot(symbol, NEXT_TS, open_=100.2, high=103.0, low=99.9, close=101.0)
+    service.update_market([candle_t], scan_id="scan-candle-t")
+
+    state = _open_state(service, symbol)
+    assert state["profit_lock"] is True, "profit-lock should have activated on candle T's favorable excursion"
+    assert state["terminal_status"] == "OPEN", (
+        "the newly-repriced stop must NOT be touch-tested against candle T itself"
+    )
+
+    # Re-deliver the identical candle T again (simulating the next scan cycle
+    # before a new candle has closed -- exactly the live DOGEUSDT scenario).
+    service.update_market([candle_t], scan_id="scan-candle-t-again")
+    state = _open_state(service, symbol)
+    assert state["terminal_status"] == "OPEN", (
+        "repeated delivery of the SAME candle must still not trigger the just-repriced stop"
+    )
+
+    # A genuinely later candle (T+1) whose low touches the repriced stop MUST
+    # be allowed to close the trade.
+    candle_t_plus_1 = _snapshot(symbol, NEXT_TS + 15 * 60_000, open_=100.9, high=101.0, low=99.5, close=99.8)
+    service.update_market([candle_t_plus_1], scan_id="scan-candle-t-plus-1")
+    state = _open_state(service, symbol)
+    assert state["terminal_status"] == "CLOSED"
+    assert state["final_exit_reason"] == "STOP_LOSS"
+
+
+def test_tp1_breakeven_repriced_stop_cannot_trigger_on_the_same_candle(tmp_path):
+    """Same principle for the TP1-driven breakeven reprice (BREAK_EVEN_ACTIVATED)."""
+    service = _service(tmp_path)
+    symbol = "MMMUSDT"
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[102.0, 110.0])
+    first_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.2, low=99.7, close=100.0)
+    service.process([plan], [first_snapshot], scan_id="scan-open")
+
+    # Candle T: touches TP1 (high=102.5 >= 102) triggering a partial close and
+    # a breakeven reprice, AND its own low (99.4) would touch that fresh
+    # breakeven-ish stop if allowed to be tested in the same pass.
+    candle_t = _snapshot(symbol, NEXT_TS, open_=100.2, high=102.5, low=99.4, close=101.0)
+    service.update_market([candle_t], scan_id="scan-candle-t")
+
+    state = _open_state(service, symbol)
+    assert 0 in state["touched_targets"], "TP1 should have touched"
+    assert state["terminal_status"] == "OPEN", (
+        "the fresh TP1-breakeven stop must not be touch-tested against candle T itself"
+    )
+
+    # Re-deliver the identical candle T again (the next scan cycle before a
+    # new candle has closed) -- this is what actually exercises the bug: the
+    # first pass only sets the stop, a second look at the SAME candle is what
+    # incorrectly touch-tested it under the pre-fix code.
+    service.update_market([candle_t], scan_id="scan-candle-t-again")
+    state = _open_state(service, symbol)
+    assert state["terminal_status"] == "OPEN", (
+        "repeated delivery of the SAME candle must still not trigger the fresh TP1-breakeven stop"
+    )
+
+    candle_t_plus_1 = _snapshot(symbol, NEXT_TS + 15 * 60_000, open_=100.9, high=101.0, low=99.3, close=99.6)
+    service.update_market([candle_t_plus_1], scan_id="scan-candle-t-plus-1")
+    state = _open_state(service, symbol)
+    assert state["terminal_status"] == "CLOSED"
+
+
+def test_secondary_fix_does_not_affect_tp_touch_eligibility(tmp_path):
+    """Targets are never repriced, so TP-touch checks need no equivalent
+    gating -- confirm a TP can still touch on the very candle that first
+    makes it reachable, immediately after entry's own (ineligible) candle."""
+    service = _service(tmp_path)
+    symbol = "NNNUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)  # TP=102 not reached
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[102.0])
+    service.process([plan], [entry_snapshot], scan_id="scan-open")
+
+    next_snapshot = _snapshot(symbol, NEXT_TS, open_=100.2, high=102.5, low=100.0, close=102.2)
+    service.update_market([next_snapshot], scan_id="scan-next-candle")
+
+    state = _open_state(service, symbol)
+    assert 0 in state["touched_targets"]
+
+
+def test_deterministic_replay_with_repriced_stop(tmp_path):
+    service = _service(tmp_path)
+    symbol = "OOOUSDT"
+    plan = _plan(symbol, "LONG", entry=100.0, stop=95.0, targets=[104.0])
+    first_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.2, low=99.7, close=100.0)
+    service.process([plan], [first_snapshot], scan_id="scan-open")
+    candle_t = _snapshot(symbol, NEXT_TS, open_=100.2, high=103.0, low=99.9, close=101.0)
+    service.update_market([candle_t], scan_id="scan-candle-t")
+
+    first = service.trade_states()
+    second = service.trade_states()
+    assert first == second
