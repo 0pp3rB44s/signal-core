@@ -922,6 +922,32 @@ class TradePlanner:
         notes.append("execution_profile=single_tp_full_close")
         notes.append(f"single_tp_target={single_tp:.8f}")
 
+        # OBSERVABILITY_GATE_CONTEXT_2026-09-13: capture exactly the three note
+        # sources the master gate itself read (_note_text == candidate.notes +
+        # candidate.market.notes + candidate.detection.reason_flags) plus the
+        # gate's own inputs/verdict and the executed candidate's timeframe path,
+        # so a post-hoc audit never again has to guess which snapshot produced
+        # a given entry_quality/exhaustion_risk reading. Additive only -- does
+        # not change verdict, notes, reasons, or any trading decision.
+        fast_lane = "fast_lane=true" in note_text
+        fast_lane_granularity = None
+        if "fast_lane_granularity=" in note_text:
+            try:
+                fast_lane_granularity = note_text.split("fast_lane_granularity=", 1)[1].split()[0].strip(";|,")
+            except Exception:
+                fast_lane_granularity = None
+        gate_context = {
+            "candidate_notes": list(candidate.notes or []),
+            "candidate_market_notes": list(getattr(candidate.market, "notes", []) or []),
+            "candidate_detection_reason_flags": list(getattr(candidate.detection, "reason_flags", []) or []),
+            "planner_entry_quality": entry_quality,
+            "master_entry_quality_passed": master_gate_passed,
+            "master_entry_quality_reasons": list(master_gate_reasons),
+            "fast_lane": fast_lane,
+            "fast_lane_granularity": fast_lane_granularity,
+            "source_timeframe": getattr(candidate.market.primary, "granularity", None) if getattr(candidate, "market", None) else None,
+        }
+
         return TradePlan(
             candidate_id=candidate.candidate_id,
             candidate_candle_open_timestamp_ms=candidate.candidate_candle_open_timestamp_ms,
@@ -942,6 +968,7 @@ class TradePlanner:
             notes=notes,
             reasons=reasons,
             geometry_entry=entry,
+            gate_context=gate_context,
         )
 
     def _build_adaptive_tp(self, candidate: StrategyCandidate, entry: float, stop: float):

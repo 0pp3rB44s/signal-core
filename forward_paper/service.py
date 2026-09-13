@@ -248,6 +248,15 @@ class ForwardPaperService:
                 "notes": list(plan.notes),
                 "reasons": list(plan.reasons),
                 "market_context": self._market_context(snapshot),
+                # OBSERVABILITY_GATE_CONTEXT_2026-09-13: plan.gate_context (see
+                # TradePlan/trade_planner.py) is captured AT THE MOMENT the
+                # master gate ran, from the exact candidate the gate scored --
+                # unlike market_context above, which reflects whatever snapshot
+                # is passed into THIS call and can be a different timeframe/
+                # scan than the one the executed candidate actually used
+                # (observed for fast-lane/prearmed candidates). Empty dict for
+                # any plan built before this field existed.
+                "gate_context": dict(getattr(plan, "gate_context", None) or {}),
             },
         }
         return trade_id if self._append(

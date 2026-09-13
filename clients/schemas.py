@@ -153,6 +153,17 @@ class TradePlan:
     # behouden blijft ook als de fill van het anker is weggedreven (bug
     # 2026-07-08: fill dreef structureel naar de stop -> mini-stops).
     geometry_entry: float = 0.0
+    # OBSERVABILITY_GATE_CONTEXT_2026-09-13: the master entry-quality gate reads
+    # candidate.notes + candidate.market.notes + candidate.detection.reason_flags
+    # (see TradePlanner._note_text), but only candidate.notes ever reached
+    # persistence (via this plan's own `notes` field) -- for candidates whose
+    # entry_quality annotation lives on candidate.market.notes instead (e.g.
+    # liquidity_sweep_reversal, prearmed momentum_breakout/breakdown), a
+    # post-hoc audit of the persisted trade sees no entry_quality at all,
+    # inviting exactly the kind of cross-snapshot misattribution this field
+    # exists to prevent. Additive only; empty dict is a fully backward
+    # compatible default for every existing construction call site.
+    gate_context: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.candidate_id or self.candidate_candle_open_timestamp_ms <= 0:
