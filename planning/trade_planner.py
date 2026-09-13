@@ -17,6 +17,16 @@ STRATEGY_EXPECTANCY_PATH = Path(__file__).resolve().parents[1] / "reports" / "ba
 LOW_VOL_RECLAIM_V2_2_MIN_PARTICIPATION_SCORE = 10.0
 LOW_VOL_RECLAIM_V2_2_MAX_PRESSURE_SCORE = 25.0
 
+# STRATEGY_HARDENING_2026-09-13: strategies whose EXECUTABLE verdict checks only
+# reward:risk and risk.allowed, with no strategy-specific entry-quality gate of
+# their own (unlike low_vol_reclaim's day_defensive_block or
+# adaptive_momentum_continuation's hard checks below). For exactly these three,
+# the already-computed _master_entry_quality_gate() result is enforced instead of
+# left observability-only. See the comment at its call site for the evidence.
+_MASTER_GATE_ENFORCED_STRATEGIES = frozenset(
+    {"momentum_breakout", "momentum_breakdown", "trend_continuation"}
+)
+
 
 def low_vol_reclaim_v2_2_selection_gate(
     participation_score: float,
@@ -617,6 +627,23 @@ class TradePlanner:
                 candidate.direction,
                 "|".join(master_gate_reasons) if master_gate_reasons else "unknown",
             )
+            # STRATEGY_HARDENING_2026-09-13: the July 7 audit's "everything the
+            # master gate catches, the specific quality gates also catch" only
+            # holds where a strategy-specific gate actually exists (low_vol_reclaim
+            # has day_defensive_block above; adaptive_momentum_continuation has its
+            # own hard checks below). momentum_breakout, momentum_breakdown and
+            # trend_continuation have neither -- their EXECUTABLE branch above
+            # checks only reward:risk and risk.allowed, so entry_quality/exhaustion
+            # risk/pressure/expansion is pure observability for exactly these three.
+            # Sunday-shadow evidence (12 forward-paper trades, 2026-09-12/13): every
+            # one of the 5 trades where master_gate_passed was False and the
+            # strategy was one of these three ended net-negative; this closes that
+            # specific, previously-unenforced gap without touching the strategies
+            # that already have their own gate (low_vol_reclaim, adaptive_momentum_
+            # continuation) or reopening the July 7 finding for them.
+            if strategy_name in _MASTER_GATE_ENFORCED_STRATEGIES:
+                verdict = "BLOCKED"
+                notes.append(f"blocked_reason=master_entry_quality_gate_enforced_{strategy_name}")
 
         if (
             verdict == "BLOCKED"

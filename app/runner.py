@@ -1858,7 +1858,25 @@ class StartupRunner:
                 self.trade_plan_logger.append_rows(plans)
 
             try:
-                self.forward_paper.process(plans, snapshots, scan_id=scan_id)
+                # STRATEGY_HARDENING_2026-09-13: ForwardPaperService.process() admits
+                # plans strictly in list order until max_open_positions capacity is
+                # exhausted (see forward_paper/service.py) -- it does not consult
+                # select_execution_winner()'s cross-symbol ranking below, which only
+                # runs afterward and only feeds real execution. `plans` here is in
+                # raw watchlist-iteration order, so when more executable candidates
+                # exist in one scan cycle than there is capacity for, shadow paper
+                # trading was filling whichever symbol happened to appear earliest in
+                # the watchlist rather than the highest-scored candidate. Sorting a
+                # copy for this call only (score, then verdict, matching
+                # _emit_plan_summary's existing ranking key) makes shadow's limited
+                # capacity favor plan quality without touching plans' own order or
+                # anything downstream that still reads the original list.
+                paper_plans = sorted(
+                    plans,
+                    key=lambda plan: (plan.verdict == "EXECUTABLE", plan.score),
+                    reverse=True,
+                )
+                self.forward_paper.process(paper_plans, snapshots, scan_id=scan_id)
             except Exception as exc:
                 # Paper telemetry must never interrupt scans or weaken live
                 # execution safety. Corruption fails the paper writer closed.
