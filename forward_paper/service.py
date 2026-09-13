@@ -272,6 +272,24 @@ class ForwardPaperService:
                 remaining_size=float(pending_terminal.get("remaining_size", state["remaining_size"])),
             )
             return
+
+        # CAUSAL_PAPER_ENGINE_FIX_2026-09-13: entry is priced off the trigger
+        # candle's own close (open_trade()'s `simulated_fill`), so that same
+        # candle's high/low necessarily predates -- or is at best
+        # contemporaneous with -- the entry itself. Evaluating SL/TP/trailing
+        # against it is not "market movement after entry"; it's the entry
+        # candle's own already-fixed range being replayed as if it were
+        # post-entry price action. Proven live: every one of 5 forward-paper
+        # trades inspected showed this exact candle recurring as both the
+        # TRADE_OPENED reference and the very first MARK_DECISION reference,
+        # and 3 of those closed instantly on it (0-second holding duration).
+        # A trade only becomes eligible for evaluation once the "latest
+        # closed candle" genuinely advances past the one used for entry --
+        # never on the entry candle itself, however many scan cycles run in
+        # the meantime.
+        if timestamp <= state["entry_candle_timestamp"]:
+            return
+
         self._append(trade_id, state["plan_id"], "MARK_DECISION", timestamp, {
             "mark_price": mark, "candle_high": high, "candle_low": low,
             "current_stop": state["stop"], "remaining_size": state["remaining_size"],
@@ -371,6 +389,10 @@ class ForwardPaperService:
             payload = opened["payload"]
             state = {
                 "candidate_id": opened["candidate_id"], "plan_id": opened["plan_id"], "symbol": payload["symbol"], "direction": payload["direction"],
+                # CAUSAL_PAPER_ENGINE_FIX_2026-09-13: the candle referenced by
+                # TRADE_OPENED itself (opened["timestamp"], i.e. signal_timestamp)
+                # priced the entry -- see the guard in _update_trade().
+                "entry_candle_timestamp": opened["timestamp"],
                 "fill": float(payload["simulated_fill"]), "stop": float(payload["initial_stop"]),
                 "targets": [float(value) for value in payload["initial_targets"]],
                 "initial_size": float(payload["position_size"]),
