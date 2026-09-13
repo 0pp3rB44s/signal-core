@@ -273,6 +273,19 @@ class ForwardPaperService:
             )
             return
 
+        # A partial exit already reduced remaining_size to zero (a full close
+        # via TP fractions) but the terminal TRADE_CLOSED event was never
+        # appended -- e.g. a crash between the two. This is completing
+        # already-decided bookkeeping, not a new market decision, so (like
+        # pending_terminal above) it must not wait for a fresh candle either.
+        if state["remaining_size"] <= 1e-12 and state["terminal_status"] != "CLOSED" and state["completed_partial_targets"]:
+            last_index = max(state["completed_partial_targets"])
+            self._close(
+                trade_id, state, timestamp, state["targets"][last_index],
+                f"TP{last_index + 1}", remaining_size=0.0,
+            )
+            return
+
         # CAUSAL_PAPER_ENGINE_FIX_2026-09-13: entry is priced off the trigger
         # candle's own close (open_trade()'s `simulated_fill`), so that same
         # candle's high/low necessarily predates -- or is at best

@@ -254,3 +254,45 @@ def test_existing_crash_resume_pending_terminal_still_completes_on_stale_candle(
     final_state = service.trade_states()[trade_id]
     assert final_state["terminal_status"] == "CLOSED"
     assert final_state["final_exit_reason"] == "STOP_LOSS"
+
+
+def test_full_partial_exit_recovery_closes_even_without_a_fresh_candle(tmp_path):
+    """If a partial exit already reduced remaining_size to zero (a full TP1
+    close) but the process crashed before TRADE_CLOSED was appended, recovery
+    must complete the close on restart even if the only snapshot available
+    is still the (stale) entry candle -- this is finishing an
+    already-decided bookkeeping fact, not a new market decision, and must
+    not be blocked by the same-candle guard."""
+    service = _service(tmp_path)
+    symbol = "JJJUSDT"
+    entry_snapshot = _snapshot(symbol, ENTRY_TS, open_=99.8, high=100.5, low=99.5, close=100.0)
+    plan = _plan(symbol, "LONG", entry=100.0, stop=97.0, targets=[102.0])
+    service.process([plan], [entry_snapshot], scan_id="scan-open")
+    trade_id = next(iter(service.open_states().keys()))
+    state = service.trade_states()[trade_id]
+
+    # Simulate: a genuinely later candle touched TP1 and PARTIAL_EXIT was
+    # persisted (TP1_CLOSE_PCT defaults to a full close), but the process
+    # crashed before EXIT_REASON_TRANSITION/TRADE_CLOSED were appended.
+    service._append(
+        trade_id, state["plan_id"], "TP_TOUCH", "2026-01-01T00:15:00+00:00",
+        {"target_index": 1, "price": 102.0, "mark_price": 102.0},
+        candidate_id=state["candidate_id"],
+    )
+    service._append(
+        trade_id, state["plan_id"], "PARTIAL_EXIT", "2026-01-01T00:15:00+00:00",
+        {"target_index": 1, "exit_price": 102.0, "exit_size": state["initial_size"],
+         "gross_pnl": 0.0, "fee": 0.0},
+        candidate_id=state["candidate_id"],
+    )
+
+    mid_state = service.trade_states()[trade_id]
+    assert mid_state["remaining_size"] <= 1e-12
+    assert mid_state["terminal_status"] == "OPEN", "not yet closed -- exactly the crash gap being recovered"
+
+    # Recovery scan cycle: only the stale entry candle is available again.
+    service.update_market([entry_snapshot], scan_id="scan-recovery")
+
+    final_state = service.trade_states()[trade_id]
+    assert final_state["terminal_status"] == "CLOSED"
+    assert final_state["final_exit_reason"] == "TP1"

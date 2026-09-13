@@ -111,6 +111,11 @@ def test_public_runner_builds_complete_real_pipeline_lineage(tmp_path, monkeypat
     opened = next(event for event in events if event["event_type"] == "TRADE_OPENED")
     close_snapshot = _detector_fixture()
     last = close_snapshot.primary.candles[-1]
+    # CAUSAL_PAPER_ENGINE_FIX_2026-09-13: a trade's own trigger candle is no
+    # longer eligible to close it (see forward_paper/service.py's
+    # entry_candle_timestamp guard) -- this "closing" observation must be a
+    # genuinely later candle, not the same one mutated in place.
+    last.timestamp_ms += 900_000
     last.high = float(opened["payload"]["initial_targets"][0]) + 0.1
     last.close = float(opened["payload"]["initial_targets"][0])
     runner.forward_paper.process([], [close_snapshot], scan_id="close-scan")
@@ -145,6 +150,9 @@ def test_public_runner_restart_resumes_transition_without_duplicate_lineage(tmp_
         if event["event_type"] == "TRADE_OPENED"
     )
     close_snapshot = _detector_fixture()
+    # CAUSAL_PAPER_ENGINE_FIX_2026-09-13: see the sibling test above -- the
+    # closing observation must be a genuinely later candle.
+    close_snapshot.primary.candles[-1].timestamp_ms += 900_000
     close_snapshot.primary.candles[-1].high = float(opened["payload"]["initial_targets"][0]) + 0.1
     close_snapshot.primary.candles[-1].close = float(opened["payload"]["initial_targets"][0])
     original_append = runner.forward_paper.store.append
