@@ -22,6 +22,7 @@ from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_i
 from clients.schemas import (MarketSnapshot, StrategyCandidate, StrategyScore,
                              SweepDetection, TradePlan)
 from execution.execution_service import ExecutionService
+from tests.test_entry_path_audit import _authorize
 from risk.risk_manager import RiskManager
 
 CANDLE_MS = 1_785_000_000_000
@@ -166,7 +167,9 @@ def test_execution_invariant_blocks_injected_short(monkeypatch):
     """A SHORT plan injected straight into execution - bypassing the risk layer
     entirely - must still be refused."""
     svc = _service(monkeypatch, ENABLE_SHORTS=False)
-    reports = svc.execute([_plan("SHORT")])
+    plan = _plan("SHORT")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert "shorts disabled by configuration" in reports[0].message
 
@@ -182,7 +185,9 @@ def test_execution_invariant_allows_long_through(monkeypatch):
     """The invariant must not touch the LONG path: a LONG plan proceeds past it
     and is only stopped by ordinary downstream gates."""
     svc = _service(monkeypatch, ENABLE_SHORTS=False)
-    reports = svc.execute([_plan("LONG")])
+    plan = _plan("LONG")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert "shorts disabled" not in reports[0].message
 
 

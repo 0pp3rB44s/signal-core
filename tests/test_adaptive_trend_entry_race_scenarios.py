@@ -36,7 +36,7 @@ from strategies.adaptive_trend_tsmom import (
     initial_stop,
     size_position,
 )
-from tests.test_entry_path_audit import _live_settings, _service
+from tests.test_entry_path_audit import _authorize, _live_settings, _service
 
 ALIAS_STRATEGY = "adaptive_trend_momentum_v1_test"
 
@@ -102,6 +102,7 @@ def test_one_position_e2e_second_entry_blocked_by_existing_open_position(
     service.client.get_all_positions.return_value = {"data": [_open_position("BTCUSDT")]}
 
     plan = _adaptive_plan(_winner(symbol="ETHUSDT"))
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "SKIPPED"
@@ -121,6 +122,7 @@ def test_no_hedge_e2e_opposite_direction_same_symbol_blocked(
 
     short_winner = _winner(symbol="BTCUSDT", side=Side.SHORT)
     plan = _adaptive_plan(short_winner)
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "SKIPPED"
@@ -140,6 +142,7 @@ def test_duplicate_same_candle_candidate_cannot_execute_twice(
     service.client.get_all_positions.side_effect = [
         {"data": []}, {"data": []}, {"data": [_open_position("BTCUSDT")]},
     ]
+    _authorize(service, plan)
     first = service.execute([plan])
     assert first[0].status == "EXECUTED"
     assert service.client.place_futures_market_order.call_count == 1
@@ -151,6 +154,7 @@ def test_duplicate_same_candle_candidate_cannot_execute_twice(
     assert same_plan.candidate_id == plan.candidate_id
     assert same_plan.plan_id == plan.plan_id
     service.client.get_all_positions.return_value = {"data": [_open_position("BTCUSDT")]}
+    _authorize(service, same_plan)
     second = service.execute([same_plan])
 
     assert second[0].status == "SKIPPED"
@@ -250,6 +254,7 @@ def test_initial_protection_e2e_confirms_and_records_state(
         "expected_take_profit_count": 0,
     }
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "EXECUTED"
@@ -281,6 +286,7 @@ def test_protection_failure_failsafe_e2e_emergency_close_invoked(
         "expected_take_profit_count": 0,
     }
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "ERROR"
@@ -305,6 +311,7 @@ def test_protection_timeout_then_retry_succeeds_without_duplicate_protection(
         },
     ]
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "EXECUTED"

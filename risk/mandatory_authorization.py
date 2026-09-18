@@ -159,6 +159,37 @@ class RiskAuthorizationStore:
             raise RiskStateCorrupt(f"authorization record for {candidate_id} is malformed: {exc}") from exc
 
 
+def _build_and_store(
+    verdict,  # clients.schemas.RiskVerdict -- already computed
+    *,
+    candidate_id: str,
+    plan_id: str,
+    symbol: str,
+    direction: str,
+    position_notional_usdt: float,
+    store: RiskAuthorizationStore,
+) -> "RiskAuthorization":
+    """Shared core for authorize() and record_authorization(): turn an already-computed
+    RiskVerdict into a persisted receipt bound to the EXACT plan economics it will be checked
+    against later. Not exported -- reached only via the two public entry points below, so every
+    stored authorization traces back to a genuine RiskManager.evaluate() call, never a
+    fabricated one."""
+    content_hash = _plan_content_hash(
+        candidate_id=candidate_id, plan_id=plan_id, symbol=symbol, direction=direction,
+        position_notional_usdt=position_notional_usdt, leverage=verdict.leverage,
+    )
+    auth = RiskAuthorization(
+        candidate_id=candidate_id, plan_id=plan_id, allowed=bool(verdict.allowed),
+        reasons=list(verdict.reasons), content_hash=content_hash, evaluated_at=time.time(),
+        account_risk_pct=verdict.account_risk_pct, leverage=verdict.leverage,
+        max_open_positions=verdict.max_open_positions,
+    )
+    store.put(auth)
+    log.warning("RISK_AUTHORIZATION_RECORDED | candidate_id=%s | plan_id=%s | allowed=%s | reasons=%s",
+               candidate_id, plan_id, auth.allowed, auth.reasons)
+    return auth
+
+
 def authorize(
     risk_manager,  # risk.risk_manager.RiskManager -- typed loosely to avoid a hard import cycle
     candidate,     # clients.schemas.StrategyCandidate
@@ -169,8 +200,13 @@ def authorize(
     store: RiskAuthorizationStore,
     observed_equity: float | None = None,
 ) -> "RiskAuthorization":
-    """THE ONLY sanctioned way to record a risk authorization. Call this instead of calling
-    `RiskManager.evaluate()` directly whenever the result will be used to justify a real order.
+    """Call RiskManager.evaluate() and record the result in one step. Use this when nothing has
+    evaluated risk for this candidate yet.
+
+    NOT for the app/runner.py shape, where a RiskVerdict must already exist before
+    TradePlanner.build() can run -- use record_authorization() there instead, with the SAME
+    already-computed verdict, so RiskManager is never evaluated twice for one candidate.
+
     Fails closed: any exception from RiskManager.evaluate() itself propagates as
     RiskManagerUnavailable and NOTHING is persisted (so require_authorized() below correctly
     finds nothing and refuses)."""
@@ -182,21 +218,33 @@ def authorize(
         log.error("RISK_MANAGER_UNAVAILABLE | candidate_id=%s | %s", candidate.candidate_id, exc)
         raise RiskManagerUnavailable(str(exc)) from exc
 
-    content_hash = _plan_content_hash(
-        candidate_id=candidate.candidate_id, plan_id=plan_id, symbol=candidate.symbol,
-        direction=candidate.direction, position_notional_usdt=position_notional_usdt,
-        leverage=verdict.leverage,
+    return _build_and_store(
+        verdict, candidate_id=candidate.candidate_id, plan_id=plan_id, symbol=candidate.symbol,
+        direction=candidate.direction, position_notional_usdt=position_notional_usdt, store=store,
     )
-    auth = RiskAuthorization(
-        candidate_id=candidate.candidate_id, plan_id=plan_id, allowed=bool(verdict.allowed),
-        reasons=list(verdict.reasons), content_hash=content_hash, evaluated_at=time.time(),
-        account_risk_pct=verdict.account_risk_pct, leverage=verdict.leverage,
-        max_open_positions=verdict.max_open_positions,
+
+
+def record_authorization(
+    verdict,     # clients.schemas.RiskVerdict -- already computed by an earlier risk_manager.evaluate()
+    candidate,   # clients.schemas.StrategyCandidate
+    *,
+    plan_id: str,
+    position_notional_usdt: float,
+    store: RiskAuthorizationStore,
+) -> "RiskAuthorization":
+    """Record a RiskVerdict that was already obtained via a real RiskManager.evaluate() call
+    elsewhere -- the app/runner.py shape, where evaluate() must run BEFORE TradePlanner.build()
+    (build() needs the verdict to compute its own EXECUTABLE/BLOCKED decision) but a plan's final
+    notional/leverage are only known AFTER build() returns. Use the SAME verdict object that was
+    passed into build(), so RiskManager is never evaluated twice for one candidate.
+
+    Does NOT call RiskManager itself -- this is not a way to skip evaluation, only a way to record
+    one that genuinely already happened. Callers are this project's own strategy-runner code, not
+    external input, so the verdict is trusted rather than independently re-derived here."""
+    return _build_and_store(
+        verdict, candidate_id=candidate.candidate_id, plan_id=plan_id, symbol=candidate.symbol,
+        direction=candidate.direction, position_notional_usdt=position_notional_usdt, store=store,
     )
-    store.put(auth)
-    log.warning("RISK_AUTHORIZATION_RECORDED | candidate_id=%s | allowed=%s | reasons=%s",
-               candidate.candidate_id, auth.allowed, auth.reasons)
-    return auth
 
 
 def require_authorized(
@@ -245,7 +293,7 @@ def require_authorized(
 
 
 __all__ = [
-    "RiskAuthorization", "RiskAuthorizationStore", "authorize", "require_authorized",
+    "RiskAuthorization", "RiskAuthorizationStore", "authorize", "record_authorization", "require_authorized",
     "RiskAuthorizationError", "RiskManagerUnavailable", "RiskAuthorizationMissing",
     "RiskAuthorizationExpired", "RiskAuthorizationMismatch", "RiskStateCorrupt",
     "AUTHORIZATION_TTL_SECONDS",

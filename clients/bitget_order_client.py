@@ -284,6 +284,7 @@ class BitgetOrderClientMixin:
         product_type: str | None = None,
         margin_coin: str = "USDT",
     ) -> dict[str, Any]:
+        self._require_safe_clock_for_order()
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
             "productType": (product_type or self.settings.bitget_product_type).upper(),
@@ -337,6 +338,7 @@ class BitgetOrderClientMixin:
         # size first would issue an HTTP request on a path that can never place
         # an order, and would surface a size error instead of the real reason.
         self._assert_order_transport_allowed()
+        self._require_safe_clock_for_order()
 
         side = "buy" if direction_upper == "LONG" else "sell"
         hold_side = "long" if direction_upper == "LONG" else "short"
@@ -419,6 +421,7 @@ class BitgetOrderClientMixin:
         # size first would issue an HTTP request on a path that can never place
         # an order, and would surface a size error instead of the real reason.
         self._assert_order_transport_allowed()
+        self._require_safe_clock_for_order()
 
         side = "buy" if direction_upper == "LONG" else "sell"
         hold_side = "long" if direction_upper == "LONG" else "short"
@@ -485,6 +488,7 @@ class BitgetOrderClientMixin:
         if direction_upper not in {"LONG", "SHORT"}:
             raise ValueError(f"Unsupported futures direction: {direction}")
         self._assert_order_transport_allowed()
+        self._require_safe_clock_for_order()
         formatted_price = self._format_trigger_price(symbol, float(price))
         normalized, reason = self.validate_entry_size(
             symbol, float(size), reference_price=formatted_price
@@ -536,6 +540,7 @@ class BitgetOrderClientMixin:
         hold_side_lower = str(hold_side or "").lower()
         side = close_side_for_hold_side(hold_side_lower)
         self._assert_order_transport_allowed()
+        self._require_safe_clock_for_order()
         formatted_price = self._format_trigger_price(symbol, float(price))
         formatted_size = self._format_size(symbol, float(size))
         if formatted_price <= 0 or formatted_size <= 0:
@@ -579,6 +584,7 @@ class BitgetOrderClientMixin:
         margin_coin: str = "USDT",
     ) -> dict[str, Any]:
         """Cancel an open futures order (used when a maker limit doesn't fill in time)."""
+        self._require_safe_clock_for_order()
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
             "productType": (product_type or self.settings.bitget_product_type).upper(),
@@ -697,6 +703,7 @@ class BitgetOrderClientMixin:
         **_: Any,
     ) -> dict[str, Any]:
         """Close/reduce an existing Bitget futures position."""
+        self._require_safe_clock_for_order()
         if hold_side is None and direction is not None:
             direction_upper = str(direction).upper()
             if direction_upper == "LONG":
@@ -767,6 +774,7 @@ class BitgetOrderClientMixin:
         **_: Any,
     ) -> dict[str, Any]:
         """Close the full live remaining position and optionally cleanup stale TP/SL orders."""
+        self._require_safe_clock_for_order()
         symbol = symbol.upper()
         direction_upper = str(direction or "").upper()
         if direction_upper not in {"LONG", "SHORT"}:

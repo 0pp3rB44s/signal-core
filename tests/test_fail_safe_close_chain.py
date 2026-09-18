@@ -45,6 +45,13 @@ class Client(BitgetOrderClientMixin, BitgetAccountClientMixin):
         self.cancelled_tpsl = []
         self.close_orders = []
 
+    def _require_safe_clock_for_order(self):
+        # Deployment Gap #2 fix (clients/clock_safety.py, integrated 2026-09-18):
+        # this test double predates the clock-safety gate and, like its existing
+        # _assert_order_transport_allowed stub above, is not testing clock
+        # behavior -- stubbed the same way, not testing around a real defect.
+        return None
+
     # -- exchange edge -----------------------------------------------------
     def get_all_positions(self, *a, **k):
         rows = self._readbacks.pop(0) if len(self._readbacks) > 1 else self._readbacks[0]

@@ -5,7 +5,7 @@ import threading
 import time
 
 from execution.runtime_lock import trading_state_lock
-from tests.test_entry_path_audit import _service
+from tests.test_entry_path_audit import _authorize, _service
 from tests.test_portfolio_selection import _plan
 from tests.test_position_model_migration import _manager
 
@@ -47,6 +47,7 @@ def test_three_symbols_remain_isolated_across_three_sequential_lifecycles(monkey
     sol.reasons = ["symbol expectancy source=live (SOLUSDT LONG, n=8, exp=0.30)"]
     btc.reasons = ["symbol expectancy source=live (BTCUSDT LONG, n=8, exp=0.20)"]
     eth.reasons = ["symbol expectancy source=live (ETHUSDT LONG, n=8, exp=0.10)"]
+    _authorize(service, eth, btc, sol)
 
     _prepare_success(service, symbol="SOLUSDT", order_id="sol-order", fee=0.01)
     first_reports = service.execute([eth, btc, sol])
@@ -90,6 +91,7 @@ def test_three_symbols_remain_isolated_across_three_sequential_lifecycles(monkey
     service.cooldowns.clear("SOLUSDT")
     sol_new = _plan("SOLUSDT", 96, candle_ms=1_700_000_900_000)
     sol_new.reasons = ["symbol expectancy source=live (SOLUSDT LONG, n=9, exp=0.40)"]
+    _authorize(service, sol_new)
     _prepare_success(service, symbol="SOLUSDT", order_id="sol-order-new", fee=0.03)
     third_reports = service.execute([sol_new])
 
@@ -122,6 +124,9 @@ def test_overlapping_execution_cycles_never_exceed_the_position_cap(monkeypatch,
     first_plan = _plan("BTCUSDT", 90)
     second_plan = _plan("SOLUSDT", 95)
     third_plan = _plan("XLMUSDT", 85)
+    _authorize(first, first_plan)
+    _authorize(second, second_plan)
+    _authorize(third, third_plan)
     exchange_positions: list[dict] = []
     exchange_guard = threading.Lock()
     barrier = threading.Barrier(3)
@@ -196,6 +201,7 @@ def test_late_legality_failure_never_falls_through_to_runner_up(monkeypatch):
         {"data": []},
     ]
 
+    _authorize(service, btc, sol)
     reports = service.execute([btc, sol])
 
     assert [report.symbol for report in reports] == ["SOLUSDT"]

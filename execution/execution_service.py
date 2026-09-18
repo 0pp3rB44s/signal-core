@@ -36,6 +36,7 @@ from execution.entry_snapshot import (
     missingness,
 )
 from execution.order_identity import ENTRY_LEG_MAKER, ENTRY_LEG_MARKET
+from risk.mandatory_authorization import RiskAuthorizationError, RiskAuthorizationStore, require_authorized
 from execution.order_intent_store import (
     STATE_ABANDONED,
     STATE_UNKNOWN,
@@ -201,6 +202,7 @@ class ExecutionService:
             else None
         )
         self.intent_store = OrderIntentStore()
+        self._risk_authorization_store = RiskAuthorizationStore()
         self.entry_submitter = EntryOrderSubmitter(
             client=self.client,
             intent_store=self.intent_store,
@@ -375,6 +377,27 @@ class ExecutionService:
     def execute(self, plans: list[TradePlan]) -> list[ExecutionReport]:
         if not self.settings.execution_enabled:
             return []
+
+        # Mandatory, strategy-agnostic risk authorization gate (Deployment Gap
+        # #1 fix, integrated 2026-09-18). ExecutionService is the one place
+        # every TradePlan -- regardless of which strategy/module constructed
+        # it -- must pass through before any order can be created or
+        # submitted, so this check runs here rather than trusting that
+        # whatever built the plan already called RiskManager. Per-plan
+        # filtering: one denied/unauthorized candidate among several must not
+        # block unrelated ones. A plan that fails this check is never seen by
+        # selection, sizing, precision, or order-intent logic below.
+        authorized_plans: list[TradePlan] = []
+        for plan in plans:
+            try:
+                require_authorized(plan, store=self._risk_authorization_store)
+                authorized_plans.append(plan)
+            except RiskAuthorizationError as exc:
+                self.log.error(
+                    "RISK_AUTHORIZATION_REFUSED | plan_id=%s | candidate_id=%s | strategy=%s | %s",
+                    plan.plan_id, plan.candidate_id, plan.strategy, exc,
+                )
+        plans = authorized_plans
 
         # Housekeeping before selection. Everything below this line can return
         # early; reconciliation must not depend on whether this cycle trades.

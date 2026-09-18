@@ -158,6 +158,27 @@ class BitgetPrecisionMixin:
                 "Private exchange call blocked: FORWARD_PAPER_ONLY is active"
             )
 
+    def _require_safe_clock_for_order(self) -> None:
+        """Fail closed before any order-MUTATING call if the exchange clock
+        reference is missing, stale, or outside its frozen bound. Deployment
+        Gap #2 fix, integrated 2026-09-18 -- reuses clients/clock_safety.py,
+        itself modeled on the liquidation V2 collector's own proven clock-
+        reference design. Deliberately NOT called from read-only paths
+        (reconciliation/account queries): a stale clock reference should stop
+        new risk-taking, not stop the bot from safely reading its own state.
+        """
+        from clients.clock_safety import ClockSafetyCache, require_safe_clock
+
+        # Lazily create the cache if this instance was not constructed via
+        # BitgetBaseClient.__init__ (test doubles, partially-initialized
+        # objects). A fresh cache still forces a real probe on first use --
+        # this only avoids an AttributeError, never skips the safety check.
+        cache = getattr(self, "_clock_cache", None)
+        if cache is None:
+            cache = ClockSafetyCache()
+            self._clock_cache = cache
+        require_safe_clock(cache)  # raises ClockUnsafe -- never returns a falsy "unsafe" value
+
     # --- metadata ---------------------------------------------------------
 
     def _spec_key(self, symbol: str) -> tuple[str, str]:

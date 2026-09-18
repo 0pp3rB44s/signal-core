@@ -106,6 +106,123 @@ guard_assert_critical_risks_cleared() {
   echo "guard: LAYER 1 OK ($(printf '%s\n' "$report" | grep -c . ) critical risk(s), all resolved or accepted)"
 }
 
+# --- LAYER 2 content binding: stale-authorization fix, 2026-09-18 ------------
+# Reproduced finding: the OLD Layer 2 was `[ -f "$AUTH_FILE" ]` -- existence
+# only. state/LIVE_PILOT_AUTHORISATION on production is, right now, dated for
+# commit aa42c3aac52ef67d6d20efac2901f22581a60877 while production HEAD is
+# 4d2fb7182afc49687cfa27cde3fcc7c4783f22ae -- a DIFFERENT commit -- and the old
+# check would still pass. An authorization must be bound to the exact approved
+# deployment identity, not merely be present. This function REPLACES the bare
+# existence check; the caller (launch_live.sh) is updated separately, in its
+# own reviewed change -- this file only adds the capability, per this
+# mission's "controlled reviewed development/integration path" instruction.
+# NOTHING here creates, modifies, or invalidates any real authorization file.
+
+# Canonical, deterministic hash of the risk-relevant configuration actually
+# about to run. Reuses values this guard already validates elsewhere (LIVE
+# mode invariants, pilot limits) rather than inventing a second definition of
+# "risk configuration" -- if one of these values changes, the deployment's
+# actual risk posture has changed, and a stale authorization must not cover it.
+guard_compute_risk_config_hash() {
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "${MAX_LEVERAGE:-}" "${MAX_OPEN_POSITIONS:-}" "${EXECUTION_MAX_PER_CYCLE:-}" \
+    "${PRODUCTION_SYMBOL_ALLOWLIST:-}" "${ENABLED_STRATEGIES:-}" \
+    "${HARD_DAILY_STOP_PCT:-}" "${WEEKLY_FREEZE_LOSS_PCT:-}" \
+    "${ADAPTIVE_TREND_LIVE_ENTRY_ENABLED:-}" "${MICROFLOW_SCALPER_ENABLED:-}" \
+    | shasum -a 256 | awk '{print $1}'
+}
+
+# Hash of the ACTUALLY-INSTALLED launchd supervisor definition, when present
+# (it lives outside the git tree, at ~/Library/LaunchAgents/, and can drift
+# from the repo's own template without the repo itself going dirty). Falls
+# back to the in-repo template, then to a fixed sentinel, so the field is
+# always defined and always comparable -- never silently skipped.
+guard_compute_runtime_hash() {
+  local installed="${HOME}/Library/LaunchAgents/com.cgc.live.plist"
+  if [ -f "$installed" ]; then
+    shasum -a 256 "$installed" | awk '{print $1}'
+    return 0
+  fi
+  local template="deploy/launchd/com.cgc.live.plist.template"
+  if [ -f "$template" ]; then
+    shasum -a 256 "$template" | awk '{print $1}'
+    return 0
+  fi
+  echo "N/A"
+}
+
+# Non-secret fingerprint of which account/environment this run targets. Never
+# includes the raw API key/secret/passphrase -- a SHA-256 of the key plus the
+# declared environment name is enough to detect "this authorization was for a
+# different account or environment" without persisting or logging the
+# credential itself.
+guard_compute_account_identity() {
+  local key_fp="N/A"
+  if [ -n "${BITGET_API_KEY:-}" ]; then
+    key_fp="$(printf '%s' "${BITGET_API_KEY}" | shasum -a 256 | awk '{print substr($1,1,16)}')"
+  fi
+  printf '%s:%s\n' "${APP_ENV:-unset}" "$key_fp"
+}
+
+# Replaces the old bare `[ -f "$AUTH_FILE" ]` check. Requires every binding
+# field to be present AND to match the CURRENT deployment exactly. Any
+# mismatch, or any missing field (an old-format file, like production's
+# current one, has none of these fields), fails closed -- same guard_die
+# fail-fast contract as every other layer in this file.
+guard_assert_authorization_binding() {
+  local auth_file="${1:-state/LIVE_PILOT_AUTHORISATION}"
+  [ -f "$auth_file" ] || guard_die \
+    "LAYER 2: missing $auth_file — owner authorisation required. This file must be created by the owner, dated and signed. It is not created by any script."
+
+  local auth_commit auth_risk_hash auth_runtime_hash auth_account auth_at
+  auth_commit="$(awk -F= '$1=="commit"{print $2; exit}' "$auth_file")"
+  auth_risk_hash="$(awk -F= '$1=="risk_config_hash"{print $2; exit}' "$auth_file")"
+  auth_runtime_hash="$(awk -F= '$1=="runtime_hash"{print $2; exit}' "$auth_file")"
+  auth_account="$(awk -F= '$1=="account_environment"{print $2; exit}' "$auth_file")"
+  auth_at="$(awk -F= '$1=="authorized_at"{print $2; exit}' "$auth_file")"
+
+  [ -n "$auth_commit" ] || guard_die \
+    "LAYER 2: $auth_file has no commit= field (old-format or malformed authorization; owner must issue a fresh one bound to the current deployment identity)"
+  [ -n "$auth_risk_hash" ] || guard_die \
+    "LAYER 2: $auth_file has no risk_config_hash= field (old-format or malformed authorization)"
+  [ -n "$auth_account" ] || guard_die \
+    "LAYER 2: $auth_file has no account_environment= field (old-format or malformed authorization)"
+  [ -n "$auth_at" ] || guard_die \
+    "LAYER 2: $auth_file has no authorized_at= field (old-format or malformed authorization)"
+  # runtime_hash may legitimately be the literal string N/A on both sides
+  # (no launchd definition installed or templated anywhere); still required
+  # to be PRESENT as a field, so a truncated file cannot silently pass.
+  [ -n "$auth_runtime_hash" ] || guard_die \
+    "LAYER 2: $auth_file has no runtime_hash= field (old-format or malformed authorization)"
+
+  local current_commit; current_commit="$(git rev-parse HEAD)"
+  [ "$auth_commit" = "$current_commit" ] || guard_die \
+"LAYER 2: authorization is bound to commit ${auth_commit}, current HEAD is ${current_commit}.
+       A stale authorization must never be reused for a different commit — the owner
+       must issue a fresh authorization for THIS exact commit."
+
+  local current_risk_hash; current_risk_hash="$(guard_compute_risk_config_hash)"
+  [ "$auth_risk_hash" = "$current_risk_hash" ] || guard_die \
+"LAYER 2: authorization risk_config_hash (${auth_risk_hash}) does not match the current
+       risk configuration (${current_risk_hash}). Risk-relevant settings changed since
+       authorization was issued; a fresh authorization is required."
+
+  local current_runtime_hash; current_runtime_hash="$(guard_compute_runtime_hash)"
+  [ "$auth_runtime_hash" = "$current_runtime_hash" ] || guard_die \
+"LAYER 2: authorization runtime_hash (${auth_runtime_hash}) does not match the current
+       installed/templated supervisor definition (${current_runtime_hash}). The
+       deployment/supervisor definition changed since authorization; a fresh
+       authorization is required."
+
+  local current_account; current_account="$(guard_compute_account_identity)"
+  [ "$auth_account" = "$current_account" ] || guard_die \
+"LAYER 2: authorization account_environment does not match the current environment
+       and credentials on file. A stale authorization for a different account or
+       environment must never be reused."
+
+  echo "layer 2: authorisation content-bound and verified (commit=$auth_commit, authorized_at=$auth_at)"
+}
+
 # Load an env file into the environment, ignoring comments and blanks.
 guard_load_env() {
   local f="$1"

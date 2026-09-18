@@ -24,6 +24,7 @@ from data.watchlist import get_watchlist
 from market_data.market_data_service import MarketDataService
 from market_data.multi_timeframe_cache import MultiTimeframeCache
 from execution.execution_service import ExecutionService
+from risk.mandatory_authorization import RiskAuthorizationStore, record_authorization
 from execution.dynamic_grid_service import DynamicGridService
 from execution.position_manager import PositionManager
 from execution.portfolio_selector import select_execution_winner
@@ -475,6 +476,7 @@ class StartupRunner:
         self.scorer = StrategyScorer(settings=settings)
         self.risk_manager = RiskManager(settings=settings)
         self.trade_planner = TradePlanner(settings=settings)
+        self._risk_authorization_store = RiskAuthorizationStore()
         self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
         self.dynamic_grid = DynamicGridService(
             settings=settings, client=self.client, cache=self.multi_tf_cache,
@@ -1532,6 +1534,16 @@ class StartupRunner:
                             details={"status": str(risk.status)}, **funnel_common,
                         )
                         plan = self.trade_planner.build(candidate, score, risk)
+                        # Record the RiskVerdict already obtained above, bound to this
+                        # plan's own final economics -- ExecutionService.execute() requires
+                        # a matching record before it will act on any plan (Deployment Gap
+                        # #1 fix, integrated 2026-09-18). Recorded regardless of verdict so
+                        # a denial is on record too, not only approvals.
+                        record_authorization(
+                            risk, candidate, plan_id=plan.plan_id,
+                            position_notional_usdt=plan.position_notional_usdt,
+                            store=self._risk_authorization_store,
+                        )
                         executable = plan.verdict == "EXECUTABLE"
                         self.funnel_telemetry.event(
                             event_type="PLANNER_DECISION", passed=executable,
@@ -1794,6 +1806,11 @@ class StartupRunner:
                                     details={"status": str(fast_risk.status)}, **fast_common,
                                 )
                                 fast_plan = self.trade_planner.build(fast_candidate, fast_score, fast_risk)
+                                record_authorization(
+                                    fast_risk, fast_candidate, plan_id=fast_plan.plan_id,
+                                    position_notional_usdt=fast_plan.position_notional_usdt,
+                                    store=self._risk_authorization_store,
+                                )
                                 fast_executable = fast_plan.verdict == "EXECUTABLE"
                                 fast_secondary = classify_reason_codes(
                                     list(getattr(fast_risk, "reasons", []) or [])

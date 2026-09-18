@@ -16,7 +16,7 @@ import pytest
 from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 from clients.schemas import TradePlan
 from execution.execution_service import ExecutionService
-from tests.test_entry_path_audit import _live_settings, _service
+from tests.test_entry_path_audit import _authorize, _live_settings, _service
 
 CANDLE_MS = 1_785_700_000_000
 ADAPTIVE_STRATEGY = "adaptive_trend_tsmom_v1"
@@ -70,7 +70,9 @@ def _service_with_flag(monkeypatch, *, adaptive_flag: bool, **overrides) -> Exec
 
 def test_adaptive_trend_blocked_when_flag_false(monkeypatch):
     svc = _service_with_flag(monkeypatch, adaptive_flag=False)
-    reports = svc.execute([_adaptive_plan()])
+    plan = _adaptive_plan()
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert "hybrid gate blocked unsupported strategy" in reports[0].message
     assert svc.client.place_futures_market_order.call_count == 0
@@ -80,7 +82,9 @@ def test_adaptive_trend_blocked_when_flag_missing_default(monkeypatch):
     """Settings default is False -- omitting the override must behave
     identically to explicitly passing False."""
     svc = _service_with_flag(monkeypatch, adaptive_flag=False)
-    reports = svc.execute([_adaptive_plan()])
+    plan = _adaptive_plan()
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert "hybrid gate blocked unsupported strategy" in reports[0].message
 
 
@@ -91,7 +95,9 @@ def test_adaptive_trend_permitted_past_the_gate_when_flag_true(monkeypatch):
         {"data": [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0.5",
                     "openPriceAvg": "100.0", "markPrice": "100.0"}]},
     ]
-    reports = svc.execute([_adaptive_plan()])
+    plan = _adaptive_plan()
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert "hybrid gate blocked unsupported strategy" not in reports[0].message
     assert svc.client.place_futures_market_order.call_count == 1
 
@@ -123,6 +129,7 @@ def test_unknown_strategy_still_blocked_even_with_flag_true(monkeypatch):
         leverage=2.0, position_notional_usdt=26.79, notes=[], reasons=[],
         geometry_entry=100.0,
     )
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert "hybrid gate blocked unsupported strategy" in reports[0].message
 
@@ -148,6 +155,7 @@ def test_low_vol_reclaim_unaffected_by_the_new_flag_in_either_state(monkeypatch)
             {"data": [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0.5",
                         "openPriceAvg": "100.0", "markPrice": "100.0"}]},
         ]
+        _authorize(svc, plan)
         reports = svc.execute([plan])
         assert "hybrid gate blocked unsupported strategy" not in reports[0].message
 
@@ -186,7 +194,9 @@ def test_max_open_positions_still_blocks_adaptive_trend_when_flag_true(monkeypat
             {"symbol": "ETHUSDT", "holdSide": "long", "total": "0.5"},
         ]
     }
-    reports = svc.execute([_adaptive_plan(symbol="SOLUSDT")])
+    plan = _adaptive_plan(symbol="SOLUSDT")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert svc.client.place_futures_market_order.call_count == 0
 
@@ -201,7 +211,9 @@ def test_zero_take_profits_not_rejected_when_flag_true(monkeypatch):
         {"data": [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0.5",
                     "openPriceAvg": "100.0", "markPrice": "100.0"}]},
     ]
-    reports = svc.execute([_adaptive_plan()])
+    plan = _adaptive_plan()
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert "invalid or missing SL/TP" not in reports[0].message
     assert "take_profit_invalid" not in reports[0].message
 
@@ -217,6 +229,7 @@ def test_zero_stop_loss_still_rejected_even_with_flag_true(monkeypatch):
     svc = _service_with_flag(monkeypatch, adaptive_flag=True)
     plan = _adaptive_plan()
     plan.stop_loss = 0.0
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert reports == []
     assert svc.client.place_futures_market_order.call_count == 0
@@ -229,7 +242,9 @@ def test_successful_entry_places_protection_with_the_real_stop(monkeypatch):
         {"data": [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0.5",
                     "openPriceAvg": "100.0", "markPrice": "100.0"}]},
     ]
-    reports = svc.execute([_adaptive_plan()])
+    plan = _adaptive_plan()
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "EXECUTED"
     assert svc.client.place_futures_protection_orders.call_count == 1
     call = svc.client.place_futures_protection_orders.call_args.kwargs
@@ -246,6 +261,8 @@ def test_one_position_cap_still_applies_when_flag_true(monkeypatch):
     svc.client.get_all_positions.return_value = {
         "data": [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0.5"}]
     }
-    reports = svc.execute([_adaptive_plan(symbol="ETHUSDT")])
+    plan = _adaptive_plan(symbol="ETHUSDT")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert svc.client.place_futures_market_order.call_count == 0

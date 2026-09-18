@@ -60,6 +60,21 @@ class FakeClient(BitgetPrecisionMixin):
         self._contracts = list(contracts)
         self._fail = fail
         self.fetches = 0
+        # Deployment Gap #2 fix (clients/clock_safety.py, integrated
+        # 2026-09-18): a pre-populated, always-fresh, always-passing clock
+        # reference so the real _require_safe_clock_for_order() gate still
+        # runs (this class DOES inherit BitgetPrecisionMixin) but this file's
+        # own stated invariant -- "the HTTP layer is never reached" -- holds.
+        import time as _time
+        from clients.clock_safety import ClockProbe as _ClockProbe
+        from clients.clock_safety import ClockSafetyCache as _ClockSafetyCache
+        self._clock_cache = _ClockSafetyCache()
+        self._clock_cache._last = _ClockProbe(
+            local_utc="1970-01-01T00:00:00.000+00:00",
+            exchange_utc="1970-01-01T00:00:00.000+00:00",
+            offset_ms=0.0, offset_lower_ms=0.0, offset_upper_ms=0.0, rtt_ms=1.0,
+            measured_at=_time.monotonic(), status="OK", detail="test fixture: clock assumed fine",
+        )
 
     def get_contracts(self, product_type, symbol=None):
         self.fetches += 1

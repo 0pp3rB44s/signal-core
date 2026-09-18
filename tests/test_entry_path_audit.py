@@ -17,8 +17,11 @@ import pytest
 from app.config import Settings
 from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 from clients.bitget_base_client import BitgetOrderSubmissionAmbiguous
-from clients.schemas import TradePlan
+from clients.schemas import RiskVerdict, TradePlan
 from execution.execution_service import ExecutionService
+from risk.mandatory_authorization import (
+    RiskAuthorizationMissing, record_authorization, require_authorized,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -147,6 +150,22 @@ def _plan(symbol: str = "BTCUSDT", direction: str = "LONG") -> TradePlan:
     )
 
 
+def _authorize(service: ExecutionService, *plans: TradePlan) -> None:
+    """Test helper standing in for what a real caller (app/runner.py) does before
+    ever calling execute(): RiskManager.evaluate() then record_authorization().
+    Deployment Gap #1 fix, integrated 2026-09-18 -- execute() now refuses any
+    plan that was never authorized this way. `plan` doubles as the 'candidate'
+    argument here -- TradePlan already carries candidate_id/symbol/direction,
+    the only attributes record_authorization() reads from that parameter."""
+    for plan in plans:
+        verdict = RiskVerdict(allowed=True, status="ALLOWED", reasons=[],
+                              account_risk_pct=plan.account_risk_pct, leverage=plan.leverage,
+                              max_open_positions=2)
+        record_authorization(verdict, plan, plan_id=plan.plan_id,
+                             position_notional_usdt=plan.position_notional_usdt,
+                             store=service._risk_authorization_store)
+
+
 def _service(monkeypatch, **setting_overrides) -> ExecutionService:
     monkeypatch.setattr(
         "execution.execution_service.resolve_account_equity", lambda _s: (1000.0, "test")
@@ -204,6 +223,7 @@ def test_live_entry_passes_a_deterministic_client_oid(monkeypatch, direction, ex
         },
     ]
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert service.client.place_futures_market_order.call_count == 1
@@ -248,6 +268,7 @@ def test_ambiguous_live_entry_never_posts_twice(monkeypatch):
         },
     ]
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert service.client.place_futures_market_order.call_count == 1
@@ -281,6 +302,7 @@ def test_v2_unfilled_cancelled_maker_is_retired_in_the_execution_path(monkeypatc
     }
     service.client.get_all_positions.return_value = {"data": []}
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "SKIPPED"
@@ -302,6 +324,7 @@ def test_unknown_exchange_state_blocks_every_further_entry_in_the_cycle(monkeypa
         "status": "UNKNOWN", "order": None, "source": "inconclusive", "errors": ["boom"],
     }
 
+    _authorize(service, first, second)
     reports = service.execute([first, second])
 
     assert service.client.place_futures_market_order.call_count == 1
@@ -319,11 +342,14 @@ def test_next_cycle_stays_blocked_until_the_intent_is_reconciled(monkeypatch):
         "status": "UNKNOWN", "order": None, "source": "inconclusive", "errors": ["boom"],
     }
 
+    _authorize(service, plan)
     service.execute([plan])
     service.client.place_futures_market_order.reset_mock()
     service.client.place_futures_market_order.side_effect = None
 
-    reports = service.execute([_plan("SOLUSDT")])
+    second_plan = _plan("SOLUSDT")
+    _authorize(service, second_plan)
+    reports = service.execute([second_plan])
 
     assert service.client.place_futures_market_order.call_count == 0
     assert reports[0].status == "SKIPPED"
@@ -343,7 +369,9 @@ def test_pending_exchange_entry_blocks_every_new_symbol(monkeypatch):
         }
     }
 
-    reports = service.execute([_plan("SOLUSDT")])
+    pending_plan = _plan("SOLUSDT")
+    _authorize(service, pending_plan)
+    reports = service.execute([pending_plan])
 
     assert reports[0].status == "SKIPPED"
     assert "pending exchange entry order" in reports[0].message
@@ -373,6 +401,7 @@ def test_pending_reduce_only_close_does_not_look_like_a_new_entry(monkeypatch):
         }]},
     ]
 
+    _authorize(service, plan)
     reports = service.execute([plan])
 
     assert reports[0].status == "EXECUTED"
@@ -395,6 +424,122 @@ def test_fail_safe_close_uses_the_reduce_only_path_not_a_new_opening_order(monke
     kwargs = service.client.close_futures_position_full.call_args.kwargs
     assert kwargs["direction"] == "LONG"
     assert kwargs["size"] == 0.5
+
+
+# --- mandatory risk authorization integration (Deployment Gap #1, 2026-09-18) ---
+
+
+def test_execute_refuses_a_plan_with_no_prior_authorization(monkeypatch):
+    """The core integration guarantee: execute() must never act on a plan that
+    nothing ever authorized -- no RiskManager call, no receipt, no order."""
+    service = _service(monkeypatch)
+    plan = _plan()
+    # Deliberately NOT calling _authorize() -- this is the whole point.
+
+    reports = service.execute([plan])
+
+    assert reports == []
+    service.client.place_futures_market_order.assert_not_called()
+    service.client.set_futures_leverage.assert_not_called()
+    assert service.intent_store.all() == []  # never even reached order-intent persistence
+
+
+def test_execute_refuses_an_explicitly_denied_plan(monkeypatch):
+    """A plan whose RiskManager verdict was recorded as denied (e.g. a cluster-
+    exposure breach) must be refused even though a record exists -- presence of
+    a record is not sufficient, it must also say allowed=True."""
+    service = _service(monkeypatch)
+    plan = _plan()
+    verdict = RiskVerdict(allowed=False, status="DENIED",
+                          reasons=["cluster-risk: correlated exposure limit reached"],
+                          account_risk_pct=plan.account_risk_pct, leverage=plan.leverage,
+                          max_open_positions=2)
+    record_authorization(verdict, plan, plan_id=plan.plan_id,
+                         position_notional_usdt=plan.position_notional_usdt,
+                         store=service._risk_authorization_store)
+
+    reports = service.execute([plan])
+
+    assert reports == []
+    service.client.place_futures_market_order.assert_not_called()
+
+
+def test_authorized_plan_executes_normally_no_regression(monkeypatch):
+    """A plan authorized the way app/runner.py's real normal path now does it
+    (RiskManager.evaluate() -> record_authorization(), both wired 2026-09-18)
+    must still execute exactly as before the gate existed -- proves the fix
+    adds a precondition, not a behavior change, for the legacy working path."""
+    service = _service(monkeypatch)
+    plan = _plan()
+    service.client.get_all_positions.side_effect = [
+        {"data": []}, {"data": []},
+        {"data": [{"symbol": plan.symbol, "holdSide": "long", "total": "0.5",
+                   "openPriceAvg": "100.0", "markPrice": "100.0"}]},
+    ]
+
+    _authorize(service, plan)
+    reports = service.execute([plan])
+
+    assert service.client.place_futures_market_order.call_count == 1
+    assert reports[0].status == "EXECUTED"
+
+
+def test_one_denied_plan_does_not_block_an_unrelated_authorized_plan(monkeypatch):
+    """Per-plan filtering, not all-or-nothing: proves the exact semantic Agent
+    C's integration spec required."""
+    service = _service(monkeypatch)
+    good_plan = _plan("BTCUSDT")
+    bad_plan = _plan("ETHUSDT")
+    _authorize(service, good_plan)
+    # bad_plan gets no authorization at all.
+    service.client.get_all_positions.side_effect = [
+        {"data": []}, {"data": []},
+        {"data": [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0.5",
+                   "openPriceAvg": "100.0", "markPrice": "100.0"}]},
+    ]
+
+    reports = service.execute([good_plan, bad_plan])
+
+    assert service.client.place_futures_market_order.call_count == 1
+    kwargs = service.client.place_futures_market_order.call_args.kwargs
+    assert kwargs["client_oid"] == service.entry_submitter.client_oid_for(good_plan)
+
+
+def test_adaptive_trend_plan_end_to_end_now_blocked(monkeypatch):
+    """Direct reproduction, end-to-end (not just at the mandatory_authorization
+    unit level), of the exact defect Agent C found: a TradePlan built by
+    strategies/adaptive_trend_plan.py.build_trade_plan() -- which hardcodes
+    verdict="EXECUTABLE" with zero RiskManager involvement -- must now be
+    refused by execute(), because nothing ever authorized it. This is the
+    'safe direction to fail in' Agent C's review predicted: the gap remains
+    unfixed in build_trade_plan() itself (not urgent -- that path is still
+    unreachable via adaptive_trend_runtime.route_selected_candidate's
+    shadow-only routing), but execute() no longer trusts it blindly either
+    way."""
+    from strategies.adaptive_trend_plan import build_trade_plan
+    from strategies.adaptive_trend_tsmom import Side, SignalCandidate, SizingResult
+
+    candidate = SignalCandidate(
+        symbol="BTCUSDT", side=Side.LONG, signal_candle_close_ms=1_800_021_600_000,
+        close=65000.0, mom=0.02, atr=800.0,
+    )
+    sizing = SizingResult(
+        equity=100.0, atr=800.0, stop_distance=800.0, stop_distance_pct=0.0123,
+        risk_usdt=0.5, raw_notional=20.0, exchange_min_notional=5.0, rounded_notional=20.0,
+        effective_risk_usdt=0.5, effective_risk_pct=0.005, required_margin=6.67,
+        projected_total_exposure_pct=0.2, leverage=3.0, accepted=True,
+    )
+    plan = build_trade_plan(candidate, sizing)
+    assert plan.verdict == "EXECUTABLE"  # confirms the defect is still present in this function
+
+    service = _service(monkeypatch)
+    # Deliberately no _authorize() call -- exactly what happens today, since
+    # nothing on this path ever calls RiskManager.
+
+    reports = service.execute([plan])
+
+    assert reports == []
+    service.client.place_futures_market_order.assert_not_called()
 
 
 def test_empty_pending_orders_envelope_is_not_read_as_an_order():

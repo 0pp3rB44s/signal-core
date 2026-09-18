@@ -108,6 +108,11 @@ class BitgetBaseClient:
             getattr(settings, "bitget_rate_limit_state_path", "state/bitget_rate_limit.json"),
             self.rate_limit_min_interval_seconds,
         )
+        # Clock-safety gate for order-mutating calls (Deployment Gap #2 fix,
+        # integrated 2026-09-18). One cache per client/process; deliberately
+        # not persisted across restarts (clients/clock_safety.py).
+        from clients.clock_safety import ClockSafetyCache
+        self._clock_cache = ClockSafetyCache()
 
     @property
     def has_credentials(self) -> bool:

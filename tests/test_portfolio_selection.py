@@ -3,7 +3,7 @@ from __future__ import annotations
 from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 from clients.schemas import TradePlan
 from execution.portfolio_selector import select_execution_winner
-from tests.test_entry_path_audit import _service
+from tests.test_entry_path_audit import _authorize, _service
 
 
 def _plan(
@@ -167,6 +167,7 @@ def test_execution_service_creates_state_only_for_the_single_winner(monkeypatch)
         },
     ]
 
+    _authorize(service, btc, sol, eth)
     reports = service.execute([btc, sol, eth])
 
     assert [report.symbol for report in reports] == ["SOLUSDT"]
@@ -191,6 +192,7 @@ def test_full_position_cap_blocks_winner_without_falling_through(monkeypatch):
         {"data": open_positions},
     ]
 
+    _authorize(service, btc, sol)
     reports = service.execute([btc, sol])
 
     assert [report.symbol for report in reports] == ["SOLUSDT"]
