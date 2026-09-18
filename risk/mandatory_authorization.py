@@ -173,16 +173,27 @@ def _build_and_store(
     RiskVerdict into a persisted receipt bound to the EXACT plan economics it will be checked
     against later. Not exported -- reached only via the two public entry points below, so every
     stored authorization traces back to a genuine RiskManager.evaluate() call, never a
-    fabricated one."""
+    fabricated one.
+
+    Reads `allowed` and `reasons` as required (the actual authorization decision
+    depends on them and must not silently default). `leverage`, `account_risk_pct`,
+    and `max_open_positions` are read defensively (getattr with a safe default):
+    they are descriptive/audit fields, not part of the allow/deny decision itself,
+    and some legitimate callers construct a minimal verdict-like stand-in (e.g. a
+    bare SimpleNamespace in tests exercising an unrelated concern) that sets
+    allowed/reasons but not every RiskVerdict field. Defaulting them never makes a
+    denied verdict look allowed, or vice versa -- only the recorded audit detail
+    is coarser in that case."""
+    leverage = getattr(verdict, "leverage", 0.0)
     content_hash = _plan_content_hash(
         candidate_id=candidate_id, plan_id=plan_id, symbol=symbol, direction=direction,
-        position_notional_usdt=position_notional_usdt, leverage=verdict.leverage,
+        position_notional_usdt=position_notional_usdt, leverage=leverage,
     )
     auth = RiskAuthorization(
         candidate_id=candidate_id, plan_id=plan_id, allowed=bool(verdict.allowed),
-        reasons=list(verdict.reasons), content_hash=content_hash, evaluated_at=time.time(),
-        account_risk_pct=verdict.account_risk_pct, leverage=verdict.leverage,
-        max_open_positions=verdict.max_open_positions,
+        reasons=list(getattr(verdict, "reasons", None) or []), content_hash=content_hash,
+        evaluated_at=time.time(), account_risk_pct=getattr(verdict, "account_risk_pct", 0.0),
+        leverage=leverage, max_open_positions=getattr(verdict, "max_open_positions", 0),
     )
     store.put(auth)
     log.warning("RISK_AUTHORIZATION_RECORDED | candidate_id=%s | plan_id=%s | allowed=%s | reasons=%s",

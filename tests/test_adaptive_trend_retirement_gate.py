@@ -16,6 +16,7 @@ from app.config import Settings
 from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 from clients.schemas import TradePlan
 from execution.execution_service import ExecutionService
+from tests.test_entry_path_audit import _authorize
 from execution.adaptive_trend_entry import submit_adaptive_trend_entry
 from strategies.adaptive_trend_tsmom import STRATEGY_VERSION, Side, SignalCandidate, initial_stop, size_position
 
@@ -88,6 +89,7 @@ def test_retired_false_does_not_produce_the_retirement_skip(monkeypatch):
     settings = _settings(ADAPTIVE_TREND_RETIRED=False)
     svc = _service(monkeypatch, settings)
     plan = _plan("BTCUSDT", STRATEGY_VERSION)
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert len(reports) == 1
     assert reports[0].message != "ADAPTIVE_TREND_RETIRED"
@@ -99,6 +101,7 @@ def test_retired_true_blocks_new_entry_with_explicit_reason(monkeypatch):
     settings = _settings(ADAPTIVE_TREND_RETIRED=True)
     svc = _service(monkeypatch, settings)
     plan = _plan("BTCUSDT", STRATEGY_VERSION)
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert len(reports) == 1
     assert reports[0].status == "SKIPPED"
@@ -111,6 +114,7 @@ def test_retired_true_blocks_even_when_live_entry_flag_is_true(monkeypatch):
     settings = _settings(ADAPTIVE_TREND_LIVE_ENTRY_ENABLED=True, ADAPTIVE_TREND_RETIRED=True)
     svc = _service(monkeypatch, settings)
     plan = _plan("ETHUSDT", STRATEGY_VERSION)
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert reports[0].message == "ADAPTIVE_TREND_RETIRED"
@@ -122,6 +126,7 @@ def test_other_strategy_ids_unaffected_by_retirement_flag(monkeypatch):
     settings = _settings(ADAPTIVE_TREND_RETIRED=True, ENABLED_STRATEGIES="")
     svc = _service(monkeypatch, settings)
     plan = _plan("BTCUSDT", "momentum_breakout")
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert len(reports) == 1
     assert reports[0].message != "ADAPTIVE_TREND_RETIRED"
@@ -131,6 +136,7 @@ def test_microflow_unaffected_by_adaptive_trend_retirement_flag(monkeypatch):
     settings = _settings(ADAPTIVE_TREND_RETIRED=True, ENABLED_STRATEGIES="")
     svc = _service(monkeypatch, settings)
     plan = _plan("SOLUSDT", "microflow_scalper_v1")
+    _authorize(svc, plan)
     reports = svc.execute([plan])
     assert reports[0].message != "ADAPTIVE_TREND_RETIRED"
 

@@ -26,6 +26,7 @@ from app.config import Settings
 from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
 from clients.schemas import TradePlan
 from execution.execution_service import ExecutionService
+from tests.test_entry_path_audit import _authorize
 
 CANDLE_MS = 1_785_000_000_000
 REPO = Path(__file__).resolve().parents[1]
@@ -108,7 +109,9 @@ def test_cap_override_mechanism_blocks_a_second_position_when_pinned_to_one(monk
     svc = _service(monkeypatch, existing_open=existing)
     monkeypatch.setitem(svc.PER_STRATEGY_MAX_OPEN_POSITIONS_OVERRIDE, strategy, 1)
 
-    reports = svc.execute([_plan("ETHUSDT", strategy)])
+    plan = _plan("ETHUSDT", strategy)
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert "max open positions for strategy reached: 1/1" in reports[0].message
 
@@ -122,7 +125,9 @@ def test_cap_override_mechanism_is_direction_agnostic_no_hedge(monkeypatch):
     svc = _service(monkeypatch, existing_open=existing)
     monkeypatch.setitem(svc.PER_STRATEGY_MAX_OPEN_POSITIONS_OVERRIDE, strategy, 1)
 
-    reports = svc.execute([_plan("BTCUSDT", strategy, direction="SHORT")])
+    plan = _plan("BTCUSDT", strategy, direction="SHORT")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
 
 
@@ -130,7 +135,9 @@ def test_generic_strategy_still_gets_two_slots_unaffected(monkeypatch):
     """Without any override, the shared default (2) is untouched."""
     existing = [{"symbol": "BTCUSDT", "status": "OPEN", "strategy": "low_vol_reclaim"}]
     svc = _service(monkeypatch, existing_open=existing)
-    reports = svc.execute([_plan("ETHUSDT", "low_vol_reclaim")])
+    plan = _plan("ETHUSDT", "low_vol_reclaim")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert "max open positions for strategy reached" not in reports[0].message
 
 
@@ -140,6 +147,8 @@ def test_adaptive_trend_is_still_blocked_by_the_earlier_hybrid_gate(monkeypatch)
     HYBRID SAFE MODE gate earlier in execute() rejects it first. This is the
     correct state until the owner explicitly wires live order eligibility."""
     svc = _service(monkeypatch, existing_open=[])
-    reports = svc.execute([_plan("BTCUSDT", "adaptive_trend_tsmom_v1")])
+    plan = _plan("BTCUSDT", "adaptive_trend_tsmom_v1")
+    _authorize(svc, plan)
+    reports = svc.execute([plan])
     assert reports[0].status == "SKIPPED"
     assert "hybrid gate blocked unsupported strategy" in reports[0].message

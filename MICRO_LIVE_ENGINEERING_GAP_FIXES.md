@@ -1,5 +1,17 @@
 # Micro-Live Engineering Gap Fixes — 2026-09-18
 
+> **UPDATE 2026-09-19 (Agent A, "Controlled Safety Integration"): both fixes below are now WIRED,
+> not just built.** Per Agent C's exact integration specification
+> (`CLAUDE_AGENT_C_POST_ENGINEERING_REVIEW_2026-09-18.md` §4), `execution/execution_service.py::execute()`
+> now calls `require_authorized()` for every plan, and all 8 order-mutating functions in
+> `clients/bitget_order_client.py` now call `_require_safe_clock_for_order()`. The "exact
+> integration point" sections below, originally written as forward-looking specification, are now
+> historical record of what was implemented — see `AGENT_A_CONTROLLED_SAFETY_INTEGRATION_2026-09-18.md`
+> for the full integration evidence, test results, and the separate stale-authorization fix. Still
+> not applied to production. See that document, not this section's original prose below, for
+> current status; nothing below this note was edited, only superseded.
+
+
 Worktree: `/Users/bryonkolkman/cgc/micro-live-deployment-readiness-v1` (branch
 `research/micro-live-deployment-readiness-v1`, parent SHA `4d2fb7182afc49687cfa27cde3fcc7c4783f22ae`,
 unchanged production HEAD). Commit `f20e9eb`. Isolated only — not merged, not deployed, production

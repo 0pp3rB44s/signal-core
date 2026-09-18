@@ -34,7 +34,15 @@ tested 4-layer ceremony (audited directly, 2026-09-16 and reconfirmed unchanged 
 
 ## Two gaps found (re-confirmed this mission, not previously fixed)
 
-**GAP 1 — commit binding not enforced.** LAYER 2 only checks the authorization file's
+**GAP 1 — commit binding not enforced — FIXED IN THE ISOLATED WORKTREE, 2026-09-19, NOT YET
+APPLIED TO PRODUCTION.** `scripts/lib/env_guard.sh::guard_assert_authorization_binding()` now
+binds Layer 2 to commit + risk-config hash + runtime/supervisor hash + a non-secret account
+fingerprint; 15 tests prove it rejects the exact real stale production file. See
+`AGENT_A_CONTROLLED_SAFETY_INTEGRATION_2026-09-18.md` for full detail. `scripts/launch_live.sh`
+itself is not yet edited to call the new function -- that remains separate, owner-facing work.
+Original finding preserved below, superseded by the above, not deleted.
+
+**GAP 1 — commit binding not enforced (original finding).** LAYER 2 only checks the authorization file's
 *existence* (`[ -f "$AUTH_FILE" ]`). The file records `commit=<sha>`, but nothing compares that
 to the CURRENT checkout's HEAD. Re-verified this mission: the on-disk authorization is still
 pinned to commit `aa42c3a`, while production HEAD is now `4d2fb71` — a different commit — and
