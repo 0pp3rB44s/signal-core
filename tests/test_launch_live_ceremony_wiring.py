@@ -130,8 +130,25 @@ def _rejected_at_layer2(checkout: Path, result: subprocess.CompletedProcess) -> 
 def test_reproduces_real_stale_auth_no_longer_bypasses_the_real_script(ceremony_checkout):
     """The exact scenario found on production, driven through the real script
     end to end (not the validator in isolation): the bare-existence check that
-    used to live in launch_live.sh itself is gone."""
+    used to live in launch_live.sh itself is gone. Production's real file has
+    only commit= and authorised_for= -- old-format by the new function's own
+    definition -- so this is rejected for missing binding fields, the same
+    correct outcome as test_old_format_production_shaped_file_..., not because
+    of a commit mismatch this particular file happens not to reach."""
     _write_auth_file(ceremony_checkout, commit=PRODUCTION_STALE_COMMIT, authorised_for="LIVE")
+    result = run_ceremony(ceremony_checkout)
+    assert "old-format or malformed" in result.stderr
+    _rejected_at_layer2(ceremony_checkout, result)
+
+
+def test_reproduces_real_stale_auth_rejected_even_with_binding_fields_added(ceremony_checkout):
+    """A hardened version of production's file -- imagine the owner had
+    already adopted the new field format, but simply forgot to re-issue
+    after HEAD moved. This isolates the commit check itself, distinct from
+    the missing-fields case above."""
+    fields = _matching_fields(BASE_ENV)
+    fields["commit"] = PRODUCTION_STALE_COMMIT
+    _write_auth_file(ceremony_checkout, **fields)
     result = run_ceremony(ceremony_checkout)
     assert PRODUCTION_STALE_COMMIT in result.stderr
     _rejected_at_layer2(ceremony_checkout, result)
