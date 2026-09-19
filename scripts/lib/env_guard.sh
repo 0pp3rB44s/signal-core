@@ -113,9 +113,10 @@ guard_assert_critical_risks_cleared() {
 # 4d2fb7182afc49687cfa27cde3fcc7c4783f22ae -- a DIFFERENT commit -- and the old
 # check would still pass. An authorization must be bound to the exact approved
 # deployment identity, not merely be present. This function REPLACES the bare
-# existence check; the caller (launch_live.sh) is updated separately, in its
-# own reviewed change -- this file only adds the capability, per this
-# mission's "controlled reviewed development/integration path" instruction.
+# existence check; scripts/launch_live.sh now calls it directly at LAYER 2
+# (2026-09-19, reproduced against this exact production file first, then
+# wired -- see tests/test_launch_live_ceremony_wiring.py, which drives the
+# real ceremony script rather than only this function in isolation).
 # NOTHING here creates, modifies, or invalidates any real authorization file.
 
 # Canonical, deterministic hash of the risk-relevant configuration actually

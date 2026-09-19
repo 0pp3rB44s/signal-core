@@ -22,9 +22,14 @@ echo "=== LIVE LAUNCH — AUTHORISATION REQUIRED ==="
 # somewhere in the file. The parser now lives in env_guard.sh and fails closed.
 guard_assert_critical_risks_cleared "docs/RISK_REGISTER.md"
 
-# LAYER 2: owner-created authorisation token.
-[ -f "$AUTH_FILE" ] || guard_die "LAYER 2: missing $AUTH_FILE — owner authorisation required. This file must be created by the owner, dated and signed. It is not created by any script."
-echo "layer 2: authorisation token present ($AUTH_FILE)"
+# LAYER 2: owner-created authorisation token, content-bound to this exact
+# deployment identity (commit, risk config, runtime/supervisor definition,
+# account/environment). Reproduced 2026-09-19: the previous bare
+# `[ -f "$AUTH_FILE" ]` check accepted the real production authorisation
+# file even though it was dated for a different, older commit -- existence
+# was never enough. This must call the shared function, not re-implement
+# its checks inline, so the two can never drift apart again.
+guard_assert_authorization_binding "$AUTH_FILE"
 
 # LAYER 3: configuration file and invariants.
 guard_assert_repo_clean
