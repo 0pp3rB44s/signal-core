@@ -34,13 +34,20 @@ tested 4-layer ceremony (audited directly, 2026-09-16 and reconfirmed unchanged 
 
 ## Two gaps found (re-confirmed this mission, not previously fixed)
 
-**GAP 1 — commit binding not enforced — FIXED IN THE ISOLATED WORKTREE, 2026-09-19, NOT YET
-APPLIED TO PRODUCTION.** `scripts/lib/env_guard.sh::guard_assert_authorization_binding()` now
-binds Layer 2 to commit + risk-config hash + runtime/supervisor hash + a non-secret account
-fingerprint; 15 tests prove it rejects the exact real stale production file. See
-`AGENT_A_CONTROLLED_SAFETY_INTEGRATION_2026-09-18.md` for full detail. `scripts/launch_live.sh`
-itself is not yet edited to call the new function -- that remains separate, owner-facing work.
-Original finding preserved below, superseded by the above, not deleted.
+**GAP 1 -- commit binding not enforced -- FULLY WIRED IN THE ISOLATED WORKTREE, 2026-09-19
+(later, same day), NOT YET APPLIED TO PRODUCTION.** Agent C's independent review
+(`CLAUDE_AGENT_C_FINAL_INTEGRATION_REVIEW_2026-09-19.md` S1G) found that although
+`guard_assert_authorization_binding()` itself was correct and fully tested, the actual ceremony
+script, `scripts/launch_live.sh`, still called the old bare `[ -f "$AUTH_FILE" ]` check --
+reproduced directly: production's real stale authorization still printed "layer 2:
+authorisation token present" and proceeded into LAYER 3. LAYER 2 now calls the function
+directly. `tests/test_launch_live_ceremony_wiring.py` (10 tests) drives the real script itself,
+via a disposable git-worktree checkout, not the validator in isolation -- proving every
+adversarial case is rejected specifically at LAYER 2, before LAYER 3 ever starts, and that
+LAYER 4 and any engine launch are never reached. See
+`AGENT_A_FINAL_TWO_BLOCKER_PATCH_2026-09-19.md` for full detail. This is still an isolated-
+worktree change, not applied to production, and does not itself constitute deployment
+authorization. Prior finding history preserved below, not deleted.
 
 **GAP 1 — commit binding not enforced (original finding).** LAYER 2 only checks the authorization file's
 *existence* (`[ -f "$AUTH_FILE" ]`). The file records `commit=<sha>`, but nothing compares that
