@@ -528,6 +528,26 @@ class StartupRunner:
             self.execution_service.microflow_entry_guard = (
                 self.microflow_runtime.pre_submit_guard
             )
+        self.lsrl = self._build_lsrl()
+
+    def _build_lsrl(self):
+        """LSRL_V1 (default OFF). SHADOW/PAPER are observational: a failure to build them is logged and
+        must not take the trading engine down. MICRO_LIVE is fail-loud: it refuses to start unarmed."""
+        settings = self.settings
+        mode = str(settings.lsrl_mode).strip().upper()
+        if not settings.lsrl_enabled or mode == "OFF":
+            return None
+        from lsrl.runtime import build_runtime
+        try:
+            return build_runtime(
+                settings, client=self.client, execution_service=self.execution_service,
+                risk_manager=self.risk_manager,
+            )
+        except Exception as exc:
+            if mode == "MICRO_LIVE":
+                raise
+            self.log.critical("LSRL_START_FAILED | mode=%s | %s: %s", mode, type(exc).__name__, exc)
+            return None
 
     def _startup_recovery_verdict(self, stats) -> tuple[bool, str]:
         """Decide whether a recovery sweep leaves anything unaccounted for.
@@ -686,6 +706,11 @@ class StartupRunner:
                 raise RuntimeError("MicroFlow startup blocked by close-recovery gate")
             self.microflow_runtime.start()
 
+        if self.lsrl is not None:
+            if self.lsrl.mode.value == "MICRO_LIVE" and not self._ensure_startup_close_recovery():
+                raise RuntimeError("LSRL MICRO_LIVE startup blocked by close-recovery gate")
+            self.lsrl.start()
+
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
             self._position_monitor_thread = threading.Thread(
                 target=self._position_monitor_loop,
@@ -706,10 +731,13 @@ class StartupRunner:
             while True:
                 time.sleep(self.settings.scan_interval_sec)
                 self._scan_cycle_iteration()
-        elif self.microflow_runtime is not None:
-            # The WebSocket/decision workers are the MicroFlow engine. Keep the
-            # supported app.main owner alive even when candle scanning is off.
-            self.log.info("MicroFlow event loop active | legacy scan loop disabled")
+        elif self.microflow_runtime is not None or self.lsrl is not None:
+            # The WebSocket/decision workers are the MicroFlow engine (and the LSRL runtime thread is
+            # LSRL). Keep the supported app.main owner alive even when candle scanning is off.
+            self.log.info(
+                "%s event loop active | legacy scan loop disabled",
+                "MicroFlow" if self.microflow_runtime is not None else "LSRL",
+            )
             while True:
                 time.sleep(1.0)
 

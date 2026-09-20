@@ -55,12 +55,12 @@ class SimDriver:
         for order_event in self.sim.apply(intents, ev.t_ms):
             self._process(order_event)
 
-    def feed(self, ev: Any) -> None:
-        is_bar = isinstance(ev, BarClosed) and ev.tf_s == self.engine.cfg.trigger_tf_s
+    def feed(self, ev: Any, *, nav: bool = True) -> None:
+        is_bar = nav and isinstance(ev, BarClosed) and ev.tf_s == self.engine.cfg.trigger_tf_s
         if is_bar:
             self._process(NavEvent(t_ms=ev.t_ms, nav_usdt=self.nav, source=self.mode.value))
         self._process(ev)
-        if is_bar:
+        if isinstance(ev, BarClosed) and ev.tf_s == self.engine.cfg.trigger_tf_s:
             for fill in self.sim.entry_fills(ev):
                 self._process(fill)
             for fill in self.sim.exit_fills(ev):
