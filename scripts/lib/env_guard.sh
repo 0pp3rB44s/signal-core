@@ -224,6 +224,59 @@ guard_assert_authorization_binding() {
   echo "layer 2: authorisation content-bound and verified (commit=$auth_commit, authorized_at=$auth_at)"
 }
 
+# --- start_bot.sh direct-live bypass hardening (2026-09-20) -------------------
+# scripts/start_bot.sh starts app.main with none of the four ceremony layers. It is
+# the strict forward-paper / observe launcher, so it must REFUSE whenever the
+# environment it would hand to the engine is live-capable -- regardless of whether that
+# came from `.env` or from variables already exported into the operator's shell (e.g. a
+# sourced `.env.live`). Resolution follows pydantic-settings: a real OS environment
+# variable (any case) beats the .env file, and the last assignment in the file wins.
+guard_resolve_setting() {
+  local name="$1" envfile="${2:-.env}" out
+  out="$(env | awk -v n="$name" 'BEGIN{FS="="} toupper($1)==n {print "SET:" substr($0, index($0,"=")+1); exit}')"
+  if [ -n "$out" ]; then printf '%s' "${out#SET:}"; return 0; fi
+  [ -f "$envfile" ] || return 0
+  awk -v n="$name" '
+    { line=$0; sub(/^[ \t]*export[ \t]+/, "", line) }
+    line ~ /^[ \t]*#/ { next }
+    { i=index(line,"="); if (i==0) next
+      k=substr(line,1,i-1); gsub(/[ \t]/,"",k)
+      if (toupper(k)==n) { found=1; last=substr(line,i+1) } }
+    END { if (found) { v=last; sub(/^[ \t]+/,"",v)
+          if (v ~ /^"/) { sub(/^"/,"",v); sub(/".*$/,"",v) }
+          else if (v ~ /^\047/) { sub(/^\047/,"",v); sub(/\047.*$/,"",v) }
+          else { sub(/[ \t]+#.*$/,"",v); sub(/[ \t\r]+$/,"",v) }
+          printf "%s", v } }' "$envfile"
+}
+
+guard_assert_not_live_capable_env() {
+  local envfile="${1:-.env}" mode enabled reasons="" name
+  mode="$(guard_resolve_setting EXECUTION_MODE "$envfile" | tr '[:lower:]' '[:upper:]')"
+  enabled="$(guard_resolve_setting EXECUTION_ENABLED "$envfile" | tr '[:upper:]' '[:lower:]')"
+  [ "$mode" = "LIVE" ] && reasons="${reasons} EXECUTION_MODE=LIVE"
+  case "$enabled" in true|1|yes|y|on) reasons="${reasons} EXECUTION_ENABLED=true" ;; esac
+  for name in BITGET_API_KEY BITGET_API_SECRET BITGET_API_PASSPHRASE; do
+    [ -n "$(guard_resolve_setting "$name" "$envfile")" ] && reasons="${reasons} ${name}(non-blank)"
+  done
+  [ -z "$reasons" ] || guard_die \
+"start_bot.sh is the forward-paper/observe launcher and refuses a live-capable environment:${reasons}
+       (values are never printed). This can come from ${envfile} OR from variables already
+       exported into this shell. Live trading starts ONLY through scripts/launch_live.sh
+       (four-layer ceremony); nothing was started, nothing was stopped."
+}
+
+# start_bot.sh kills any "app.main" process to prevent duplicates. That must never be a running
+# LIVE engine: it would be SIGKILLed with no graceful shutdown while positions may be open.
+guard_assert_no_live_engine_running() {
+  local state="${1:-state/live_runtime.state}" mode pid
+  [ -f "$state" ] || return 0
+  mode="$(awk -F= '$1=="mode"{print $2; exit}' "$state")"
+  pid="$(awk -F= '$1=="pid"{print $2; exit}' "$state")"
+  [ "$mode" = "LIVE" ] || return 0
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+  guard_die "a LIVE engine (pid ${pid}) is running per ${state}; start_bot.sh will not kill it. Use scripts/stop_all.sh deliberately."
+}
+
 # Load an env file into the environment, ignoring comments and blanks.
 guard_load_env() {
   local f="$1"

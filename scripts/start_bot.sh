@@ -4,6 +4,13 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# HARDENING (2026-09-20): this launcher has none of the live ceremony's four layers. Refuse before
+# ANYTHING else -- including reading .env -- if the resolved environment is live-capable (from .env
+# OR already exported into this shell), and never SIGKILL a running LIVE engine below.
+. scripts/lib/env_guard.sh
+guard_assert_not_live_capable_env ".env"
+guard_assert_no_live_engine_running "state/live_runtime.state"
+
 
 if [ ! -d ".venv" ]; then
   echo "ERROR: .venv not found. Run: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
