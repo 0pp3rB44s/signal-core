@@ -295,7 +295,8 @@ class LSRLEngine:
                 total_qty=sizing.total_qty,
                 planned_notional_usdt=sum(sizing.rung_qty * p for p in geometry.rung_prices),
                 planned_loss_usdt=sizing.planned_loss_usdt,
-                strategy_risk_fraction=self.cfg.risk_per_full_trade_frac))
+                strategy_risk_fraction=self.cfg.risk_per_full_trade_frac,
+                spread_bps=snap.spread_bps))
         except Exception as exc:                       # fail closed on ANY gate error
             decision = RiskDecision(False, (f"RISK_GATE_ERROR:{type(exc).__name__}",), None, "ERROR")
         s.risk_gate = {"allowed": decision.allowed, "reasons": list(decision.reasons),

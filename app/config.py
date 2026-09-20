@@ -90,6 +90,19 @@ class Settings(BaseSettings):
     microflow_max_slippage_bps: float = Field(default=1.0, alias="MICROFLOW_MAX_SLIPPAGE_BPS")
     microflow_data_dir: str = Field(default="data_store/microflow_live", alias="MICROFLOW_DATA_DIR")
 
+    # LSRL_V1 (Liquidity Sweep -> Reclaim -> Ladder, SOLUSDT). EVERYTHING defaults OFF.
+    # SHADOW/PAPER never place orders. MICRO_LIVE needs the global LIVE gate AND its own
+    # arming flag, and production LIVE still refuses lsrl_v1 in ENABLED_STRATEGIES (below)
+    # until a separate, reviewed change extends that allow-list.
+    lsrl_enabled: bool = Field(default=False, alias="LSRL_ENABLED")
+    lsrl_mode: str = Field(default="OFF", alias="LSRL_MODE")
+    lsrl_symbol: str = Field(default="SOLUSDT", alias="LSRL_SYMBOL")
+    lsrl_data_dir: str = Field(default="data_store/lsrl", alias="LSRL_DATA_DIR")
+    lsrl_shadow_nav_usdt: float = Field(default=100.0, alias="LSRL_SHADOW_NAV_USDT")
+    lsrl_min_free_gb: float = Field(default=1.0, alias="LSRL_MIN_FREE_GB")
+    lsrl_depth_interval_s: float = Field(default=10.0, alias="LSRL_DEPTH_INTERVAL_S")
+    lsrl_microlive_armed: bool = Field(default=False, alias="LSRL_MICROLIVE_ARMED")
+
     # dynamic_grid_v1 is an isolated, fail-closed pilot. OFF and SHADOW can
     # never place grid orders; LIVE additionally requires the global LIVE gate.
     dynamic_grid_enabled: bool = Field(default=False, alias="DYNAMIC_GRID_ENABLED")
@@ -326,6 +339,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def enforce_forward_paper_only(self) -> "Settings":
+        lsrl_mode = self.lsrl_mode.strip().upper()
+        if lsrl_mode not in {"OFF", "SHADOW", "PAPER", "MICRO_LIVE"}:
+            raise ValueError("LSRL_MODE must be OFF, SHADOW, PAPER, or MICRO_LIVE")
+        if lsrl_mode != "OFF" and not self.lsrl_enabled:
+            raise ValueError("LSRL_MODE requires LSRL_ENABLED=true")
+        if self.lsrl_symbol.strip().upper() != "SOLUSDT":
+            raise ValueError("LSRL_V1 is frozen to SOLUSDT")
+        if self.lsrl_shadow_nav_usdt <= 0 or self.lsrl_min_free_gb <= 0 or self.lsrl_depth_interval_s < 1:
+            raise ValueError("LSRL nav / disk floor / depth interval must be positive (interval >= 1s)")
+        if self.lsrl_microlive_armed and lsrl_mode != "MICRO_LIVE":
+            raise ValueError("LSRL_MICROLIVE_ARMED requires LSRL_MODE=MICRO_LIVE")
+        if lsrl_mode == "MICRO_LIVE":
+            if not self.is_live_execution:
+                raise ValueError("LSRL_MODE=MICRO_LIVE requires the global LIVE execution gate")
+            if not self.lsrl_microlive_armed:
+                raise ValueError("LSRL_MODE=MICRO_LIVE requires LSRL_MICROLIVE_ARMED=true")
         grid_mode = self.dynamic_grid_mode.strip().upper()
         if grid_mode not in {"OFF", "SHADOW", "LIVE"}:
             raise ValueError("DYNAMIC_GRID_MODE must be OFF, SHADOW, or LIVE")

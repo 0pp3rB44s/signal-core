@@ -28,6 +28,7 @@ class RiskProposal:
     planned_notional_usdt: float
     planned_loss_usdt: float
     strategy_risk_fraction: float
+    spread_bps: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

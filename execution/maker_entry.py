@@ -290,16 +290,21 @@ def attempt_maker_entry(
 # Long-lived maker grids use the same write-ahead/idempotent submitter as every
 # other production entry. This helper lives here so the raw transport call
 # remains confined to the repository's audited maker-entry boundary.
-def submit_persistent_maker_entry(*, submitter, client, plan, size, price, notional_usdt):
+def submit_persistent_maker_entry(*, submitter, client, plan, size, price, notional_usdt, direction="LONG"):
+    # `direction` defaults to LONG so the long-only grid caller is unchanged; LSRL passes
+    # its own direction. The raw transport call stays confined to this audited boundary.
+    direction = str(direction).upper()
+    if direction not in {"LONG", "SHORT"}:
+        raise ValueError(f"unsupported maker entry direction: {direction}")
     result = submitter.submit_entry(
         plan=plan,
         size=size,
-        side="buy",
+        side="buy" if direction == "LONG" else "sell",
         order_type="limit",
         leg=ENTRY_LEG_MAKER,
         place=lambda client_oid: client.place_futures_limit_order(
             symbol=plan.symbol,
-            direction="LONG",
+            direction=direction,
             size=size,
             price=price,
             margin_mode="isolated",

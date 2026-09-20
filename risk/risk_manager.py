@@ -1348,6 +1348,14 @@ class RiskManager:
 
         strategy_name = (candidate.strategy or "").lower()
         is_microflow = strategy_name == "microflow_scalper_v1"
+        # lsrl_v1 (Liquidity Sweep -> Reclaim -> Ladder) is a frozen-policy strategy like
+        # MicroFlow: the legacy heuristic gates that encode OTHER strategies' hypotheses
+        # (HTF alignment / regime, MTF quality) are not applied to it, because they would
+        # act as an unfrozen hidden trend filter on a symmetric long/short design. Every
+        # CENTRAL protective gate below (kill switch, weekly freeze, shorts switch,
+        # ENABLED_STRATEGIES allow-list, cluster/directional exposure, drawdown, AI-agent
+        # symbol avoidance, execution cost) still applies to it unchanged.
+        is_lsrl = strategy_name == "lsrl_v1"
         if is_microflow:
             leverage = min(
                 float(self.settings.microflow_leverage),
@@ -1361,7 +1369,8 @@ class RiskManager:
         mtf_quality = self._mtf_quality(candidate)
         is_adaptive_fallback = strategy_name == "adaptive_momentum_continuation"
 
-        if not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim and not is_microflow:
+        if (not is_sweep and not is_momentum and not is_continuation and not is_low_vol_reclaim
+                and not is_microflow and not is_lsrl):
             allowed = False
             reasons.append(f"Safe Mode blocks unsupported strategy: {candidate.strategy}")
 
@@ -1462,10 +1471,10 @@ class RiskManager:
                     f"continuation blocked: weak volume confirmation ({volume_ratio:.2f} < {required_continuation_volume:.2f})"
                 )
 
-        if not is_microflow and candidate.direction == "LONG" and candidate.market.alignment == "aligned_bearish":
+        if not is_microflow and not is_lsrl and candidate.direction == "LONG" and candidate.market.alignment == "aligned_bearish":
             allowed = False
             reasons.append("HTF alignment opposes long setup")
-        if not is_microflow and candidate.direction == "SHORT" and candidate.market.alignment == "aligned_bullish":
+        if not is_microflow and not is_lsrl and candidate.direction == "SHORT" and candidate.market.alignment == "aligned_bullish":
             allowed = False
             reasons.append("HTF alignment opposes short setup")
 
@@ -1523,6 +1532,8 @@ class RiskManager:
 
         if is_microflow:
             reasons.append("microflow: frozen order-flow entry policy; legacy HTF alignment gate not applicable")
+        elif is_lsrl:
+            reasons.append("lsrl_v1: frozen liquidity-sweep entry policy; legacy HTF alignment gate not applicable")
         else:
             alignment_allowed, alignment_reasons = self._alignment_gate(candidate, score)
             reasons.extend(alignment_reasons)
