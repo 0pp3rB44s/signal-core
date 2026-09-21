@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hourly lossless rotation of REGENERABLE, NON-EVIDENCE logs that a running process keeps open
+  (scripts/rotate_regenerable_logs.py): gzip + sha256 + decompress-verify, then truncate. Never deletes, refuses
+  evidence formats (.jsonl/.csv/.gz/.json/...), refuses symlinks, skips files smaller than --min-mb and sparse leftovers.
+
+  WHY: on 2026-09-21 three research collectors blocked by their own free-space guard logged a traceback per failed
+  write (about 2.6 GB/day) and consumed the space their guard was waiting for. Rotation keeps that from filling the
+  volume again if it recurs. NOT installed by any script in this repository: the owner decides whether to run it.
+
+  Install:   bash deploy/launchd/install_logrotate_agent.sh   (after writing __PATHS_FILE__ with one log path per line)
+  Uninstall: bash deploy/launchd/uninstall_logrotate_agent.sh
+  __PROJECT_DIR__, __PYTHON__, __PATHS_FILE__ and __ARCHIVE_DIR__ are substituted by the installer.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>              <string>com.cgc.logrotate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__PROJECT_DIR__/scripts/rotate_regenerable_logs.py</string>
+    <string>--apply</string>
+    <string>--min-mb</string>
+    <string>100</string>
+    <string>--archive-dir</string>
+    <string>__ARCHIVE_DIR__</string>
+    <string>--paths-file</string>
+    <string>__PATHS_FILE__</string>
+  </array>
+  <key>WorkingDirectory</key>   <string>__PROJECT_DIR__</string>
+  <key>RunAtLoad</key>          <false/>
+  <key>StartInterval</key>      <integer>3600</integer>
+  <key>StandardOutPath</key>    <string>__PROJECT_DIR__/logs/logrotate.out</string>
+  <key>StandardErrorPath</key>  <string>__PROJECT_DIR__/logs/logrotate.err</string>
+  <key>ProcessType</key>        <string>Background</string>
+  <key>LowPriorityIO</key>      <true/>
+  <key>Nice</key>               <integer>10</integer>
+</dict>
+</plist>
