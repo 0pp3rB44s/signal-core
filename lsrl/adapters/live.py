@@ -31,7 +31,14 @@ Safety properties (each has a test):
   * every finalized trade is written through the CANONICAL central close pipeline (provisional row ->
     exchange-truth economics -> economic CLOSE) and NEW entries stay blocked until that record exists;
   * any ambiguous exchange state fails closed: no NEW entries (`halt_reason`, persisted, explicit
-    `resume()` only); protection, cancellation and reconciliation continue.
+    `resume()` only); protection, cancellation and reconciliation continue;
+  * THE EXPOSURE INVARIANT (`exposure` state machine, persisted, re-derived from the exchange on every poll and
+    on every restart): any detected LSRL quantity converges to a VERIFIED protective stop or to VERIFIED FLAT and
+    can never settle as 'unprotected + gave up'. The executor protects what it finds WITHOUT waiting for the engine
+    (the frozen stop is recorded write-ahead with every entry), attempts protection, then a verified flatten, then
+    keeps retrying both with bounded exponential backoff forever (`CRITICAL_UNPROTECTED_EXPOSURE`);
+  * a fill the engine never acknowledges (its SetStop never covers the ledger) is flattened after a grace period;
+  * entries carry a write-ahead record, so an order accepted just before a crash is found again on restart.
 """
 from __future__ import annotations
 
@@ -45,8 +52,9 @@ from clients.clock_safety import ClockUnsafe
 from clients.schemas import TradePlan
 from execution.entry_submitter import EntryOrderBlocked, EntryOrderSubmitter
 from execution.maker_entry import submit_persistent_maker_entry
+from execution.order_identity import ENTRY_LEG_MAKER
 from execution.strategy_ownership import (OwnershipConflict, OwnershipUnreadable,
-                                          StrategyOwnershipRegistry)
+                                          StrategyOwnershipRegistry, owner_family)
 from lsrl.adapters.central_ledger import RECORDED, CentralCloseRecorder
 from lsrl.adapters.riskgate import CentralRiskGate
 from lsrl.contract import ExchangeFactsError, verify_exchange_facts
@@ -57,7 +65,7 @@ from risk.mandatory_authorization import (RiskAuthorizationError, RiskAuthorizat
                                           require_authorized)
 
 EPS = 1e-9
-STATE_VERSION = 2
+STATE_VERSION = 3
 _TERMINAL = {"filled", "full_fill", "full-filled", "cancelled", "canceled", "rejected", "expired"}
 _FILLED = {"filled", "full_fill", "full-filled"}
 _STOP_SOURCES = ("loss_market", "loss_limit", "pos_loss_market", "pos_loss_limit")
@@ -66,8 +74,15 @@ TP_PLACE_ATTEMPTS = 5
 MISMATCH_ROUNDS = 3
 CENTRAL_RETRY_S = 5.0
 CENTRAL_MAX_ATTEMPTS = 120
-EMERGENCY_MAX_ATTEMPTS = 10
 MAX_INCIDENTS = 200
+EXPOSURE_BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)   # bounded: the retry NEVER stops, the interval stops growing at 30 s
+ENGINE_ACK_GRACE_MS = 20_000        # a filled quantity the engine has not covered with a SetStop by then is flattened
+FAST_WATCH_MS = 1_000               # while an entry rests, look for its fill this often (the runtime poll is 3 s)
+LOG_EVERY_N_ATTEMPTS = 10
+EXPOSURE_NONE = "NONE"
+EXPOSURE_PROTECTED = "PROTECTED"
+EXPOSURE_UNPROTECTED = "UNPROTECTED_EXPOSURE"
+EXPOSURE_CRITICAL = "CRITICAL_UNPROTECTED_EXPOSURE"
 
 
 class LiveNotArmed(RuntimeError):
@@ -129,7 +144,9 @@ class LSRLLiveExecutor:
                  sleep: Callable[[float], None] = time.sleep, log: logging.Logger | None = None,
                  ownership: StrategyOwnershipRegistry | None = None,
                  central: CentralCloseRecorder | None = None,
-                 facts_verifier: Callable[..., Any] = verify_exchange_facts) -> None:
+                 facts_verifier: Callable[..., Any] = verify_exchange_facts,
+                 clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+                 fast_watch: bool = True) -> None:
         assert_armed(settings)
         self.settings, self.client, self.submitter = settings, client, submitter
         self.auth_store, self.gate, self.store = auth_store, gate, state_store
@@ -153,7 +170,20 @@ class LSRLLiveExecutor:
         self.ledger_adj: dict[str, float] = data.get("ledger_adj", {})         # closes the exchange order book cannot show
         self.facts: dict[str, Any] | None = data.get("facts")
         self.halt_reason: str | None = data.get("halt_reason")
+        self.exposure: dict[str, Any] = data.get("exposure") or self._fresh_exposure()
+        self.latencies: list[dict[str, Any]] = data.get("latencies", [])
         self._facts_ok = False
+        self._clock_ms = clock_ms
+        self._fast_watch_enabled = fast_watch
+        self._recovered = False
+        self._verify_first = bool(data)      # after a restart a stop may already exist: read before placing another
+        self._last_fast_ms = 0
+        self._in_poll = False
+        self._read_failures: dict[str, int] = {}
+        self._unknown_orders = False
+        self._polled_once = False
+        self._immediate_failed_t: int | None = None
+        self._immediate_failed_why = ""
 
     # ------------------------------------------------------------------ persistence / incidents
     def to_state(self) -> dict[str, Any]:
@@ -161,10 +191,15 @@ class LSRLLiveExecutor:
                 "stop_fills": self.stop_fills, "pending_central": self.pending_central,
                 "incidents": self.incidents[-MAX_INCIDENTS:], "mismatch_polls": self.mismatch_polls,
                 "emergency": self.emergency, "ledger_adj": self.ledger_adj, "facts": self.facts,
-                "halt_reason": self.halt_reason}
+                "halt_reason": self.halt_reason, "exposure": self.exposure, "latencies": self.latencies[-50:]}
 
     def _persist(self) -> None:
         self.store.save(self.to_state())
+
+    @staticmethod
+    def _fresh_exposure() -> dict[str, Any]:
+        return {"state": EXPOSURE_NONE, "hold": None, "setup_id": None, "since_ms": None, "qty": 0.0, "attempts": 0,
+                "next_ms": 0, "last_error": "", "recoveries": 0, "escalated": False}
 
     def _incident(self, kind: str, detail: str, t_ms: int | None = None, **extra: Any) -> None:
         self.incidents.append({"kind": kind, "detail": detail[:300], "t_ms": t_ms, **extra})
@@ -271,7 +306,9 @@ class LSRLLiveExecutor:
                    "hold": self._hold(direction), "opened_ms": None, "engine_closed": False, "closed_ms": None,
                    "stop_price": None, "desired_stop_qty": 0.0, "desired_targets": {}, "tp_version": 0,
                    "tp_fail": {}, "leverage": None, "plan_id": "", "candidate_id": "", "first_entry_order_id": "",
-                   "first_entry_client_oid": "", "claimed": False, "finalized": False, "preflight_ok": False}
+                   "first_entry_client_oid": "", "claimed": False, "finalized": False, "preflight_ok": False,
+                   "protect_price": None, "ack_qty": 0.0, "unacked_since_ms": None, "fill_seen_ms": None,
+                   "fill_exchange_ms": None, "protected_ms": None, "expected_entries": {}}
             self.setups[setup_id] = rec
         return rec
 
@@ -295,6 +332,8 @@ class LSRLLiveExecutor:
     def apply(self, intents: list[Intent], t_ms: int) -> list[Any]:
         events: list[Any] = []
         assert_armed(self.settings)                       # re-checked on EVERY apply (kill switch)
+        events += self._startup_reconcile(t_ms)
+        events += self._fast_watch(t_ms)
         blocked: str | None = None
         entry_batch = [i for i in intents if isinstance(i, PlaceEntry)]
         if entry_batch:
@@ -323,9 +362,14 @@ class LSRLLiveExecutor:
         if isinstance(it, PlaceEntry):
             # A clean business rejection (e.g. post-only would cross) created no order and says
             # nothing about exchange state: the remaining rungs proceed. Anything else may leave an
-            # order in an unknown state, so it halts NEW entries.
+            # order in an unknown state, so it halts NEW entries (the write-ahead record stays: restart
+            # looks the clientOid up and adopts the order if it exists).
             if "status=REJECTED" not in reason:
                 self._halt(f"ENTRY_FAILED:{reason}")
+            else:
+                expected = self._setup(it.setup_id, it.direction)["expected_entries"]
+                for oid in [o for o, e in expected.items() if e["tag"] == it.tag]:
+                    del expected[oid]
             return [OrderEvent(t_ms, it.setup_id, it.tag, "REJECTED", reason)]
         if isinstance(it, SetStop) and it.qty > 0:
             return self._protection_failed(it.setup_id, it.direction, reason, t_ms)
@@ -343,6 +387,8 @@ class LSRLLiveExecutor:
         """Runs ONCE before a setup's ladder is sent. Returns a rejection reason (or None)."""
         if self.halt_reason:
             return f"EXECUTOR_HALTED:{self.halt_reason}"
+        if self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
+            return "UNPROTECTED_EXPOSURE"
         if first.setup_id in self.setups and self.setups[first.setup_id].get("claimed"):
             return None                                     # restart / duplicate delivery of a known setup
         try:
@@ -388,11 +434,21 @@ class LSRLLiveExecutor:
             return []                                       # restart / duplicate delivery: already placed
         if self.halt_reason:
             return [OrderEvent(t_ms, it.setup_id, it.tag, "REJECTED", f"EXECUTOR_HALTED:{self.halt_reason}")]
+        if self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
+            return [OrderEvent(t_ms, it.setup_id, it.tag, "REJECTED", "UNPROTECTED_EXPOSURE")]
         setup = self._setup(it.setup_id, it.direction)
         plan, ident = self._rung_plan(it)
         self._authorize(plan)                              # 1. mandatory central risk gate
         self._clock_gate()                                 # 2. clock gate, checked up front (also inside the client)
         self._preflight(it, setup)                         # 3. leverage
+        # WRITE-AHEAD: before any order can exist on the exchange, persist the frozen protective stop and the
+        # deterministic clientOid. A crash between the exchange accepting the order and the normal bookkeeping is
+        # then recoverable: restart looks the order up by this clientOid instead of never knowing it existed.
+        setup["protect_price"] = setup["protect_price"] or float(plan.stop_loss)
+        expected_oid = self.submitter.client_oid_for(ident, leg=ENTRY_LEG_MAKER)
+        setup["expected_entries"][expected_oid] = {"tag": it.tag, "rung": it.rung, "price": it.price, "qty": it.qty,
+                                                   "direction": it.direction.value, "t_ms": t_ms}
+        self._persist()
         result = submit_persistent_maker_entry(            # 4. audited boundary
             submitter=self.submitter, client=self.client, plan=ident, size=it.qty, price=it.price,
             notional_usdt=plan.position_notional_usdt, direction=it.direction.value)
@@ -402,6 +458,8 @@ class LSRLLiveExecutor:
         setup["first_entry_client_oid"] = setup["first_entry_client_oid"] or result.client_oid
         self.orders[result.client_oid] = self._order_rec(it.tag, "ENTRY", it.setup_id, it.rung, result.client_oid,
                                                          result.order_id, it.price, it.qty, it.direction.value, t_ms)
+        setup["expected_entries"].pop(result.client_oid, None)
+        setup["expected_entries"].pop(expected_oid, None)
         return [OrderEvent(t_ms, it.setup_id, it.tag, "ACCEPTED")]
 
     @staticmethod
@@ -484,9 +542,12 @@ class LSRLLiveExecutor:
             return False, f"STOP_SIZE_INSUFFICIENT:covered={covered} need={qty}"
         return True, ""
 
-    def _install_stop(self, setup: dict[str, Any], t_ms: int, reason: str) -> None:
+    def _install_stop(self, setup: dict[str, Any], t_ms: int, reason: str, *, price: float | None = None,
+                      qty: float | None = None) -> None:
         """Place + verify. Raises when protection cannot be PROVEN (caller flattens)."""
-        hold, price, qty = setup["hold"], setup["stop_price"], setup["desired_stop_qty"]
+        hold = setup["hold"]
+        price = setup["stop_price"] if price is None else price
+        qty = setup["desired_stop_qty"] if qty is None else qty
         last: str = "unknown"
         for _attempt in range(STOP_RETRIES):
             try:
@@ -500,6 +561,8 @@ class LSRLLiveExecutor:
                     self.stop = {"setup_id": setup["setup_id"], "price": price, "qty": qty,
                                  "direction": setup["direction"], "hold": hold, "armed_ms": t_ms,
                                  "verified_ms": t_ms}
+                    if setup["stop_price"] is None:         # protection placed before the engine asked for it
+                        setup["stop_price"], setup["desired_stop_qty"] = price, qty
                     return
                 last = why
             except Exception as exc:                        # noqa: BLE001
@@ -512,8 +575,28 @@ class LSRLLiveExecutor:
         if it.qty <= 0:
             return self._remove_stop(setup, t_ms)
         setup["stop_price"], setup["desired_stop_qty"] = it.price, it.qty
+        setup["ack_qty"], setup["unacked_since_ms"] = it.qty, None        # the engine has seen the fills up to here
+        if self.emergency:
+            return []                                       # a verified flatten is already under way: no stop work
+        if self._stop_already_in_place(setup):
+            return []                                       # executor-first protection already placed exactly this
         self._install_stop(setup, t_ms, it.reason)
         return []
+
+    def _stop_already_in_place(self, setup: dict[str, Any]) -> bool:
+        """Moving a stop is cancel-then-place (a window with NO stop): never do it for a stop that is already
+        there, exactly as asked, and independently proven on the exchange."""
+        cur = self.stop
+        if not cur or cur["setup_id"] != setup["setup_id"]:
+            return False
+        if abs(cur["price"] - setup["stop_price"]) > self.rules.tick_size / 2:
+            return False
+        if abs(cur["qty"] - setup["desired_stop_qty"]) > self.rules.qty_step / 2:
+            return False
+        ok, _why = self._verify_stop(setup["hold"], setup["stop_price"], setup["desired_stop_qty"])
+        if ok:
+            cur["verified_ms"] = self._clock_ms()
+        return ok
 
     def _remove_stop(self, setup: dict[str, Any], t_ms: int) -> list[Any]:
         """The engine says the setup is flat. Never remove protection from exposure that still exists."""
@@ -551,29 +634,58 @@ class LSRLLiveExecutor:
                 if not ("not exist" in str(exc).lower() or "43001" in str(exc)):
                     self._incident("EMERGENCY_CANCEL_FAILED", _reason(exc), tag=rec["tag"])
 
+    def _cancel_pending_closes(self, hold: str) -> None:
+        """Resting reduce-only closes on the side we are flattening occupy the position whether or not our state
+        remembers placing them (a lost state file). The whole side is being closed, so they all go; OPEN orders
+        that are not ours are never touched."""
+        try:
+            rows = _rows(self.client.get_pending_orders(symbol=self.rules.symbol))
+        except Exception:                                   # noqa: BLE001
+            return
+        for row in rows:
+            side = str(row.get("posSide") or row.get("holdSide") or "").lower()
+            if str(row.get("tradeSide") or "").lower() != "close" or (side and side != hold):
+                continue
+            ident = ({"client_oid": row["clientOid"]} if row.get("clientOid") else {"order_id": row.get("orderId")})
+            try:
+                self.client.cancel_futures_order(symbol=self.rules.symbol, **ident)
+            except Exception as exc:                        # noqa: BLE001
+                if not ("not exist" in str(exc).lower() or "43001" in str(exc)):
+                    self._incident("EMERGENCY_CANCEL_FAILED", _reason(exc), tag=str(row.get("clientOid") or ""))
+
+    @staticmethod
+    def _backoff_ms(attempts: int) -> int:
+        return int(EXPOSURE_BACKOFF_S[min(max(attempts, 1) - 1, len(EXPOSURE_BACKOFF_S) - 1)] * 1000)
+
+    def _emergency_failed(self, setup_id: str, direction: str, reason: str, error: str, t_ms: int) -> list[Any]:
+        """An emergency close that is not PROVEN complete stays open and is retried FOREVER with a bounded backoff;
+        it is never abandoned and never recorded as closed."""
+        attempts = (self.emergency or {}).get("attempts", 0) + 1
+        self.emergency = {"setup_id": setup_id, "direction": str(direction).upper(), "reason": reason,
+                          "attempts": attempts, "error": error[:200], "next_ms": t_ms + self._backoff_ms(attempts)}
+        if attempts == 1 or attempts % LOG_EVERY_N_ATTEMPTS == 0:
+            self._incident("EMERGENCY_CLOSE_INCOMPLETE" if error.startswith("status=") else "EMERGENCY_CLOSE_FAILED",
+                           error, t_ms, attempts=attempts)
+        return []
+
     def _emergency_flatten(self, setup_id: str, direction: str, reason: str, t_ms: int) -> list[Any]:
         """Close OUR exposure at market and PROVE it. Anything short of proven-flat stays an open
-        emergency that every poll retries; the executor is halted throughout."""
+        emergency that is retried with bounded backoff until flat; the executor is halted throughout."""
         self._halt(reason[:200])
         self._cancel_own_resting(setup_id)
         hold = self._hold(direction)
+        self._cancel_pending_closes(hold)
         try:
             result = self.client.close_futures_position_full(
                 symbol=self.rules.symbol, direction=str(direction).upper(), margin_mode="isolated",
                 reason="lsrl_unprotected_position", cleanup_tpsl=False)
         except Exception as exc:                            # noqa: BLE001
-            self.emergency = {"setup_id": setup_id, "direction": str(direction).upper(), "reason": reason,
-                              "attempts": (self.emergency or {}).get("attempts", 0) + 1, "error": _reason(exc)}
-            self._incident("EMERGENCY_CLOSE_FAILED", _reason(exc), t_ms)
-            return []
+            return self._emergency_failed(setup_id, direction, reason, _reason(exc), t_ms)
         status = str((result or {}).get("status") or "").upper()
         try:
             remaining = self._read_positions()[hold]
         except Exception as exc:                            # noqa: BLE001
-            self.emergency = {"setup_id": setup_id, "direction": str(direction).upper(), "reason": reason,
-                              "attempts": (self.emergency or {}).get("attempts", 0) + 1,
-                              "error": f"POSITION_READ:{_reason(exc)}"}
-            return []
+            return self._emergency_failed(setup_id, direction, reason, f"POSITION_READ:{_reason(exc)}", t_ms)
         if status in ("CLOSED", "NO_POSITION") and remaining <= self.rules.qty_step / 2:
             ledger = max(0.0, self._ledger(hold))
             self.ledger_adj[hold] = self.ledger_adj.get(hold, 0.0) - ledger
@@ -584,17 +696,26 @@ class LSRLLiveExecutor:
             price = _f((result or {}).get("avg_price") or (result or {}).get("price")) or (self._mark() or 0.0)
             return [FillEvent(t_ms, setup_id, f"lsrl-{setup_id}-emergency", "OTHER_CLOSE", price, ledger,
                               liquidity="taker")]
-        self.emergency = {"setup_id": setup_id, "direction": str(direction).upper(), "reason": reason,
-                          "attempts": (self.emergency or {}).get("attempts", 0) + 1,
-                          "error": f"status={status} remaining={remaining}"}
-        self._incident("EMERGENCY_CLOSE_INCOMPLETE", f"status={status} remaining={remaining}", t_ms)
-        return []
+        return self._emergency_failed(setup_id, direction, reason, f"status={status} remaining={remaining}", t_ms)
 
     def _protection_failed(self, setup_id: str, direction: Any, reason: str, t_ms: int) -> list[Any]:
         """A position whose stop cannot be PROVEN is flattened: never knowingly unprotected."""
+        d = str(getattr(direction, "value", direction)).upper()
+        hold = self._hold(d)
+        try:
+            qty = self._read_positions()[hold]
+        except Exception:                                   # noqa: BLE001
+            qty = self.exposure.get("qty", 0.0)
+        self._begin_unprotected(hold, qty, self.setups.get(setup_id), reason, t_ms)
         self._incident("PROTECTION_FAILED", reason, t_ms, setup_id=setup_id)
-        return self._emergency_flatten(setup_id, str(getattr(direction, "value", direction)),
-                                       f"STOP_PLACEMENT_FAILED:{reason}", t_ms)
+        self._escalate(f"STOP_PLACEMENT_FAILED:{reason}", t_ms)
+        events = self._emergency_flatten(setup_id, d, f"STOP_PLACEMENT_FAILED:{reason}", t_ms)
+        if self.emergency is None:
+            self._exposure_resolved("FLAT", t_ms)
+        else:
+            self.exposure["state"] = EXPOSURE_CRITICAL
+            self.exposure["next_ms"] = self.emergency.get("next_ms", 0)
+        return events
 
     def _orphan_exposure(self, setup_id: str, direction: str, why: str, t_ms: int) -> list[Any]:
         """Exposure our engine no longer manages: protect-or-flatten, then halt (no silent adoption)."""
@@ -684,6 +805,7 @@ class LSRLLiveExecutor:
         if status == "UNKNOWN":
             self._incident("ORDER_STATE_UNKNOWN", rec["client_oid"], t_ms)
             self._halt(f"ORDER_STATE_UNKNOWN:{rec['client_oid']}")
+            self._unknown_orders = True                     # a fill may be hiding behind this: see _owned_exposure
             return events
         if status == "ABSENT":
             rec["terminal"], rec["terminal_state"] = True, "absent"
@@ -714,8 +836,14 @@ class LSRLLiveExecutor:
             setup = self.setups.get(rec["setup_id"])
             if setup is not None and rec["kind"] == "ENTRY" and setup["opened_ms"] is None:
                 setup["opened_ms"] = t_ms
+            if setup is not None and rec["kind"] == "ENTRY" and setup.get("fill_seen_ms") is None:
+                setup["fill_seen_ms"] = self._clock_ms()
+                exchange_ms = int(_f((row or {}).get("uTime") or (row or {}).get("cTime")))
+                setup["fill_exchange_ms"] = exchange_ms or None
             if setup is not None and rec["kind"] == "ENTRY" and setup["engine_closed"]:
                 setup["orphan_qty"] = setup.get("orphan_qty", 0.0) + delta
+            if setup is not None and rec["kind"] == "ENTRY" and not setup["engine_closed"] and not self.emergency:
+                self._protect_immediately(setup, t_ms)
         state = str(metrics["state"]).lower()
         if state in _TERMINAL:
             rec["terminal"], rec["terminal_state"] = True, state
@@ -729,6 +857,29 @@ class LSRLLiveExecutor:
                     self._incident("TP_LOST", f"{rec['kind']} {rec['client_oid']} state={state} "
                                    f"cancelReason={cancel_reason or '-'} filled={rec['reported_qty']}/{rec['qty']}", t_ms)
         return events
+
+    def _protect_immediately(self, setup: dict[str, Any], t_ms: int) -> None:
+        """The moment an entry fill is SEEN, before any further read: place (and prove) the frozen stop for the whole
+        ledgered quantity. This is the shortest path from 'fill visible' to 'stop confirmed'; every later read is a
+        cross-check. A failure changes nothing here: the regular cycle in the same poll escalates it."""
+        hold = setup["hold"]
+        step = self.rules.qty_step
+        qty = round(self._ledger(hold) / step) * step
+        price = setup["stop_price"] if setup["stop_price"] is not None else setup.get("protect_price")
+        if price is None or qty <= step / 2:
+            return
+        cur = self.stop
+        if (cur and cur["setup_id"] == setup["setup_id"] and cur["qty"] + step / 2 >= qty
+                and abs(cur["price"] - price) <= self.rules.tick_size / 2):
+            return
+        try:
+            self._install_stop(setup, t_ms, "ENTRY_FILL_IMMEDIATE", price=price, qty=qty)
+        except Exception as exc:                            # noqa: BLE001
+            self.log.warning("LSRL_LIVE_IMMEDIATE_PROTECTION_FAILED | %s | %s", setup["setup_id"], _reason(exc))
+            self._immediate_failed_t, self._immediate_failed_why = t_ms, _reason(exc)   # spent: do not repeat them
+            return
+        self._record_protection_latency(setup, t_ms)
+        self._persist()
 
     def _stop_fill_events(self, t_ms: int) -> list[Any]:
         """Stop fills come from the exchange ORDER HISTORY (real price and fee), keyed by orderId with
@@ -806,37 +957,287 @@ class LSRLLiveExecutor:
                 self._halt(f"LEDGER_EXCEEDS_EXCHANGE:{hold}:{exchange_qty}<{ledger_qty}")
         return False, positions
 
-    def _audit_protection(self, positions: dict[str, float], t_ms: int) -> list[Any]:
-        """Every poll: exposure we own has a PROVEN stop, or it is repaired, or it is flattened."""
+    # ------------------------------------------------------------------ THE EXPOSURE STATE MACHINE
+    def _claimed_by_us(self, hold: str) -> bool:
+        try:
+            owner = self.ownership.owner_of(self.rules.symbol, hold)
+        except Exception:                                   # noqa: BLE001
+            return False
+        return bool(owner) and owner_family(owner) == owner_family(STRATEGY_ID)
+
+    def _active_setup(self, hold: str) -> dict[str, Any] | None:
+        live = [s for s in self.setups.values() if s["hold"] == hold and not s["finalized"]]
+        return live[-1] if live else None
+
+    def _owned_exposure(self, positions: dict[str, float], orders_unreadable: bool = False
+                        ) -> dict[str, tuple[float, dict[str, Any] | None]]:
+        """Exchange quantity that is LSRL's to protect. It is ours when (a) our ledger of exchange-confirmed fills says
+        so, (b) our resting entry could not be read this cycle and exposure appeared on its side (a fill we cannot see
+        yet), or (c) the ownership registry says the side is ours but no setup explains it (executor state lost).
+        Anything else is foreign and is never touched: it halts, it is not protected or closed by us."""
+        owned: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        for hold, qty in positions.items():
+            if qty <= self.rules.qty_step / 2:
+                continue
+            setup = self._active_setup(hold)
+            resting = any(r["kind"] == "ENTRY" and not r["terminal"] and self.setups.get(r["setup_id"], {}).get("hold") == hold
+                          for r in self.orders.values())
+            if (self._ledger(hold) > EPS or (orders_unreadable and resting)
+                    or (setup is None and self._claimed_by_us(hold))):
+                owned[hold] = (qty, setup)
+        return owned
+
+    def _cancel_resting_entries(self, setup_id: str | None) -> None:
+        """No additional ladder exposure while protection is unproven. Cancels are requests; late fills are still
+        tracked and protected."""
+        for rec in list(self.orders.values()):
+            if rec["kind"] != "ENTRY" or rec["terminal"] or rec["cancel_requested"]:
+                continue
+            if setup_id is not None and rec["setup_id"] != setup_id:
+                continue
+            rec["cancel_requested"] = True
+            try:
+                self.client.cancel_futures_order(symbol=self.rules.symbol, client_oid=rec["client_oid"])
+            except Exception as exc:                        # noqa: BLE001
+                if not ("not exist" in str(exc).lower() or "43001" in str(exc)):
+                    self._incident("ENTRY_CANCEL_FAILED", _reason(exc), tag=rec["tag"])
+                    rec["cancel_requested"] = False         # try again on the next cycle
+
+    def _begin_unprotected(self, hold: str, qty: float, setup: dict[str, Any] | None, why: str, t_ms: int) -> None:
+        """Marks the state and makes it DURABLE before anything is attempted (a crash now restarts in this state).
+        A fill found a moment ago is normally protected in this same cycle, so nothing else is disturbed yet."""
+        ex = self.exposure
+        if ex["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
+            ex["qty"], ex["last_error"] = qty, why
+            return
+        ex.update({"state": EXPOSURE_UNPROTECTED, "hold": hold, "qty": qty, "since_ms": t_ms, "attempts": 0,
+                   "next_ms": t_ms, "last_error": why, "setup_id": setup["setup_id"] if setup else None,
+                   "escalated": False})
+        self.log.warning("LSRL_LIVE_EXPOSURE_UNPROTECTED | %s qty=%s | %s", hold, qty, why)
+        if self.stop and setup is not None and self.stop.get("setup_id") == setup["setup_id"]:
+            self._incident("STOP_AUDIT_FAILED", why, t_ms, setup_id=setup["setup_id"])   # a stop we believed in is gone
+        self._persist()
+
+    def _escalate(self, reason: str, t_ms: int) -> None:
+        """Protection could not be established at the first attempt: the incident is raised, NEW entries are blocked
+        and no ADDITIONAL ladder exposure is left resting while the position is unproven."""
+        ex = self.exposure
+        if ex.get("escalated"):
+            return
+        ex["escalated"] = True
+        self._incident("UNPROTECTED_EXPOSURE", f"{ex.get('hold')} qty={ex.get('qty')}: {reason}", t_ms,
+                       setup_id=ex.get("setup_id"))
+        self._halt(reason[:200])
+        self._cancel_resting_entries(ex.get("setup_id"))
+        self._persist()
+
+    def _exposure_resolved(self, how: str, t_ms: int) -> None:
+        ex = self.exposure
+        was = ex["state"]
+        ex["state"] = EXPOSURE_PROTECTED if how == "PROTECTED" else EXPOSURE_NONE
+        if was in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
+            if ex.get("escalated"):
+                ex["recoveries"] = ex.get("recoveries", 0) + 1
+                self._incident("EXPOSURE_RECOVERED", f"{how} after {ex.get('attempts', 0)} attempt(s)", t_ms)
+            ex.update({"attempts": 0, "next_ms": 0, "last_error": "", "since_ms": None, "escalated": False})
+        elif how == "FLAT":
+            ex.update({"hold": None, "qty": 0.0, "setup_id": None})
+        ex["escalated"] = False if ex["state"] in (EXPOSURE_NONE, EXPOSURE_PROTECTED) else ex.get("escalated", False)
+        self._persist()
+
+    def _record_protection_latency(self, setup: dict[str, Any], t_ms: int) -> None:
+        if setup.get("protected_ms") is not None or setup.get("fill_seen_ms") is None:
+            return
+        now = self._clock_ms()
+        setup["protected_ms"] = now
+        entry = {"setup_id": setup["setup_id"], "discovery_to_verified_ms": now - setup["fill_seen_ms"]}
+        if setup.get("fill_exchange_ms"):
+            entry["exchange_fill_to_discovery_ms"] = setup["fill_seen_ms"] - setup["fill_exchange_ms"]
+            entry["exchange_fill_to_verified_ms"] = now - setup["fill_exchange_ms"]
+        self.latencies.append(entry)
+        self.log.warning("LSRL_LIVE_PROTECTION_LATENCY | %s", entry)
+
+    def _ensure_protected(self, hold: str, qty: float, setup: dict[str, Any] | None, t_ms: int) -> list[Any]:
+        """One reconciliation step for exposure we own: verified stop, or repair, or verified flat."""
         events: list[Any] = []
-        for sid, setup in self.setups.items():
-            if setup["engine_closed"] or setup["stop_price"] is None or setup["desired_stop_qty"] <= 0:
-                continue
-            if positions.get(setup["hold"], 0.0) <= self.rules.qty_step / 2:
-                continue
-            ok, why = self._verify_stop(setup["hold"], setup["stop_price"], positions[setup["hold"]])
+        ex = self.exposure
+        price = None
+        if setup is not None:
+            price = setup["stop_price"] if setup["stop_price"] is not None else setup.get("protect_price")
+        why = "NO_STOP_PRICE_KNOWN"
+        # A fill found in a running process with no stop of ours on record is known-unprotected: place the stop NOW
+        # instead of first spending two REST round trips proving what we already know.
+        known_unprotected = (not self._verify_first) and price is not None and (
+            self.stop is None or self.stop.get("setup_id") != setup["setup_id"])
+        if known_unprotected:
+            why = "NO_STOP_YET"
+        elif price is not None:
+            self._verify_first = False
+            ok, why = self._verify_stop(hold, price, qty)
             if ok:
                 if self.stop:
                     self.stop["verified_ms"] = t_ms
-                continue
-            self._incident("STOP_AUDIT_FAILED", why, t_ms, setup_id=sid)
+                self._record_protection_latency(setup, t_ms)
+                if ex["state"] != EXPOSURE_PROTECTED or ex["hold"] != hold:
+                    ex.update({"hold": hold, "qty": qty, "setup_id": setup["setup_id"]})
+                    self._exposure_resolved("PROTECTED", t_ms)
+                events += self._check_engine_ack(hold, setup, t_ms)
+                return events
+        self._begin_unprotected(hold, qty, setup, why, t_ms)
+        if self.emergency:
+            self._escalate(f"UNPROTECTED_EXPOSURE:{why}", t_ms)
+            ex["state"] = EXPOSURE_CRITICAL                 # a flatten is already in flight; it retries on its own clock
+            return events
+        if t_ms < ex["next_ms"]:
+            return events                                   # bounded backoff between attempts
+        ex["attempts"] += 1
+        if self._immediate_failed_t == t_ms:
+            why = self._immediate_failed_why                # what the immediate attempt actually saw
+        ex["last_error"] = why
+        if price is not None and self._immediate_failed_t != t_ms:
             try:
-                self._install_stop(setup, t_ms, "AUDIT_REPAIR")
+                self._install_stop(setup, t_ms, "EXPOSURE_RECOVERY", price=price, qty=qty)
+                self._record_protection_latency(setup, t_ms)
+                self._exposure_resolved("PROTECTED", t_ms)
+                return events
             except Exception as exc:                        # noqa: BLE001
-                events += self._protection_failed(sid, setup["direction"], _reason(exc), t_ms)
+                why = _reason(exc)
+                ex["last_error"] = why
+        reason = f"STOP_PLACEMENT_FAILED:{why}" if price is not None else f"UNPROTECTED_EXPOSURE:{why}"
+        self._escalate(reason, t_ms)
+        sid = setup["setup_id"] if setup else (ex.get("setup_id") or "")
+        events += self._emergency_flatten(sid, "LONG" if hold == "long" else "SHORT", reason[:200], t_ms)
+        if self.emergency is None:
+            self._exposure_resolved("FLAT", t_ms)
+        else:
+            ex["state"] = EXPOSURE_CRITICAL
+            ex["next_ms"] = t_ms + self._backoff_ms(ex["attempts"])
         return events
+
+    def _check_engine_ack(self, hold: str, setup: dict[str, Any] | None, t_ms: int) -> list[Any]:
+        """The engine manages targets and the stop lifecycle. A fill it never acknowledged (its SetStop never covers
+        the ledger) means it does not know this position: hold the protective stop, then flatten after a grace."""
+        if setup is None or setup["engine_closed"] or self.emergency:
+            return []
+        unacked = self._ledger(hold) - setup.get("ack_qty", 0.0)
+        if unacked <= self.rules.qty_step / 2:
+            setup["unacked_since_ms"] = None
+            return []
+        if setup.get("unacked_since_ms") is None:
+            setup["unacked_since_ms"] = t_ms
+            return []
+        if t_ms - setup["unacked_since_ms"] < ENGINE_ACK_GRACE_MS:
+            return []
+        self._incident("ENGINE_DID_NOT_ACKNOWLEDGE_FILL", f"{hold}: filled={self._ledger(hold)} "
+                       f"acknowledged={setup.get('ack_qty', 0.0)} for {t_ms - setup['unacked_since_ms']} ms", t_ms,
+                       setup_id=setup["setup_id"])
+        return self._emergency_flatten(setup["setup_id"], "LONG" if hold == "long" else "SHORT",
+                                       "ENGINE_DID_NOT_ACKNOWLEDGE_FILL", t_ms)
+
+    def _exposure_cycle(self, positions: dict[str, float], t_ms: int, orders_unreadable: bool = False) -> list[Any]:
+        events: list[Any] = []
+        owned = self._owned_exposure(positions, orders_unreadable)
+        if not owned:
+            if self.exposure["state"] != EXPOSURE_NONE:
+                self._exposure_resolved("FLAT", t_ms)
+            return events
+        for hold, (qty, setup) in owned.items():
+            events += self._ensure_protected(hold, qty, setup, t_ms)
+        return events
+
+    def _audit_protection(self, positions: dict[str, float], t_ms: int) -> list[Any]:
+        """Every poll: exposure we own has a PROVEN stop, or it is repaired, or it is flattened (see above)."""
+        return self._exposure_cycle(positions, t_ms)
+
+    # ------------------------------------------------------------------ restart recovery
+    def _startup_reconcile(self, t_ms: int) -> list[Any]:
+        """Once per process, before anything else: orders the executor recorded write-ahead but never got to track
+        (the process died after the exchange accepted them) are looked up by their deterministic clientOid and
+        adopted; an unreadable answer keeps new exposure blocked and is retried until it is resolved."""
+        if self._recovered:
+            return []
+        for setup in self.setups.values():
+            for oid, exp in list(setup.get("expected_entries", {}).items()):
+                if oid in self.orders:
+                    del setup["expected_entries"][oid]
+                    continue
+                try:
+                    found = self.client.find_order_by_client_oid(self.rules.symbol, oid)
+                    status = str(found.get("status"))
+                except Exception as exc:                    # noqa: BLE001
+                    status = "UNKNOWN"
+                    found = {}
+                    self.log.warning("LSRL_LIVE_STARTUP_LOOKUP_FAILED | %s | %s", oid, _reason(exc))
+                if status == "UNKNOWN":
+                    self._halt(f"STARTUP_ORDER_STATE_UNKNOWN:{oid}")   # no new exposure until it is resolved
+                    return []
+                if status == "ABSENT":
+                    del setup["expected_entries"][oid]      # it was never placed
+                    continue
+                row = found.get("order") or {}
+                self.orders[oid] = self._order_rec(exp["tag"], "ENTRY", setup["setup_id"], exp["rung"], oid,
+                                                   str(row.get("orderId") or ""), exp["price"], exp["qty"],
+                                                   exp["direction"], exp["t_ms"])
+                del setup["expected_entries"][oid]
+                self._incident("ENTRY_ORDER_ADOPTED_AFTER_RESTART", f"{oid} state={status}", t_ms,
+                               setup_id=setup["setup_id"])
+        self._recovered = True
+        self._persist()
+        return []
+
+    def _fast_watch(self, t_ms: int) -> list[Any]:
+        """The runtime polls every 3 s. While an entry rests (or exposure is unresolved) the executor looks for the
+        fill itself about once a second, so the time a fill sits unprotected is bounded by this, not by the poll."""
+        if not self._fast_watch_enabled or self._in_poll or not self._recovered:
+            return []
+        resting = any(r["kind"] == "ENTRY" and not r["terminal"] for r in self.orders.values())
+        if not (resting or self.emergency or self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL)):
+            return []
+        if t_ms - self._last_fast_ms < FAST_WATCH_MS:
+            return []
+        self._last_fast_ms = t_ms
+        try:
+            return self.poll(t_ms)
+        except Exception as exc:                            # noqa: BLE001 - a failed look must never break the trading loop
+            self._read_failure("FAST_WATCH_FAILED", exc, t_ms)
+            return []
 
     # ------------------------------------------------------------------ poll
     def poll(self, t_ms: int) -> list[Any]:
         """Read the exchange and translate reality into engine events. Never adds exposure."""
+        if self._in_poll:
+            return []
+        self._in_poll = True
+        try:
+            return self._poll(t_ms)
+        finally:
+            self._in_poll = False
+
+    def _read_failure(self, kind: str, exc: Exception, t_ms: int) -> None:
+        count = self._read_failures[kind] = self._read_failures.get(kind, 0) + 1
+        if count == 1 or count % LOG_EVERY_N_ATTEMPTS == 0:
+            self._incident(kind, _reason(exc), t_ms, occurrences=count)
+
+    def _poll(self, t_ms: int) -> list[Any]:
         events: list[Any] = []
+        events += self._startup_reconcile(t_ms)
         active = (any(not r["terminal"] for r in self.orders.values()) or self.stop or self.emergency
-                  or self.pending_central or any(not s["finalized"] for s in self.setups.values()))
+                  or self.pending_central or any(not s["finalized"] for s in self.setups.values())
+                  or self.exposure["state"] != EXPOSURE_NONE or not self._recovered or not self._polled_once)
+        self._polled_once = True                            # a fresh process ALWAYS reads the exchange once: state may be lost
         if not active:
             return events
         if self.emergency:
             events += self._retry_emergency(t_ms)
-        events += self._reconcile_orders(t_ms)
+        orders_unreadable = False
+        self._unknown_orders = False
+        try:
+            events += self._reconcile_orders(t_ms)
+        except Exception as exc:                            # noqa: BLE001 - an unreadable order must not stop protection
+            orders_unreadable = True
+            self._read_failure("ORDER_RECONCILE_FAILED", exc, t_ms)
+        orders_unreadable = orders_unreadable or self._unknown_orders
+        self._persist()                                     # the fills just seen are durable BEFORE we act on them
         for setup in self.setups.values():
             if setup.get("orphan_qty", 0.0) > EPS and not self.emergency:
                 qty, setup["orphan_qty"] = setup["orphan_qty"], 0.0
@@ -850,11 +1251,12 @@ class LSRLLiveExecutor:
                     sid = next((s["setup_id"] for s in self.setups.values() if s["hold"] == hold), "")
                     events += self._orphan_exposure(sid, "LONG" if hold == "long" else "SHORT",
                                                     f"EXPOSURE_WITHOUT_ACTIVE_SETUP:{hold}:{qty}", t_ms)
-        if positions is not None and not self.emergency:
-            events += self._audit_protection(positions, t_ms)
-            for setup in self.setups.values():
-                if not setup["engine_closed"]:
-                    self._ensure_targets(setup, t_ms)
+        if positions is not None:
+            events += self._exposure_cycle(positions, t_ms, orders_unreadable)
+            if not self.emergency:
+                for setup in self.setups.values():
+                    if not setup["engine_closed"]:
+                        self._ensure_targets(setup, t_ms)
         for rec in self.orders.values():                    # deferred cancel events: only when reconciled
             if rec.get("cancel_event_pending") and consistent:
                 rec["cancel_event_pending"] = False
@@ -866,10 +1268,8 @@ class LSRLLiveExecutor:
 
     def _retry_emergency(self, t_ms: int) -> list[Any]:
         em = self.emergency
-        if em is None:
+        if em is None or t_ms < em.get("next_ms", 0):
             return []
-        if em.get("attempts", 0) >= EMERGENCY_MAX_ATTEMPTS:
-            return []                                       # halted + incident already raised; owner action
         return self._emergency_flatten(em["setup_id"], em["direction"], em["reason"], t_ms)
 
     # ------------------------------------------------------------------ lifecycle / ownership / central record
@@ -939,8 +1339,11 @@ class LSRLLiveExecutor:
                 self._halt(f"CENTRAL_CLOSE_RECORD_UNRECONCILED:{sid}")
 
     def resume(self) -> None:
-        """Explicit owner action only; never called by the runtime."""
+        """Explicit owner action only; never called by the runtime. Refused while exposure is unresolved: the
+        recovery loop, not a person clicking resume, ends an emergency."""
+        if self.emergency or self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
+            raise LiveExecutorError(f"cannot resume while exposure is unresolved: state={self.exposure['state']} "
+                                    f"emergency={bool(self.emergency)}")
         self._incident("RESUME", f"halt cleared (was {self.halt_reason})")
         self.halt_reason = None
-        self.emergency = None
         self._persist()

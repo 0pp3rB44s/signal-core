@@ -61,7 +61,8 @@ class Rig:
             settings=self.settings, client=self.ex, submitter=self.submitter, auth_store=self.auth, gate=self.gate,
             state_store=self.state, rules=RULES, sleep=lambda s: None,
             ownership=StrategyOwnershipRegistry(self.tmp / "ownership.json"),
-            central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)))
+            central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)),
+            clock_ms=lambda: self.ex.now_ms)
 
     def feed(self, ev):
         queue = [ev]

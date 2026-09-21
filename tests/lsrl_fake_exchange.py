@@ -66,6 +66,8 @@ class FakeExchange:
         self.stop_lies = False               # the client claims verified=True but no plan exists
         self.strict_occupancy = True         # limit closes occupy the position for market closes
         self.foreign_orders: list[dict[str, Any]] = []
+        self.outage = False                  # every read and write fails (network loss / exchange outage)
+        self.fail_counts: dict[str, int] = {}                 # method -> number of upcoming calls that fail transiently
         self._n = 0
 
     # ---------------------------------------------------------------- stub accessors (compat with old tests)
@@ -88,8 +90,13 @@ class FakeExchange:
             raise ClockUnsafe("exchange clock reference stale")
 
     def _maybe_fail(self, name: str) -> None:
+        if self.outage:
+            raise ConnectionError(f"exchange unreachable ({name})")
         if name in self.fail:
             raise self.fail[name]
+        if self.fail_counts.get(name, 0) > 0:
+            self.fail_counts[name] -= 1
+            raise ConnectionError(f"transient failure ({name})")
 
     def _new_id(self) -> str:
         self._n += 1
@@ -123,6 +130,7 @@ class FakeExchange:
         return {"code": "00000", "data": dict(self.account)}
 
     def get_trade_fee_rate(self, symbol, business_type="mix", **_):
+        self._maybe_fail("get_trade_fee_rate")
         return {"code": "00000", "data": dict(self.fee_rates)}
 
     def get_all_positions(self, *_a, **_k):
@@ -142,7 +150,9 @@ class FakeExchange:
         return {"data": {"entrustedList": rows, "endId": None}}
 
     def find_order_by_client_oid(self, symbol, client_oid, product_type=None):
-        if self.lookup_unknown:
+        if self.lookup_unknown or self.outage or self.fail_counts.get("find_order_by_client_oid", 0) > 0:
+            if self.fail_counts.get("find_order_by_client_oid", 0) > 0:
+                self.fail_counts["find_order_by_client_oid"] -= 1
             return {"status": "UNKNOWN", "order": None, "errors": ["boom"]}
         order = self.orders.get(client_oid)
         if order is None:
@@ -201,6 +211,7 @@ class FakeExchange:
 
     def cancel_futures_order(self, symbol, order_id=None, client_oid=None, **_):
         self._require_safe_clock_for_order()
+        self._maybe_fail("cancel_futures_order")
         self.calls.append(("cancel", client_oid))
         order = self.orders.get(client_oid)
         if order is None:
@@ -234,6 +245,7 @@ class FakeExchange:
                 "placed": {"data": {"orderId": plan["orderId"]}}, "size": size}
 
     def cancel_all_futures_tpsl_orders(self, symbol, hold_side=None, **_):
+        self._maybe_fail("cancel_all_futures_tpsl_orders")
         self.calls.append(("cancel_stop", hold_side))
         self.plans = [p for p in self.plans if hold_side and p["posSide"] != hold_side]
         return {"data": {}}
@@ -265,6 +277,7 @@ class FakeExchange:
         order["baseVolume"] += qty
         order["priceAvg"] = total_notional / order["baseVolume"]
         order["fee"] += fee
+        order["uTime"] = self.now_ms
         order["state"] = "filled" if order["baseVolume"] >= order["size"] - 1e-9 else "partially_filled"
         hold = "long" if order["direction"] == "LONG" else "short"
         if order["tradeSide"] == "open":
