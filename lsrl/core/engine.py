@@ -14,6 +14,7 @@ from typing import Any
 
 from lsrl.core.atr import WilderATR
 from lsrl.core.config import SPEC, LSRLConfig
+from lsrl.core.coverage import INSUFFICIENT_BOOK_COVERAGE, target_coverage
 from lsrl.core.gates import RiskDecision, RiskGate, RiskProposal
 from lsrl.core.ladder import build_geometry, size_ladder, split_tp_quantities
 from lsrl.core.lifecycle import Ledger, cost_adjusted_break_even
@@ -229,7 +230,8 @@ class LSRLEngine:
                 # spans what the exchange channel lists. Recorded so the gap is measurable, never assumed away.
                 "book_window_bid": None if w.frozen_window is None else w.frozen_window[0],
                 "book_window_ask": None if w.frozen_window is None else w.frozen_window[1],
-                "distance_reach": None if w.frozen_atr15 is None else 1.5 * w.frozen_atr15}
+                "distance_reach": None if w.frozen_atr15 is None else 1.5 * w.frozen_atr15,
+                "coverage": dict(w.coverage)}
 
     @staticmethod
     def _est_dict(est: ConsumptionEstimate | None) -> dict[str, Any] | None:
@@ -238,7 +240,8 @@ class LSRLEngine:
         return {"method": est.method, "frozen_depth": est.frozen_depth, "consumed": est.consumed,
                 "removed_total": est.removed_total, "cancelled_est": est.cancelled_est,
                 "fraction": est.fraction, "trades": est.trades, "residual_depth": est.residual_depth,
-                "replenished_est": est.replenished_est}
+                "replenished_est": est.replenished_est, "max_removed": est.max_removed,
+                "unexplained_removal": est.unexplained_removal}
 
     def _on_sweep_confirmed(self, o: SweepOutcome) -> None:
         w, bar = o.watch, o.bar
@@ -350,6 +353,15 @@ class LSRLEngine:
             return self._reject_setup(why, t)
         targets, why = select_targets(s.direction, self.tracker, snap, t, s.atr15,
                                       geometry.rung_prices[0], self.rules, self.cfg)
+        # NOT OBSERVED != ABSENT for the target search too (the frozen rules are untouched; this only refuses to conclude
+        # from a truncated observation): a selected pool cut off by the window edge, or 'fewer than three' claimed over
+        # a reach the window does not cover, is a coverage failure.
+        selected = [tp.state for tp in (self.tracker.get(x.pool_id) for x in (targets or [])) if tp is not None]
+        cov = target_coverage(s.direction, snap, selected, 3 if targets else 0, s.atr15, self.cfg)
+        s.feed_evidence["coverage_target"] = cov
+        if cov["target_coverage_reason"] and (targets is not None or why == "INSUFFICIENT_OPPOSITE_POOLS"):
+            self._store_sizing(s, sizing)
+            return self._reject_setup(INSUFFICIENT_BOOK_COVERAGE, t)
         if targets is None:
             self._store_sizing(s, sizing)
             return self._reject_setup(why, t)

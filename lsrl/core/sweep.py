@@ -26,6 +26,18 @@ Causality rules enforced here (events are processed in ARRIVAL order = what the 
       R5  missing exchange timestamps make ordering unknowable.
     The age of the frozen state at the first interaction is recorded on every candidate so the residual
     ambiguity (a cancel within one update interval before the first print) is measurable.
+
+    NO TOTAL ORDER IS ASSUMED. Bitget guarantees no order between the depth and the trade channel (independent
+    latency: the depth update that reflects a trade is stamped a median ~50 ms AFTER it, tails -400/+500 ms), so an
+    exchange-stamp inequality can never PROVE that a cancel came after a print. R1-R5 only refuse; what decides
+    acceptance is order-free conservation of volume:
+      R6  CONSERVATION. Every unit that left a frozen pool level while the market was interacting with it must be
+          accounted for by executed volume at that price. A level that lost more than was executed there (a pull /
+          cancel) cannot be told apart from 'cancelled first, then ordinary flow printed at those prices' without a
+          cross-channel order that does not exist -> POOL_REMOVAL_NOT_EXPLAINED_BY_EXECUTION, NO SIGNAL. This needs no
+          timestamp comparison between channels and no tuned margin.
+  * BOOK COVERAGE (`lsrl.core.coverage`): a pool whose run ends at the outermost listed level may continue beyond the
+    window; executed volume over a fragment overstates consumption. Not observed != absent: INSUFFICIENT_BOOK_COVERAGE.
   * bars never establish interaction. A bar that reached the pool while no depth/trade evidence of the
     interaction exists means the feed missed it: rejected, not inferred.
 """
@@ -35,10 +47,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from lsrl.core.config import LSRLConfig
+from lsrl.core.coverage import INSUFFICIENT_BOOK_COVERAGE, entry_coverage
 from lsrl.core.pools import PoolState, PoolTracker, eligibility_failures
 from lsrl.core.types import BarClosed, DepthSnapshot, Direction, Side, TradeTick
 
 _KEY = 8
+CONSERVATION_TOLERANCE = 1e-9      # exact: sizes are decimals; no tuned slack (any unexplained removal is ambiguity)
 
 
 def _k(price: float) -> float:
@@ -73,6 +87,8 @@ class ConsumptionEstimate:
     trades: int = 0
     residual_depth: float | None = None
     replenished_est: float = 0.0   # executed volume that the book no longer shows as removed
+    max_removed: float = 0.0       # most that ever left the frozen levels while interacting (order-free)
+    unexplained_removal: float = 0.0   # R6: that part of it NOT accounted for by executed volume at the same prices
 
 
 @dataclass(slots=True)
@@ -107,6 +123,9 @@ class PoolWatch:
     ambiguous_reason: str | None = None
     depth_series: list[tuple[int, float]] = field(default_factory=list)
     rejected_disappearance_logged: bool = False
+    coverage: dict = field(default_factory=dict)             # entry coverage evidence at the freeze
+    level_min: dict = field(default_factory=dict)            # price key -> smallest size seen at that frozen level since the freeze
+    tape_by_level: dict = field(default_factory=dict)        # price key -> executed (wanted-side) volume at that level
 
     def touch_reached(self, snap: DepthSnapshot) -> bool:
         assert self.frozen is not None
@@ -137,10 +156,21 @@ def evaluate_consumption(w: PoolWatch, snap: DepthSnapshot | None) -> Consumptio
         removed = max(0.0, sum(max(0.0, s - book.get(_k(p), 0.0)) for p, s in frozen.levels))
     consumed = w.tape_consumed
     fraction = consumed / depth if depth > 0 else 0.0
+    max_removed, unexplained = 0.0, 0.0
+    now_book = None if snap is None else dict((_k(p), s) for p, s in (snap.bids if frozen.side is Side.BID else snap.asks))
+    for price, size0 in frozen.levels:
+        key = _k(price)
+        low = w.level_min.get(key, size0)
+        if now_book is not None:
+            low = min(low, now_book.get(key, 0.0))
+        gone = max(0.0, size0 - low)
+        max_removed += gone
+        unexplained += max(0.0, gone - w.tape_by_level.get(key, 0.0))
     return ConsumptionEstimate(
         method="TAPE", frozen_depth=depth, consumed=consumed, removed_total=removed,
         cancelled_est=max(0.0, removed - min(consumed, depth)), fraction=fraction, trades=w.tape_trades,
-        residual_depth=residual, replenished_est=max(0.0, min(consumed, depth) - removed))
+        residual_depth=residual, replenished_est=max(0.0, min(consumed, depth) - removed),
+        max_removed=max_removed, unexplained_removal=unexplained)
 
 
 def bar_touches(watch: PoolWatch, bar: BarClosed) -> bool:
@@ -170,6 +200,16 @@ class SweepDetector:
         w.interaction_source = source
         if w.frozen_recv_ms is not None:
             w.pre_touch_state_age_ms = recv_ms - w.frozen_recv_ms
+
+    @staticmethod
+    def _note_levels(w: PoolWatch, snap: DepthSnapshot) -> None:
+        """R6 bookkeeping: the lowest size each frozen level has shown, INCLUDING the snapshot that starts the interaction
+        (a pool pulled and then re-posted before the bar closes must not hide behind the final book)."""
+        assert w.frozen is not None
+        book = dict(((_k(p), s) for p, s in (snap.bids if w.side is Side.BID else snap.asks)))
+        for p, size0 in w.frozen.levels:
+            key = _k(p)
+            w.level_min[key] = min(w.level_min.get(key, size0), book.get(key, 0.0))
 
     @staticmethod
     def _ambiguous(w: PoolWatch, reason: str) -> None:
@@ -220,6 +260,7 @@ class SweepDetector:
                 book = dict(((_k(p), s) for p, s in (snap.bids if w.side is Side.BID else snap.asks)))
                 w.depth_series.append((snap.t_ms, sum(book.get(_k(p), 0.0) for p, _ in w.frozen.levels)))
                 del w.depth_series[:-120]
+                self._note_levels(w, snap)                      # R6 bookkeeping: how low did each frozen level ever go?
                 continue
             # ---- WATCHING
             if tp is not None:
@@ -234,16 +275,23 @@ class SweepDetector:
                     w.frozen_window = (snap.bids[0][0] - snap.bids[-1][0], snap.asks[-1][0] - snap.asks[0][0])
                     w.frozen_failures = eligibility_failures(
                         tp.state, tp.first_seen_ms, snap.t_ms, snap.mid, atr15, self.cfg)
+                    w.coverage = entry_coverage(tp.state, snap, atr15, self.cfg)
+                    if w.coverage["entry_coverage_reason"]:            # NOT OBSERVED != ABSENT: a truncated pool never qualifies
+                        w.frozen_failures = [INSUFFICIENT_BOOK_COVERAGE, *w.frozen_failures]
+                    w.level_min = {_k(p): s for p, s in tp.state.levels}
+                    w.tape_by_level = {}
                     w.depth_series.append((snap.t_ms, tp.state.depth))
                     del w.depth_series[:-24]
                 elif w.frozen is not None and w.touch_reached(snap):
                     self._start_interaction(w, recv_ms=snap.t_ms, exchange_ts_ms=snap.exchange_ts_ms,
                                             source="BOOK")
+                    self._note_levels(w, snap)
                 continue
             # pool no longer in the book. If the market touch has reached it, the pool was traded into
             # (interaction); if the touch is still away, it was CANCELLED.
             if w.frozen is not None and w.touch_reached(snap):
                 self._start_interaction(w, recv_ms=snap.t_ms, exchange_ts_ms=snap.exchange_ts_ms, source="BOOK")
+                self._note_levels(w, snap)
                 continue
             if w.frozen is not None and not w.frozen_failures and not w.rejected_disappearance_logged:
                 w.rejected_disappearance_logged = True
@@ -283,6 +331,8 @@ class SweepDetector:
             w.tape_trades += 1
             if trade.aggressor.upper() == wanted and self._in_pool(w, trade.price):
                 w.tape_consumed += trade.size
+                level = min((p for p, _ in f.levels), key=lambda p: abs(p - trade.price))
+                w.tape_by_level[_k(level)] = w.tape_by_level.get(_k(level), 0.0) + trade.size
                 if w.tape_first_ts_ms is None:
                     w.tape_first_ts_ms = trade.exchange_ts_ms
                 w.tape_last_ts_ms = trade.exchange_ts_ms
@@ -338,7 +388,10 @@ class SweepDetector:
             boundary = boundary_of(w.frozen)
             reclaimed_bar = bar.close > boundary if w.side is Side.BID else bar.close < boundary
             if est.fraction >= self.cfg.sweep_min_consumed_fraction:
-                outcomes.append(SweepOutcome("CONFIRMED", "SWEEP_CONFIRMED", w, bar, est))
+                if est.unexplained_removal > CONSERVATION_TOLERANCE:
+                    outcomes.append(SweepOutcome("REJECTED", "POOL_REMOVAL_NOT_EXPLAINED_BY_EXECUTION", w, bar, est))
+                else:
+                    outcomes.append(SweepOutcome("CONFIRMED", "SWEEP_CONFIRMED", w, bar, est))
                 w.phase = WatchPhase.DONE
             elif reclaimed_bar:
                 outcomes.append(SweepOutcome("REJECTED", "TOUCH_WITHOUT_SWEEP", w, bar, est))

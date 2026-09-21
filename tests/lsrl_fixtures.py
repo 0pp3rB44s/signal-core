@@ -86,7 +86,7 @@ TAPE_LAG_MS = 40          # local receipt lag of a trade behind its exchange tim
 
 
 def tape_for_path(*, path: list, touch, edge: float, pool: tuple, pool_cancel_at_s, consume: bool,
-                  pool_after_touch, sweep_low: float, base: float = 10.0) -> list:
+                  pool_after_touch, sweep_low: float, base: float = 10.0, extras: tuple = ()) -> list:
     """Executed volume (taker SELLs) that the scenario's price path implies.
 
     The trades happen midway between the last snapshot with the touch still away (the frozen state) and the
@@ -133,9 +133,12 @@ def tape_for_path(*, path: list, touch, edge: float, pool: tuple, pool_cancel_at
             emit(price, max(0.0, level_size - after.get(price, 0.0)))
         elif consume:
             emit(price, level_size)
+    # a further pool the market runs through executes at its full size (volume conservation: what leaves the book
+    # at a price and is not cancelled is what printed there)
+    extra_size = {px(e - i * GRID): size for (e, n, size) in extras for i in range(n)}
     price = px(levels[-1] - GRID)
     while price >= sweep_low - 1e-9:
-        emit(price, base)
+        emit(price, extra_size.get(price, base))
         price = px(price - GRID)
     return trades
 
@@ -202,7 +205,7 @@ def long_sweep(*, pool: tuple = BID_POOL, pool_first_seen_s: int = -240, pool_ca
     if tape:
         events.extend(tape_for_path(path=resolved_path, touch=touch, edge=edge, pool=pool,
                                     pool_cancel_at_s=pool_cancel_at_s, consume=consume,
-                                    pool_after_touch=pool_after_touch, sweep_low=sweep_low))
+                                    pool_after_touch=pool_after_touch, sweep_low=sweep_low, extras=extras))
     events.append(bar(S, CENTER, sweep_high, sweep_low, sweep_close))
     cursor = 1
     for (o, h, l, c) in extra_bars:
