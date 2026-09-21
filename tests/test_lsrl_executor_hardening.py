@@ -127,9 +127,12 @@ def test_e1_an_incomplete_emergency_close_stays_open_and_is_retried_until_flat(r
     ex.stop_vanishes = True
     ex.fill(entries(rig)[0])
     rig.poll()
-    assert rig.exec.emergency is not None and ex.position["long"] > 0     # NOT recorded as closed
-    assert "EMERGENCY_CLOSE_INCOMPLETE" in kinds(rig)
-    rig.poll()
+    assert "EMERGENCY_CLOSE_INCOMPLETE" in kinds(rig)                     # an incomplete close is NEVER recorded as closed...
+    for _ in range(3):                                                    # ...it is retried at once (the first retries are back to back)
+        if rig.exec.emergency is None:
+            break
+        assert ex.position["long"] > 0
+        rig.poll()
     assert rig.exec.emergency is None and ex.position["long"] == 0.0 and attempts["n"] == 2
     assert kinds(rig).count("EMERGENCY_FLATTENED") == 1
 

@@ -75,7 +75,9 @@ MISMATCH_ROUNDS = 3
 CENTRAL_RETRY_S = 5.0
 CENTRAL_MAX_ATTEMPTS = 120
 MAX_INCIDENTS = 200
-EXPOSURE_BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)   # bounded: the retry NEVER stops, the interval stops growing at 30 s
+# Retry pacing is counted in POLLS (a poll is at most ~3 s apart, ~1 s while exposure is unresolved), not in caller-supplied
+# timestamps: the retry never stops, the first three attempts are back to back, and the gap stops growing at 8 polls.
+EXPOSURE_BACKOFF_POLLS = (0, 0, 0, 1, 2, 4, 8)
 ENGINE_ACK_GRACE_MS = 20_000        # a filled quantity the engine has not covered with a SetStop by then is flattened
 FAST_WATCH_MS = 1_000               # while an entry rests, look for its fill this often (the runtime poll is 3 s)
 LOG_EVERY_N_ATTEMPTS = 10
@@ -199,7 +201,7 @@ class LSRLLiveExecutor:
     @staticmethod
     def _fresh_exposure() -> dict[str, Any]:
         return {"state": EXPOSURE_NONE, "hold": None, "setup_id": None, "since_ms": None, "qty": 0.0, "attempts": 0,
-                "next_ms": 0, "last_error": "", "recoveries": 0, "escalated": False}
+                "wait": 0, "last_error": "", "recoveries": 0, "escalated": False}
 
     def _incident(self, kind: str, detail: str, t_ms: int | None = None, **extra: Any) -> None:
         self.incidents.append({"kind": kind, "detail": detail[:300], "t_ms": t_ms, **extra})
@@ -578,6 +580,8 @@ class LSRLLiveExecutor:
         setup["ack_qty"], setup["unacked_since_ms"] = it.qty, None        # the engine has seen the fills up to here
         if self.emergency:
             return []                                       # a verified flatten is already under way: no stop work
+        if self._ledger(setup["hold"]) <= self.rules.qty_step / 2:
+            return []                                       # our own books hold nothing (already flattened): nothing to protect
         if self._stop_already_in_place(setup):
             return []                                       # executor-first protection already placed exactly this
         self._install_stop(setup, t_ms, it.reason)
@@ -654,15 +658,15 @@ class LSRLLiveExecutor:
                     self._incident("EMERGENCY_CANCEL_FAILED", _reason(exc), tag=str(row.get("clientOid") or ""))
 
     @staticmethod
-    def _backoff_ms(attempts: int) -> int:
-        return int(EXPOSURE_BACKOFF_S[min(max(attempts, 1) - 1, len(EXPOSURE_BACKOFF_S) - 1)] * 1000)
+    def _gap_polls(attempts: int) -> int:
+        return EXPOSURE_BACKOFF_POLLS[min(max(attempts, 1) - 1, len(EXPOSURE_BACKOFF_POLLS) - 1)]
 
     def _emergency_failed(self, setup_id: str, direction: str, reason: str, error: str, t_ms: int) -> list[Any]:
         """An emergency close that is not PROVEN complete stays open and is retried FOREVER with a bounded backoff;
         it is never abandoned and never recorded as closed."""
         attempts = (self.emergency or {}).get("attempts", 0) + 1
         self.emergency = {"setup_id": setup_id, "direction": str(direction).upper(), "reason": reason,
-                          "attempts": attempts, "error": error[:200], "next_ms": t_ms + self._backoff_ms(attempts)}
+                          "attempts": attempts, "error": error[:200], "wait": self._gap_polls(attempts)}
         if attempts == 1 or attempts % LOG_EVERY_N_ATTEMPTS == 0:
             self._incident("EMERGENCY_CLOSE_INCOMPLETE" if error.startswith("status=") else "EMERGENCY_CLOSE_FAILED",
                            error, t_ms, attempts=attempts)
@@ -707,14 +711,13 @@ class LSRLLiveExecutor:
         except Exception:                                   # noqa: BLE001
             qty = self.exposure.get("qty", 0.0)
         self._begin_unprotected(hold, qty, self.setups.get(setup_id), reason, t_ms)
-        self._incident("PROTECTION_FAILED", reason, t_ms, setup_id=setup_id)
         self._escalate(f"STOP_PLACEMENT_FAILED:{reason}", t_ms)
         events = self._emergency_flatten(setup_id, d, f"STOP_PLACEMENT_FAILED:{reason}", t_ms)
         if self.emergency is None:
             self._exposure_resolved("FLAT", t_ms)
         else:
             self.exposure["state"] = EXPOSURE_CRITICAL
-            self.exposure["next_ms"] = self.emergency.get("next_ms", 0)
+            self.exposure["wait"] = self.emergency.get("wait", 0)
         return events
 
     def _orphan_exposure(self, setup_id: str, direction: str, why: str, t_ms: int) -> list[Any]:
@@ -1011,7 +1014,7 @@ class LSRLLiveExecutor:
             ex["qty"], ex["last_error"] = qty, why
             return
         ex.update({"state": EXPOSURE_UNPROTECTED, "hold": hold, "qty": qty, "since_ms": t_ms, "attempts": 0,
-                   "next_ms": t_ms, "last_error": why, "setup_id": setup["setup_id"] if setup else None,
+                   "wait": 0, "last_error": why, "setup_id": setup["setup_id"] if setup else None,
                    "escalated": False})
         self.log.warning("LSRL_LIVE_EXPOSURE_UNPROTECTED | %s qty=%s | %s", hold, qty, why)
         if self.stop and setup is not None and self.stop.get("setup_id") == setup["setup_id"]:
@@ -1025,6 +1028,8 @@ class LSRLLiveExecutor:
         if ex.get("escalated"):
             return
         ex["escalated"] = True
+        if reason.startswith("STOP_PLACEMENT_FAILED"):
+            self._incident("PROTECTION_FAILED", reason, t_ms, setup_id=ex.get("setup_id"))
         self._incident("UNPROTECTED_EXPOSURE", f"{ex.get('hold')} qty={ex.get('qty')}: {reason}", t_ms,
                        setup_id=ex.get("setup_id"))
         self._halt(reason[:200])
@@ -1039,7 +1044,7 @@ class LSRLLiveExecutor:
             if ex.get("escalated"):
                 ex["recoveries"] = ex.get("recoveries", 0) + 1
                 self._incident("EXPOSURE_RECOVERED", f"{how} after {ex.get('attempts', 0)} attempt(s)", t_ms)
-            ex.update({"attempts": 0, "next_ms": 0, "last_error": "", "since_ms": None, "escalated": False})
+            ex.update({"attempts": 0, "wait": 0, "last_error": "", "since_ms": None, "escalated": False})
         elif how == "FLAT":
             ex.update({"hold": None, "qty": 0.0, "setup_id": None})
         ex["escalated"] = False if ex["state"] in (EXPOSURE_NONE, EXPOSURE_PROTECTED) else ex.get("escalated", False)
@@ -1088,8 +1093,9 @@ class LSRLLiveExecutor:
             self._escalate(f"UNPROTECTED_EXPOSURE:{why}", t_ms)
             ex["state"] = EXPOSURE_CRITICAL                 # a flatten is already in flight; it retries on its own clock
             return events
-        if t_ms < ex["next_ms"]:
-            return events                                   # bounded backoff between attempts
+        if ex.get("wait", 0) > 0:
+            ex["wait"] -= 1
+            return events                                   # bounded backoff between attempts (counted in polls)
         ex["attempts"] += 1
         if self._immediate_failed_t == t_ms:
             why = self._immediate_failed_why                # what the immediate attempt actually saw
@@ -1111,7 +1117,7 @@ class LSRLLiveExecutor:
             self._exposure_resolved("FLAT", t_ms)
         else:
             ex["state"] = EXPOSURE_CRITICAL
-            ex["next_ms"] = t_ms + self._backoff_ms(ex["attempts"])
+            ex["wait"] = self._gap_polls(ex["attempts"])
         return events
 
     def _check_engine_ack(self, hold: str, setup: dict[str, Any] | None, t_ms: int) -> list[Any]:
@@ -1268,7 +1274,10 @@ class LSRLLiveExecutor:
 
     def _retry_emergency(self, t_ms: int) -> list[Any]:
         em = self.emergency
-        if em is None or t_ms < em.get("next_ms", 0):
+        if em is None:
+            return []
+        if em.get("wait", 0) > 0:
+            em["wait"] -= 1
             return []
         return self._emergency_flatten(em["setup_id"], em["direction"], em["reason"], t_ms)
 

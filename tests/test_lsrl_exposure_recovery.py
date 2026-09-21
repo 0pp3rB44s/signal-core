@@ -165,9 +165,10 @@ def test_x3_the_emergency_close_never_gives_up_and_the_backoff_is_bounded(rig):
     rig.drive(900)
     em = rig.exec.emergency
     assert em is not None and em["attempts"] > 10                # the old cap
-    assert em["attempts"] < 60                                   # ...and the interval stops growing at 30 s
+    assert em["attempts"] < 150                                  # ...and the gap stops growing at 8 polls: bounded, not a hammer
+    assert 80 < len(ex.by_kind("emergency_close")) < 150
     assert rig.xstate() == EXPOSURE_CRITICAL and ex.position["long"] > 0
-    assert kinds(rig).count("EMERGENCY_CLOSE_FAILED") <= 12      # incidents are throttled, not one per retry
+    assert kinds(rig).count("EMERGENCY_CLOSE_FAILED") <= 14      # incidents are throttled, not one per retry
     del ex.fail["close_futures_position_full"]
     ex.stop_vanishes = False
     rig.drive(120, until=lambda r: r.ex.position["long"] == 0.0)
