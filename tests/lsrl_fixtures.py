@@ -16,7 +16,9 @@ from lsrl.core.gates import NullRiskGate
 from lsrl.core.types import (BarClosed, DepthSnapshot, FillEvent, NavEvent, OrderEvent, SymbolRules,
                              TradeTick)
 
-RULES = SymbolRules("SOLUSDT", tick_size=0.01, qty_step=0.1, min_qty=0.1, min_notional_usdt=5.0)
+# REAL exchange metadata for SOLUSDT (Bitget contract config, 2026-09-20): pricePlace 3 x priceEndStep 1 -> tick 0.001,
+# sizeMultiplier 0.1, minTradeNum 0.1, minTradeUSDT 5. The old test-only tick 0.01 is gone.
+RULES = SymbolRules("SOLUSDT", tick_size=0.001, qty_step=0.1, min_qty=0.1, min_notional_usdt=5.0)
 CENTER = 150.00
 GRID = 0.05
 S = 1_800_000_000_000 + 40 * 60_000          # start of the sweep bar (multiple of 60_000)
@@ -80,6 +82,62 @@ def warmup(*, atr15_range: float = 1.0, atr1m_range: float = 0.4, nav: float | N
 
 
 DEFAULT_PATH = ((10, 150.00), (20, 149.85), (30, 149.70), (40, 149.30), (50, None), (60, None))
+TAPE_LAG_MS = 40          # local receipt lag of a trade behind its exchange time
+
+
+def tape_for_path(*, path: list, touch, edge: float, pool: tuple, pool_cancel_at_s, consume: bool,
+                  pool_after_touch, sweep_low: float, base: float = 10.0) -> list:
+    """Executed volume (taker SELLs) that the scenario's price path implies.
+
+    The trades happen midway between the last snapshot with the touch still away (the frozen state) and the
+    first snapshot that shows the touch reached, so their exchange times are strictly after the frozen state
+    and strictly before the next depth update (the orderings the detector requires).
+      * pool intact until the touch, consume=True  -> the pool's level sizes trade
+      * pool cancelled BEFORE the touch            -> only baseline liquidity trades at the pool prices
+      * pool_after_touch (a residual pool remains) -> only the difference trades
+      * consume=False                              -> nothing trades at the pool prices
+    """
+    e_price, n_levels, level_size = pool
+    levels = [px(e_price - i * GRID) for i in range(n_levels)]
+    prev_t, t_touch = None, None
+    for t_s, mid in path:
+        bid, _ = touch(mid if mid is not None else 0.0)
+        if mid is not None and bid <= edge:
+            t_touch = t_s
+            break
+        prev_t = t_s
+    if t_touch is None:
+        return []
+    t_trade = ((prev_t if prev_t is not None else t_touch - 10) + t_touch) / 2.0
+    cancelled = pool_cancel_at_s is not None and pool_cancel_at_s <= t_trade
+    after = {}
+    if pool_after_touch is not None:
+        a_edge, a_n, a_size = pool_after_touch
+        after = {px(a_edge - i * GRID): a_size for i in range(a_n)}
+    trades, k = [], 0
+
+    def emit(price: float, size: float) -> None:
+        nonlocal k
+        if size <= 0:
+            return
+        ts = int(S + t_trade * 1000) + k * 20
+        k += 1
+        trades.append(TradeTick(t_ms=ts + TAPE_LAG_MS, exchange_ts_ms=ts, price=price, size=size, aggressor="SELL"))
+
+    for price in levels:
+        if price < sweep_low - 1e-9:            # the market never traded that low: nothing executed there
+            continue
+        if cancelled:
+            emit(price, base)
+        elif pool_after_touch is not None:
+            emit(price, max(0.0, level_size - after.get(price, 0.0)))
+        elif consume:
+            emit(price, level_size)
+    price = px(levels[-1] - GRID)
+    while price >= sweep_low - 1e-9:
+        emit(price, base)
+        price = px(price - GRID)
+    return trades
 
 
 def long_sweep(*, pool: tuple = BID_POOL, pool_first_seen_s: int = -240, pool_cancel_at_s: int | None = None,
@@ -88,7 +146,8 @@ def long_sweep(*, pool: tuple = BID_POOL, pool_first_seen_s: int = -240, pool_ca
                pool_after_touch: tuple | None = None, spread: float = 0.10, extra_bars: tuple = (),
                tail_snapshots: int = 12, nav: float | None = 1000.0, atr15_range: float = 1.0,
                atr1m_range: float = 0.4, drop_snapshots_after_s: int | None = None,
-               sweep_high: float = 150.05, extra_bid_pools: tuple = (), warm: bool = True) -> list:
+               sweep_high: float = 150.05, extra_bid_pools: tuple = (), warm: bool = True,
+               tape: bool = True) -> list:
     """A complete LONG attempt.
 
     The pool is visible from `pool_first_seen_s`; the sweep bar starts at S. `path` is a
@@ -134,10 +193,16 @@ def long_sweep(*, pool: tuple = BID_POOL, pool_first_seen_s: int = -240, pool_ca
     while t < 0:
         events.append(book(t, CENTER))
         t += 10
+    resolved_path = []
     for t_s, mid in (path or DEFAULT_PATH):
         if mid is None:
             mid = sweep_low + 0.05 if t_s == 50 else sweep_close
+        resolved_path.append((t_s, mid))
         events.append(book(t_s, mid))
+    if tape:
+        events.extend(tape_for_path(path=resolved_path, touch=touch, edge=edge, pool=pool,
+                                    pool_cancel_at_s=pool_cancel_at_s, consume=consume,
+                                    pool_after_touch=pool_after_touch, sweep_low=sweep_low))
     events.append(bar(S, CENTER, sweep_high, sweep_low, sweep_close))
     cursor = 1
     for (o, h, l, c) in extra_bars:
@@ -167,7 +232,9 @@ def shift(events: Iterable, dt_ms: int) -> list:
         elif isinstance(e, BarClosed):
             out.append(replace(e, t_ms=e.t_ms + dt_ms, open_ts_ms=e.open_ts_ms + dt_ms,
                                close_ts_ms=e.close_ts_ms + dt_ms))
-        elif isinstance(e, (NavEvent, TradeTick)):
+        elif isinstance(e, TradeTick):
+            out.append(replace(e, t_ms=e.t_ms + dt_ms, exchange_ts_ms=e.exchange_ts_ms + dt_ms))
+        elif isinstance(e, NavEvent):
             out.append(replace(e, t_ms=e.t_ms + dt_ms))
         else:
             out.append(e)

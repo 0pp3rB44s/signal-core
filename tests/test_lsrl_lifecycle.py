@@ -14,7 +14,9 @@ from lsrl.core.types import (CancelOrder, FillEvent, Intent, NavEvent, OrderEven
 from tests.lsrl_fixtures import (RULES, S, Harness, ack_all, bar, fill_entry, feed_quiet, flat_bars,
                                  long_sweep, quiet_book, shift, MIN)
 
-STOP = 149.13      # scenario stop (structural: extreme 149.20 - 0.15 x ATR1m at reclaim, rounded away)
+# scenario stop (structural): extreme 149.20 - 0.15 x ATR1m at reclaim, ATR1m = (13*0.4 + 0.85)/14 = 0.43214
+# -> 149.135179, rounded AWAY (down) to the real 0.001 tick -> 149.135
+STOP = 149.135
 
 
 def accepted(**kw) -> Harness:
@@ -38,6 +40,16 @@ def fill_all_rungs(h: Harness, *, fee_rate: float = 0.0) -> None:
 
 def types_of(intents) -> set[str]:
     return {type(i).__name__ for i in intents}
+
+
+def confirm_cancels(h: Harness, *, skip: tuple[str, ...] = ()) -> None:
+    """Adapter-style confirmation that every requested entry cancel is terminal on the exchange."""
+    s = h.engine.setup
+    assert s is not None
+    for rung in list(s.pending_cancel_rungs()):
+        if rung.tag.rsplit("-", 1)[1] in skip:
+            continue
+        h.feed(OrderEvent(t_ms=h.engine.now_ms + 100, setup_id=s.setup_id, tag=rung.tag, status="CANCELLED"))
 
 
 # ------------------------------------------------------------------ partial fill / expiry / no chase
@@ -69,10 +81,55 @@ def test_no_fill_expiry_cancels_the_whole_ladder_and_closes_the_setup_without_a_
     h = accepted()
     feed_quiet(h, h.engine.now_ms + 5_000, h.engine.setup.entry_expires_ms + 20_000, mid=149.70)
     assert len(h.intents_of(CancelOrder)) == 5
+    assert h.engine.setup is not None                                  # cancels requested, NOT yet confirmed
+    confirm_cancels(h)
     assert h.engine.setup is None
     closed = h.kinds("setup_closed")[-1].data
     assert closed["close_reason"] == "ENTRY_EXPIRED_NO_FILL" and closed["realized_r"] == 0.0
     assert h.engine.daily.realized_r == 0.0
+
+
+# ------------------------------------------------------------------ cancel / fill race (no orphan exposure)
+def test_the_setup_stays_open_until_every_cancel_is_confirmed_terminal():
+    h = accepted()
+    feed_quiet(h, h.engine.now_ms + 5_000, h.engine.setup.entry_expires_ms + 20_000, mid=149.70)
+    assert {r.status for r in h.engine.setup.rungs.values()} == {"CANCEL_REQUESTED"}
+    confirm_cancels(h, skip=("e5",))                                   # one order not yet confirmed
+    assert h.engine.setup is not None and [r.rung for r in h.engine.setup.pending_cancel_rungs()] == [5]
+    confirm_cancels(h)
+    assert h.engine.setup is None and h.kinds("setup_closed")[-1].data["close_reason"] == "ENTRY_EXPIRED_NO_FILL"
+
+
+def test_a_rung_that_fills_while_its_cancel_is_pending_is_adopted_and_protected():
+    """The exchange filled E2 in the race with the expiry cancel. The old engine had already closed the
+    setup, so the fill was an unknown-setup anomaly: an orphan position with no stop."""
+    h = accepted()
+    feed_quiet(h, h.engine.now_ms + 5_000, h.engine.setup.entry_expires_ms + 20_000, mid=149.70)
+    assert h.engine.setup is not None
+    n_stops, n_targets = len(h.intents_of(SetStop)), len(h.intents_of(SetTargets))
+    fill_entry(h, 2, h.engine.now_ms + 1_000)                          # the late fill
+    s = h.engine.setup
+    assert s is not None and s.state == "IN_POSITION" and s.ledger.entry_qty == pytest.approx(s.rungs[2].qty)
+    assert not [r for r in h.records if r.kind == "anomaly" and r.data["reason"] == "FILL_FOR_UNKNOWN_SETUP"]
+    stop = h.intents_of(SetStop)[n_stops]                              # protection established immediately
+    assert stop.qty == pytest.approx(s.rungs[2].qty) and stop.price == s.stop_price
+    assert len(h.intents_of(SetTargets)) == n_targets + 1
+    confirm_cancels(h)
+    assert h.engine.setup is not None and h.engine.setup.state == "IN_POSITION"     # NOT closed as "no fill"
+
+
+def test_a_late_fill_after_the_tp1_cancel_request_resizes_stop_and_targets():
+    h = accepted()
+    fill_entry(h, 1, h.engine.now_ms + 1_000)
+    fill_entry(h, 2, h.engine.now_ms + 1_000)
+    fill(h, "TP1", 150.30, h.engine.setup.tp_orders["TP1"]["qty"])
+    assert {r.status for r in h.engine.setup.rungs.values() if r.rung >= 3} == {"CANCEL_REQUESTED"}
+    before = h.engine.setup.ledger.entry_qty
+    fill_entry(h, 3, h.engine.now_ms + 1_000)                          # E3 filled in the race with the TP1 cancel
+    s = h.engine.setup
+    assert s.ledger.entry_qty == pytest.approx(before + s.rungs[3].qty)
+    assert h.intents_of(SetStop)[-1].qty == pytest.approx(s.ledger.remaining_qty)
+    assert not [r for r in h.records if r.kind == "anomaly" and r.data["reason"] == "FILL_FOR_UNKNOWN_SETUP"]
 
 
 def test_engine_only_ever_emits_limit_style_intents_never_a_market_order():
@@ -98,7 +155,7 @@ def test_tp_lifecycle_tp1_break_even_then_tp2_stop_to_tp1_then_tp3_flat():
     led = h.engine.setup.ledger
     remaining = 18.5 - 5.5
     costs = entry_fees + 5.5 * 150.30 * 0.0002 + remaining * 149.40 * 0.0006 + remaining * 149.40 * 2e-4
-    assert be.price == pytest.approx(round(-(-((149.40 + costs / remaining) * 100) // 1) / 100, 2))
+    assert be.price == pytest.approx(round(-(-((149.40 + costs / remaining) * 1000) // 1) / 1000, 3))   # ceil to the tick
     assert be.price > 149.40 and be.qty == pytest.approx(remaining) and be.reason == "TP1_COST_ADJUSTED_BE"
     assert led.remaining_qty == pytest.approx(remaining)
 
@@ -244,6 +301,7 @@ def test_stale_liquidity_data_cancels_a_pending_ladder():
     h = accepted()
     h.feed(TimerTick(t_ms=h.engine.now_ms + 40_000))                   # >30s with no depth snapshot
     assert {c.reason for c in h.intents_of(CancelOrder)} == {"LIQUIDITY_DATA_STALE"}
+    confirm_cancels(h)
     assert h.engine.setup is None
     assert h.kinds("setup_closed")[-1].data["close_reason"] == "LIQUIDITY_DATA_STALE"
 
@@ -347,3 +405,14 @@ def test_rejected_setups_are_persisted_with_full_context():
     rec = h.kinds("setup_rejected")[-1].data
     assert rec["reason"] == "RR_TO_TP2_BELOW_MIN" and rec["geometry"] and rec["targets"] and rec["sizing"]
     assert rec["expected_rr_tp2"] < 6.0 and rec["pool_frozen"] and rec["consumption"]
+
+
+# ------------------------------------------------------------------ a halted engine places nothing new
+def test_a_halt_between_the_sweep_and_the_reclaim_stops_the_ladder_from_being_placed():
+    """e.g. the raw recorder failed while a confirmed sweep was waiting for its reclaim bar."""
+    h = Harness().run(long_sweep(extra_bars=(), tail_snapshots=0, sweep_close=149.50))   # sweep confirmed, NOT reclaimed
+    assert h.engine.setup is not None and h.engine.setup.state == "AWAIT_RECLAIM"
+    h.engine.halt("RECORDER_DISK_GUARD: 0.10 GB free < floor 1.0 GB")
+    h.feed(bar(S + MIN, 149.55, 149.80, 149.55, 149.75))                                # the reclaim bar arrives
+    assert h.engine.setup is None and not h.intents_of(PlaceEntry)
+    assert any(str(r.data.get("reason", "")).startswith("ENGINE_HALTED") for r in h.kinds("setup_rejected"))

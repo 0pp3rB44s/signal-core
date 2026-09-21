@@ -31,6 +31,10 @@ def _rm(*, daily=None, weekly=0.0, decisions=(), open_positions=(), **settings) 
     rm._daily_defensive_status = lambda: daily or {"daily_total_net_pnl": 0.0, "consecutive_losses": 0}
     rm._latest_agent_decisions = staticmethod(lambda: {"decisions": list(decisions)})
     rm._load_open_positions = staticmethod(lambda: list(open_positions) if open_positions is not None else None)
+    # The central manager sizes DOWN inside certain UTC hour windows (23:00 UTC was one of them when these tests were
+    # first run at a different hour). Pin a neutral hour so the assertions do not depend on the wall clock.
+    real_session = rm._session_risk_multiplier
+    rm._session_risk_multiplier = lambda now_hour_utc=None: real_session(now_hour_utc=14 if now_hour_utc is None else now_hour_utc)
     return rm
 
 

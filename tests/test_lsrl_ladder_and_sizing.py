@@ -30,37 +30,68 @@ def test_long_ladder_geometry_e1_reclaim_boundary_to_e5_sweep_extreme():
 def test_long_stop_is_below_the_sweep_extreme_by_015_atr1m_rounded_away():
     g = _geom(Direction.LONG, 149.60, 149.20, atr1m=0.4)
     assert g.stop == pytest.approx(149.14) and g.stop < g.rung_prices[-1]
-    g = _geom(Direction.LONG, 149.60, 149.20, atr1m=0.4137)                # raw 149.137945 -> down
-    assert g.stop == pytest.approx(149.13)
+    g = _geom(Direction.LONG, 149.60, 149.20, atr1m=0.4137)                # raw 149.137945 -> down to the tick
+    assert g.stop == pytest.approx(149.137)
 
 
 def test_short_ladder_is_the_exact_mirror_of_long():
     long_g = _geom(Direction.LONG, 149.60, 149.20, atr1m=0.4)
     short_g = _geom(Direction.SHORT, 150.40, 150.80, atr1m=0.4)
-    assert short_g.rung_prices == pytest.approx(tuple(round(300 - p, 2) for p in long_g.rung_prices))
-    assert short_g.stop == pytest.approx(round(300 - long_g.stop, 2))
+    assert short_g.rung_prices == pytest.approx(tuple(round(300 - p, 3) for p in long_g.rung_prices))
+    assert short_g.stop == pytest.approx(round(300 - long_g.stop, 3))
     assert short_g.stop > short_g.rung_prices[-1]                          # above the sweep high
 
 
-def test_off_grid_prices_round_conservatively():
-    # LONG: entries round DOWN (passive), stop rounds DOWN (further from the entries)
+def _oracle(direction: Direction, boundary: str, extreme: str, atr1m: str, tick: str):
+    """Independent reference geometry in exact decimal arithmetic (no floats, no engine code)."""
+    from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+    b, e, a, t = Decimal(boundary), Decimal(extreme), Decimal(atr1m), Decimal(tick)
+    long_ = direction is Direction.LONG
+    span = abs(b - e)
+    passive = ROUND_FLOOR if long_ else ROUND_CEILING                    # entries: away from the market
+    rungs = []
+    for f in ("0", "0.25", "0.5", "0.75", "1"):
+        raw = b - Decimal(f) * span if long_ else b + Decimal(f) * span
+        rungs.append(float((raw / t).to_integral_value(rounding=passive) * t))
+    raw_stop = e - Decimal("0.15") * a if long_ else e + Decimal("0.15") * a
+    stop = float((raw_stop / t).to_integral_value(rounding=ROUND_FLOOR if long_ else ROUND_CEILING) * t)
+    return tuple(rungs), stop
+
+
+@pytest.mark.parametrize("tick", ["0.001", "0.005", "0.01"])                # real SOLUSDT, a priceEndStep=5 symbol, legacy
+@pytest.mark.parametrize("direction,boundary,extreme", [
+    (Direction.LONG, "149.600", "149.230"), (Direction.SHORT, "150.400", "150.770")])
+def test_off_grid_prices_round_conservatively_at_any_exchange_tick(tick, direction, boundary, extreme):
+    """LONG entries round DOWN and the stop DOWN; SHORT entries UP and the stop UP: always away from the market."""
+    rules = replace(RULES, tick_size=float(tick))
+    g = _geom(direction, float(boundary), float(extreme), atr1m=0.4137, rules=rules)
+    want_rungs, want_stop = _oracle(direction, boundary, extreme, "0.4137", tick)
+    assert g.rung_prices == pytest.approx(want_rungs, abs=1e-9) and g.stop == pytest.approx(want_stop, abs=1e-9)
+    sgn = direction.sgn
+    assert all(sgn * (r - w) <= 1e-9 for r, w in zip(g.rung_prices, want_rungs))
+    assert sgn * (g.stop - g.rung_prices[-1]) < 0                             # the stop is beyond the last rung
+
+
+def test_real_tick_values_for_the_worked_example():
     g = _geom(Direction.LONG, 149.60, 149.23, atr1m=0.4137)
-    assert g.rung_prices == (149.60, 149.50, 149.41, 149.32, 149.23)
-    assert g.stop == pytest.approx(149.16)
-    # SHORT: entries round UP (passive), stop rounds UP (further from the entries)
+    assert g.rung_prices == (149.6, 149.507, 149.415, 149.322, 149.23) and g.stop == pytest.approx(149.167)
     s = _geom(Direction.SHORT, 150.40, 150.77, atr1m=0.4137)
-    assert s.rung_prices == (150.40, 150.50, 150.59, 150.68, 150.77)
-    assert s.stop == pytest.approx(150.84)
+    assert s.rung_prices == (150.4, 150.493, 150.585, 150.678, 150.77) and s.stop == pytest.approx(150.833)
 
 
 @pytest.mark.parametrize("boundary,extreme,reason", [
     (149.60, 149.60, "DEGENERATE_SWEEP_RANGE"),
     (149.60, 149.70, "DEGENERATE_SWEEP_RANGE"),
-    (149.60, 149.58, "SWEEP_RANGE_TOO_SMALL_FOR_LADDER"),
+    (149.60, 149.598, "SWEEP_RANGE_TOO_SMALL_FOR_LADDER"),               # 2 ticks: E1..E5 would not be distinct
 ])
 def test_degenerate_or_too_small_ladders_are_rejected(boundary, extreme, reason):
     g, why = build_geometry(Direction.LONG, boundary, extreme, 0.4, RULES, CFG)
     assert g is None and why == reason
+
+
+def test_a_range_of_exactly_the_minimum_number_of_ticks_gives_five_distinct_rungs():
+    g = _geom(Direction.LONG, 149.600, 149.596)                             # 4 ticks -> one tick between rungs
+    assert g.rung_prices == (149.6, 149.599, 149.598, 149.597, 149.596)
 
 
 # ------------------------------------------------------------------ sizing: 0.50% NAV
@@ -205,9 +236,9 @@ def test_short_setup_is_the_exact_mirror_of_the_long_setup():
     short_h = Harness().run(mirror(long_sweep()))
     ls, ss = long_h.engine.setup, short_h.engine.setup
     assert ss is not None and ss.direction is Direction.SHORT
-    assert [round(300 - p, 2) for p in ls.geometry["rungs"]] == pytest.approx(ss.geometry["rungs"])
-    assert round(300 - ls.geometry["stop"], 2) == pytest.approx(ss.geometry["stop"])
-    assert [round(300 - t["price"], 2) for t in ls.targets] == pytest.approx([t["price"] for t in ss.targets])
+    assert [round(300 - p, 3) for p in ls.geometry["rungs"]] == pytest.approx(ss.geometry["rungs"])
+    assert round(300 - ls.geometry["stop"], 3) == pytest.approx(ss.geometry["stop"])
+    assert [round(300 - t["price"], 3) for t in ls.targets] == pytest.approx([t["price"] for t in ss.targets])
     assert ls.sizing["total_qty"] == ss.sizing["total_qty"]
     assert ls.expected_rr_tp2 == pytest.approx(ss.expected_rr_tp2)
     assert [(i.rung, i.qty) for i in long_h.intents_of(PlaceEntry)] == \

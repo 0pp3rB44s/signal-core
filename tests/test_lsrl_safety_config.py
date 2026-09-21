@@ -49,7 +49,6 @@ def test_no_lsrl_flag_can_make_the_process_live_capable(tmp_path):
     ({"LSRL_ENABLED": True, "LSRL_MODE": "SHADOW", "LSRL_SYMBOL": "BTCUSDT"}, "frozen to SOLUSDT"),
     ({"LSRL_ENABLED": True, "LSRL_MODE": "SHADOW", "LSRL_SHADOW_NAV_USDT": 0}, "must be positive"),
     ({"LSRL_ENABLED": True, "LSRL_MODE": "SHADOW", "LSRL_MIN_FREE_GB": -1}, "must be positive"),
-    ({"LSRL_ENABLED": True, "LSRL_MODE": "SHADOW", "LSRL_DEPTH_INTERVAL_S": 0.5}, "must be positive"),
     ({"LSRL_ENABLED": True, "LSRL_MODE": "SHADOW", "LSRL_MICROLIVE_ARMED": True}, "requires LSRL_MODE=MICRO_LIVE"),
     ({"LSRL_ENABLED": True, "LSRL_MODE": "MICRO_LIVE"}, "global LIVE execution gate"),           # forward-paper-only forbids it
 ])
@@ -167,3 +166,23 @@ def test_micro_live_build_failure_is_fatal_not_swallowed(tmp_path):
 def test_the_default_runner_still_has_no_microflow_or_lsrl_side_effects(tmp_path):
     runner = StartupRunner(strict(tmp_path))
     assert runner.lsrl is None and runner.microflow_runtime is None
+
+
+def test_a_failed_shadow_start_is_logged_and_does_not_take_the_engine_down(tmp_path, caplog):
+    runner = StartupRunner(strict(tmp_path, SCAN_ON_START=False, SCAN_LOOP_ENABLED=False))
+    runner._startup_checks = MagicMock()
+    boom = MagicMock(side_effect=ValueError("engine snapshot does not match this frozen configuration"))
+    runner.lsrl = SimpleNamespace(mode=SimpleNamespace(value="SHADOW"), start=boom)
+    with caplog.at_level(logging.CRITICAL):
+        runner.run()                                                    # returns normally: the engine was NOT taken down
+    assert "LSRL_START_FAILED | mode=SHADOW" in caplog.text and runner.lsrl is None
+    boom.assert_called_once_with()
+
+
+def test_a_failed_micro_live_start_is_fatal(tmp_path):
+    runner = StartupRunner(strict(tmp_path, SCAN_ON_START=False, SCAN_LOOP_ENABLED=False))
+    runner._startup_checks = MagicMock()
+    runner._ensure_startup_close_recovery = MagicMock(return_value=True)
+    runner.lsrl = SimpleNamespace(mode=SimpleNamespace(value="MICRO_LIVE"), start=MagicMock(side_effect=ValueError("x")))
+    with pytest.raises(ValueError):
+        runner.run()

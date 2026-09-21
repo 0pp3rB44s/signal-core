@@ -49,6 +49,8 @@ class DepthSnapshot:
     exchange_ts_ms: int | None
     bids: tuple[tuple[float, float], ...]   # (price, size), best first
     asks: tuple[tuple[float, float], ...]   # (price, size), best first
+    seq: int | None = None                  # exchange sequence of the update this state reflects
+    epoch: int = 0                          # increments at every causal reconstruction of the book
 
     @property
     def best_bid(self) -> float:
@@ -135,9 +137,62 @@ class TimerTick:
     t_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class FeedHealth:
+    """Derived by the observation layer. ok=False means the market view is UNCERTAIN: the engine must
+    forget everything that depended on it and may not act on new signals until ok=True again."""
+    TYPE: ClassVar[str] = "feed_health"
+    t_ms: int
+    ok: bool
+    reason: str = ""
+    epoch: int = 0
+
+
+# ------------------------------------------------------------------ raw feed inputs (what is RECORDED)
+@dataclass(frozen=True, slots=True)
+class RawBook:
+    """One raw depth push, exactly as received (price/size strings preserved). action: snapshot | update."""
+    TYPE: ClassVar[str] = "raw_book"
+    t_ms: int                               # local receipt
+    exchange_ts_ms: int | None
+    action: str
+    seq: int | None
+    pseq: int | None
+    bids: tuple[tuple[str, str], ...]
+    asks: tuple[tuple[str, str], ...]
+    conn_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RawTrade:
+    """One raw public trade, exactly as received. side is the TAKER (aggressor) side: buy | sell."""
+    TYPE: ClassVar[str] = "raw_trade"
+    t_ms: int                               # local receipt
+    exchange_ts_ms: int | None
+    action: str                             # snapshot (history at subscribe) | update (live)
+    trade_id: str
+    price: str
+    size: str
+    side: str
+    conn_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FeedMarker:
+    """Connection lifecycle / session boundary. kind: SESSION_START | CONNECT | SUBSCRIBED | DISCONNECT | RESET."""
+    TYPE: ClassVar[str] = "feed_marker"
+    t_ms: int
+    kind: str
+    conn_id: str = ""
+    detail: str = ""                        # free text or a JSON string (SESSION_START carries the restored state)
+
+
 EVENT_TYPES: dict[str, type] = {
-    cls.TYPE: cls for cls in (DepthSnapshot, TradeTick, BarClosed, NavEvent, FillEvent, OrderEvent, TimerTick)
+    cls.TYPE: cls for cls in (DepthSnapshot, TradeTick, BarClosed, NavEvent, FillEvent, OrderEvent, TimerTick,
+                              FeedHealth, RawBook, RawTrade, FeedMarker)
 }
+
+RAW_FEED_TYPES = (RawBook, RawTrade, FeedMarker)
 
 
 def event_to_dict(event: Any) -> dict[str, Any]:
@@ -152,6 +207,9 @@ def event_from_dict(data: dict[str, Any]) -> Any:
     if cls is DepthSnapshot:
         body["bids"] = tuple((float(p), float(s)) for p, s in body["bids"])
         body["asks"] = tuple((float(p), float(s)) for p, s in body["asks"])
+    elif cls is RawBook:
+        body["bids"] = tuple((str(p), str(s)) for p, s in body["bids"])
+        body["asks"] = tuple((str(p), str(s)) for p, s in body["asks"])
     return cls(**body)
 
 

@@ -166,7 +166,7 @@ def test_the_core_uses_no_wall_clock_or_randomness():
 
 # ------------------------------------------------------------------ record / replay
 def _recorded_run(tmp_path, bars):
-    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", tape_available=False, min_free_gb=0.001)
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", min_free_gb=0.001)
     d = run(bars=bars, recorder=rec)
     rec.close()
     return d, tmp_path / "rec"
@@ -215,13 +215,15 @@ def test_header_records_config_symbol_rules_and_data_quality(tmp_path):
     _d, root = _recorded_run(tmp_path, [Q])
     h = read_header(input_files(root)[0])
     assert h["config_digest"] == CFG.digest() and h["spec"] == "LSRL_V1" and h["mode"] == "PAPER"
-    assert h["symbol_rules"]["tick_size"] == 0.01 and h["tape_available"] is False
+    assert h["symbol_rules"]["tick_size"] == RULES.tick_size
+    assert (h["schema_version"], h["strategy"], h["symbol"], h["exchange"]) == (2, "LSRL_V1", "SOLUSDT", "bitget")
+    assert h["session_id"] and h["start_ts_ms"] > 0 and h["git_sha"] and "feed_digest" in h
 
 
 def test_the_chain_continues_across_a_process_restart(tmp_path):
     root = tmp_path / "rec"
     for _ in range(2):
-        rec = LSRLRecorder(root, CFG, RULES, mode="PAPER", tape_available=False, min_free_gb=0.001)
+        rec = LSRLRecorder(root, CFG, RULES, mode="PAPER", min_free_gb=0.001)
         for i in range(3):
             rec.record_event(make_book(S + i * 10_000, 149.95, 150.05))
         rec.close()
@@ -232,7 +234,7 @@ def test_the_chain_continues_across_a_process_restart(tmp_path):
 
 
 def test_the_log_rotates_per_utc_day_without_breaking_the_chain(tmp_path):
-    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", tape_available=False, min_free_gb=0.001)
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", min_free_gb=0.001)
     day = 86_400_000
     edge = (S // day + 1) * day
     for t in (edge - 20_000, edge - 10_000, edge + 10_000, edge + 20_000):
@@ -243,7 +245,7 @@ def test_the_log_rotates_per_utc_day_without_breaking_the_chain(tmp_path):
 
 
 def test_low_disk_fails_closed_and_halts_new_setups_without_losing_position_management(tmp_path):
-    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", tape_available=False, min_free_gb=1e9)
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", min_free_gb=1e9)
     d = run(recorder=rec)
     assert d.recorder_error and "RECORDER_DISK_GUARD" in d.recorder_error
     assert d.engine.setup is None and any(r.startswith("ENGINE_HALTED") for r in
@@ -251,7 +253,7 @@ def test_low_disk_fails_closed_and_halts_new_setups_without_losing_position_mana
 
 
 def test_recorder_raises_rather_than_dropping_a_write(tmp_path):
-    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", tape_available=False, min_free_gb=1e9)
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", min_free_gb=1e9)
     with pytest.raises(RecorderError):
         rec.record_event(make_book(S, 149.95, 150.05))
 
@@ -262,7 +264,7 @@ def test_risk_gate_decisions_are_recorded_so_replay_needs_no_live_gate(tmp_path)
     class Reduce:
         def check(self, p):
             return RiskDecision(True, ("reduced",), 0.0025, "RiskManager")
-    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", tape_available=False, min_free_gb=0.001)
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", min_free_gb=0.001)
     d = run(bars=[Q], recorder=rec, gate=Reduce())
     rec.close()
     replayed = replay(input_files(tmp_path / "rec"))

@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def record_paper_session(tmp_path, bars=(Q, FILL_ALL, TP1, TP2, TP3), nav=1_000.0):
-    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", tape_available=False)
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER")
     d = driver(Mode.PAPER, recorder=rec, nav=nav)
     d.run(long_sweep(extra_bars=tuple(bars), tail_snapshots=2))
     return d, input_files(tmp_path / "rec")
@@ -66,7 +66,7 @@ def test_a_recorded_fill_is_never_replayed_into_a_backtest(tmp_path):
     paper, files = record_paper_session(tmp_path / "a", bars=(Q,))
     setup = paper.engine.setup
     assert setup is not None and setup.ledger.entry_qty == 0.0
-    forged = LSRLRecorder(tmp_path / "forged", CFG, RULES, mode="MICRO_LIVE", tape_available=False)
+    forged = LSRLRecorder(tmp_path / "forged", CFG, RULES, mode="MICRO_LIVE")
     events = list(read_events(files))
     for setup_id, decision in read_gate_decisions(files).items():
         forged.record_gate(events[0].t_ms, setup_id, decision)
@@ -84,7 +84,7 @@ def test_a_recorded_fill_is_never_replayed_into_a_backtest(tmp_path):
 
 def test_backtest_can_record_its_own_verifiable_chain_labelled_backtest(tmp_path):
     _paper, files = record_paper_session(tmp_path)
-    own = LSRLRecorder(tmp_path / "bt", CFG, RULES, mode="BACKTEST", tape_available=False)
+    own = LSRLRecorder(tmp_path / "bt", CFG, RULES, mode="BACKTEST")
     backtest(files, recorder=own)
     out_files = input_files(tmp_path / "bt")
     ok, why = verify_chain(out_files)
@@ -118,3 +118,64 @@ def test_backtest_never_builds_liquidity_from_candles_or_swings():
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree)
                                                                        if isinstance(n, ast.Attribute)}
     assert not names & {"swing_high", "swing_low", "find_peaks", "rolling"}
+
+
+# ------------------------------------------------------------------ BACKTEST over RAW recordings (the production format)
+def raw_session(tmp_path, direction="LONG", name="A_true_consumption"):
+    from lsrl.io.gate_log import RecordingRiskGate
+    from lsrl.core.gates import NullRiskGate
+    from lsrl.core.engine import LSRLEngine
+    from lsrl.driver import SimDriver
+    from lsrl.adapters.sim import SimExchange
+    from tests.test_lsrl_causal_timelines import observed
+    holder = {}
+    rec = LSRLRecorder(tmp_path / "rec", CFG, RULES, mode="PAPER", min_free_gb=0.001)
+    engine = LSRLEngine(CFG, RULES, risk_gate=RecordingRiskGate(NullRiskGate(), lambda *a: holder["d"].gate_sink(*a)))
+    holder["d"] = SimDriver(Mode.PAPER, engine, SimExchange(RULES, CFG), start_nav_usdt=1_000.0, recorder=rec)
+    holder["d"].run(observed(name, direction)[0])
+    rec.close()
+    return holder["d"], input_files(tmp_path / "rec")
+
+
+@pytest.mark.parametrize("direction", ["LONG", "SHORT"])
+def test_backtest_over_a_raw_recording_takes_the_same_decisions_as_the_run_that_recorded_it(tmp_path, direction):
+    paper, files = raw_session(tmp_path, direction)
+    assert paper.engine.setup is not None
+    result = backtest(files)
+    assert kinds(result.records) == kinds(paper.records)
+    assert result.engine.snapshot() == paper.engine.snapshot()
+    assert result.observer.state == paper.observer.state and result.observer.epoch == 1
+
+
+def test_backtest_replays_only_market_frames_and_regenerates_the_account(tmp_path):
+    _paper, files = raw_session(tmp_path)
+    logged = {type(e).__name__ for e in read_events(files)}
+    assert {"OrderEvent", "NavEvent"} <= logged                            # the recording HAS adapter output ...
+    small = backtest(files, start_nav_usdt=250.0)
+    big = backtest(files, start_nav_usdt=1_000.0)
+    assert sum(r.qty for r in small.engine.setup.rungs.values()) < sum(r.qty for r in big.engine.setup.rungs.values())
+
+
+def test_backtest_keeps_its_own_engine_state_across_a_recorded_restart_marker(tmp_path):
+    """A SESSION_START in the log resets the market view (uncertain interval) but is NOT allowed to overwrite the
+    backtest's account with the recorded run's restored state."""
+    from tests.lsrl_fixtures import S
+    from tests.lsrl_raw_feed import Truth, to_raw
+    from tests.test_lsrl_feed_and_runtime import Rig, timeline_events
+    first = Rig(tmp_path)
+    first.start()
+    first.run(timeline_events())
+    first.close()
+    quiet = Truth()
+    quiet.book(S + 90_000, 149.95, 150.05)
+    second = Rig(tmp_path, session=2, start_ms=S + 70_000)
+    second.start()
+    second.run(to_raw(quiet, keepalive_until_ms=S + 100_000, bars=[]))
+    second.close()
+    files = input_files(tmp_path / "rec")
+    result = backtest(files, start_nav_usdt=500.0)
+    boots = [r.data for r in result.records if r.kind == "feed_health" and r.data["reason"] == "BOOTSTRAP"]
+    assert len(boots) == 2 and result.observer.state == "OK"              # the market view WAS rebuilt at the boundary
+    assert result.engine.setup is None and result.nav != 1_000.0            # own account (500 start), own decisions
+    closed = [r.data for r in result.records if r.kind == "setup_closed"]
+    assert closed and closed[0]["close_reason"] == "LIQUIDITY_DATA_STALE"

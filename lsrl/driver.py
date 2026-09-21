@@ -12,16 +12,24 @@ from lsrl.core.engine import LSRLEngine
 from lsrl.core.types import BarClosed, NavEvent, Record
 from lsrl.io.recorder import LSRLRecorder, RecorderError
 from lsrl.modes import SIM_MODES, Mode
+from lsrl.obs.observer import BookObserver
+from lsrl.pipeline import CONTINUE, RESTORE, FeedPipeline
 
 
 class SimDriver:
     def __init__(self, mode: Mode, engine: LSRLEngine, sim: SimExchange, *, start_nav_usdt: float,
-                 recorder: LSRLRecorder | None = None) -> None:
+                 recorder: LSRLRecorder | None = None, observer: BookObserver | None = None,
+                 continue_engine_state: bool = False, history_limit: int | None = None) -> None:
         if mode not in SIM_MODES:
             raise ValueError(f"SimDriver cannot run {mode}; MICRO_LIVE uses the live executor")
         self.mode, self.engine, self.sim, self.recorder = mode, engine, sim, recorder
+        self.observer = observer or BookObserver()
+        # BACKTEST keeps its own account across a recorded restart marker; live-like modes restore state.
+        self.pipeline = FeedPipeline(engine, self.observer,
+                                     session_mode=CONTINUE if continue_engine_state else RESTORE)
         self.nav = start_nav_usdt
         self.compounding = mode is not Mode.SHADOW
+        self.history_limit = history_limit          # a long-running runtime keeps only a tail; the recorder has it all
         self.records: list[Record] = []
         self.intents: list[Any] = []
         self.recorder_error: str | None = None
@@ -44,11 +52,14 @@ class SimDriver:
     def _process(self, ev: Any) -> None:
         if self.recorder is not None:
             self._guard(self.recorder.record_event, ev)
-        intents, records = self.engine.on_event(ev)
+        intents, records = self.pipeline.process(ev)
         if self.recorder is not None:
             self._guard(self.recorder.record_outputs, ev.t_ms, intents, records)
         self.records.extend(records)
         self.intents.extend(intents)
+        if self.history_limit:
+            del self.records[:-self.history_limit]
+            del self.intents[:-self.history_limit]
         for r in records:
             if r.kind == "setup_closed" and self.compounding:
                 self.nav += float(r.data.get("realized_net_usdt") or 0.0)
@@ -65,6 +76,13 @@ class SimDriver:
                 self._process(fill)
             for fill in self.sim.exit_fills(ev):
                 self._process(fill)
+
+    def state_snapshot(self) -> dict:
+        return {"nav": self.nav, "sim": self.sim.snapshot()}
+
+    def state_restore(self, state: dict) -> None:
+        self.nav = state["nav"]
+        self.sim.restore(state["sim"])
 
     def run(self, events) -> "SimDriver":
         for ev in events:

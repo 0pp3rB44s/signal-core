@@ -26,7 +26,7 @@ SCENARIOS = {
 
 
 def reflect(p: float) -> float:
-    return round(300.0 - p, 2)
+    return round(300.0 - p, 3)
 
 
 def reflected(intent) -> dict:
@@ -64,7 +64,15 @@ def test_every_intent_of_the_short_lifecycle_is_the_mirror_of_the_long_one(name)
     assert [i.direction for i in long_d.intents if hasattr(i, "direction")][0] is Direction.LONG
     assert [i.direction for i in short_d.intents if hasattr(i, "direction")][0] is Direction.SHORT
     assert len(long_d.intents) > 5                                         # a real lifecycle, not an empty stream
-    assert [reflected(i) for i in long_d.intents] == [plain(i) for i in short_d.intents]
+    long_side, short_side = [reflected(i) for i in long_d.intents], [plain(i) for i in short_d.intents]
+    assert len(long_side) == len(short_side)
+    for mirrored, actual in zip(long_side, short_side):
+        if mirrored.get("reason") == "TP1_COST_ADJUSTED_BE":
+            # break-even adds FEES, which are proportional to price (149.4 vs 150.6): a few ticks, nothing else
+            assert actual["price"] == pytest.approx(mirrored["price"], abs=0.004)
+            assert {k: v for k, v in actual.items() if k != "price"} == {k: v for k, v in mirrored.items() if k != "price"}
+        else:
+            assert mirrored == actual
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))

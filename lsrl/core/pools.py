@@ -19,10 +19,13 @@ Operationalization decisions (documented in the implementation report):
 from __future__ import annotations
 
 import statistics
+from collections import deque
 from dataclasses import dataclass, field
 
 from lsrl.core.config import LSRLConfig
 from lsrl.core.types import DepthSnapshot, Side
+
+HISTORY_SAMPLE_MS = 1_000        # pool history is bookkeeping: one state per second is plenty (and bounded)
 
 MIN_LEVELS_FOR_MEDIAN = 5
 
@@ -91,7 +94,7 @@ class TrackedPool:
     first_seen_ms: int
     last_seen_ms: int
     state: PoolState
-    history: list[PoolState] = field(default_factory=list)
+    history: deque[PoolState] = field(default_factory=deque)      # bookkeeping only: sampled, bounded, never read by a rule
     alive: bool = True
     vanished_ms: int | None = None
     # OBSERVABLE ONLY (never gates): start of the current continuous stretch in
@@ -164,7 +167,8 @@ class PoolTracker:
                 tp = tracked[ti]
                 tp.state = clusters[ci]
                 tp.last_seen_ms = snap.t_ms
-                tp.history.append(clusters[ci])
+                if not tp.history or snap.t_ms - tp.history[-1].t_ms >= HISTORY_SAMPLE_MS:
+                    tp.history.append(clusters[ci])
                 matched_ids.add(tp.pool_id)
             still: list[TrackedPool] = []
             for tp in tracked:
@@ -180,7 +184,7 @@ class PoolTracker:
                 cl = clusters[ci]
                 pid = f"{side.value}-{snap.t_ms}-{cl.lower}-{cl.upper}"
                 still.append(TrackedPool(pool_id=pid, side=side, first_seen_ms=snap.t_ms,
-                                         last_seen_ms=snap.t_ms, state=cl, history=[cl]))
+                                         last_seen_ms=snap.t_ms, state=cl, history=deque([cl])))
             for tp in still:
                 in_range = (atr15 is not None and atr15 > 0 and snap.mid > 0 and
                             pool_distance(tp.state, snap.mid) <= self.cfg.pool_max_distance_atr15 * atr15)
@@ -193,9 +197,18 @@ class PoolTracker:
         cutoff = snap.t_ms - self.cfg.history_retention_s * 1000
         for pools in self._alive.values():
             for tp in pools:
-                if len(tp.history) > 1 and tp.history[0].t_ms < cutoff:
-                    tp.history = [h for h in tp.history if h.t_ms >= cutoff] or [tp.state]
+                while len(tp.history) > 1 and tp.history[0].t_ms < cutoff:
+                    tp.history.popleft()                                  # O(1): the old list rebuild cost ~25 ms/update
         return vanished
+
+    def reset(self) -> None:
+        """Forget every pool: their pre-existence can no longer be vouched for (uncertain market view)."""
+        for pools in self._alive.values():
+            for tp in pools:
+                tp.alive = False
+        self._alive = {Side.BID: [], Side.ASK: []}
+        self.last_snapshot = None
+        self._last_valid_t_ms = None
 
     # ---------------------------------------------------------------- queries
     def alive(self, side: Side) -> list[TrackedPool]:

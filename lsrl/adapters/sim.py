@@ -15,7 +15,7 @@ Nothing here reads a clock, a network or an exchange.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from lsrl.core.config import LSRLConfig
 from lsrl.core.types import (BarClosed, CancelOrder, Direction, FillEvent, Intent, OrderEvent,
@@ -56,6 +56,19 @@ class SimExchange:
         self.stop: SimStop | None = None
         self.position_qty = 0.0
         self.direction: Direction | None = None
+
+    def snapshot(self) -> dict:
+        return {"orders": {tag: {**asdict(o), "direction": o.direction.value} for tag, o in self.orders.items()},
+                "stop": None if self.stop is None else {**asdict(self.stop), "direction": self.stop.direction.value},
+                "position_qty": self.position_qty, "direction": None if self.direction is None else self.direction.value}
+
+    def restore(self, state: dict) -> None:
+        self.orders = {tag: SimOrder(**{**o, "direction": Direction(o["direction"])})
+                       for tag, o in state["orders"].items()}
+        st = state["stop"]
+        self.stop = None if st is None else SimStop(**{**st, "direction": Direction(st["direction"])})
+        self.position_qty = state["position_qty"]
+        self.direction = None if state["direction"] is None else Direction(state["direction"])
 
     def assumptions(self) -> dict:
         return {"fill_rule": f"THROUGH_BY_{self.through}", "same_bar_fills": False,

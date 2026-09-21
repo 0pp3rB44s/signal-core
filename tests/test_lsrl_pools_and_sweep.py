@@ -5,7 +5,7 @@ from lsrl.core.pools import cluster_pools, eligibility_failures
 from lsrl.core.config import DEFAULT_CONFIG
 from lsrl.core.setup import STATE_LADDER_PENDING
 from lsrl.core.types import PlaceEntry, Side
-from tests.lsrl_fixtures import Harness, long_sweep, make_book, S
+from tests.lsrl_fixtures import ASK_POOLS, BID_POOL, RULES, Harness, long_sweep, make_book, S
 
 
 def _placed(h: Harness) -> list[PlaceEntry]:
@@ -89,8 +89,8 @@ def test_touch_that_consumes_too_little_is_not_a_sweep():
 
 
 def test_depth_pulled_at_levels_price_never_reached_is_cancellation_not_consumption():
-    """Price only touches the pool's top level; the deeper levels vanish. Removed depth
-    at levels beyond the sweep extreme must be classified cancelled, never consumed."""
+    """Price only touches the pool's top level; the deeper levels vanish. Depth that leaves the book
+    without executing is cancellation: it is recorded as such and can NEVER count as consumption."""
     path = ((10, 150.0), (20, 149.85), (30, 149.70), (40, 149.62), (50, 149.62), (60, 149.75))
     h = Harness().run(long_sweep(pool_after_touch=(149.60, 1, 40.0), path=path,
                                  sweep_low=149.58, sweep_close=149.75))
@@ -98,13 +98,13 @@ def test_depth_pulled_at_levels_price_never_reached_is_cancellation_not_consumpt
     rejection = next(r.data for r in h.records if r.data.get("reason") == "TOUCH_WITHOUT_SWEEP")
     assert rejection["consumption"]["consumed"] == 0.0
     assert rejection["consumption"]["cancelled_est"] > 0.0
-    assert rejection["consumption"]["method"] == "DEPTH_REMOVAL_PRICE_GATED"
+    assert rejection["consumption"]["method"] == "TAPE"
 
 
 def test_consumption_estimate_is_recorded_on_a_valid_sweep():
     h = Harness().run(long_sweep())
     c = h.engine.setup.consumption
-    assert c["fraction"] >= 0.25 and c["consumed"] > 0 and c["method"] == "DEPTH_REMOVAL_PRICE_GATED"
+    assert c["fraction"] >= 0.25 and c["consumed"] > 0 and c["method"] == "TAPE" and c["trades"] > 0
 
 
 # ------------------------------------------------------------------ reclaim window
@@ -171,3 +171,34 @@ def test_pool_age_never_bridges_a_gap_in_depth_observation():
     assert again.first_seen_ms == 15 * 3_600_000 and again.pool_id != first.pool_id
     tracker.update(book(15 * 3_600_000 + 10_000), 1.0)               # ...but ordinary cadence continues it
     assert tracker.alive(Side.BID)[0].first_seen_ms == 15 * 3_600_000
+
+
+# ------------------------------------------------------------------ resources over a long session
+def test_pool_bookkeeping_stays_bounded_past_the_retention_window():
+    """A live book updates ~10x/s for days. Pool history is bookkeeping only; before it was bounded the tracker
+    rebuilt ~5,000-element lists for ~90 pools on every update once the 600 s window filled (10x CPU, 10x RAM)."""
+    from lsrl.core.config import DEFAULT_CONFIG as CFG
+    from lsrl.core.pools import HISTORY_SAMPLE_MS, PoolTracker
+    tracker = PoolTracker(CFG, 0.001)
+    t0 = 1_800_000_000_000
+    for i in range(7_500):                                            # 12.5 simulated minutes at 10 updates/s
+        tracker.update(make_book(t0 + i * 100, 149.95, 150.05, bid_pools=(BID_POOL,), ask_pools=ASK_POOLS), 0.5)
+    pools = [tp for side in (Side.BID, Side.ASK) for tp in tracker.alive(side)]
+    assert pools
+    limit = CFG.history_retention_s * 1_000 // HISTORY_SAMPLE_MS + 2
+    assert max(len(tp.history) for tp in pools) <= limit
+    assert all(tp.history[0].t_ms >= t0 + 7_499 * 100 - CFG.history_retention_s * 1_000 - 1_000 for tp in pools)
+
+
+def test_driver_memory_tail_is_bounded_when_a_limit_is_set():
+    from lsrl.adapters.sim import SimExchange
+    from lsrl.core.config import DEFAULT_CONFIG as CFG
+    from lsrl.core.engine import LSRLEngine
+    from lsrl.core.gates import NullRiskGate
+    from lsrl.driver import SimDriver
+    from lsrl.modes import Mode
+    d = SimDriver(Mode.PAPER, LSRLEngine(CFG, RULES, risk_gate=NullRiskGate()), SimExchange(RULES, CFG),
+                  start_nav_usdt=1_000.0, history_limit=5)
+    d.run(long_sweep(extra_bars=((149.7, 149.9, 149.65, 149.8),) * 3))
+    assert len(d.records) <= 5 and len(d.intents) <= 5
+    assert d.engine.setup is not None                                  # decisions are unaffected by the memory tail

@@ -18,6 +18,9 @@ RUNG_FILLED = "FILLED"
 RUNG_CANCELLED = "CANCELLED"
 RUNG_REJECTED = "REJECTED"
 RUNG_SKIPPED = "SKIPPED"
+# A cancel was REQUESTED but the exchange has not yet confirmed the order terminal. The order may still
+# fill: the setup must stay open (and a late fill must be applied and protected) until it is confirmed.
+RUNG_CANCEL_REQUESTED = "CANCEL_REQUESTED"
 
 
 @dataclass(slots=True)
@@ -32,6 +35,9 @@ class RungState:
 
     def live(self) -> bool:
         return self.status in (RUNG_PLANNED, RUNG_OPEN)
+
+    def cancel_pending(self) -> bool:
+        return self.status == RUNG_CANCEL_REQUESTED
 
     def to_state(self) -> dict[str, Any]:
         return {"rung": self.rung, "tag": self.tag, "price": self.price, "qty": self.qty,
@@ -79,6 +85,7 @@ class Setup:
     expected_rr_tp2: float | None = None
     risk_gate: dict[str, Any] | None = None
     absorption: dict[str, Any] | None = None
+    feed_evidence: dict[str, Any] = field(default_factory=dict)
     rungs: dict[int, RungState] = field(default_factory=dict)
     entry_expires_ms: int | None = None
     entries_cancelled: bool = False
@@ -102,6 +109,9 @@ class Setup:
 
     def live_rungs(self) -> list[RungState]:
         return [r for r in self.rungs.values() if r.live()]
+
+    def pending_cancel_rungs(self) -> list[RungState]:
+        return [r for r in self.rungs.values() if r.cancel_pending()]
 
     # ------------------------------------------------------------- persistence
     def to_state(self) -> dict[str, Any]:
@@ -150,7 +160,7 @@ class Setup:
             "pool_age_s_at_freeze": self.pool_age_s_at_freeze,
             "pool_in_range_since_ms": self.pool_in_range_since_ms,
             "pool_strength": self.pool.get("strength"),
-            "pool_depth_series": self.depth_series,
+            "pool_depth_series": [list(x) for x in self.depth_series],
             "interaction_start_ms": self.interaction_start_ms,
             "interaction_source": self.interaction_source,
             "sweep_t_ms": self.sweep_t_ms,
@@ -169,6 +179,7 @@ class Setup:
             "expected_rr_tp2": self.expected_rr_tp2,
             "risk_gate": self.risk_gate,
             "absorption": self.absorption,
+            "feed_evidence": self.feed_evidence,
             "rungs": {str(k): v.to_state() for k, v in self.rungs.items()},
             "actual": None if led is None else {
                 "entry_qty": led.entry_qty, "avg_entry": led.avg_entry,
@@ -177,7 +188,7 @@ class Setup:
                 "entry_slippage_usdt": self.entry_slippage_usdt,
                 "stop_slippage_usdt": self.stop_slippage_usdt,
             },
-            "lifecycle_events": self.events,
+            "lifecycle_events": [dict(e) for e in self.events],     # a record is a SNAPSHOT: never alias live state
             "close_reason": self.close_reason,
             "realized_net_usdt": self.realized_net_usdt,
             "realized_r": self.realized_r,

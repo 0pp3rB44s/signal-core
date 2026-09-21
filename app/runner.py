@@ -709,7 +709,14 @@ class StartupRunner:
         if self.lsrl is not None:
             if self.lsrl.mode.value == "MICRO_LIVE" and not self._ensure_startup_close_recovery():
                 raise RuntimeError("LSRL MICRO_LIVE startup blocked by close-recovery gate")
-            self.lsrl.start()
+            try:
+                self.lsrl.start()
+            except Exception as exc:
+                if self.lsrl.mode.value == "MICRO_LIVE":
+                    raise
+                # SHADOW / PAPER are observational: a bad state file or a REST hiccup must not take the engine down
+                self.log.critical("LSRL_START_FAILED | mode=%s | %s: %s", self.lsrl.mode.value, type(exc).__name__, exc)
+                self.lsrl = None
 
         if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
             self._position_monitor_thread = threading.Thread(

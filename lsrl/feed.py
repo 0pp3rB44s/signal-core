@@ -1,56 +1,38 @@
-"""Live market-data feed: the project's REST client -> LSRL engine events (no project imports).
+"""Completed-candle feed (REST). Bars only: NO order-book or trade data comes from REST.
 
-Point-in-time liquidity source (v1): Bitget REST merge-depth via `get_orderbook` (50 levels,
-exchange timestamp + local receipt time, no sequence id), polled at `depth_interval_s`. No trade
-tape is wired in v1, so consumed-vs-cancelled uses the price-gated depth-removal fallback and
-absorption is recorded as unavailable (never invented).
+Sweep classification is decided from the WebSocket depth + trade tape (`lsrl.ws` -> `lsrl.obs`). REST is
+used here for 1m/15m candles (ATR and the reclaim close), and elsewhere for bootstrap/metadata only.
 
-Causality: an event's `t_ms` is the LOCAL RECEIPT time. A candle is emitted only once it is
-complete (`open + tf + bar_lag <= now`); the still-forming last row is never emitted.
+Causality: a candle is emitted only once it is complete (`open + tf + bar_lag <= now`); the still-forming last
+row is never emitted. `t_ms` on the returned bars is a placeholder: the runtime restamps each bar with the
+event bus's monotonic receipt time when it is queued.
 """
 from __future__ import annotations
 
 import time
 from typing import Any, Callable
 
-from lsrl.core.types import BarClosed, DepthSnapshot
+from lsrl.core.types import BarClosed
 
 GRANULARITY = {60: "1m", 900: "15m"}
 
 
-class LiveFeed:
+class CandleFeed:
     def __init__(self, client: Any, symbol: str, product_type: str, *,
-                 now_ms: Callable[[], int] = lambda: int(time.time() * 1000), depth_limit: int = 50,
-                 bar_lag_ms: int = 2_000) -> None:
+                 now_ms: Callable[[], int] = lambda: int(time.time() * 1000), bar_lag_ms: int = 2_000) -> None:
         self.client, self.symbol, self.product_type = client, symbol.upper(), product_type
-        self.now_ms, self.depth_limit, self.bar_lag_ms = now_ms, depth_limit, bar_lag_ms
+        self.now_ms, self.bar_lag_ms = now_ms, bar_lag_ms
         self.last_open: dict[int, int | None] = {60: None, 900: None}
-        self._last_t = 0
 
-    def _now(self) -> int:
-        self._last_t = max(self._last_t, int(self.now_ms()))       # never step backwards on a clock slew
-        return self._last_t
-
-    def now(self) -> int:
-        return self._now()
-
-    def depth(self) -> DepthSnapshot:
-        ob = self.client.get_orderbook(self.symbol, limit=self.depth_limit)
-        raw = ob.get("raw_payload") or {}
-        try:
-            exchange_ts = int(raw.get("ts")) if raw.get("ts") else None
-        except (TypeError, ValueError):
-            exchange_ts = None
-        return DepthSnapshot(
-            t_ms=self._now(), exchange_ts_ms=exchange_ts,
-            bids=tuple((float(r["price"]), float(r["size"])) for r in ob.get("bids") or []),
-            asks=tuple((float(r["price"]), float(r["size"])) for r in ob.get("asks") or []))
+    def seed(self, *, last_open_1m: int | None, last_open_15m: int | None) -> None:
+        """After a restart: never re-deliver bars the restored engine has already consumed."""
+        self.last_open = {60: last_open_1m, 900: last_open_15m}
 
     def bars(self, tf_s: int, limit: int) -> list[BarClosed]:
         payload = self.client.get_candles(self.symbol, self.product_type, granularity=GRANULARITY[tf_s], limit=limit)
         rows = [r for r in (payload.get("data") or []) if isinstance(r, list) and len(r) >= 6]
         rows.sort(key=lambda r: int(r[0]))
-        now, out = self._now(), []
+        now, out = int(self.now_ms()), []
         for r in rows:
             open_ts = int(r[0])
             close_ts = open_ts + tf_s * 1000

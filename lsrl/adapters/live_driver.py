@@ -9,12 +9,18 @@ from typing import Any, Callable
 from lsrl.core.engine import LSRLEngine
 from lsrl.core.types import BarClosed, NavEvent, Record
 from lsrl.io.recorder import LSRLRecorder, RecorderError
+from lsrl.obs.observer import BookObserver
+from lsrl.pipeline import RESTORE, FeedPipeline
 
 
 class LiveDriver:
     def __init__(self, engine: LSRLEngine, executor: Any, *, nav_fn: Callable[[], float],
-                 recorder: LSRLRecorder | None = None) -> None:
+                 recorder: LSRLRecorder | None = None, observer: BookObserver | None = None,
+                 history_limit: int | None = None) -> None:
         self.engine, self.executor, self.nav_fn, self.recorder = engine, executor, nav_fn, recorder
+        self.observer = observer or BookObserver()
+        self.pipeline = FeedPipeline(engine, self.observer, session_mode=RESTORE)
+        self.history_limit = history_limit          # a long-running runtime keeps only a tail; the recorder has it all
         self.records: list[Record] = []
         self.intents: list[Any] = []
         self.recorder_error: str | None = None
@@ -36,11 +42,14 @@ class LiveDriver:
     def _process(self, ev: Any) -> None:
         if self.recorder is not None:
             self._guard(self.recorder.record_event, ev)
-        intents, records = self.engine.on_event(ev)
+        intents, records = self.pipeline.process(ev)
         if self.recorder is not None:
             self._guard(self.recorder.record_outputs, ev.t_ms, intents, records)
         self.records.extend(records)
         self.intents.extend(intents)
+        if self.history_limit:
+            del self.records[:-self.history_limit]
+            del self.intents[:-self.history_limit]
         for out in self.executor.apply(intents, ev.t_ms):
             self._process(out)
         if self.executor.halt_reason:
@@ -55,8 +64,20 @@ class LiveDriver:
                 self.nav_error = f"{type(exc).__name__}:{exc}"
         self._process(ev)
 
-    def poll(self, t_ms: int) -> None:
-        for out in self.executor.poll(t_ms):
-            self._process(out)
+    def state_snapshot(self) -> dict:
+        return {}                                   # the executor persists its own order/position state
+
+    def state_restore(self, state: dict) -> None:
+        return None
+
+    def poll_events(self, t_ms: int) -> list[Any]:
+        """Executor reconciliation events, NOT yet processed. The runtime queues them on the same stamping
+        bus as every other input so the engine sees one monotonic timeline."""
+        events = list(self.executor.poll(t_ms))
         if self.executor.halt_reason:
             self.engine.halt(f"EXECUTOR:{self.executor.halt_reason}")
+        return events
+
+    def poll(self, t_ms: int) -> None:
+        for out in self.poll_events(t_ms):
+            self._process(out)
