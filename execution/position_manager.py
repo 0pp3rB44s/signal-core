@@ -236,6 +236,7 @@ class PositionManager(
             if position.get("status") == "OPEN"
         }
         missing_local_symbols = sorted(symbol for symbol in bitget_open_symbols if symbol and symbol not in local_open_symbols)
+        missing_local_symbols = self._exclude_strategy_owned(missing_local_symbols)
         if missing_local_symbols:
             self.log.error(
                 "STATE_MISMATCH | Bitget has open positions not tracked locally: %s",

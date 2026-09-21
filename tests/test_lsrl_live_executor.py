@@ -16,6 +16,8 @@ from clients.schemas import RiskVerdict
 from execution.entry_submitter import EntryOrderSubmitter
 from execution.order_intent_store import OrderIntentStore
 from execution.state_store import JsonStateStore
+from execution.strategy_ownership import StrategyOwnershipRegistry
+from lsrl.adapters.central_ledger import CentralCloseRecorder
 from lsrl.adapters.live import LiveNotArmed, LSRLLiveExecutor, assert_armed
 from lsrl.adapters.riskgate import CentralRiskGate
 from lsrl.core.config import DEFAULT_CONFIG as CFG
@@ -37,8 +39,10 @@ def armed_settings(**over):
 
 
 class Rig:
-    def __init__(self, tmp_path, *, settings=None, rm=None):
-        self.ex = FakeExchange(bid=149.65, ask=149.75)
+    def __init__(self, tmp_path, *, settings=None, rm=None, dataset=None):
+        self.tmp = tmp_path
+        self.dataset = dataset or tmp_path / "trade_dataset_v2.csv"
+        self.ex = FakeExchange(bid=149.65, ask=149.75, rules=RULES)
         self.settings = settings or armed_settings()
         rm = rm or _rm()
         self.gate = CentralRiskGate(rm, rm.settings)
@@ -53,14 +57,17 @@ class Rig:
         self.intents: list = []
 
     def build_executor(self) -> LSRLLiveExecutor:
-        return LSRLLiveExecutor(settings=self.settings, client=self.ex, submitter=self.submitter,
-                                auth_store=self.auth, gate=self.gate, state_store=self.state, rules=RULES,
-                                sleep=lambda s: None)
+        return LSRLLiveExecutor(
+            settings=self.settings, client=self.ex, submitter=self.submitter, auth_store=self.auth, gate=self.gate,
+            state_store=self.state, rules=RULES, sleep=lambda s: None,
+            ownership=StrategyOwnershipRegistry(self.tmp / "ownership.json"),
+            central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)))
 
     def feed(self, ev):
         queue = [ev]
         while queue:
             e = queue.pop(0)
+            self.ex.now_ms = max(self.ex.now_ms, e.t_ms)                # the exchange clock follows the market clock
             intents, records = self.engine.on_event(e)
             self.intents.extend(intents)
             self.records.extend(records)
@@ -73,6 +80,7 @@ class Rig:
 
     def poll(self, dt_ms: int = 1_000):
         t = self.engine.now_ms + dt_ms
+        self.ex.now_ms = max(self.ex.now_ms, t)
         for e in self.exec.poll(t):
             self.feed(e)
 
@@ -306,15 +314,23 @@ def test_full_engine_to_exchange_lifecycle_tp1_break_even_tp2_tp1_stop_tp3_flat(
     assert rig.ex.position["long"] == pytest.approx(0.0) and rig.ex.by_kind("cancel_stop")
 
 
-def test_a_stop_out_seen_only_as_a_position_reduction_closes_the_setup(rig):
+def test_a_stop_out_is_taken_from_the_exchange_order_history_with_its_real_price_and_fee(rig):
     for c in rig.ex.by_kind("place_entry"):
         rig.ex.fill(c[1])
     rig.poll()
-    rig.ex.trigger_stop()
+    stop_price = rig.engine.setup.stop_price
+    order_id = rig.ex.trigger_stop(slippage=0.05)                  # market stop fills 0.05 worse than the trigger
     rig.poll()
     closed = rig.kinds("setup_closed")[-1].data
     assert closed["close_reason"] == "STOP_LOSS" and rig.engine.setup is None
-    assert closed["realized_r"] == pytest.approx(-1.0, abs=1e-3)
+    row = rig.ex.history[-1]
+    assert row["orderId"] == order_id and row["orderSource"] == "loss_market"
+    qty = closed["actual"]["exit_qty"]
+    assert qty == pytest.approx(float(row["baseVolume"]))
+    assert closed["actual"]["stop_slippage_usdt"] == pytest.approx(0.05 * qty)       # the REAL fill price, not the stop price
+    assert closed["actual"]["exit_fees_usdt"] == pytest.approx(abs(float(row["fee"])))
+    assert closed["realized_r"] < -1.0                                                # slippage + taker fee are real losses
+    assert stop_price - float(row["priceAvg"]) == pytest.approx(0.05)
 
 
 def test_entry_expiry_cancels_unfilled_rungs_on_the_exchange(rig):

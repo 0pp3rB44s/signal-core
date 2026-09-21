@@ -122,6 +122,28 @@ class EntryOrderSubmitter:
         self.bot_identity = bot_identity
         self.log = log or logging.getLogger(self.__class__.__name__)
 
+    # --- ownership -------------------------------------------------------
+
+    @staticmethod
+    def _ownership_block(plan: Any, symbol: str, direction: str) -> str:
+        """One owner per (symbol, hold side): a strategy that holds the claim is the only one that may
+        enter there. Returns a reason, or '' when the entry may proceed."""
+        from execution.strategy_ownership import (
+            PROTECTED_WHEN_UNREADABLE, OwnershipUnreadable, StrategyOwnershipRegistry, owner_family)
+
+        family = owner_family(getattr(plan, "strategy", ""))
+        hold_side = "long" if direction == "LONG" else "short"
+        registry = StrategyOwnershipRegistry()
+        try:
+            owner = registry.owner_of(symbol, hold_side)
+        except OwnershipUnreadable as exc:
+            if symbol in PROTECTED_WHEN_UNREADABLE and family != "lsrl_v1":
+                return f"ownership registry unreadable, {symbol} is protected ({exc})"
+            return ""
+        if owner and owner != family:
+            return f"{symbol}:{hold_side} is owned by {owner!r}; {family or 'unknown strategy'!r} may not enter"
+        return ""
+
     # --- public API ------------------------------------------------------
 
     def client_oid_for(self, plan: Any, leg: str = ENTRY_LEG_MARKET) -> str:
@@ -154,6 +176,12 @@ class EntryOrderSubmitter:
         symbol = str(getattr(plan, "symbol", "")).upper()
         direction = str(getattr(plan, "direction", "")).upper()
         plan_id = str(getattr(plan, "plan_id", ""))
+
+        blocked = self._ownership_block(plan, symbol, direction)
+        if blocked:
+            self.log.critical("ENTRY_OWNERSHIP_REFUSED | %s | %s | plan_id=%s | %s", symbol, direction, plan_id, blocked)
+            return EntrySubmissionResult(status=RESULT_REJECTED, classification="OWNED_BY_OTHER_STRATEGY",
+                                         message=f"entry blocked: {blocked}")
 
         try:
             client_oid = self.client_oid_for(plan, leg=leg)

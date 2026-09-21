@@ -65,6 +65,8 @@ class ContractSpec:
     source: str
     retrieved_at: float
     fallback_used: bool = False
+    #: Bitget `priceEndStep`: the price increment in units of 10**-pricePlace (tick = step * 10**-place).
+    price_end_step: Decimal = Decimal(1)
 
     @property
     def age_seconds(self) -> float:
@@ -212,6 +214,9 @@ class BitgetPrecisionMixin:
         if volume_place_int < 0 or price_place_int < 0:
             return None
 
+        end_step = _dec(contract.get("priceEndStep"))
+        if end_step is None or end_step <= 0:
+            end_step = Decimal(1)
         return ContractSpec(
             symbol=symbol.upper(), product_type=product_type,
             min_trade_num=min_trade, size_multiplier=multiplier,
@@ -219,6 +224,7 @@ class BitgetPrecisionMixin:
             min_trade_usdt=_dec(contract.get("minTradeUSDT")),
             source="/api/v2/mix/market/contracts",
             retrieved_at=time.monotonic(), fallback_used=False,
+            price_end_step=end_step,
         )
 
     def _contract_spec(self, symbol: str, *, force_refresh: bool = False) -> ContractSpec | None:
@@ -280,6 +286,7 @@ class BitgetPrecisionMixin:
                 min_trade_usdt=validated.min_trade_usdt,
                 source=validated.source + " (cached)",
                 retrieved_at=validated.retrieved_at, fallback_used=True,
+                price_end_step=validated.price_end_step,
             )
             self.log.warning("CONTRACT_METADATA_FALLBACK | %s", fallback.log_fields())
             return fallback

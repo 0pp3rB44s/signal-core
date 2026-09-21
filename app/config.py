@@ -100,7 +100,6 @@ class Settings(BaseSettings):
     lsrl_data_dir: str = Field(default="data_store/lsrl", alias="LSRL_DATA_DIR")
     lsrl_shadow_nav_usdt: float = Field(default=100.0, alias="LSRL_SHADOW_NAV_USDT")
     lsrl_min_free_gb: float = Field(default=1.0, alias="LSRL_MIN_FREE_GB")
-    lsrl_depth_interval_s: float = Field(default=10.0, alias="LSRL_DEPTH_INTERVAL_S")
     lsrl_microlive_armed: bool = Field(default=False, alias="LSRL_MICROLIVE_ARMED")
 
     # dynamic_grid_v1 is an isolated, fail-closed pilot. OFF and SHADOW can
@@ -346,8 +345,8 @@ class Settings(BaseSettings):
             raise ValueError("LSRL_MODE requires LSRL_ENABLED=true")
         if self.lsrl_symbol.strip().upper() != "SOLUSDT":
             raise ValueError("LSRL_V1 is frozen to SOLUSDT")
-        if self.lsrl_shadow_nav_usdt <= 0 or self.lsrl_min_free_gb <= 0 or self.lsrl_depth_interval_s < 1:
-            raise ValueError("LSRL nav / disk floor / depth interval must be positive (interval >= 1s)")
+        if self.lsrl_shadow_nav_usdt <= 0 or self.lsrl_min_free_gb <= 0:
+            raise ValueError("LSRL reference NAV and recorder disk floor must be positive")
         if self.lsrl_microlive_armed and lsrl_mode != "MICRO_LIVE":
             raise ValueError("LSRL_MICROLIVE_ARMED requires LSRL_MODE=MICRO_LIVE")
         if lsrl_mode == "MICRO_LIVE":

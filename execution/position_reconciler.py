@@ -25,6 +25,25 @@ from execution.position_model import (
 
 
 class PositionReconcilerMixin:
+    def _exclude_strategy_owned(self, symbols: list[str]) -> list[str]:
+        """A symbol whose exposure belongs to a strategy running its OWN order lifecycle (LSRL_V1) is
+        neither adopted, nor managed, nor healed here: exactly one owner may manage live exposure."""
+        if not symbols:
+            return symbols
+        from execution.strategy_ownership import PROTECTED_WHEN_UNREADABLE, StrategyOwnershipRegistry
+
+        owned = StrategyOwnershipRegistry().owned_symbols(fail_closed_symbols=PROTECTED_WHEN_UNREADABLE)
+        kept: list[str] = []
+        for symbol in symbols:
+            owner = owned.get(str(symbol).upper())
+            if owner:
+                self.log.warning(
+                    "POSITION_OWNED_BY_STRATEGY | %s | owner=%s | not adopted, not managed, not healed",
+                    symbol, owner)
+                continue
+            kept.append(symbol)
+        return kept
+
     def _recover_missing_local_positions(
         self,
         missing_symbols: list[str],

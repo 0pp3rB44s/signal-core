@@ -4,11 +4,12 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
-# HARDENING (2026-09-20): this launcher has none of the live ceremony's four layers. Refuse before
-# ANYTHING else -- including reading .env -- if the resolved environment is live-capable (from .env
-# OR already exported into this shell), and never SIGKILL a running LIVE engine below.
+# HARDENING (2026-09-20/21): this launcher has none of the live ceremony's four layers. Refuse before
+# ANYTHING else -- including reading .env -- if the environment the APP would resolve is live-capable
+# (decided by the app's own settings, see app/launch_guard.py), and never SIGKILL a running LIVE engine
+# (or any app.main from another directory) below.
 . scripts/lib/env_guard.sh
-guard_assert_not_live_capable_env ".env"
+guard_assert_not_live_capable_env ".venv/bin/python3"
 guard_assert_no_live_engine_running "state/live_runtime.state"
 
 
@@ -47,10 +48,8 @@ if [ -f state/bot.pid ]; then
   fi
 fi
 
-# prevent duplicate bot processes
-pkill -9 -f "app.main" >/dev/null 2>&1 || true
-pkill -9 -f "python3.*app.main" >/dev/null 2>&1 || true
-pkill -9 -f "Python.*app.main" >/dev/null 2>&1 || true
+# prevent duplicate bot processes -- of THIS project only (never another checkout's engine)
+guard_kill_own_app_main "$PROJECT_DIR"
 
 sleep 1
 

@@ -1,0 +1,47 @@
+{
+ "code": "00000",
+ "msg": "success",
+ "requestTime": 1789931039284,
+ "data": [
+  {
+   "symbol": "SOLUSDT",
+   "baseCoin": "SOL",
+   "quoteCoin": "USDT",
+   "buyLimitPriceRatio": "0.07",
+   "sellLimitPriceRatio": "0.07",
+   "feeRateUpRatio": "0.005",
+   "makerFeeRate": "0.0002",
+   "takerFeeRate": "0.0006",
+   "openCostUpRatio": "0.01",
+   "supportMarginCoins": [
+    "USDT"
+   ],
+   "minTradeNum": "0.1",
+   "priceEndStep": "1",
+   "volumePlace": "1",
+   "pricePlace": "3",
+   "sizeMultiplier": "0.1",
+   "symbolType": "perpetual",
+   "minTradeUSDT": "5",
+   "maxSymbolOrderNum": "200",
+   "maxProductOrderNum": "1000",
+   "maxPositionNum": "200",
+   "symbolStatus": "normal",
+   "offTime": "-1",
+   "limitOpenTime": "-1",
+   "deliveryTime": "",
+   "deliveryStartTime": "",
+   "deliveryPeriod": "",
+   "launchTime": "",
+   "fundInterval": "8",
+   "minLever": "1",
+   "maxLever": "100",
+   "posLimit": "0.15",
+   "maintainTime": "",
+   "openTime": "",
+   "maxMarketOrderQty": "20000",
+   "maxOrderQty": "100000",
+   "isRwa": "NO"
+  }
+ ]
+}
