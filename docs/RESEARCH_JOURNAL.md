@@ -366,3 +366,86 @@ nooit `PROSPECTIVE_GREEN`, `PAPER_GREEN` of `MICRO_LIVE_GREEN`. Live blijft
 gebonden aan GO_LIVE_CHECKLIST.md (stand vóór deze toets: A 0/9 · B 0/5 ·
 C 1/7 · D 0/5 · E 0/3 → NIET LIVE) en MASTER_PLAN Fase E ("GEBLOKKEERD tot
 D-exit").
+
+### RESULTATEN (run 2026-09-24, research/hab1_relstrength_reversal.py)
+
+TRAIN (n=3504 signaalbars): P20=−0,6282, P80=0,6348 (z-verdeling
+mean≈0, pstdev≈0,878 — geen outcome-data geïnspecteerd, uitsluitend
+distributie-eigenschap).
+
+| Split | N | dag-clusters | avg R (net) | median R | win% | PF | t (dag-geclusterd) | total R | max DD (R) |
+|---|---|---|---|---|---|---|---|---|---|
+| VAL | 141 | 28 | −0,257 | −1,110 | 35,5% | 0,641 | **−2,65** | −36,19 | 47,73 |
+
+avg_stop_pct = 0,746% (binnen realistische band 0,15–1,2% uit
+`scripts/validation_engine.py` — geometrie is niet onrealistisch, het
+signaal zelf is fout). Maandbreakdown VAL: 2026-05 = −39,25R (108% van
+totaal), 2026-06 = +3,06R — het verlies concentreert in mei, juni is
+vlak/licht positief; dit verandert het VAL-verdict niet (poort faalt al
+hard op teken + PF) maar is genoteerd voor het record.
+
+### VAL-poort: **FAIL**
+- Teken: total_r < 0 in de geregistreerde reversal-richting → **FAIL**.
+- Profit factor 0,641 ≤ 1,0 → **FAIL**.
+- |t|=2,65 ≥ 1,5 (en zelfs ≥ 2,0) — dit ís geadequate power, dus dit is
+  een **informatieve verwerping, geen power-probleem**: het teken is
+  betrouwbaar vastgesteld en het is het tegenovergestelde van de
+  registratie (continuation, niet reversal).
+
+**Verzegelde TEST NIET uitgevoerd** — zegel blijft intact conform
+pre-registratie (VAL-poort is hard go/no-go).
+
+### Verdict: **VERWORPEN**
+Mechanisme gefalsifieerd zoals vooraf gedefinieerd: "Contraire uitkomst
+(continuation wint) telt als falsificatie van dit mechanisme, niet als
+'ook goed'". Geen tekenwissel toegepast, geen herregistratie, geen
+subgroep-redding (bv. alleen juni). **Bevroren. Niet recyclen** onder deze
+vorm (cross-sectionele extremiteit vs. 11-symbool-basket, 15m-4u,
+reversal-richting) zonder fundamenteel nieuw mechanisme-argument.
+
+Restonzekerheid: N=141 is klein or gevoelig voor de "één positie
+tegelijk"-regel; effect is geconcentreerd in mei (mogelijk regime-
+specifiek). Beide zijn genoteerd, geen van beide verandert het FAIL-
+verdict of rechtvaardigt een nieuwe blik op dezelfde hypothese.
+
+---
+
+## H-AB1-F — BTC→SOL cross-asset lead-lag (PRE-REGISTRATIE)
+
+**Status: GEREGISTREERD 2026-09-24, vóór enige uitkomstinspectie van dit
+signaal.** Mechanisme/richting/payer stonden al vast in de Fase-1-tabel
+hierboven (gecommit in 156c2f5, vóór het testen van H-AB1-A) — dit voegt
+de exacte, toetsbare mechanica toe. Structurele keuzes (W, ATR-stop,
+target, horizon, split-fracties, kostenmodel, poortstructuur) zijn
+**bewust identiek** aan H-AB1-A, niet opnieuw gekozen ná het zien van
+H-AB1-A's uitkomst — dit is bevroren voor consistentie/vergelijkbaarheid,
+geen parameter-fishing.
+
+### Theorie & mechanisme
+BTC is de dominante prijsvormingsleider in crypto-perps (hoogste liquiditeit/
+aandacht). Na een significante BTC-beweging over een kort venster heeft SOL
+(trager, lagere liquiditeit, meer "aandacht-lag") nog niet volledig
+bijgetrokken. Geregistreerde richting: **CONTINUATION** — SOL volgt BTC's
+recente richting (tegengesteld aan H-AB1-A's reversal-registratie; dit is
+een wezenlijk ander mechanisme — beta-propagatie-vertraging, niet
+rotatie-overextensie — geen rescue van H-AB1-A). Contraire uitkomst
+(reversal wint) telt als falsificatie.
+
+### Signaal
+- r_BTC,t = log(close_BTC[t] / close_BTC[t−16]) (zelfde W=16 bars/4u).
+- Drempels P20/P80 van r_BTC,t **op TRAIN alleen** (zelfde procedure als
+  H-AB1-A, geen outcome-data).
+- r_BTC,t ≥ P80(TRAIN) → LONG SOL @ open(t+1). r_BTC,t ≤ P20(TRAIN) →
+  SHORT SOL @ open(t+1).
+
+### Entry/exit/stop/sizing/kosten/splits/poorten
+Identiek aan H-AB1-A: 1,5×ATR(14,15m,SOL)-stop, 2R-target, 16-bar/4u
+time-stop, stop-eerst bij ambiguïteit, één positie tegelijk, 14 bps
+kosten (+25 bps stress), TRAIN=[0,3520) VAL=[3520,6160) TEST=[6160,8800),
+VAL-poort (teken + N≥30 + |t|≥1,5 + PF>1,0 → door naar TEST) en TEST-poort
+(teken-match + N≥30 + |t|≥2,0 + PF>1,3 + geen maand>70% + overleeft 25bps)
+zoals hierboven gespecificeerd voor H-AB1-A.
+
+### Script
+`research/hab1f_btc_lead_lag.py` (te schrijven ná commit van deze
+pre-registratie).
