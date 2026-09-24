@@ -449,3 +449,63 @@ zoals hierboven gespecificeerd voor H-AB1-A.
 ### Script
 `research/hab1f_btc_lead_lag.py` (te schrijven ná commit van deze
 pre-registratie).
+
+### RESULTATEN (run 2026-09-24, research/hab1f_btc_lead_lag.py)
+
+TRAIN (n=3504): P20=−0,00413, P80=0,00521 (BTC 16-bar-log-return-
+verdeling, mean≈0,0007, pstdev≈0,0073 — geen outcome-data geïnspecteerd).
+
+| Split | N | dag-clusters | avg R (net) | median R | win% | PF | t (dag-geclusterd) | total R | max DD (R) |
+|---|---|---|---|---|---|---|---|---|---|
+| VAL | 188 | 28 | −0,231 | −1,086 | 33,5% | 0,673 | −1,79 | −43,43 | 49,34 |
+
+Long (na BTC-pump, n=59): avg −0,484R. Short (na BTC-dump, n=129): avg
+−0,115R. Beide poten verliezen — SOL "haalt niet in" na een grote
+BTC-beweging op dit 15m/4u-venster, althans niet genoeg om 14 bps te
+dekken. Maandbreakdown: 2026-05 = −39,02R (90%), 2026-06 = −4,41R (10%)
+— verlies overwegend in mei maar niet uitsluitend (anders dan H-AB1-A
+is juni hier ook negatief, niet vlak/positief).
+
+### VAL-poort: **FAIL**
+- Teken: total_r < 0 in de geregistreerde continuation-richting → **FAIL**.
+- Profit factor 0,673 ≤ 1,0 → **FAIL**.
+- |t|=1,79 haalt op zichzelf de 1,5-drempel, maar teken en PF falen al
+  hard — poort vereist alle vier, dus **FAIL** in totaal. Niet een
+  power-probleem (N=188, 28 dagclusters is redelijk voor dit venster).
+
+**Verzegelde TEST NIET uitgevoerd** — zegel blijft intact.
+
+### Verdict: **VERWORPEN**
+Continuation-mechanisme gefalsifieerd zoals vooraf gedefinieerd. Geen
+tekenwissel, geen herregistratie, geen subgroep-redding.
+**Bevroren. Niet recyclen** onder deze vorm zonder fundamenteel nieuw
+mechanisme-argument.
+
+---
+
+## H-AB1 — CYCLUSCONCLUSIE (2026-09-24)
+
+Beide vooraf-gedeclareerde, geteste kandidaten (A: cross-sectionele
+reversal; F: BTC-lead-lag continuation) **VERWORPEN op VAL** — geen van
+beide bereikte de verzegelde TEST-split; beide zegels blijven intact.
+Kandidaten B/C/D werden al vóór enige test verworpen op zwak/gerecycled
+mechanisme (Fase 1). Dit is een **volledig doorlopen, begrensde trechter**
+(5 kandidaten gescreend, 2 daadwerkelijk getoetst, 0 overlevend) — geen
+nieuwe kandidaat wordt ad-hoc toegevoegd om alsnog een groen resultaat te
+forceren vóór een deadline; dat zou exact de "manufacture a green result
+under Sunday pressure"-fout zijn die de opdracht zelf verbiedt.
+
+**HISTORICAL_GREEN_CANDIDATE: NEE** deze cyclus. Geen kandidaat voor
+Agent C. Live-status ongewijzigd: GO_LIVE_CHECKLIST A 0/9 · B 0/5 ·
+C 1/7 · D 0/5 · E 0/3 → NIET LIVE (geen van deze twee verwerpingen wijzigt
+dit — er was nooit een claim dat het zou kunnen).
+
+**Aanbeveling voor een volgende cyclus** (niet uitgevoerd, buiten scope
+van deze opdracht): de twee hoogste-prior-mechanismen die MASTER_PLAN
+Fase C zelf prioriteert (liquidatie-cascade-dynamiek, 10s-orderbook-
+imbalance) zijn NIET getoetst in deze cyclus — ze vereisen de
+microstructuur-/liquidatie-archiefdata die niet in deze checkout
+beschikbaar was (eigenaarsbeslissing 2026-09-24: alleen lokale OHLCV).
+Kandidaat **B** (liquidatie-cascade-proxy via OHLCV-extremen) blijft
+mechanistisch aantrekkelijk maar principieel niet schoon toetsbaar zonder
+die data — geen point in het alsnog los te laten op dezelfde OHLCV-bron.
