@@ -18,9 +18,12 @@ import sys
 import termios
 import threading
 import time
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+from lsrl.capital import CAPITAL_MIN_USDT, RISK_FRACTION, CapitalPolicy, CapitalRefused
 
 PHRASE = 'START LIVE PILOT'
 BASE_SHA = '679b6e0b5eeb8c90c87b20d892006a9a8d7dd4f2'
@@ -33,6 +36,15 @@ GATES = ('approved_sha', 'clean_tree', 'approved_config', 'strategy_freeze',
          'exchange_semantics', 'authenticated_exposure', 'no_unexpected_exposure',
          'clock', 'feed', 'recorder', 'disk', 'risk_manager', 'kill_switches',
          'reconciliation', 'exchange_protection', 'owner_capital_approval')
+
+#: Gates whose evidence MUST be the very artifact the reviewed release policy pins (Agent C, C1): a bare boolean or an arbitrary string can
+#: never satisfy them. The other gates are live observations; their evidence still has to be a structured `kind:sha256(observation)`.
+BOUND_GATES = ('prospective_green', 'engineering_approval', 'process_down_protection', 'exchange_semantics',
+               'owner_capital_approval')
+_SOURCE = re.compile(r'^[a-z][a-z0-9_]{1,31}:[0-9a-f]{64}$')
+_ACCOUNT = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+_HEX = '0123456789abcdef'
+
 
 class Refused(RuntimeError):
     pass
@@ -68,6 +80,7 @@ class Snapshot:
     orders: tuple
     conditional_orders: tuple
     audit_complete: bool            # all pages and all required plan types read
+    approved_digests: dict = field(default_factory=dict)   # BOUND_GATES -> sha256 pinned by the reviewed release policy
 
 class Provider(Protocol):
     """Trusted composition, NEVER supplied through CLI, environment or an API.
@@ -83,30 +96,45 @@ class Provider(Protocol):
 
 def validate(s: Snapshot, now: float | None = None) -> None:
     now = time.monotonic() if now is None else now
+    if type(s) is not Snapshot: raise Refused('SNAPSHOT_TYPE')
     i = s.identity
+    if type(i) is not Identity or type(s.approved_identity) is not Identity: raise Refused('IDENTITY_INVALID')
     if i != s.approved_identity: raise Refused("APPROVED_BINDING_MISMATCH")
     for x,n in [(i.sha,40),(i.config_hash,64),(i.runtime_config_hash,64)]:
-        if len(x)!=n or any(c not in '0123456789abcdef' for c in x): raise Refused('IDENTITY_INVALID')
+        if type(x) is not str or len(x)!=n or any(c not in _HEX for c in x): raise Refused('IDENTITY_INVALID')
     if (i.strategy,i.mode,i.symbol,i.exchange,i.account_mode)!=(
             'LSRL_V1','MICRO_LIVE','SOLUSDT','bitget','hedge_mode/isolated'):
         raise Refused('IDENTITY_INVALID')
-    if not i.account or any(ord(c)<32 for c in i.account): raise Refused('ACCOUNT_UNKNOWN')
-    if i.config_hash != CONFIG_HASH or i.risk_fraction != 0.005: raise Refused('FROZEN_CONFIG_MISMATCH')
+    if type(i.account) is not str or not _ACCOUNT.fullmatch(i.account): raise Refused('ACCOUNT_UNKNOWN')
+    if i.config_hash != CONFIG_HASH or i.risk_fraction != RISK_FRACTION: raise Refused('FROZEN_CONFIG_MISMATCH')
     if any(isinstance(x,bool) or not isinstance(x,(int,float)) or not math.isfinite(x) or x<=0
            for x in (i.nav_usdt,i.capital_ceiling_usdt,i.exposure_ceiling_usdt)):
         raise Refused('CAPITAL_UNKNOWN')
+    # The micro-live capital band and the exposure ceiling are absolute, not merely "whatever the policy says" (Agent C: a 1e9 x NAV
+    # exposure ceiling and an unbounded capital were accepted). The owner chooses INSIDE the band; nothing here chooses for them.
+    try: CapitalPolicy(i.capital_ceiling_usdt, i.exposure_ceiling_usdt)
+    except CapitalRefused as exc: raise Refused('CAPITAL_POLICY:'+str(exc)) from exc
     if i.nav_usdt > i.capital_ceiling_usdt: raise Refused('CAPITAL_CEILING_EXCEEDED')
+    if i.nav_usdt < CAPITAL_MIN_USDT: raise Refused('NAV_BELOW_MICRO_LIVE_FLOOR')
+    if type(s.gates) is not dict: raise Refused('GATES_TYPE')
+    if type(s.approved_digests) is not dict: raise Refused('APPROVED_DIGESTS_TYPE')
     for name in GATES:
         e = s.gates.get(name)
-        if not isinstance(e,Evidence) or e.passed is not True or not e.source:
+        if type(e) is not Evidence or e.passed is not True or type(e.source) is not str or not _SOURCE.fullmatch(e.source):
             raise Refused('GATE_NOT_MET:'+name)
-        if not math.isfinite(e.observed_mono) or not 0<=now-e.observed_mono<=MAX_AGE_S:
+        if isinstance(e.observed_mono,bool) or not isinstance(e.observed_mono,(int,float)) or not math.isfinite(e.observed_mono) \
+                or not 0<=now-e.observed_mono<=MAX_AGE_S:
             raise Refused('STALE_OR_FUTURE:'+name)
+    for name in BOUND_GATES:
+        pinned = s.approved_digests.get(name)
+        if type(pinned) is not str or len(pinned)!=64 or any(c not in _HEX for c in pinned) \
+                or s.gates[name].source.split(':',1)[1] != pinned:
+            raise Refused('GATE_NOT_BOUND_TO_PINNED_ARTIFACT:'+name)
     if s.audit_complete is not True: raise Refused('EXPOSURE_AUDIT_INCOMPLETE')
-    # Dedicated pilot requires a completely flat/clean audited account. Unknown
-    # is not an empty tuple, and foreign exposure is never cancelled here.
+    # Dedicated pilot requires a completely flat/clean audited account. Unknown is not an empty tuple, a tuple SUBCLASS (whose truthiness
+    # can hide rows) is not a tuple, and foreign exposure is never cancelled here.
     for rows in (s.positions,s.orders,s.conditional_orders):
-        if not isinstance(rows,tuple) or rows: raise Refused('UNEXPECTED_OR_UNKNOWN_EXPOSURE')
+        if type(rows) is not tuple or len(rows)!=0: raise Refused('UNEXPECTED_OR_UNKNOWN_EXPOSURE')
 
 
 def pinned_artifact(path: Path, expected_digest: str, binding: dict) -> bool:
@@ -139,11 +167,10 @@ def git_facts(root: Path) -> dict:
     return dict(sha=sha,clean=clean,strategy_freeze=intact)
 
 
-def read_owner_phrase(timeout_s: float = INPUT_TIMEOUT_S) -> None:
+def _read_tty_line(prompt: str, timeout_s: float, max_len: int) -> bytes:
     """Require foreground controlling terminal AND terminal stdin/stdout.
     No redirected stdin, file, pipe or /dev/tty fallback for a piped command.
-    Flush pretyped input before prompting; bounded read, EOF and exact bytes.
-    """
+    Flush pretyped input before prompting; bounded read, EOF and a hard length limit. Returns the bytes including the newline."""
     fd=sys.stdin.fileno()
     if not os.isatty(fd) or not os.isatty(sys.stdout.fileno()): raise Refused('INTERACTIVE_ONLY')
     try:
@@ -153,7 +180,7 @@ def read_owner_phrase(timeout_s: float = INPUT_TIMEOUT_S) -> None:
             if os.tcgetpgrp(fd)!=os.getpgrp(): raise Refused('FOREGROUND_TTY_REQUIRED')
         finally: os.close(tty)
         termios.tcflush(fd,termios.TCIFLUSH)
-        print('Type exactly START LIVE PILOT: ',end='',flush=True)
+        print(prompt,end='',flush=True)
         deadline=time.monotonic()+timeout_s
         data=b''
         while b'\n' not in data:
@@ -162,13 +189,35 @@ def read_owner_phrase(timeout_s: float = INPUT_TIMEOUT_S) -> None:
             chunk=os.read(fd,128)
             if not chunk: raise Refused('EOF')
             data+=chunk
-            if len(data)>len(PHRASE)+1: raise Refused('PHRASE_MISMATCH')
-        if data!=PHRASE.encode()+b'\n': raise Refused('PHRASE_MISMATCH')
+            if len(data)>max_len+1: raise Refused('INPUT_TOO_LONG')
+        return data
     except (OSError,ValueError) as exc: raise Refused('TERMINAL_UNAVAILABLE') from exc
+
+
+def read_owner_phrase(timeout_s: float = INPUT_TIMEOUT_S) -> None:
+    try: data=_read_tty_line('Type exactly START LIVE PILOT: ',timeout_s,len(PHRASE))
+    except Refused as exc:
+        if str(exc)=='INPUT_TOO_LONG': raise Refused('PHRASE_MISMATCH') from exc
+        raise
+    if data!=PHRASE.encode()+b'\n': raise Refused('PHRASE_MISMATCH')
+
+
+def read_pinned_digest(what: str, timeout_s: float = INPUT_TIMEOUT_S) -> str:
+    """The OWNER types the sha256 of a reviewed artifact at the terminal. It can never arrive through a flag, an environment variable, a file
+    or a pipe, so the artifact it pins cannot vouch for itself."""
+    data=_read_tty_line(f'Type the SHA-256 of the reviewed {what}: ',timeout_s,64).decode('ascii','replace').strip().lower()
+    if len(data)!=64 or any(c not in _HEX for c in data): raise Refused('DIGEST_MALFORMED')
+    return data
 
 
 _lock=threading.Lock()
 _pending: dict[object,tuple] = {}
+_consumed: dict[int,Identity] = {}     # identities that came out of Permit.consume in THIS process (never persisted)
+
+
+def is_consumed(identity: object) -> bool:
+    """True only for an Identity object that Permit.consume returned in this process. No file, flag or environment variable can make it true."""
+    with _lock: return _consumed.get(id(identity)) is identity and identity is not None
 class Permit:
     """In-memory one-shot handoff. No serialization, token file or restart reuse."""
     def __reduce__(self): raise TypeError('Permits cannot be serialized')
@@ -180,6 +229,7 @@ class Permit:
         s=provider.snapshot();validate(s)
         if s.identity!=identity: raise Refused('IDENTITY_CHANGED')
         if time.monotonic()-issued>=PERMIT_TTL_S: raise Refused('PERMIT_EXPIRED')
+        with _lock: _consumed[id(identity)]=identity
         return identity
 
 

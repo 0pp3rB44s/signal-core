@@ -16,7 +16,7 @@ from lsrl.adapters.live import (ENGINE_ACK_GRACE_MS, EXPOSURE_CRITICAL, EXPOSURE
 from lsrl.core.config import DEFAULT_CONFIG as CFG
 from lsrl.core.engine import LSRLEngine
 from lsrl.core.types import PlaceEntry
-from tests.lsrl_fake_exchange import TEST_PROTECTION
+from tests.lsrl_fake_exchange import TEST_AUTHORITY, TEST_PROTECTION
 from tests.lsrl_fixtures import RULES, long_sweep
 from tests.test_lsrl_executor_hardening import entries, kinds
 from tests.test_lsrl_live_executor import Rig, q_of
@@ -40,7 +40,7 @@ class LifeRig(Rig):
             ownership=StrategyOwnershipRegistry(self.tmp / "ownership.json"),
             central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)),
             clock_ms=lambda: self.ex.now_ms,
-            process_down=getattr(self, "protection", TEST_PROTECTION))
+            process_down=getattr(self, "protection", TEST_PROTECTION), authority=getattr(self, "authority", TEST_AUTHORITY))
 
     def advance(self, ms: float) -> None:
         self.ex.now_ms += int(ms)

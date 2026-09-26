@@ -62,6 +62,8 @@ from execution.strategy_ownership import (OwnershipConflict, OwnershipUnreadable
                                           StrategyOwnershipRegistry, owner_family)
 from lsrl.adapters.central_ledger import RECORDED, CentralCloseRecorder
 from lsrl.adapters.process_down import ProcessDownProtection
+from lsrl.adapters.authority import PROTECT_ONLY, TRADE, LiveAuthority
+from lsrl.adapters.strategy_port import IntentRefused, check_intents
 from lsrl.adapters.riskgate import CentralRiskGate
 from lsrl.contract import ExchangeFactsError, verify_exchange_facts
 from lsrl.core.config import DEFAULT_CONFIG, STRATEGY_ID, LSRLConfig
@@ -156,11 +158,18 @@ class LSRLLiveExecutor:
                  facts_verifier: Callable[..., Any] = verify_exchange_facts,
                  clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
                  fast_watch: bool = True,
-                 process_down: ProcessDownProtection | None = None) -> None:
+                 process_down: ProcessDownProtection | None = None,
+                 authority: LiveAuthority | None = None) -> None:
         assert_armed(settings)
         if not isinstance(process_down, ProcessDownProtection):
             raise LiveNotArmed("MICRO_LIVE not armed: PROCESS_DOWN_PROTECTION_NOT_ATTESTED")
+        if not isinstance(authority, LiveAuthority):
+            # The ceremony's consumed identity (TRADE) or the explicit PROTECT_ONLY authority: without one this executor cannot exist,
+            # so a restart or a respawn can never resume trading on its own.
+            raise LiveNotArmed("MICRO_LIVE not armed: CEREMONY_NOT_CONSUMED")
+        self.authority = authority
         self.process_down = process_down
+        self._place_first_broken = False        # the exchange did not tolerate a second stop in production: legacy moves only
         self.settings, self.client, self.submitter = settings, client, submitter
         self.auth_store, self.gate, self.store = auth_store, gate, state_store
         self.rules, self.cfg, self._sleep = rules, cfg, sleep
@@ -198,6 +207,26 @@ class LSRLLiveExecutor:
         self._polled_once = False
         self._immediate_failed_t: int | None = None
         self._immediate_failed_why = ""
+
+    # ------------------------------------------------------------------ authority
+    def promote(self, authority: LiveAuthority) -> None:
+        """PROTECT_ONLY -> TRADE, once, in the SAME process that ran the ceremony: the only way an executor that started without a permit can ever
+        open a position. The TRADE authority itself can only be built from an identity `Permit.consume` returned in this process."""
+        if self.authority.mode != PROTECT_ONLY:
+            raise LiveNotArmed("MICRO_LIVE promotion refused: already trading")
+        if not isinstance(authority, LiveAuthority) or authority.mode != TRADE:
+            raise LiveNotArmed("MICRO_LIVE promotion refused: a TRADE authority is required")
+        self.authority = authority
+        self._incident("PROMOTED_TO_TRADE", "the owner ceremony was consumed in this process")
+
+    def summary(self) -> dict[str, Any]:
+        """Non-secret facts about the executor for the pre-ceremony health gates (read-only)."""
+        report = self.startup_report or {}
+        return {"authority": self.authority.mode, "halt_reason": self.halt_reason, "emergency": bool(self.emergency),
+                "recovered": bool(self._recovered), "exposure_state": self.exposure.get("state"),
+                "startup_unreadable": bool(report.get("unreadable")), "unclassified_orders": len(report.get("unclassified_orders") or []),
+                "foreign_plans": len(report.get("foreign_plans") or []), "cancel_failures": len(report.get("cancel_failures") or []),
+                "open_setups": sum(1 for x in self.setups.values() if not x["finalized"])}
 
     # ------------------------------------------------------------------ persistence / incidents
     def to_state(self) -> dict[str, Any]:
@@ -349,10 +378,17 @@ class LSRLLiveExecutor:
         assert_armed(self.settings)                       # re-checked on EVERY apply (kill switch)
         events += self._startup_reconcile(t_ms)
         events += self._fast_watch(t_ms)
+        try:
+            check_intents(intents)                        # the port's vocabulary: nothing else is ever executed
+        except IntentRefused as exc:
+            self._incident("INTENT_REFUSED", str(exc), t_ms)
+            self._halt(f"INTENT_REFUSED:{exc}")
+            self._persist()
+            return events
         blocked: str | None = None
         entry_batch = [i for i in intents if isinstance(i, PlaceEntry)]
         if entry_batch:
-            blocked = self._entry_cycle_gate(entry_batch[0], t_ms)
+            blocked = self._entry_cycle_gate(entry_batch[0], t_ms, entry_batch)
         for it in intents:
             try:
                 if isinstance(it, PlaceEntry):
@@ -398,14 +434,21 @@ class LSRLLiveExecutor:
         return []
 
     # ------------------------------------------------------------------ entry cycle
-    def _entry_cycle_gate(self, first: PlaceEntry, t_ms: int) -> str | None:
+    def _entry_cycle_gate(self, first: PlaceEntry, t_ms: int, batch: list[PlaceEntry] | None = None) -> str | None:
         """Runs ONCE before a setup's ladder is sent. Returns a rejection reason (or None)."""
         if self.halt_reason:
             return f"EXECUTOR_HALTED:{self.halt_reason}"
         if self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
             return "UNPROTECTED_EXPOSURE"
+        blocked = self.authority.entries_blocked()          # PROTECT_ONLY after a restart; a dead or alarming capacity monitor
+        if blocked:
+            self._incident("ENTRIES_BLOCKED", blocked, t_ms)
+            return blocked
         if first.setup_id in self.setups and self.setups[first.setup_id].get("claimed"):
             return None                                     # restart / duplicate delivery of a known setup
+        vetoed = self._capital_veto(first, batch or [first], t_ms)
+        if vetoed:
+            return vetoed
         try:
             self._ensure_facts()
         except LiveExecutorError as exc:
@@ -444,9 +487,29 @@ class LSRLLiveExecutor:
         setup["claimed"] = True
         return None
 
+    def _capital_veto(self, first: PlaceEntry, batch: list[PlaceEntry], t_ms: int) -> str | None:
+        """The owner-approved capital band bounds the WHOLE ladder before its first rung is sent (a thinned ladder would be a different
+        strategy). It only ever vetoes: it never computes, raises or rounds a quantity."""
+        try:
+            _verdict, candidate = self._verdict(first.setup_id)
+            stop = float(candidate.detection.invalidation)
+        except (RiskAuthorizationError, AttributeError, TypeError, ValueError):
+            return None                                     # no evaluated verdict: the mandatory authorization refuses the order itself
+        rungs = [(i.qty * i.price) for i in batch]
+        planned_loss = sum(i.qty * abs(i.price - stop) for i in batch)
+        veto = self.authority.capital_veto(planned_loss_usdt=planned_loss, total_notional_usdt=sum(rungs), rung_notionals=rungs,
+                                           exchange_min_notional=self.rules.min_notional_usdt)
+        if veto:
+            self._incident("CAPITAL_GUARD_VETO", veto, t_ms, setup_id=first.setup_id)
+            return f"CAPITAL_GUARD:{veto}"
+        return None
+
     def _place_entry(self, it: PlaceEntry, t_ms: int) -> list[Any]:
         if any(r["tag"] == it.tag and r["kind"] == "ENTRY" for r in self.orders.values()):
             return []                                       # restart / duplicate delivery: already placed
+        blocked = self.authority.entries_blocked()
+        if blocked:
+            return [OrderEvent(t_ms, it.setup_id, it.tag, "REJECTED", blocked)]
         if self.halt_reason:
             return [OrderEvent(t_ms, it.setup_id, it.tag, "REJECTED", f"EXECUTOR_HALTED:{self.halt_reason}")]
         if self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL):
@@ -598,6 +661,17 @@ class LSRLLiveExecutor:
         if self.process_down.observed_model == "POSITION_LEVEL" and self._lone_position_level_stop(hold):
             return self.client.move_position_level_stop_only(
                 symbol=self.rules.symbol, hold_side=hold, trigger_price=price, reason=reason)
+        if (self.process_down.observed_model == "PLAN_LEVEL" and self.process_down.plan_place_first_ok
+                and not self._place_first_broken):
+            res = self.client.move_plan_level_stop_place_first(
+                symbol=self.rules.symbol, hold_side=hold, trigger_price=price, reason=reason)
+            if isinstance(res, dict) and res.get("place_first_survived") is False:
+                # The exchange cancelled the second stop although the attestation observed it tolerated. NOTHING was cancelled
+                # (the old stop is intact), so falling back to the legacy move loses nothing; and it is not tried again.
+                self._place_first_broken = True
+                self._incident("PLACE_FIRST_STOP_NOT_TOLERATED", f"{hold}: {res.get('reason_detail')}")
+            else:
+                return res
         return self.client.move_futures_stop_loss(
             symbol=self.rules.symbol, hold_side=hold, trigger_price=price,
             direction=setup["direction"], cleanup_existing=True, reason=reason)
@@ -1442,6 +1516,8 @@ class LSRLLiveExecutor:
         events += self._startup_reconcile(t_ms)
         if self._recovered:
             self._resolve_expected_entries(t_ms)             # a write-ahead entry from THIS process, accepted but never tracked
+            if self.authority.entries_blocked() == "ENTRIES_DISABLED_PROTECT_ONLY":
+                self._cancel_resting_entries(None)           # a restart without the ceremony: no ladder of a previous life may still fill
         active = (any(not r["terminal"] for r in self.orders.values()) or self.stop or self.emergency
                   or bool(self._unresolved_entry_sides())
                   or self.pending_central or any(not s["finalized"] for s in self.setups.values())

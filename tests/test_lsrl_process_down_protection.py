@@ -24,7 +24,7 @@ from lsrl.adapters.process_down import (REQUIRED_CHECKS, AttestationRefused, Pro
 from lsrl.core.config import DEFAULT_CONFIG as CFG
 from lsrl.core.engine import LSRLEngine
 from lsrl.core.types import Direction, FillEvent, SetStop
-from tests.lsrl_fake_exchange import TEST_PROTECTION
+from tests.lsrl_fake_exchange import TEST_AUTHORITY, TEST_PROTECTION
 from tests.lsrl_fixtures import RULES, long_sweep
 from tests.test_bitget_minimum_size import FakeOrderClient
 from tests.test_lsrl_central_loss_visibility import read_rows
@@ -38,10 +38,32 @@ NOW = 1_800_000_000.0
 
 
 # ==================================================================================== the attestation (pure)
+#: FROZEN, WRITTEN OUT BY HAND, and deliberately NOT derived from `lsrl.adapters.process_down` (Agent C, mutant M09: a test that
+#: takes its expectation from the code under test cannot notice the code dropping a check). Every observation the design depends
+#: on, once per side, plus the one global one. Changing this list is a reviewed decision, not a refactor.
+FROZEN_PER_SIDE_CHECKS = (
+    "preset_accepted_on_limit_order", "preset_accepted_at_strategy_geometry", "unfilled_cancel_leaves_no_stop",
+    "stop_exists_after_fill_without_client", "partial_fill_stop_covers_filled",
+    "partial_fill_cancel_keeps_stop_for_filled_size", "stop_covers_every_fill", "stop_survives_settle",
+    "executor_stop_move_coexists", "later_fill_with_old_preset_is_repairable", "cleanup_after_flat")
+FROZEN_REQUIRED_CHECKS = (
+    tuple(f"{c}:long" for c in FROZEN_PER_SIDE_CHECKS) + tuple(f"{c}:short" for c in FROZEN_PER_SIDE_CHECKS)
+    + ("model_same_on_both_sides",))
+
+
+def test_the_required_observations_are_exactly_the_frozen_reviewed_list():
+    assert len(FROZEN_REQUIRED_CHECKS) == 23 and len(set(FROZEN_REQUIRED_CHECKS)) == 23
+    assert set(REQUIRED_CHECKS) == set(FROZEN_REQUIRED_CHECKS) and len(REQUIRED_CHECKS) == 23
+    assert "cleanup_after_flat:long" in REQUIRED_CHECKS and "cleanup_after_flat:short" in REQUIRED_CHECKS        # M09, by name
+    assert "partial_fill_stop_covers_filled:short" in REQUIRED_CHECKS and "model_same_on_both_sides" in REQUIRED_CHECKS
+
+
 def attestation(tmp_path, **over):
-    doc = {"kind": "PRESET_STOP_SEMANTICS", "schema": 1, "decision": "PASS", "environment": "BITGET_DEMO",
+    doc = {"kind": "PRESET_STOP_SEMANTICS", "schema": 2, "decision": "PASS", "environment": "BITGET_DEMO",
            "code_sha": SHA, "created_at": NOW - 60, "expires_at": NOW + 3600, "observed_model": "PLAN_LEVEL",
-           "checks": [{"id": c, "passed": True, "observed": {}} for c in REQUIRED_CHECKS]}
+           "sides_tested": ["long", "short"], "capabilities": {"plan_place_first_ok": False},
+           "evidence": {"run_id": "abc12345", "orders": [{"orderId": "1", "clientOid": "lsrlprobe-abc12345-l-fill1"}]},
+           "checks": [{"id": c, "passed": True, "observed": {}} for c in FROZEN_REQUIRED_CHECKS]}
     doc.update(over)
     path = tmp_path / "attestation.json"
     raw = json.dumps(doc).encode()
@@ -51,14 +73,39 @@ def attestation(tmp_path, **over):
 
 def test_a_complete_attestation_bound_to_this_release_and_pinned_outside_the_file_is_accepted(tmp_path):
     path, digest = attestation(tmp_path)
-    got = verify_attestation(path, digest, code_sha=SHA, now=NOW)
+    got = verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True)
     assert got.observed_model == "PLAN_LEVEL" and got.environment == "BITGET_DEMO" and got.digest == digest
+    assert got.plan_place_first_ok is False
+
+
+def test_a_demo_observation_is_refused_unless_the_owner_has_explicitly_accepted_demo_evidence(tmp_path):
+    path, digest = attestation(tmp_path)
+    with pytest.raises(AttestationRefused, match="DEMO_NOT_ACCEPTED_BY_OWNER"):
+        verify_attestation(path, digest, code_sha=SHA, now=NOW)
+    with pytest.raises(AttestationRefused, match="DEMO_NOT_ACCEPTED_BY_OWNER"):
+        verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=False)
+    live, live_digest = attestation(tmp_path, environment="BITGET_LIVE_MINIMAL")             # a minimal LIVE observation needs no such decision
+    assert verify_attestation(live, live_digest, code_sha=SHA, now=NOW).environment == "BITGET_LIVE_MINIMAL"
+
+
+def test_the_owner_demo_acceptance_setting_is_read_strictly_and_defaults_to_refuse(tmp_path):
+    path, digest = attestation(tmp_path)
+    base = dict(lsrl_process_down_attestation_path=str(path), lsrl_process_down_attestation_sha256=digest)
+    for value in (None, False, "true", 1, "yes"):                       # only the boolean True is acceptance
+        kw = dict(base) if value is None else {**base, "lsrl_accept_demo_process_down_evidence": value}
+        with pytest.raises(AttestationRefused, match="DEMO_NOT_ACCEPTED_BY_OWNER"):
+            load_from_settings(SimpleNamespace(**kw), code_sha=SHA, now=NOW)
+    ok = load_from_settings(SimpleNamespace(**base, lsrl_accept_demo_process_down_evidence=True), code_sha=SHA, now=NOW)
+    assert ok.environment == "BITGET_DEMO"
+    from app.config import Settings
+    assert Settings.model_fields["lsrl_accept_demo_process_down_evidence"].default is False
 
 
 @pytest.mark.parametrize("over,reason", [
     ({"decision": "FAIL"}, "DECISION_NOT_PASS"),
     ({"kind": "OTHER"}, "KIND_OR_SCHEMA"),
-    ({"schema": 2}, "KIND_OR_SCHEMA"),
+    ({"schema": 1}, "KIND_OR_SCHEMA"),                                    # the long-only, id-less schema is no longer accepted
+    ({"schema": 3}, "KIND_OR_SCHEMA"),
     ({"environment": "SOMEWHERE"}, "ENVIRONMENT"),
     ({"observed_model": "GUESS"}, "MODEL_UNKNOWN"),
     ({"code_sha": "b" * 40}, "NOT_BOUND_TO_THIS_RELEASE"),
@@ -68,59 +115,88 @@ def test_a_complete_attestation_bound_to_this_release_and_pinned_outside_the_fil
     ({"created_at": "x"}, "TIMES_INVALID"),
     ({"expires_at": float("inf")}, "TIMES_INVALID"),
     ({"checks": "nope"}, "CHECKS_MISSING"),
+    ({"sides_tested": ["long"]}, "NOT_BOTH_SIDES"),                      # a long-only observation says nothing about shorts
+    ({"sides_tested": ["short", "long"]}, "NOT_BOTH_SIDES"),
+    ({"sides_tested": None}, "NOT_BOTH_SIDES"),
+    ({"capabilities": None}, "CAPABILITIES_INVALID"),
+    ({"capabilities": {"plan_place_first_ok": "yes"}}, "CAPABILITIES_INVALID"),
+    ({"capabilities": {"can_skip_stops": True}}, "CAPABILITIES_INVALID"),      # an unknown capability is never granted
+    ({"evidence": None}, "NO_RAW_EXCHANGE_EVIDENCE"),
+    ({"evidence": {"run_id": "", "orders": [{"orderId": "1", "clientOid": "c"}]}}, "NO_RAW_EXCHANGE_EVIDENCE"),
+    ({"evidence": {"run_id": "r", "orders": []}}, "NO_RAW_EXCHANGE_EVIDENCE"),
+    ({"evidence": {"run_id": "r", "orders": [{"clientOid": "c"}]}}, "NO_RAW_EXCHANGE_EVIDENCE"),     # an order without an exchange id
+    ({"evidence": {"run_id": "r", "orders": [{"orderId": "1"}]}}, "NO_RAW_EXCHANGE_EVIDENCE"),
 ])
 def test_every_way_an_attestation_can_be_wrong_refuses(tmp_path, over, reason):
     path, digest = attestation(tmp_path, **over)
     with pytest.raises(AttestationRefused, match=reason):
-        verify_attestation(path, digest, code_sha=SHA, now=NOW)
+        verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True)
 
 
-@pytest.mark.parametrize("missing", REQUIRED_CHECKS)
+@pytest.mark.parametrize("missing", FROZEN_REQUIRED_CHECKS)
 def test_each_required_observation_is_individually_required(tmp_path, missing):
-    checks = [{"id": c, "passed": True} for c in REQUIRED_CHECKS if c != missing]
+    checks = [{"id": c, "passed": True} for c in FROZEN_REQUIRED_CHECKS if c != missing]
     path, digest = attestation(tmp_path, checks=checks)
     with pytest.raises(AttestationRefused, match="CHECK_MISSING:" + missing):
-        verify_attestation(path, digest, code_sha=SHA, now=NOW)
+        verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True)
 
 
-def test_one_failed_observation_refuses_even_when_the_decision_says_pass(tmp_path):
-    checks = [{"id": c, "passed": c != "stop_survives_settle"} for c in REQUIRED_CHECKS]
+def test_a_check_that_belongs_to_the_other_side_does_not_stand_in_for_this_one(tmp_path):
+    checks = [{"id": c, "passed": True} for c in FROZEN_REQUIRED_CHECKS if c != "stop_covers_every_fill:short"]
+    checks.append({"id": "stop_covers_every_fill", "passed": True})          # the old, side-less name proves nothing
     path, digest = attestation(tmp_path, checks=checks)
-    with pytest.raises(AttestationRefused, match="CHECK_FAILED:stop_survives_settle"):
-        verify_attestation(path, digest, code_sha=SHA, now=NOW)
+    with pytest.raises(AttestationRefused, match="CHECK_MISSING:stop_covers_every_fill:short"):
+        verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True)
+
+
+@pytest.mark.parametrize("failing", FROZEN_REQUIRED_CHECKS)
+def test_one_failed_observation_refuses_even_when_the_decision_says_pass(tmp_path, failing):
+    checks = [{"id": c, "passed": c != failing} for c in FROZEN_REQUIRED_CHECKS]
+    path, digest = attestation(tmp_path, checks=checks)
+    with pytest.raises(AttestationRefused, match="CHECK_FAILED:" + failing):
+        verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True)
+
+
+def test_the_place_first_capability_is_granted_only_when_observed_and_only_to_a_plan_level_exchange(tmp_path):
+    path, digest = attestation(tmp_path, capabilities={"plan_place_first_ok": True})
+    assert verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True).plan_place_first_ok is True
+    path, digest = attestation(tmp_path, capabilities={"plan_place_first_ok": True}, observed_model="POSITION_LEVEL")
+    assert verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True).plan_place_first_ok is False
+    path, digest = attestation(tmp_path, capabilities={})                    # not observed = not granted
+    assert verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True).plan_place_first_ok is False
 
 
 def test_an_attestation_cannot_vouch_for_itself_the_digest_is_pinned_outside_the_file(tmp_path):
     path, digest = attestation(tmp_path)
     with pytest.raises(AttestationRefused, match="DIGEST_MISMATCH"):
-        verify_attestation(path, "0" * 64, code_sha=SHA, now=NOW)
+        verify_attestation(path, "0" * 64, code_sha=SHA, now=NOW, accept_demo=True)
     for bad in ("", "abc", "g" * 64):
         with pytest.raises(AttestationRefused, match="DIGEST_NOT_PINNED"):
-            verify_attestation(path, bad, code_sha=SHA, now=NOW)
+            verify_attestation(path, bad, code_sha=SHA, now=NOW, accept_demo=True)
     path.write_bytes(path.read_bytes() + b" ")                                  # any edit breaks the pin
     with pytest.raises(AttestationRefused, match="DIGEST_MISMATCH"):
-        verify_attestation(path, digest, code_sha=SHA, now=NOW)
+        verify_attestation(path, digest, code_sha=SHA, now=NOW, accept_demo=True)
 
 
 @pytest.mark.parametrize("sha", ["UNKNOWN", SHA + "+dirty", "", "A" * 40, "abc123"])
 def test_a_dirty_unknown_or_malformed_release_sha_never_verifies(tmp_path, sha):
     path, digest = attestation(tmp_path)
     with pytest.raises(AttestationRefused, match="RELEASE_SHA_NOT_CLEAN_40_HEX"):
-        verify_attestation(path, digest, code_sha=sha, now=NOW)
+        verify_attestation(path, digest, code_sha=sha, now=NOW, accept_demo=True)
 
 
 def test_missing_symlinked_and_non_json_files_refuse(tmp_path):
     path, digest = attestation(tmp_path)
     with pytest.raises(AttestationRefused, match="FILE_MISSING"):
-        verify_attestation(tmp_path / "nope.json", digest, code_sha=SHA, now=NOW)
+        verify_attestation(tmp_path / "nope.json", digest, code_sha=SHA, now=NOW, accept_demo=True)
     link = tmp_path / "link.json"
     link.symlink_to(path)
     with pytest.raises(AttestationRefused, match="FILE_MISSING"):
-        verify_attestation(link, digest, code_sha=SHA, now=NOW)
+        verify_attestation(link, digest, code_sha=SHA, now=NOW, accept_demo=True)
     junk = tmp_path / "junk.json"
     junk.write_bytes(b"not json")
     with pytest.raises(AttestationRefused, match="NOT_JSON"):
-        verify_attestation(junk, hashlib.sha256(b"not json").hexdigest(), code_sha=SHA, now=NOW)
+        verify_attestation(junk, hashlib.sha256(b"not json").hexdigest(), code_sha=SHA, now=NOW, accept_demo=True)
 
 
 def test_load_from_settings_refuses_when_nothing_is_configured():
@@ -136,7 +212,7 @@ def test_the_executor_cannot_be_constructed_without_a_verified_protection_object
     for bad in (None, "PLAN_LEVEL", object()):
         with pytest.raises(LiveNotArmed, match="PROCESS_DOWN_PROTECTION_NOT_ATTESTED"):
             LSRLLiveExecutor(settings=rig.settings, client=rig.ex, submitter=rig.submitter, auth_store=rig.auth,
-                             gate=rig.gate, state_store=rig.state, rules=RULES, process_down=bad)
+                             gate=rig.gate, state_store=rig.state, rules=RULES, process_down=bad, authority=TEST_AUTHORITY)
 
 
 def test_the_production_runtime_builder_refuses_micro_live_without_the_attestation(tmp_path):
@@ -482,3 +558,111 @@ def test_if_the_attestation_says_plan_level_but_the_exchange_makes_a_position_le
     assert verdict(rig) == "FLAT" and rig.exec.emergency is None and rig.xstate() == EXPOSURE_NONE
     assert "no_active_take_profit_to_preserve" in rig.exec.halt_reason               # halted: no new entries until an owner looks
     assert {"PROTECTION_FAILED", "EMERGENCY_FLATTENED"} <= set(kinds(rig))
+
+
+# ==================================================================================== what "a lone position-level stop" means (Agent C: E03, E04)
+def _plans(rig, *rows):
+    rig.ex.plans = [{"orderId": f"P{i}", "planType": kind, "posSide": side, "holdSide": side, "triggerPrice": "149.0",
+                     "size": "1.0"} for i, (kind, side) in enumerate(rows)]
+
+
+@pytest.mark.parametrize("rows,expected", [
+    ((("pos_loss", "long"),), True),
+    ((("pos_loss", "long"), ("pos_profit", "long")), False),           # a position-level take-profit on the same side: not lone
+    ((("pos_loss", "long"), ("pos_profit", "short")), True),           # a take-profit on the OTHER side does not matter
+    ((("pos_loss", "short"),), False),                                  # someone else's side
+    ((("loss_plan", "long"),), False),                                  # plan-level stops are not position-level
+    ((("pos_loss", "short"), ("pos_profit", "long")), False),
+    ((), False),
+])
+def test_a_lone_position_level_stop_is_judged_per_hold_side_and_only_by_position_level_types(tmp_path, rows, expected):
+    rig = LifeRig(tmp_path)
+    _plans(rig, *rows)
+    assert rig.exec._lone_position_level_stop("long") is expected
+
+
+def test_an_unreadable_plan_list_is_never_a_lone_position_level_stop(tmp_path):
+    rig = LifeRig(tmp_path)
+    rig.ex.fail["get_tpsl_orders"] = TimeoutError("read timed out")
+    assert rig.exec._lone_position_level_stop("long") is False
+
+
+# ==================================================================================== the stop move never leaves a gap when the exchange was OBSERVED to allow it
+def _plan_level_rig(tmp_path, *, place_first_ok):
+    rig = LifeRig(tmp_path)
+    rig.protection = ProcessDownProtection("PLAN_LEVEL", "BITGET_DEMO", "0" * 40, "0" * 64, plan_place_first_ok=place_first_ok)
+    rig.exec.process_down = rig.protection
+    rig.run(long_sweep())
+    rig.ex.fill(entries(rig)[0])
+    rig.drive(5)
+    return rig
+
+
+def _protected_at(rig, extra):
+    """What the EXCHANGE holds after a move: every stop at frozen+extra, covering the whole position (the frozen-price
+    `verdict` cannot judge a moved stop)."""
+    plans = [p for p in rig.ex.plans if "loss" in p["planType"] and p["posSide"] == "long"]
+    return bool(plans) and sum(float(p["size"]) for p in plans) >= rig.ex.position["long"] - 1e-9 and all(
+        abs(float(p["triggerPrice"]) - round(frozen_stop(rig) + extra, 3)) < 0.006 for p in plans)
+
+
+def _move_to_break_even(rig, extra=0.4, reason="BE"):
+    """Returns the stop requests made BY THIS MOVE (the immediate post-fill protection is not counted)."""
+    before = {k: len(rig.ex.by_kind(k)) for k in ("stop", "stop_place_first", "stop_pos")}
+    rig.exec._set_stop(SetStop(rig.engine.setup.setup_id, Direction.LONG, round(frozen_stop(rig) + extra, 3), q_of(rig), reason),
+                       rig.ex.now_ms)
+    return {k: len(rig.ex.by_kind(k)) - n for k, n in before.items()}
+
+
+def test_with_the_capability_attested_a_plan_level_stop_is_moved_place_first_and_never_cancel_then_place(tmp_path):
+    rig = _plan_level_rig(tmp_path, place_first_ok=True)
+    made = _move_to_break_even(rig)
+    assert made == {"stop": 0, "stop_place_first": 1, "stop_pos": 0}                 # the legacy move was never used
+    (loss,) = [p for p in rig.ex.plans if "loss" in p["planType"]]
+    assert float(loss["triggerPrice"]) == pytest.approx(round(frozen_stop(rig) + 0.4, 3))
+    assert _protected_at(rig, 0.4) and rig.exec.halt_reason is None
+
+
+def test_without_the_capability_the_legacy_move_is_used_exactly_as_before(tmp_path):
+    rig = _plan_level_rig(tmp_path, place_first_ok=False)
+    made = _move_to_break_even(rig)
+    assert made == {"stop": 1, "stop_place_first": 0, "stop_pos": 0}
+    assert rig.ex.by_kind("stop_place_first") == []                                   # not even for the immediate protection
+    assert _protected_at(rig, 0.4)
+
+
+def test_a_position_level_attestation_never_uses_place_first_even_if_the_flag_were_set(tmp_path):
+    rig = LifeRig(tmp_path)
+    rig.protection = ProcessDownProtection("POSITION_LEVEL", "BITGET_DEMO", "0" * 40, "0" * 64, plan_place_first_ok=True)
+    rig.exec.process_down = rig.protection
+    rig.ex.preset_model = "POSITION_LEVEL"
+    rig.run(long_sweep())
+    rig.ex.fill(entries(rig)[0])
+    rig.drive(5)
+    made = _move_to_break_even(rig)
+    assert rig.ex.by_kind("stop_place_first") == [] and made["stop_pos"] == 1
+
+
+def test_if_the_exchange_does_not_tolerate_the_second_stop_in_production_the_old_stop_is_untouched_and_the_move_falls_back(tmp_path):
+    rig = _plan_level_rig(tmp_path, place_first_ok=True)
+    rig.ex.place_first_tolerated = False                         # the attestation was demo-only; production differs
+    before = [dict(p) for p in rig.ex.plans if "loss" in p["planType"]]
+    made = _move_to_break_even(rig)
+    assert made == {"stop": 1, "stop_place_first": 1, "stop_pos": 0}                  # tried once, then the legacy move
+    assert rig.exec._place_first_broken is True and "PLACE_FIRST_STOP_NOT_TOLERATED" in kinds(rig)
+    assert before and _protected_at(rig, 0.4) and rig.exec.halt_reason is None
+    again = _move_to_break_even(rig, extra=0.8, reason="TP")
+    assert again == {"stop": 1, "stop_place_first": 0, "stop_pos": 0}                    # NOT retried: legacy from now on
+    assert _protected_at(rig, 0.8)
+
+
+def test_a_place_first_move_the_exchange_refuses_is_retried_and_an_unprovable_one_ends_verified_flat(tmp_path):
+    rig = _plan_level_rig(tmp_path, place_first_ok=True)
+    rig.ex.fail_counts["move_plan_level_stop_place_first"] = 100          # the request itself keeps failing (not 'not tolerated')
+    events = rig.exec.apply([SetStop(rig.engine.setup.setup_id, Direction.LONG, round(frozen_stop(rig) + 0.4, 3), q_of(rig),
+                                     "BE")], rig.ex.now_ms)
+    for e in events:
+        rig.feed(e)
+    converge(rig)
+    assert verdict(rig) in ("FLAT", "PROTECTED")                        # never an unprotected position
+    assert rig.exec._place_first_broken is False

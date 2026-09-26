@@ -72,6 +72,8 @@ class LSRLRuntime:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_error: str | None = None
+        self.promote_hook: Callable[[Any], None] | None = None      # MICRO_LIVE only: PROTECT_ONLY -> TRADE after the owner ceremony
+        self.equity_fn: Callable[[], float] | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def restore(self) -> None:
@@ -101,6 +103,12 @@ class LSRLRuntime:
         self.log.warning("LSRL_RUNTIME_STARTED | mode=%s | symbol=%s | git=%s | session=%s | orders_possible=%s",
                          self.mode.value, self.engine.cfg.symbol, self.git_sha, self.session_id,
                          self.mode is Mode.MICRO_LIVE)
+
+    def promote(self, authority: Any) -> None:
+        """Hand the running MICRO_LIVE runtime its TRADE authority. Only the launcher, in the process that ran the ceremony, can build one."""
+        if self.promote_hook is None:
+            raise RuntimeError("this runtime has nothing to promote")
+        self.promote_hook(authority)
 
     def stop(self) -> None:
         self._stop.set()
@@ -193,7 +201,8 @@ class LSRLRuntime:
                 "recorder_error": getattr(self.driver, "recorder_error", None), "last_error": self.last_error,
                 "feed": {"state": obs.state, "epoch": obs.epoch, "unsafe_reason": obs.unsafe_reason,
                          "stats": dict(obs.stats), "window": obs.window_width()},
-                "ws": self.ws.status(), "queue": len(self.bus)}
+                "ws": self.ws.status(), "queue": len(self.bus),
+                **({"executor": self.driver.executor.summary()} if hasattr(getattr(self.driver, "executor", None), "summary") else {})}
 
 
 # ---------------------------------------------------------------------- mode wiring
@@ -217,7 +226,7 @@ def load_rules(client: Any, symbol: str, product_type: str):
 
 def build_runtime(settings: Any, *, client: Any, execution_service: Any, risk_manager: Any,
                   cfg: LSRLConfig = DEFAULT_CONFIG, ws_factory: Callable[..., Any] | None = None,
-                  project_dir: str | Path | None = None) -> LSRLRuntime:
+                  project_dir: str | Path | None = None, authority: Any = None) -> LSRLRuntime:
     """Assemble the runtime for `settings.lsrl_mode`. Raises rather than degrade: an unknown
     contract spec, a missing execution service (MICRO_LIVE), or an unarmed executor refuses to start."""
     from execution.state_store import JsonStateStore
@@ -259,7 +268,7 @@ def build_runtime(settings: Any, *, client: Any, execution_service: Any, risk_ma
             raise RuntimeError("MICRO_LIVE requires the execution service (not forward-paper-only)")
         from execution.entry_submitter import EntryOrderSubmitter
         from execution.order_intent_store import OrderIntentStore
-        from lsrl.adapters.live import LSRLLiveExecutor, assert_armed
+        from lsrl.adapters.live import LiveNotArmed, LSRLLiveExecutor, assert_armed
         from lsrl.adapters.live_driver import LiveDriver
         from lsrl.adapters.process_down import load_from_settings
         from risk.mandatory_authorization import RiskAuthorizationStore
@@ -270,10 +279,17 @@ def build_runtime(settings: Any, *, client: Any, execution_service: Any, risk_ma
         # clean release SHA: a MICRO_LIVE executor that could rest an entry without an exchange-side stop cannot exist.
         assert_armed(settings)                              # unarmed stays a LiveNotArmed refusal, before anything else
         process_down = load_from_settings(settings, code_sha=git_sha)
+        from lsrl.adapters.authority import LiveAuthority, bind_authority_to_runtime
+        if not isinstance(authority, LiveAuthority):
+            raise LiveNotArmed("MICRO_LIVE not armed: CEREMONY_NOT_CONSUMED")
+        bind_authority_to_runtime(authority, settings=settings, cfg=cfg, git_sha=git_sha, symbol=symbol)
+        from lsrl.adapters.strategy_port import LsrlStrategyPort
+        from lsrl.adapters.authority import admit_strategy
+        admit_strategy(LsrlStrategyPort(engine), authority)
         executor = LSRLLiveExecutor(settings=settings, client=client, submitter=submitter,
                                     auth_store=RiskAuthorizationStore(), gate=gate,
                                     state_store=JsonStateStore(str(root / "executor_state.json")), rules=rules, cfg=cfg,
-                                    process_down=process_down)
+                                    process_down=process_down, authority=authority)
 
         def authenticated_equity() -> float:
             for row in (client.get_accounts().get("data") or []):
@@ -283,8 +299,26 @@ def build_runtime(settings: Any, *, client: Any, execution_service: Any, risk_ma
                         return value
             raise RuntimeError("authenticated USDT account equity unavailable")
 
-        driver = LiveDriver(engine, executor, nav_fn=authenticated_equity, recorder=recorder, observer=observer,
+        from lsrl.capital import sizing_nav
+
+        def sized_nav(auth: Any) -> Callable[[], float]:
+            if auth.capital is None:
+                return authenticated_equity
+            ceiling = auth.capital.capital_ceiling_usdt     # the strategy sizes against min(equity, the owner-approved ceiling), never more
+            return lambda: sizing_nav(authenticated_equity(), ceiling)
+
+        driver = LiveDriver(engine, executor, nav_fn=sized_nav(authority), recorder=recorder, observer=observer,
                             history_limit=HISTORY_LIMIT)
+
+        def promote(new_authority: Any) -> None:
+            bind_authority_to_runtime(new_authority, settings=settings, cfg=cfg, git_sha=git_sha, symbol=symbol)
+            admit_strategy(LsrlStrategyPort(engine), new_authority)
+            executor.promote(new_authority)
+            driver.nav_fn = sized_nav(new_authority)
     holder["driver"] = driver
-    return LSRLRuntime(mode=mode, engine=engine, driver=driver, bus=bus, ws=ws, candles=candles, state_store=state,
-                       git_sha=git_sha, session_id=session_id, status_store=JsonStateStore(str(root / "status.json")))
+    runtime = LSRLRuntime(mode=mode, engine=engine, driver=driver, bus=bus, ws=ws, candles=candles, state_store=state,
+                          git_sha=git_sha, session_id=session_id, status_store=JsonStateStore(str(root / "status.json")))
+    if mode is Mode.MICRO_LIVE:
+        runtime.promote_hook = promote
+        runtime.equity_fn = authenticated_equity                       # the ceremony's NAV observation; never used for sizing directly
+    return runtime

@@ -24,7 +24,7 @@ from lsrl.core.config import DEFAULT_CONFIG as CFG
 from lsrl.core.engine import LSRLEngine
 from lsrl.core.types import FillEvent, OrderEvent, PlaceEntry, SetStop, SetTargets
 from risk.mandatory_authorization import RiskAuthorizationStore
-from tests.lsrl_fake_exchange import TEST_PROTECTION, FakeExchange
+from tests.lsrl_fake_exchange import TEST_AUTHORITY, TEST_PROTECTION, FakeExchange
 from tests.lsrl_fixtures import RULES, S, feed_quiet, long_sweep, mirror
 from tests.test_lsrl_risk_integration import _isolate, _rm  # noqa: F401  (autouse isolation fixture)
 
@@ -62,7 +62,7 @@ class Rig:
             state_store=self.state, rules=RULES, sleep=lambda s: None,
             ownership=StrategyOwnershipRegistry(self.tmp / "ownership.json"),
             central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)),
-            clock_ms=lambda: self.ex.now_ms, process_down=TEST_PROTECTION)
+            clock_ms=lambda: self.ex.now_ms, process_down=TEST_PROTECTION, authority=TEST_AUTHORITY)
 
     def feed(self, ev):
         queue = [ev]

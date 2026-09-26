@@ -33,9 +33,14 @@ from clients.bitget_base_client import BitgetOrderRejected
 from clients.bitget_order_client import BitgetOrderClientMixin
 from clients.clock_safety import ClockUnsafe
 from lsrl.adapters.process_down import ProcessDownProtection
+from lsrl.adapters.authority import _authority_for_tests
 
 #: What a verified attestation grants, for tests that are not about the attestation itself.
 TEST_PROTECTION = ProcessDownProtection("PLAN_LEVEL", "BITGET_DEMO", "0" * 40, "0" * 64)
+
+#: A TRADE authority for fixtures whose NAV is far above the micro-live band (its capital veto is off). The real capital bounds are tested with a
+#: consumed ceremony identity in tests/test_lsrl_capital_authority.py.
+TEST_AUTHORITY = _authority_for_tests()
 
 
 def contract_row_for(rules) -> dict[str, Any]:
@@ -75,6 +80,7 @@ class FakeExchange:
         self.fee_rates = {"makerFeeRate": "0.0002", "takerFeeRate": "0.0006"}
         # fault injection
         self.stop_vanishes = False           # the exchange cancels the accepted plan right away
+        self.place_first_tolerated = True    # a loss_plan placed BESIDE another one survives (else the newcomer is cancelled)
         self.stop_lies = False               # the client claims verified=True but no plan exists
         self.strict_occupancy = True         # limit closes occupy the position for market closes
         self.foreign_orders: list[dict[str, Any]] = []
@@ -279,6 +285,32 @@ class FakeExchange:
                 "confirmed_stop": {"plan_type": "loss_plan", "trigger_price": float(trigger_price),
                                    "order_id": plan["orderId"], "size": str(size), "hold_side": hold_side},
                 "placed": {"data": {"orderId": plan["orderId"]}}, "size": size}
+
+    def move_plan_level_stop_place_first(self, symbol, hold_side, trigger_price, reason=None, **_):
+        """The new shared-client method: place the newcomer BESIDE the old stop(s), cancel the old ones only afterwards."""
+        self._maybe_fail("move_plan_level_stop_place_first")
+        size = self.position[hold_side]
+        if size <= 0:
+            return {"verified": False, "reason_detail": "no_live_position_to_protect", "place_first_survived": None}
+        if any(p["planType"] == "pos_loss" and p["posSide"] == hold_side for p in self.plans):
+            return {"verified": False, "reason_detail": "position_level_stop_present_place_first_not_applicable",
+                    "place_first_survived": None}
+        self.calls.append(("stop_place_first", trigger_price, size, reason))
+        old = [p for p in self.plans if "loss" in p["planType"] and p["posSide"] == hold_side]
+        keep = next((p for p in old if abs(float(p["triggerPrice"]) - trigger_price) < 1e-6 and float(p["size"]) >= size - 1e-9), None)
+        if keep is None:
+            if self.stop_vanishes or not self.place_first_tolerated:
+                return {"verified": False, "place_first_survived": False, "old_stops_retained": [p["orderId"] for p in old],
+                        "reason_detail": "newcomer_absent_after_settle_old_stops_untouched"}
+            keep = {"orderId": self._new_id(), "planType": "loss_plan", "posSide": hold_side, "holdSide": hold_side,
+                    "triggerPrice": str(trigger_price), "size": str(size), "planStatus": "live", "triggerType": "mark_price"}
+            self.plans.append(keep)
+        self.plans = [p for p in self.plans
+                      if not ("loss" in p["planType"] and p["posSide"] == hold_side and p is not keep)]
+        return {"symbol": symbol, "hold_side": hold_side, "trigger_price": trigger_price, "verified": True,
+                "model": "PLAN_LEVEL_PLACE_FIRST", "place_first_survived": True, "size": size,
+                "confirmed_stop": {"plan_type": "loss_plan", "trigger_price": float(trigger_price),
+                                   "order_id": keep["orderId"], "size": str(size), "hold_side": hold_side}}
 
     def move_position_level_stop_only(self, symbol, hold_side, trigger_price, reason=None, **_):
         """The new shared-client method: rewrite a LONE position-level stop in place (nothing to preserve)."""
