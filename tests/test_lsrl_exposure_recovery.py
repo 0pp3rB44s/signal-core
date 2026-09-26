@@ -16,6 +16,7 @@ from lsrl.adapters.live import (ENGINE_ACK_GRACE_MS, EXPOSURE_CRITICAL, EXPOSURE
 from lsrl.core.config import DEFAULT_CONFIG as CFG
 from lsrl.core.engine import LSRLEngine
 from lsrl.core.types import PlaceEntry
+from tests.lsrl_fake_exchange import TEST_PROTECTION
 from tests.lsrl_fixtures import RULES, long_sweep
 from tests.test_lsrl_executor_hardening import entries, kinds
 from tests.test_lsrl_live_executor import Rig, q_of
@@ -38,7 +39,7 @@ class LifeRig(Rig):
             state_store=self.state, rules=RULES, sleep=lambda s: self.advance(s * 1000),
             ownership=StrategyOwnershipRegistry(self.tmp / "ownership.json"),
             central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)),
-            clock_ms=lambda: self.ex.now_ms)
+            clock_ms=lambda: self.ex.now_ms, process_down=TEST_PROTECTION)
 
     def advance(self, ms: float) -> None:
         self.ex.now_ms += int(ms)
@@ -457,8 +458,9 @@ def latent(rig):
     return rig
 
 
-def window(tmp_path, phase_ms: int, fast: bool) -> int:
-    rig = latent(LifeRig(tmp_path / f"w{phase_ms}{fast}").run(long_sweep()))
+def window(tmp_path, phase_ms: int, fast: bool, preset: str = "NONE") -> int:
+    rig = latent(LifeRig(tmp_path / f"w{phase_ms}{fast}{preset}").run(long_sweep()))
+    rig.ex.preset_model = preset
     rig.exec._fast_watch_enabled = fast
     rig.exec._recovered = True
     t = rig.ex.now_ms
@@ -494,4 +496,19 @@ def test_the_entry_to_stop_window_is_measured_and_the_fast_watch_shortens_it(tmp
               f"poll-only min/median/max = {min(slow)}/{int(statistics.median(slow))}/{max(slow)} ms")
     assert max(fast) <= 8_000 and max(slow) <= 11_500           # the budget: discovery + 4 reads + stop call + read-back
     assert max(fast) < max(slow) and statistics.median(fast) < statistics.median(slow)
-    assert statistics.median(fast) <= 4_800                     # the immediate path skips two reads before the stop call
+    # This is the FALLBACK path: the exchange did NOT create a stop at the fill (preset_model NONE = an attestation that lied).
+    # Since preset stops, the executor first reads the plans once (about one round trip, 450 ms) to ADOPT a stop the exchange
+    # may already hold, and only then places one: 4.7 s became about 5.2 s. That is the price of never cancelling a
+    # stop the exchange created; the normal path is tested below and is far shorter.
+    assert statistics.median(fast) <= 5_300
+
+
+def test_with_a_preset_stop_the_exchange_holds_the_stop_from_the_fill_and_the_executor_only_has_to_verify_it(tmp_path, capsys):
+    """The naked window is ZERO by construction (the stop exists at the fill, with no client involved). What is measured
+    here is only how long until the executor has PROVEN and adopted it: discovery + one plan read, no stop call."""
+    phases = range(0, RUNTIME_POLL_MS, 300)
+    fast = [window(tmp_path, p, True, "PLAN_PER_ORDER") for p in phases]
+    with capsys.disabled():
+        print(f"\nPRESET_STOP_VERIFICATION rtt={RTT_MS}ms poll={RUNTIME_POLL_MS}ms | fast-watch verified-after-fill "
+              f"min/median/max = {min(fast)}/{int(statistics.median(fast))}/{max(fast)} ms (naked window = 0)")
+    assert max(fast) <= 2_500 and statistics.median(fast) < 2_000      # no 2 s settle: nothing was cancelled or replaced

@@ -290,12 +290,16 @@ def attempt_maker_entry(
 # Long-lived maker grids use the same write-ahead/idempotent submitter as every
 # other production entry. This helper lives here so the raw transport call
 # remains confined to the repository's audited maker-entry boundary.
-def submit_persistent_maker_entry(*, submitter, client, plan, size, price, notional_usdt, direction="LONG"):
+def submit_persistent_maker_entry(*, submitter, client, plan, size, price, notional_usdt, direction="LONG",
+                                 preset_stop_loss_price=None):
     # `direction` defaults to LONG so the long-only grid caller is unchanged; LSRL passes
     # its own direction. The raw transport call stays confined to this audited boundary.
+    # `preset_stop_loss_price` is forwarded ONLY when given, so every existing caller (and client) sees the
+    # exact call it always saw.
     direction = str(direction).upper()
     if direction not in {"LONG", "SHORT"}:
         raise ValueError(f"unsupported maker entry direction: {direction}")
+    extra = {} if preset_stop_loss_price is None else {"preset_stop_loss_price": preset_stop_loss_price}
     result = submitter.submit_entry(
         plan=plan,
         size=size,
@@ -310,6 +314,7 @@ def submit_persistent_maker_entry(*, submitter, client, plan, size, price, notio
             margin_mode="isolated",
             post_only=True,
             client_oid=client_oid,
+            **extra,
         ),
         notional_usdt=notional_usdt,
     )

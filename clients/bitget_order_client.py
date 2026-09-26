@@ -407,11 +407,16 @@ class BitgetOrderClientMixin:
         margin_coin: str = "USDT",
         client_oid: str | None = None,
         post_only: bool = True,
+        preset_stop_loss_price: float | None = None,
         **_: Any,
     ) -> dict[str, Any]:
         """Place a futures LIMIT entry. post_only=True forces maker-only:
         Bitget rejects/adjusts the order if it would cross the spread, so we
-        never pay taker fees (maker-entry experiment, 2026-07-08)."""
+        never pay taker fees (maker-entry experiment, 2026-07-08).
+
+        ``preset_stop_loss_price`` (default None: no change for any existing caller) attaches Bitget's documented
+        order-level ``presetStopLossPrice`` so an exchange-side stop exists the moment the order fills, with no
+        process alive. It is refused BEFORE the network when it is not on the losing side of the entry price."""
         direction_upper = str(direction).upper()
         if direction_upper not in {"LONG", "SHORT"}:
             raise ValueError(f"Unsupported futures direction: {direction}")
@@ -455,12 +460,21 @@ class BitgetOrderClientMixin:
         }
         if client_oid:
             body["clientOid"] = client_oid
+        if preset_stop_loss_price is not None:
+            formatted_stop = self._format_trigger_price(symbol, float(preset_stop_loss_price))
+            losing_side = formatted_stop < formatted_price if direction_upper == "LONG" else formatted_stop > formatted_price
+            if formatted_stop <= 0 or not losing_side:
+                raise ValueError(
+                    f"Preset stop {formatted_stop} is not on the losing side of the {direction_upper} entry at "
+                    f"{formatted_price} for {symbol}; refusing to place the order"
+                )
+            body["presetStopLossPrice"] = str(formatted_stop)
 
         self._validate_futures_order_flags(body)
         self.log.warning(
-            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s | client_oid=%s",
+            "BITGET_PLACE_LIMIT_ORDER | %s | direction=%s | side=%s | size=%s | price=%s | post_only=%s | client_oid=%s | preset_stop=%s",
             symbol.upper(), direction_upper, side, formatted_size, formatted_price, post_only,
-            client_oid or "-",
+            client_oid or "-", body.get("presetStopLossPrice", "-"),
         )
         # Same rule as the market entry: one attempt, classified outcome.
         return self._request(

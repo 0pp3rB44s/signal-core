@@ -15,7 +15,15 @@ repository's own incident notes establish:
   * a triggered stop is a MARKET order (orderSource loss_market) whose fill is visible in order history with its
     own orderId and priceAvg;
   * hedge mode: resting reduce-only close limits OCCUPY the position; a market close is sized against what is
-    left after them (docs: Place Order notes).
+    left after them (docs: Place Order notes);
+  * PRESET STOP (docs: Place Order `presetStopLossPrice`, echoed by Get Order Detail). The documentation does NOT say how it
+    materialises at a fill, so the fake models EACH possibility and the tests must hold under all of them:
+        preset_model = "NONE"            the exchange ignores it (an attestation that lied)
+                       "PLAN_PER_ORDER"  a loss_plan per entry order, sized to what that order has filled
+                       "POSITION_LEVEL"  ONE pos_loss for the whole position (extra fills change nothing)
+                       "REJECT"          the order is refused
+    and, from this repo's 2026-08-01 incident, `move_futures_stop_loss` follows the real client: an active pos_loss is
+    modified in place (POSITION_LEVEL), otherwise loss plans are replaced (PLAN_LEVEL).
 """
 from __future__ import annotations
 
@@ -24,6 +32,10 @@ from typing import Any
 from clients.bitget_base_client import BitgetOrderRejected
 from clients.bitget_order_client import BitgetOrderClientMixin
 from clients.clock_safety import ClockUnsafe
+from lsrl.adapters.process_down import ProcessDownProtection
+
+#: What a verified attestation grants, for tests that are not about the attestation itself.
+TEST_PROTECTION = ProcessDownProtection("PLAN_LEVEL", "BITGET_DEMO", "0" * 40, "0" * 64)
 
 
 def contract_row_for(rules) -> dict[str, Any]:
@@ -67,6 +79,7 @@ class FakeExchange:
         self.strict_occupancy = True         # limit closes occupy the position for market closes
         self.foreign_orders: list[dict[str, Any]] = []
         self.outage = False                  # every read and write fails (network loss / exchange outage)
+        self.preset_model = "NONE"           # how a preset stop materialises at a fill (see the module docstring)
         self.fail_counts: dict[str, int] = {}                 # method -> number of upcoming calls that fail transiently
         self._n = 0
 
@@ -112,6 +125,8 @@ class FakeExchange:
         row["status"] = o["state"]
         row["posSide"] = "long" if o["direction"] == "LONG" else "short"
         row["cancelReason"] = o.get("cancelReason", "")
+        if o.get("presetStopLossPrice"):
+            row["presetStopLossPrice"] = str(o["presetStopLossPrice"])
         return row
 
     def occupied(self, hold: str) -> float:
@@ -180,17 +195,23 @@ class FakeExchange:
         return {"data": {}}
 
     def place_futures_limit_order(self, symbol, direction, size, price, margin_mode="isolated",
-                                  client_oid=None, post_only=True, **_):
+                                  client_oid=None, post_only=True, preset_stop_loss_price=None, **_):
         self._require_safe_clock_for_order()
         self._maybe_fail("place_futures_limit_order")
         crosses = price >= self.ask if direction == "LONG" else price <= self.bid
         if post_only and crosses:
             raise BitgetOrderRejected("post_only order would cross the book")
+        if preset_stop_loss_price is not None:
+            losing = preset_stop_loss_price < price if direction == "LONG" else preset_stop_loss_price > price
+            if not losing:
+                raise ValueError("preset stop is not on the losing side of the entry")
+            if self.preset_model == "REJECT":
+                raise BitgetOrderRejected("status=REJECTED presetStopLossPrice not supported")
         oid = self._new_id()
         self.orders[client_oid] = {"clientOid": client_oid, "orderId": oid, "state": "live", "size": size,
                                    "price": price, "direction": direction, "tradeSide": "open",
                                    "post_only": post_only, "baseVolume": 0.0, "priceAvg": 0.0, "fee": 0.0,
-                                   "cTime": self.now_ms}
+                                   "cTime": self.now_ms, "presetStopLossPrice": preset_stop_loss_price}
         self.calls.append(("place_entry", client_oid, direction, size, price, post_only))
         return {"data": {"orderId": oid, "clientOid": client_oid}}
 
@@ -229,6 +250,17 @@ class FakeExchange:
         size = self.position[hold_side]
         if size <= 0:
             raise RuntimeError("no position to protect")
+        active_pos = next((p for p in self.plans if p["planType"] == "pos_loss" and p["posSide"] == hold_side), None)
+        if active_pos is not None:                                # the real client's POSITION_LEVEL branch: modify in place
+            self.calls.append(("stop", trigger_price, size, reason))
+            if self.stop_vanishes:
+                return {"symbol": symbol, "hold_side": hold_side, "verified": False,
+                        "reason_detail": "replacement_absent_after_settle", "placed": {"data": {}}}
+            active_pos["triggerPrice"], active_pos["size"] = str(trigger_price), str(size)
+            return {"symbol": symbol, "hold_side": hold_side, "trigger_price": trigger_price, "verified": True,
+                    "model": "POSITION_LEVEL", "size": size,
+                    "confirmed_stop": {"plan_type": "pos_loss", "trigger_price": float(trigger_price),
+                                       "order_id": active_pos["orderId"], "size": str(size), "hold_side": hold_side}}
         if cleanup_existing:
             self.plans = [p for p in self.plans if not ("loss" in p["planType"] and p["posSide"] == hold_side)]
         plan = {"orderId": self._new_id(), "planType": "loss_plan", "posSide": hold_side, "holdSide": hold_side,
@@ -282,8 +314,31 @@ class FakeExchange:
         hold = "long" if order["direction"] == "LONG" else "short"
         if order["tradeSide"] == "open":
             self.position[hold] += qty
+            self._materialise_preset(order, hold)
         else:
             self.position[hold] -= qty
+
+    def _materialise_preset(self, order: dict[str, Any], hold: str) -> None:
+        """What the EXCHANGE does with a preset stop at a fill - with no client involved."""
+        price = order.get("presetStopLossPrice")
+        if price is None or self.preset_model in ("NONE", "REJECT"):
+            return
+        if self.preset_model == "POSITION_LEVEL":
+            plan = next((p for p in self.plans if p["planType"] == "pos_loss" and p["posSide"] == hold), None)
+            if plan is None:
+                self.plans.append({"orderId": self._new_id(), "planType": "pos_loss", "posSide": hold, "holdSide": hold,
+                                   "triggerPrice": str(price), "size": str(self.position[hold]), "planStatus": "live",
+                                   "triggerType": "fill_price", "fromClientOid": order["clientOid"]})
+            else:
+                plan["size"] = str(self.position[hold])
+            return
+        plan = next((p for p in self.plans if p.get("fromClientOid") == order["clientOid"]), None)   # PLAN_PER_ORDER
+        if plan is None:
+            self.plans.append({"orderId": self._new_id(), "planType": "loss_plan", "posSide": hold, "holdSide": hold,
+                               "triggerPrice": str(price), "size": str(order["baseVolume"]), "planStatus": "live",
+                               "triggerType": "fill_price", "fromClientOid": order["clientOid"]})
+        else:
+            plan["size"] = str(order["baseVolume"])
 
     def trigger_stop(self, price: float | None = None, slippage: float = 0.0) -> str:
         """The stop plan fires: a MARKET order fills the whole position (orderSource loss_market)."""
@@ -293,8 +348,9 @@ class FakeExchange:
         size = self.position[hold]
         fill_px = (price if price is not None else float(plan["triggerPrice"])) - slippage * (1 if hold == "long" else -1)
         oid = self._new_id()
+        source = "pos_loss_market" if plan["planType"] == "pos_loss" else "loss_market"
         self.history.append({"orderId": oid, "clientOid": "", "status": "filled", "state": "filled",
-                             "orderSource": "loss_market", "posSide": hold, "tradeSide": "close",
+                             "orderSource": source, "posSide": hold, "tradeSide": "close",
                              "baseVolume": str(size), "priceAvg": str(fill_px), "fee": str(-size * fill_px * 0.0006),
                              "size": str(size), "cTime": str(self.now_ms)})
         self.position[hold] = 0.0

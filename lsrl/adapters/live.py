@@ -38,7 +38,12 @@ Safety properties (each has a test):
     (the frozen stop is recorded write-ahead with every entry), attempts protection, then a verified flatten, then
     keeps retrying both with bounded exponential backoff forever (`CRITICAL_UNPROTECTED_EXPOSURE`);
   * a fill the engine never acknowledges (its SetStop never covers the ledger) is flattened after a grace period;
-  * entries carry a write-ahead record, so an order accepted just before a crash is found again on restart.
+  * entries carry a write-ahead record, so an order accepted just before a crash is found again on restart;
+  * PROCESS-DOWN PROTECTION (`lsrl.adapters.process_down`): every resting entry carries the frozen protective stop as
+    Bitget's order-level `presetStopLossPrice`, so a fill that happens while no process is alive is still stopped BY THE
+    EXCHANGE. The executor cannot even be constructed without a verified attestation of how the exchange materialises
+    that stop; an exchange-side stop is ADOPTED (never cancelled-then-replaced), and a stop that fires during an outage is
+    read from the order history on restart so the engine and the central loss meters still learn of it.
 """
 from __future__ import annotations
 
@@ -56,6 +61,7 @@ from execution.order_identity import ENTRY_LEG_MAKER
 from execution.strategy_ownership import (OwnershipConflict, OwnershipUnreadable,
                                           StrategyOwnershipRegistry, owner_family)
 from lsrl.adapters.central_ledger import RECORDED, CentralCloseRecorder
+from lsrl.adapters.process_down import ProcessDownProtection
 from lsrl.adapters.riskgate import CentralRiskGate
 from lsrl.contract import ExchangeFactsError, verify_exchange_facts
 from lsrl.core.config import DEFAULT_CONFIG, STRATEGY_ID, LSRLConfig
@@ -148,8 +154,12 @@ class LSRLLiveExecutor:
                  central: CentralCloseRecorder | None = None,
                  facts_verifier: Callable[..., Any] = verify_exchange_facts,
                  clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
-                 fast_watch: bool = True) -> None:
+                 fast_watch: bool = True,
+                 process_down: ProcessDownProtection | None = None) -> None:
         assert_armed(settings)
+        if not isinstance(process_down, ProcessDownProtection):
+            raise LiveNotArmed("MICRO_LIVE not armed: PROCESS_DOWN_PROTECTION_NOT_ATTESTED")
+        self.process_down = process_down
         self.settings, self.client, self.submitter = settings, client, submitter
         self.auth_store, self.gate, self.store = auth_store, gate, state_store
         self.rules, self.cfg, self._sleep = rules, cfg, sleep
@@ -447,19 +457,24 @@ class LSRLLiveExecutor:
         # deterministic clientOid. A crash between the exchange accepting the order and the normal bookkeeping is
         # then recoverable: restart looks the order up by this clientOid instead of never knowing it existed.
         setup["protect_price"] = setup["protect_price"] or float(plan.stop_loss)
+        if not setup["protect_price"] or setup["protect_price"] <= 0:
+            # An entry that could rest WITHOUT its exchange-side stop is exactly the process-down hazard: never place it.
+            return [OrderEvent(t_ms, it.setup_id, it.tag, "REJECTED", "PRESET_STOP_UNAVAILABLE")]
         expected_oid = self.submitter.client_oid_for(ident, leg=ENTRY_LEG_MAKER)
         setup["expected_entries"][expected_oid] = {"tag": it.tag, "rung": it.rung, "price": it.price, "qty": it.qty,
                                                    "direction": it.direction.value, "t_ms": t_ms}
         self._persist()
         result = submit_persistent_maker_entry(            # 4. audited boundary
             submitter=self.submitter, client=self.client, plan=ident, size=it.qty, price=it.price,
-            notional_usdt=plan.position_notional_usdt, direction=it.direction.value)
+            notional_usdt=plan.position_notional_usdt, direction=it.direction.value,
+            preset_stop_loss_price=setup["protect_price"])
         setup["plan_id"] = setup["plan_id"] or plan.plan_id
         setup["candidate_id"] = setup["candidate_id"] or plan.candidate_id
         setup["first_entry_order_id"] = setup["first_entry_order_id"] or result.order_id
         setup["first_entry_client_oid"] = setup["first_entry_client_oid"] or result.client_oid
         self.orders[result.client_oid] = self._order_rec(it.tag, "ENTRY", it.setup_id, it.rung, result.client_oid,
-                                                         result.order_id, it.price, it.qty, it.direction.value, t_ms)
+                                                         result.order_id, it.price, it.qty, it.direction.value, t_ms,
+                                                         preset_stop=setup["protect_price"])
         setup["expected_entries"].pop(result.client_oid, None)
         setup["expected_entries"].pop(expected_oid, None)
         return [OrderEvent(t_ms, it.setup_id, it.tag, "ACCEPTED")]
@@ -589,18 +604,33 @@ class LSRLLiveExecutor:
 
     def _stop_already_in_place(self, setup: dict[str, Any]) -> bool:
         """Moving a stop is cancel-then-place (a window with NO stop): never do it for a stop that is already
-        there, exactly as asked, and independently proven on the exchange."""
+        there, exactly as asked, and independently proven on the exchange. That includes a stop the EXCHANGE created
+        (preset stops of further rungs make the whole position covered without any request from us)."""
         cur = self.stop
-        if not cur or cur["setup_id"] != setup["setup_id"]:
+        if cur and cur["setup_id"] != setup["setup_id"]:
             return False
-        if abs(cur["price"] - setup["stop_price"]) > self.rules.tick_size / 2:
+        if (cur and abs(cur["price"] - setup["stop_price"]) <= self.rules.tick_size / 2
+                and abs(cur["qty"] - setup["desired_stop_qty"]) <= self.rules.qty_step / 2):
+            ok, _why = self._verify_stop(setup["hold"], setup["stop_price"], setup["desired_stop_qty"])
+            if ok:
+                cur["verified_ms"] = self._clock_ms()
+            return ok
+        return self._adopt_exchange_stop(setup, setup["stop_price"], setup["desired_stop_qty"], self._clock_ms())
+
+    def _adopt_exchange_stop(self, setup: dict[str, Any], price: float | None, qty: float, t_ms: int) -> bool:
+        """A stop that is ALREADY on the exchange (a preset stop that materialised at a fill) is adopted after the same
+        independent read-back that proves our own stops. Replacing it would be cancel-then-place: a stop-less gap."""
+        if price is None or qty <= self.rules.qty_step / 2:
             return False
-        if abs(cur["qty"] - setup["desired_stop_qty"]) > self.rules.qty_step / 2:
+        ok, _why = self._verify_stop(setup["hold"], price, qty)
+        if not ok:
             return False
-        ok, _why = self._verify_stop(setup["hold"], setup["stop_price"], setup["desired_stop_qty"])
-        if ok:
-            cur["verified_ms"] = self._clock_ms()
-        return ok
+        self.stop = {"setup_id": setup["setup_id"], "price": price, "qty": qty, "direction": setup["direction"],
+                     "hold": setup["hold"], "armed_ms": int(setup.get("fill_exchange_ms") or t_ms),
+                     "verified_ms": t_ms, "adopted": True}
+        if setup["stop_price"] is None:
+            setup["stop_price"], setup["desired_stop_qty"] = price, qty
+        return True
 
     def _remove_stop(self, setup: dict[str, Any], t_ms: int) -> list[Any]:
         """The engine says the setup is flat. Never remove protection from exposure that still exists."""
@@ -875,6 +905,12 @@ class LSRLLiveExecutor:
         if (cur and cur["setup_id"] == setup["setup_id"] and cur["qty"] + step / 2 >= qty
                 and abs(cur["price"] - price) <= self.rules.tick_size / 2):
             return
+        # The entry carried a preset stop: the exchange may ALREADY hold the stop. Prove it and adopt it; only if it is
+        # not there (or does not cover the position) is a stop placed, which is the pre-existing behaviour.
+        if self._adopt_exchange_stop(setup, price, qty, t_ms):
+            self._record_protection_latency(setup, t_ms)
+            self._persist()
+            return
         try:
             self._install_stop(setup, t_ms, "ENTRY_FILL_IMMEDIATE", price=price, qty=qty)
         except Exception as exc:                            # noqa: BLE001
@@ -884,12 +920,30 @@ class LSRLLiveExecutor:
         self._record_protection_latency(setup, t_ms)
         self._persist()
 
+    def _stop_contexts(self) -> list[dict[str, Any]]:
+        """Every stop whose FILLS we must be able to read: our own installed stop, and - for setups that have entry fills
+        but no stop of ours on record - the exchange-side preset stop that was created at the fill. Without the second
+        kind, a stop that fires while no process is alive would look like an unexplained flat position."""
+        contexts: list[dict[str, Any]] = []
+        if self.stop:
+            contexts.append(self.stop)
+        for setup in self.setups.values():
+            if setup["finalized"] or (self.stop and self.stop["setup_id"] == setup["setup_id"]):
+                continue
+            entries = self._orders_of(setup["setup_id"], "ENTRY")
+            if sum(r["reported_qty"] for r in entries) <= EPS:
+                continue
+            price = setup["stop_price"] if setup["stop_price"] is not None else setup.get("protect_price")
+            armed = int(setup.get("fill_exchange_ms") or setup.get("opened_ms") or 0)
+            contexts.append({"setup_id": setup["setup_id"], "hold": setup["hold"], "price": price, "armed_ms": armed})
+        return contexts
+
     def _stop_fill_events(self, t_ms: int) -> list[Any]:
         """Stop fills come from the exchange ORDER HISTORY (real price and fee), keyed by orderId with
         cumulative quantity: a position shrinking between two reads is never read as a stop."""
-        if not self.stop:
+        contexts = self._stop_contexts()
+        if not contexts:
             return []
-        stop = self.stop
         try:
             rows = _rows(self.client.get_order_history(product_type=self.product_type, symbol=self.rules.symbol,
                                                        limit=100))
@@ -902,19 +956,22 @@ class LSRLLiveExecutor:
             if source not in _STOP_SOURCES:
                 continue
             side = str(row.get("posSide") or row.get("holdSide") or "").lower()
-            if side and side != stop["hold"]:
-                continue
-            if int(_f(row.get("cTime"))) + 5_000 < stop["armed_ms"]:
+            oid = str(row.get("orderId") or "")
+            known = self.stop_fills.get(oid)
+            stop = next((c for c in contexts if (known is None or c["setup_id"] == known.get("setup_id"))
+                         and (not side or side == c["hold"])
+                         and int(_f(row.get("cTime"))) + 5_000 >= c["armed_ms"]), None)
+            if stop is None:
                 continue
             if str(row.get("status") or row.get("state") or "").lower() not in ("filled", "partially_filled"):
                 continue
-            oid = str(row.get("orderId") or "")
             filled, avg, fee = _f(row.get("baseVolume")), _f(row.get("priceAvg")), abs(_f(row.get("fee")))
             seen = self.stop_fills.setdefault(oid, {"qty": 0.0, "notional": 0.0, "fee": 0.0, "hold": stop["hold"],
                                                     "setup_id": stop["setup_id"]})
             if filled > seen["qty"] + EPS:
                 delta = filled - seen["qty"]
-                price = (filled * avg - seen["notional"]) / delta if delta > EPS and avg > 0 else stop["price"]
+                fallback = stop["price"] if stop.get("price") else 0.0
+                price = (filled * avg - seen["notional"]) / delta if delta > EPS and avg > 0 else fallback
                 events.append(FillEvent(t_ms, stop["setup_id"], f"lsrl-{stop['setup_id']}-stop", "SL", price, delta,
                                         fee_usdt=max(0.0, fee - seen["fee"]), liquidity="taker"))
                 seen["qty"], seen["notional"], seen["fee"] = filled, filled * avg, fee
@@ -1070,18 +1127,16 @@ class LSRLLiveExecutor:
         if setup is not None:
             price = setup["stop_price"] if setup["stop_price"] is not None else setup.get("protect_price")
         why = "NO_STOP_PRICE_KNOWN"
-        # A fill found in a running process with no stop of ours on record is known-unprotected: place the stop NOW
-        # instead of first spending two REST round trips proving what we already know.
-        known_unprotected = (not self._verify_first) and price is not None and (
-            self.stop is None or self.stop.get("setup_id") != setup["setup_id"])
-        if known_unprotected:
-            why = "NO_STOP_YET"
-        elif price is not None:
+        # With preset stops the exchange may hold a stop we never placed, so there is no "known unprotected" shortcut:
+        # the read-back below adopts it or reports why it is not enough.
+        if price is not None:
             self._verify_first = False
             ok, why = self._verify_stop(hold, price, qty)
             if ok:
-                if self.stop:
+                if self.stop and self.stop.get("setup_id") == setup["setup_id"]:
                     self.stop["verified_ms"] = t_ms
+                else:
+                    self._adopt_exchange_stop(setup, price, qty, t_ms)
                 self._record_protection_latency(setup, t_ms)
                 if ex["state"] != EXPOSURE_PROTECTED or ex["hold"] != hold:
                     ex.update({"hold": hold, "qty": qty, "setup_id": setup["setup_id"]})

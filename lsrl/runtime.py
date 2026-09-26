@@ -259,15 +259,21 @@ def build_runtime(settings: Any, *, client: Any, execution_service: Any, risk_ma
             raise RuntimeError("MICRO_LIVE requires the execution service (not forward-paper-only)")
         from execution.entry_submitter import EntryOrderSubmitter
         from execution.order_intent_store import OrderIntentStore
-        from lsrl.adapters.live import LSRLLiveExecutor
+        from lsrl.adapters.live import LSRLLiveExecutor, assert_armed
         from lsrl.adapters.live_driver import LiveDriver
+        from lsrl.adapters.process_down import load_from_settings
         from risk.mandatory_authorization import RiskAuthorizationStore
         submitter = EntryOrderSubmitter(
             client=client, intent_store=OrderIntentStore(str(root / "order_intents.json")),
             session_id=f"lsrl-{int(time.time())}", execution_mode="LIVE")
+        # Refuses (AttestationRefused) unless the process-down attestation is present, pinned, unexpired and bound to THIS
+        # clean release SHA: a MICRO_LIVE executor that could rest an entry without an exchange-side stop cannot exist.
+        assert_armed(settings)                              # unarmed stays a LiveNotArmed refusal, before anything else
+        process_down = load_from_settings(settings, code_sha=git_sha)
         executor = LSRLLiveExecutor(settings=settings, client=client, submitter=submitter,
                                     auth_store=RiskAuthorizationStore(), gate=gate,
-                                    state_store=JsonStateStore(str(root / "executor_state.json")), rules=rules, cfg=cfg)
+                                    state_store=JsonStateStore(str(root / "executor_state.json")), rules=rules, cfg=cfg,
+                                    process_down=process_down)
 
         def authenticated_equity() -> float:
             for row in (client.get_accounts().get("data") or []):

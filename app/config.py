@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     lsrl_shadow_nav_usdt: float = Field(default=100.0, alias="LSRL_SHADOW_NAV_USDT")
     lsrl_min_free_gb: float = Field(default=1.0, alias="LSRL_MIN_FREE_GB")
     lsrl_microlive_armed: bool = Field(default=False, alias="LSRL_MICROLIVE_ARMED")
+    # MICRO_LIVE cannot construct its executor without a verified process-down attestation (lsrl/adapters/process_down.py):
+    # the file, and a sha256 pinned OUTSIDE the file by the reviewed release policy. Both default empty = refuse.
+    lsrl_process_down_attestation_path: str = Field(default="", alias="LSRL_PROCESS_DOWN_ATTESTATION_PATH")
+    lsrl_process_down_attestation_sha256: str = Field(default="", alias="LSRL_PROCESS_DOWN_ATTESTATION_SHA256")
 
     # dynamic_grid_v1 is an isolated, fail-closed pilot. OFF and SHADOW can
     # never place grid orders; LIVE additionally requires the global LIVE gate.
@@ -494,6 +498,13 @@ class Settings(BaseSettings):
                         "production LIVE requires explicit safety config: "
                         + ",".join(missing)
                     )
+        # Last, so every earlier refusal (global gate, arming flag, production allow-list) keeps its own message.
+        if lsrl_mode == "MICRO_LIVE":
+            pinned = self.lsrl_process_down_attestation_sha256.strip().lower()
+            if (not self.lsrl_process_down_attestation_path.strip() or len(pinned) != 64
+                    or any(c not in "0123456789abcdef" for c in pinned)):
+                raise ValueError("LSRL_MODE=MICRO_LIVE requires LSRL_PROCESS_DOWN_ATTESTATION_PATH and a pinned "
+                                 "64-hex LSRL_PROCESS_DOWN_ATTESTATION_SHA256")
         return self
 
     @property
