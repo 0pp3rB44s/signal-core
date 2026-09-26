@@ -1221,6 +1221,77 @@ class BitgetTPSLClientMixin:
         )
         return result
 
+    def move_position_level_stop_only(
+        self,
+        symbol: str,
+        hold_side: str,
+        trigger_price: float,
+        margin_mode: str = "isolated",
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Rewrite a position-level stop that has NO take-profit, in place, with place-pos-tpsl.
+
+        ``move_futures_stop_loss`` refuses this case on purpose: its position-level branch rewrites BOTH legs and so
+        must re-send the current take-profit, and it aborts when there is none (``no_active_take_profit_to_preserve``).
+        A stop that came from an order-level ``presetStopLossPrice`` is exactly such a lone position-level stop. Here
+        there is nothing to preserve, so only the stop leg is sent. Refuses (verified=False, nothing sent) unless the
+        position carries a position-level stop and NO position-level take-profit, so it can never drop a take-profit.
+        The same settle-then-read-back rule as every other stop move applies: a stop that exists for one second is not
+        protection (order 1467519838684409856, 2026-08-01).
+        """
+        symbol = symbol.upper()
+        hold_side = hold_side.lower()
+        product = (product_type or self.settings.bitget_product_type).upper()
+        formatted_trigger = self._format_trigger_price(symbol, float(trigger_price))
+        result: dict[str, Any] = {"symbol": symbol, "hold_side": hold_side, "trigger_price": formatted_trigger,
+                                  "model": "POSITION_LEVEL_STOP_ONLY", "reason": reason, "verified": False}
+        if formatted_trigger <= 0:
+            result["reason_detail"] = "invalid_trigger_price"
+            return result
+        existing = self._active_position_stop(symbol, hold_side, product)
+        result["existing_stop"] = existing
+        if not existing or existing.get("plan_type") not in POSITION_LEVEL_LOSS_TYPES:
+            result["reason_detail"] = "no_position_level_stop_to_move"
+            return result
+        if self._active_position_take_profit(symbol, hold_side, product) is not None:
+            result["reason_detail"] = "position_level_take_profit_present_use_move_futures_stop_loss"
+            return result
+        body: dict[str, Any] = {
+            "symbol": symbol,
+            "productType": product,
+            "marginCoin": margin_coin.upper(),
+            "marginMode": margin_mode,
+            "holdSide": hold_side,
+            "stopLossTriggerPrice": str(formatted_trigger),
+            "stopLossTriggerType": "mark_price",
+        }
+        self._validate_futures_order_flags(body)
+        try:
+            result["placed"] = self._request(
+                method="POST", path="/api/v2/mix/order/place-pos-tpsl", body=body, private=True)
+        except Exception as exc:
+            result["reason_detail"] = f"place_pos_tpsl_failed: {exc}"
+            self.log.error("MOVE_SL_POSITION_STOP_ONLY_FAILED | %s | hold_side=%s | target=%s | existing_stop_retained=%s | "
+                           "error=%s", symbol, hold_side, formatted_trigger, existing.get("trigger_price"), exc)
+            return result
+        time.sleep(self.STOP_REPLACEMENT_SETTLE_SECONDS)
+        confirmed = self._active_position_stop(symbol, hold_side, product)
+        result["verify"] = confirmed
+        if not confirmed:
+            result["reason_detail"] = "replacement_absent_after_settle"
+            return result
+        tolerance = self._stop_tick_tolerance(symbol, float(formatted_trigger))
+        drift = abs(float(confirmed["trigger_price"]) - float(formatted_trigger))
+        matches_side = str(confirmed.get("hold_side") or hold_side).lower() == hold_side
+        result["drift"], result["tick_tolerance"] = drift, tolerance
+        result["verified"] = bool(confirmed["plan_type"] in POSITION_LEVEL_LOSS_TYPES and matches_side and drift <= tolerance)
+        if not result["verified"]:
+            result["reason_detail"] = (f"divergence plan_type={confirmed['plan_type']} trigger={confirmed['trigger_price']} "
+                                       f"expected={formatted_trigger} drift={drift} tolerance={tolerance}")
+        return result
+
     def move_futures_stop_loss(
         self,
         symbol: str,

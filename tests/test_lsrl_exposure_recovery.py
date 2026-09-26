@@ -39,7 +39,8 @@ class LifeRig(Rig):
             state_store=self.state, rules=RULES, sleep=lambda s: self.advance(s * 1000),
             ownership=StrategyOwnershipRegistry(self.tmp / "ownership.json"),
             central=CentralCloseRecorder(client=self.ex, dataset_path=str(self.dataset)),
-            clock_ms=lambda: self.ex.now_ms, process_down=TEST_PROTECTION)
+            clock_ms=lambda: self.ex.now_ms,
+            process_down=getattr(self, "protection", TEST_PROTECTION))
 
     def advance(self, ms: float) -> None:
         self.ex.now_ms += int(ms)

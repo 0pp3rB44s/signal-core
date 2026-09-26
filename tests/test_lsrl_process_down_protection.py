@@ -202,9 +202,13 @@ def test_the_maker_entry_boundary_forwards_the_preset_only_when_given():
 # ==================================================================================== every entry carries the frozen stop
 @pytest.fixture(params=["PLAN_PER_ORDER", "POSITION_LEVEL"])
 def prig(request, tmp_path):
-    rig = LifeRig(tmp_path).run(long_sweep())
+    """The exchange materialises the preset stop as `request.param` and the attestation says exactly that."""
+    rig = LifeRig(tmp_path)
+    rig.protection = ProcessDownProtection("POSITION_LEVEL" if request.param == "POSITION_LEVEL" else "PLAN_LEVEL",
+                                           "BITGET_DEMO", "0" * 40, "0" * 64)
+    rig.exec.process_down = rig.protection
     rig.ex.preset_model = request.param
-    return rig
+    return rig.run(long_sweep())
 
 
 def test_every_resting_entry_carries_the_frozen_protective_stop(prig):
@@ -282,12 +286,15 @@ def test_a_later_stop_move_leaves_exactly_one_stop_at_the_new_price(prig):
     prig.ex.fill(entries(prig)[0])
     prig.drive(5)
     setup_id = prig.engine.setup.setup_id
+    pos_loss_id_before = next((p["orderId"] for p in prig.ex.plans if p["planType"] == "pos_loss"), None)
     new = round(frozen_stop(prig) + 0.5, 3)
     prig.exec.apply([SetStop(setup_id, Direction.LONG, new, q_of(prig), "TEST_MOVE")], prig.ex.now_ms)
     losses = [p for p in prig.ex.plans if "loss" in p["planType"]]
     assert len(losses) == 1 and float(losses[0]["triggerPrice"]) == pytest.approx(new)
     if prig.ex.preset_model == "POSITION_LEVEL":
-        assert losses[0]["planType"] == "pos_loss"               # moved in place, the way the shared client does it
+        # a lone position-level stop is rewritten IN PLACE by the new mechanism: same plan, no cancel, never without a stop
+        assert losses[0]["planType"] == "pos_loss" and prig.ex.by_kind("stop_pos") and prig.ex.by_kind("cancel_stop") == []
+        assert losses[0]["orderId"] == pos_loss_id_before
     prig.drive(5)
     assert prig.xstate() == EXPOSURE_PROTECTED and prig.exec.emergency is None
 
@@ -441,3 +448,37 @@ def test_an_old_stop_fill_from_an_earlier_setup_is_never_attributed_to_a_new_one
     prig.drive(8)
     assert "OLD-STOP" not in prig.exec.stop_fills and verdict(prig) == "PROTECTED"
     assert prig.exec.halt_reason is None and prig.exec._ledger("long") == pytest.approx(q_of(prig))
+
+
+def test_a_lone_position_level_stop_is_never_moved_with_the_shared_move_that_would_refuse_it(tmp_path):
+    """The shared move aborts on a position-level stop that has no take-profit; the executor must route around it, not
+    fail three times and flatten a healthy trade at the first break-even move."""
+    rig = LifeRig(tmp_path)
+    rig.protection = ProcessDownProtection("POSITION_LEVEL", "BITGET_DEMO", "0" * 40, "0" * 64)
+    rig.exec.process_down = rig.protection
+    rig.ex.preset_model = "POSITION_LEVEL"
+    rig.run(long_sweep())
+    rig.ex.fill(entries(rig)[0])
+    rig.drive(5)
+    rig.exec._set_stop(SetStop(rig.engine.setup.setup_id, Direction.LONG, round(frozen_stop(rig) + 0.4, 3), q_of(rig), "BE"),
+                       rig.ex.now_ms)
+    assert rig.ex.by_kind("stop") == [] and len(rig.ex.by_kind("stop_pos")) == 1        # the ordinary move was never tried
+    assert rig.ex.position["long"] > 0 and rig.exec.emergency is None and rig.exec.halt_reason is None
+
+
+def test_if_the_attestation_says_plan_level_but_the_exchange_makes_a_position_level_stop_the_executor_fails_safe(tmp_path):
+    """Drift between what was attested and what the exchange now does: the stop move is refused by the shared client, the
+    executor cannot prove protection, and it ends VERIFIED FLAT rather than run on an unprovable stop."""
+    rig = LifeRig(tmp_path).run(long_sweep())                                         # attested PLAN_LEVEL (TEST_PROTECTION)
+    rig.ex.preset_model = "POSITION_LEVEL"
+    rig.ex.fill(entries(rig)[0])
+    rig.drive(5)
+    assert verdict(rig) == "PROTECTED"                                                # the fill itself is still stopped
+    events = rig.exec.apply([SetStop(rig.engine.setup.setup_id, Direction.LONG, round(frozen_stop(rig) + 0.4, 3), q_of(rig),
+                                     "BE")], rig.ex.now_ms)
+    for e in events:
+        rig.feed(e)
+    converge(rig)
+    assert verdict(rig) == "FLAT" and rig.exec.emergency is None and rig.xstate() == EXPOSURE_NONE
+    assert "no_active_take_profit_to_preserve" in rig.exec.halt_reason               # halted: no new entries until an owner looks
+    assert {"PROTECTION_FAILED", "EMERGENCY_FLATTENED"} <= set(kinds(rig))

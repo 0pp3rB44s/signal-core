@@ -559,6 +559,35 @@ class LSRLLiveExecutor:
             return False, f"STOP_SIZE_INSUFFICIENT:covered={covered} need={qty}"
         return True, ""
 
+    def _lone_position_level_stop(self, hold: str) -> bool:
+        """The exchange holds a position-level stop and NO position-level take-profit: what an order-level preset stop
+        becomes if Bitget materialises it that way. The shared client's position-level move refuses that (it must re-send
+        a take-profit it does not have), so it needs its own mechanism."""
+        try:
+            rows = self._plan_rows()
+        except Exception:                                   # noqa: BLE001 - unreadable: use the ordinary path
+            return False
+        loss = profit = False
+        for row in rows:
+            ptype = str(row.get("planType") or row.get("orderType") or "").lower()
+            side = str(row.get("posSide") or row.get("holdSide") or "").lower()
+            if side and side != hold:
+                continue
+            loss = loss or ptype == "pos_loss"
+            profit = profit or ptype == "pos_profit"
+        return loss and not profit
+
+    def _move_stop(self, setup: dict[str, Any], price: float, reason: str) -> Any:
+        """One stop request on the mechanism that fits what the exchange actually holds. With a position-level attestation
+        a lone position-level stop is rewritten in place (no gap); everything else is the shared, audited move."""
+        hold = setup["hold"]
+        if self.process_down.observed_model == "POSITION_LEVEL" and self._lone_position_level_stop(hold):
+            return self.client.move_position_level_stop_only(
+                symbol=self.rules.symbol, hold_side=hold, trigger_price=price, reason=reason)
+        return self.client.move_futures_stop_loss(
+            symbol=self.rules.symbol, hold_side=hold, trigger_price=price,
+            direction=setup["direction"], cleanup_existing=True, reason=reason)
+
     def _install_stop(self, setup: dict[str, Any], t_ms: int, reason: str, *, price: float | None = None,
                       qty: float | None = None) -> None:
         """Place + verify. Raises when protection cannot be PROVEN (caller flattens)."""
@@ -568,9 +597,7 @@ class LSRLLiveExecutor:
         last: str = "unknown"
         for _attempt in range(STOP_RETRIES):
             try:
-                res = self.client.move_futures_stop_loss(
-                    symbol=self.rules.symbol, hold_side=hold, trigger_price=price,
-                    direction=setup["direction"], cleanup_existing=True, reason=reason)
+                res = self._move_stop(setup, price, reason)
                 ok, why = self._stop_result_verified(res)
                 if ok:
                     ok, why = self._verify_stop(hold, price)

@@ -251,8 +251,12 @@ class FakeExchange:
         if size <= 0:
             raise RuntimeError("no position to protect")
         active_pos = next((p for p in self.plans if p["planType"] == "pos_loss" and p["posSide"] == hold_side), None)
-        if active_pos is not None:                                # the real client's POSITION_LEVEL branch: modify in place
+        if active_pos is not None:                                # the real client's POSITION_LEVEL branch
             self.calls.append(("stop", trigger_price, size, reason))
+            has_tp = any(p["planType"] == "pos_profit" and p["posSide"] == hold_side for p in self.plans)
+            if not has_tp:                                        # it rewrites BOTH legs, so it refuses without a TP to keep
+                return {"symbol": symbol, "hold_side": hold_side, "verified": False, "model": "POSITION_LEVEL",
+                        "reason_detail": "no_active_take_profit_to_preserve"}
             if self.stop_vanishes:
                 return {"symbol": symbol, "hold_side": hold_side, "verified": False,
                         "reason_detail": "replacement_absent_after_settle", "placed": {"data": {}}}
@@ -275,6 +279,22 @@ class FakeExchange:
                 "confirmed_stop": {"plan_type": "loss_plan", "trigger_price": float(trigger_price),
                                    "order_id": plan["orderId"], "size": str(size), "hold_side": hold_side},
                 "placed": {"data": {"orderId": plan["orderId"]}}, "size": size}
+
+    def move_position_level_stop_only(self, symbol, hold_side, trigger_price, reason=None, **_):
+        """The new shared-client method: rewrite a LONE position-level stop in place (nothing to preserve)."""
+        self._maybe_fail("move_position_level_stop_only")
+        size = self.position[hold_side]
+        plan = next((p for p in self.plans if p["planType"] == "pos_loss" and p["posSide"] == hold_side), None)
+        has_tp = any(p["planType"] == "pos_profit" and p["posSide"] == hold_side for p in self.plans)
+        self.calls.append(("stop_pos", trigger_price, size, reason))
+        if plan is None or has_tp:
+            return {"verified": False, "reason_detail": "no_position_level_stop_to_move" if plan is None
+                    else "position_level_take_profit_present_use_move_futures_stop_loss"}
+        if self.stop_vanishes:
+            return {"verified": False, "reason_detail": "replacement_absent_after_settle"}
+        plan["triggerPrice"], plan["size"] = str(trigger_price), str(size)
+        return {"symbol": symbol, "hold_side": hold_side, "trigger_price": trigger_price, "verified": True,
+                "model": "POSITION_LEVEL_STOP_ONLY", "size": size}
 
     def cancel_all_futures_tpsl_orders(self, symbol, hold_side=None, **_):
         self._maybe_fail("cancel_all_futures_tpsl_orders")
