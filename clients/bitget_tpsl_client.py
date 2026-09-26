@@ -45,6 +45,8 @@ class BitgetTPSLClientMixin:
         product_type: str | None = None,
         symbol: str | None = None,
         plan_type: str | None = "profit_loss",
+        limit: int | None = None,
+        id_less_than: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "productType": (product_type or self.settings.bitget_product_type).upper(),
@@ -55,6 +57,12 @@ class BitgetTPSLClientMixin:
 
         if symbol:
             params["symbol"] = symbol.upper()
+
+        if limit:                            # pagination (read-only exposure audit); absent = the unchanged request
+            params["limit"] = str(limit)
+
+        if id_less_than:
+            params["idLessThan"] = str(id_less_than)
 
         return self._request(
             "GET",
@@ -1290,6 +1298,123 @@ class BitgetTPSLClientMixin:
         if not result["verified"]:
             result["reason_detail"] = (f"divergence plan_type={confirmed['plan_type']} trigger={confirmed['trigger_price']} "
                                        f"expected={formatted_trigger} drift={drift} tolerance={tolerance}")
+        return result
+
+    def _loss_plan_rows(self, symbol: str, hold_side: str, product: str) -> list[dict[str, Any]]:
+        plans, _ = self._fetch_tpsl_orders_broad(symbol=symbol, product_type=product)
+        rows: list[dict[str, Any]] = []
+        for plan in plans:
+            side = str(plan.get("holdSide") or plan.get("posSide") or "").lower()
+            if (side and side != hold_side) or str(plan.get("planType") or "").lower() != "loss_plan":
+                continue
+            order_id = str(plan.get("planOrderId") or plan.get("orderId") or plan.get("id") or "")
+            if not order_id:
+                continue
+            try:
+                trigger = float(plan.get("triggerPrice") or plan.get("planTriggerPrice") or plan.get("stopLossTriggerPrice") or -1)
+                size = float(plan.get("size") or 0)
+            except (TypeError, ValueError):
+                trigger, size = -1.0, 0.0
+            rows.append({"order_id": order_id, "trigger": trigger, "size": size})
+        return rows
+
+    def move_plan_level_stop_place_first(
+        self,
+        symbol: str,
+        hold_side: str,
+        trigger_price: float,
+        margin_mode: str = "isolated",
+        product_type: str | None = None,
+        margin_coin: str = "USDT",
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a PLAN-level stop WITHOUT ever leaving the position bare: the new loss_plan for the whole live position is
+        placed BESIDE the old ones; only once it is confirmed to have survived the settle window are the old ones cancelled.
+
+        ``move_futures_stop_loss`` cancels first and places second, so a request that fails between the two leaves an open
+        position with no stop at all. That ordering is only avoidable if the exchange tolerates two loss plans side by side,
+        which the owner-run probe observes (attestation capability ``plan_place_first_ok``); the caller must not use this
+        method without that observation. If the newcomer does not survive (``place_first_survived`` False) NOTHING has been
+        cancelled and the old stop is untouched, so the caller can fall back to the legacy move without having lost anything.
+        Never used on a position-level model (refuses, nothing sent): a loss_plan beside a pos_loss is cancelled by Bitget.
+        """
+        symbol = symbol.upper()
+        hold_side = hold_side.lower()
+        product = (product_type or self.settings.bitget_product_type).upper()
+        formatted_trigger = self._format_trigger_price(symbol, float(trigger_price))
+        result: dict[str, Any] = {"symbol": symbol, "hold_side": hold_side, "trigger_price": formatted_trigger,
+                                  "model": "PLAN_LEVEL_PLACE_FIRST", "reason": reason, "verified": False,
+                                  "place_first_survived": None, "cancelled": [], "cancel_failed": []}
+        if formatted_trigger <= 0:
+            result["reason_detail"] = "invalid_trigger_price"
+            return result
+        active = self._active_position_stop(symbol, hold_side, product)
+        result["existing_stop"] = active
+        if active and active.get("plan_type") in POSITION_LEVEL_LOSS_TYPES:
+            result["reason_detail"] = "position_level_stop_present_place_first_not_applicable"
+            return result
+        size = self._format_size(symbol, float(self._live_position_size_for_symbol(symbol, hold_side=hold_side) or 0))
+        if size <= 0:
+            result["reason_detail"] = "no_live_position_to_protect"
+            return result
+        result["size"] = size
+        tolerance = self._stop_tick_tolerance(symbol, float(formatted_trigger))
+        old = self._loss_plan_rows(symbol, hold_side, product)
+        old_ids = {r["order_id"] for r in old}
+        result["old_stops"] = old
+        keep = next((r for r in old if abs(r["trigger"] - formatted_trigger) <= tolerance and r["size"] >= size - 1e-9), None)
+        if keep is None:
+            body: dict[str, Any] = {"symbol": symbol, "productType": product, "marginCoin": margin_coin.upper(),
+                                    "marginMode": margin_mode, "planType": "loss_plan", "triggerPrice": str(formatted_trigger),
+                                    "triggerType": "mark_price", "executePrice": "0", "holdSide": hold_side, "size": str(size)}
+            self._validate_futures_order_flags(body)
+            try:
+                result["placed"] = self._request(method="POST", path="/api/v2/mix/order/place-tpsl-order", body=body,
+                                                 private=True)
+            except Exception as exc:
+                result["reason_detail"] = f"place_loss_plan_failed: {exc}"
+                result["old_stops_retained"] = sorted(old_ids)
+                self.log.error("MOVE_SL_PLACE_FIRST_FAILED | %s | hold_side=%s | target=%s | old_stops_retained=%s | error=%s",
+                               symbol, hold_side, formatted_trigger, sorted(old_ids), exc)
+                return result
+            time.sleep(self.STOP_REPLACEMENT_SETTLE_SECONDS)     # a plan the exchange cancels a second later is not protection
+            now = self._loss_plan_rows(symbol, hold_side, product)
+            keep = next((r for r in now if r["order_id"] not in old_ids
+                         and abs(r["trigger"] - formatted_trigger) <= tolerance), None)
+            result["place_first_survived"] = keep is not None
+            if keep is None:
+                result["reason_detail"] = "newcomer_absent_after_settle_old_stops_untouched"
+                result["old_stops_retained"] = sorted(old_ids)
+                self.log.error("MOVE_SL_PLACE_FIRST_NOT_TOLERATED | %s | hold_side=%s | target=%s | old_stops_retained=%s",
+                               symbol, hold_side, formatted_trigger, sorted(old_ids))
+                return result
+        else:
+            result["place_first_survived"] = True                # the exact stop is already there: only worse extras go
+        for row in self._loss_plan_rows(symbol, hold_side, product):
+            if row["order_id"] == keep["order_id"]:
+                continue
+            try:
+                self.cancel_futures_plan_order(symbol=symbol, order_id=row["order_id"], plan_type="loss_plan",
+                                               product_type=product, margin_coin=margin_coin)
+                result["cancelled"].append(row["order_id"])
+            except Exception as exc:
+                result["cancel_failed"].append({"order_id": row["order_id"], "error": str(exc)})
+        verify = self.verify_active_stop_loss(symbol=symbol, hold_side=hold_side, expected_trigger_price=formatted_trigger,
+                                              product_type=product)
+        result["verify"] = verify
+        confirmed = self._active_position_stop(symbol, hold_side, product)
+        result["confirmed_stop"] = confirmed
+        if not confirmed:
+            result["reason_detail"] = "replacement_absent_after_settle"
+            return result
+        drift = abs(float(confirmed["trigger_price"]) - float(formatted_trigger))
+        result["drift"], result["tick_tolerance"] = drift, tolerance
+        result["verified"] = bool(verify.get("verified")) and drift <= tolerance and not result["cancel_failed"]
+        if not result["verified"]:
+            result["reason_detail"] = (f"not_confirmed drift={drift} tolerance={tolerance} cancel_failed={result['cancel_failed']}")
+        self.log.warning("MOVED_SL_PLACE_FIRST | %s | hold_side=%s | trigger=%s | size=%s | verified=%s | reason=%s | "
+                         "cancelled=%s", symbol, hold_side, formatted_trigger, size, result["verified"], reason,
+                         result["cancelled"])
         return result
 
     def move_futures_stop_loss(

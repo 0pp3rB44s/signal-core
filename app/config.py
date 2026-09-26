@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     # the file, and a sha256 pinned OUTSIDE the file by the reviewed release policy. Both default empty = refuse.
     lsrl_process_down_attestation_path: str = Field(default="", alias="LSRL_PROCESS_DOWN_ATTESTATION_PATH")
     lsrl_process_down_attestation_sha256: str = Field(default="", alias="LSRL_PROCESS_DOWN_ATTESTATION_SHA256")
+    # The OWNER's explicit decision that a Bitget DEMO observation of the preset-stop behaviour is acceptable evidence for real
+    # money. Default false: a demo-only attestation is refused until the owner says otherwise (Agent C, A-3).
+    lsrl_accept_demo_process_down_evidence: bool = Field(default=False, alias="LSRL_ACCEPT_DEMO_PROCESS_DOWN_EVIDENCE")
 
     # dynamic_grid_v1 is an isolated, fail-closed pilot. OFF and SHADOW can
     # never place grid orders; LIVE additionally requires the global LIVE gate.

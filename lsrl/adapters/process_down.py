@@ -32,21 +32,32 @@ from pathlib import Path
 from typing import Any
 
 ATTESTATION_KIND = "PRESET_STOP_SEMANTICS"
-ATTESTATION_SCHEMA = 1
+ATTESTATION_SCHEMA = 2
 MAX_VALIDITY_S = 14 * 24 * 3600
 ALLOWED_ENVIRONMENTS = ("BITGET_DEMO", "BITGET_LIVE_MINIMAL")
+#: The attestation can grant a capability the executor may use only because the exchange was OBSERVED to allow it.
+KNOWN_CAPABILITIES = ("plan_place_first_ok",)
 ALLOWED_MODELS = ("POSITION_LEVEL", "PLAN_LEVEL")
 
-#: Every observation the design depends on. A missing or failed one refuses the attestation.
-REQUIRED_CHECKS = (
-    "preset_accepted_on_limit_order",        # the exchange accepted presetStopLossPrice and echoed it on the order
-    "stop_exists_after_fill_without_client",  # after a fill a stop is on the exchange with NO client stop request
-    "stop_covers_every_fill",                # a second entry with the same preset leaves the WHOLE position covered
-    "stop_survives_settle",                  # still there after the settle window (the 2026-08-01 lesson)
-    "executor_stop_move_coexists",           # a stop move leaves exactly one live stop at the new price
-    "cleanup_after_flat",                    # after the position is closed no orphan plan order remains
-    "unfilled_cancel_leaves_no_stop",        # cancelling an unfilled order leaves no plan order behind
+#: The observations the design depends on, ONCE PER SIDE (LSRL is symmetric: a long-only observation says nothing about shorts).
+BASE_CHECKS = (
+    "preset_accepted_on_limit_order",            # the exchange accepted presetStopLossPrice and echoed it on the order
+    "preset_accepted_at_strategy_geometry",      # ... also at the strategy's real (ticks-close) stop distances
+    "unfilled_cancel_leaves_no_stop",            # cancelling an unfilled order leaves no plan order behind
+    "stop_exists_after_fill_without_client",     # after a FULL fill a stop is on the exchange with NO client stop request
+    "partial_fill_stop_covers_filled",           # after a PARTIAL fill the stop covers what has filled
+    "partial_fill_cancel_keeps_stop_for_filled_size",   # cancelling the remainder leaves the stop for the filled part
+    "stop_covers_every_fill",                    # a second entry with the same preset leaves the WHOLE position covered
+    "stop_survives_settle",                      # still there after the settle window (the 2026-08-01 lesson)
+    "executor_stop_move_coexists",               # a stop move leaves exactly one live stop at the new price
+    "later_fill_with_old_preset_is_repairable",  # a rung filling after the move carries its OLD preset: no lasting worse stop
+    "cleanup_after_flat",                        # after the position is closed no orphan plan order remains
 )
+SIDES = ("long", "short")
+#: Global observations (not per side).
+GLOBAL_CHECKS = ("model_same_on_both_sides",)
+#: Every observation the design depends on. A missing or failed one refuses the attestation.
+REQUIRED_CHECKS = tuple(f"{base}:{side}" for side in SIDES for base in BASE_CHECKS) + GLOBAL_CHECKS
 
 
 class AttestationRefused(RuntimeError):
@@ -60,15 +71,20 @@ class ProcessDownProtection:
     environment: str
     code_sha: str
     digest: str
+    #: Observed on BOTH sides: a second loss_plan placed BESIDE the live one survives, so a plan-level stop can be moved
+    #: place-new-then-cancel-old (never a moment without a stop). False = the move stays cancel-then-place (a known residual).
+    plan_place_first_ok: bool = False
 
 
 def _hex(value: Any, n: int) -> bool:
     return isinstance(value, str) and len(value) == n and all(c in "0123456789abcdef" for c in value)
 
 
-def verify_attestation(path: str | Path, expected_sha256: str, *, code_sha: str,
-                       now: float | None = None) -> ProcessDownProtection:
-    """`expected_sha256` and `code_sha` come from the reviewed release policy / the running checkout, NEVER from the file."""
+def verify_attestation(path: str | Path, expected_sha256: str, *, code_sha: str, now: float | None = None,
+                       accept_demo: bool = False) -> ProcessDownProtection:
+    """`expected_sha256` and `code_sha` come from the reviewed release policy / the running checkout, NEVER from the file.
+    `accept_demo` is the OWNER'S explicit decision that a Bitget DEMO observation is acceptable evidence for real money (Agent C,
+    A-3): it defaults to False, so a demo-only attestation is refused until the owner has said otherwise."""
     now = time.time() if now is None else now
     if not _hex(str(expected_sha256).lower(), 64):
         raise AttestationRefused("ATTESTATION_DIGEST_NOT_PINNED")
@@ -96,6 +112,8 @@ def verify_attestation(path: str | Path, expected_sha256: str, *, code_sha: str,
         raise AttestationRefused("ATTESTATION_DECISION_NOT_PASS")
     if doc.get("environment") not in ALLOWED_ENVIRONMENTS:
         raise AttestationRefused("ATTESTATION_ENVIRONMENT")
+    if doc.get("environment") == "BITGET_DEMO" and not accept_demo:
+        raise AttestationRefused("ATTESTATION_DEMO_NOT_ACCEPTED_BY_OWNER")
     if doc.get("observed_model") not in ALLOWED_MODELS:
         raise AttestationRefused("ATTESTATION_MODEL_UNKNOWN")
     if doc.get("code_sha") != code_sha:
@@ -116,7 +134,18 @@ def verify_attestation(path: str | Path, expected_sha256: str, *, code_sha: str,
     missing = [c for c in REQUIRED_CHECKS if c not in passed]
     if missing:
         raise AttestationRefused("ATTESTATION_CHECK_MISSING:" + ",".join(missing))
-    return ProcessDownProtection(doc["observed_model"], doc["environment"], code_sha, digest)
+    if doc.get("sides_tested") != list(SIDES):
+        raise AttestationRefused("ATTESTATION_NOT_BOTH_SIDES")
+    caps = doc.get("capabilities")
+    if not isinstance(caps, dict) or set(caps) - set(KNOWN_CAPABILITIES) or any(not isinstance(v, bool) for v in caps.values()):
+        raise AttestationRefused("ATTESTATION_CAPABILITIES_INVALID")
+    evidence = doc.get("evidence")
+    orders = evidence.get("orders") if isinstance(evidence, dict) else None
+    if (not isinstance(evidence, dict) or not evidence.get("run_id") or not isinstance(orders, list) or not orders
+            or not all(isinstance(o, dict) and o.get("orderId") and o.get("clientOid") for o in orders)):
+        raise AttestationRefused("ATTESTATION_NO_RAW_EXCHANGE_EVIDENCE")     # a bare 'passed: true' is not evidence (Agent C, A-2)
+    return ProcessDownProtection(doc["observed_model"], doc["environment"], code_sha, digest,
+                                 plan_place_first_ok=bool(caps.get("plan_place_first_ok")) and doc["observed_model"] == "PLAN_LEVEL")
 
 
 def load_from_settings(settings: Any, *, code_sha: str, now: float | None = None) -> ProcessDownProtection:
@@ -124,4 +153,5 @@ def load_from_settings(settings: Any, *, code_sha: str, now: float | None = None
     pinned = str(getattr(settings, "lsrl_process_down_attestation_sha256", "") or "").strip()
     if not path or not pinned:
         raise AttestationRefused("PROCESS_DOWN_ATTESTATION_NOT_CONFIGURED")
-    return verify_attestation(path, pinned, code_sha=code_sha, now=now)
+    accept_demo = getattr(settings, "lsrl_accept_demo_process_down_evidence", False) is True
+    return verify_attestation(path, pinned, code_sha=code_sha, now=now, accept_demo=accept_demo)

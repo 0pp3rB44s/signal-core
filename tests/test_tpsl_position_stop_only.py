@@ -14,6 +14,12 @@ import pytest
 from clients.bitget_tpsl_client import BitgetTPSLClientMixin
 
 
+#: The request the executor sends for a lone position-level stop. The owner-run probe must send the SAME shape, or the
+#: attestation would describe a request nobody ever makes (Agent C, mutant C05).
+STOP_ONLY_BODY_KEYS = {"symbol", "productType", "marginCoin", "marginMode", "holdSide", "stopLossTriggerPrice",
+                       "stopLossTriggerType"}
+
+
 class Stub(BitgetTPSLClientMixin):
     STOP_REPLACEMENT_SETTLE_SECONDS = 0.0
     settings = SimpleNamespace(bitget_product_type="USDT-FUTURES")
@@ -54,6 +60,8 @@ def test_a_lone_position_level_stop_is_rewritten_in_place_with_the_stop_leg_only
     assert call["path"] == "/api/v2/mix/order/place-pos-tpsl" and call["private"] is True
     body = call["body"]
     assert body["stopLossTriggerPrice"] == "150.2" and body["holdSide"] == "long"
+    assert body["stopLossTriggerType"] == "mark_price"                # the SAME reference every other stop of this system uses
+    assert set(body) == STOP_ONLY_BODY_KEYS                           # exactly these fields: a divergence from the probe is a defect
     assert not [k for k in body if "Surplus" in k or "profit" in k.lower()]        # a take-profit leg is NEVER sent
 
 

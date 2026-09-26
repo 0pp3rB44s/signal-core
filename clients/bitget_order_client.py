@@ -117,6 +117,7 @@ class BitgetOrderClientMixin:
         symbol: str | None = None,
         product_type: str | None = None,
         limit: int = 100,
+        id_less_than: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "productType": (product_type or self.settings.bitget_product_type).upper(),
@@ -124,6 +125,8 @@ class BitgetOrderClientMixin:
         }
         if symbol:
             params["symbol"] = symbol.upper()
+        if id_less_than:                     # pagination cursor (the previous page's endId); absent = first page, as before
+            params["idLessThan"] = str(id_less_than)
         return self._request(
             "GET", "/api/v2/mix/order/orders-pending", params=params, private=True
         )
