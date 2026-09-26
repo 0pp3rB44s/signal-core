@@ -87,6 +87,7 @@ EXPOSURE_BACKOFF_POLLS = (0, 0, 0, 1, 2, 4, 8)
 ENGINE_ACK_GRACE_MS = 20_000        # a filled quantity the engine has not covered with a SetStop by then is flattened
 FAST_WATCH_MS = 1_000               # while an entry rests, look for its fill this often (the runtime poll is 3 s)
 LOG_EVERY_N_ATTEMPTS = 10
+EXPECTED_ABSENT_GRACE_POLLS = 5      # a write-ahead entry the exchange does not (yet) show is kept this many polls before it is dropped
 EXPOSURE_NONE = "NONE"
 EXPOSURE_PROTECTED = "PROTECTED"
 EXPOSURE_UNPROTECTED = "UNPROTECTED_EXPOSURE"
@@ -184,6 +185,7 @@ class LSRLLiveExecutor:
         self.halt_reason: str | None = data.get("halt_reason")
         self.exposure: dict[str, Any] = data.get("exposure") or self._fresh_exposure()
         self.latencies: list[dict[str, Any]] = data.get("latencies", [])
+        self.startup_report: dict[str, Any] = data.get("startup_report") or {}
         self._facts_ok = False
         self._clock_ms = clock_ms
         self._fast_watch_enabled = fast_watch
@@ -203,7 +205,8 @@ class LSRLLiveExecutor:
                 "stop_fills": self.stop_fills, "pending_central": self.pending_central,
                 "incidents": self.incidents[-MAX_INCIDENTS:], "mismatch_polls": self.mismatch_polls,
                 "emergency": self.emergency, "ledger_adj": self.ledger_adj, "facts": self.facts,
-                "halt_reason": self.halt_reason, "exposure": self.exposure, "latencies": self.latencies[-50:]}
+                "halt_reason": self.halt_reason, "exposure": self.exposure, "latencies": self.latencies[-50:],
+                "startup_report": self.startup_report}
 
     def _persist(self) -> None:
         self.store.save(self.to_state())
@@ -515,8 +518,19 @@ class LSRLLiveExecutor:
 
     # ------------------------------------------------------------------ stop = VERIFIED protection
     def _plan_rows(self) -> list[dict[str, Any]]:
-        return _rows(self.client.get_tpsl_orders(product_type=self.product_type, symbol=self.rules.symbol,
-                                                 plan_type="profit_loss"))
+        """Every plan order once. A row the exchange repeats (page overlap, a repeated response) must not count twice: coverage
+        is a SUM of sizes, and a doubled row would make half a position look fully stopped."""
+        seen: set[str] = set()
+        rows: list[dict[str, Any]] = []
+        for row in _rows(self.client.get_tpsl_orders(product_type=self.product_type, symbol=self.rules.symbol,
+                                                     plan_type="profit_loss")):
+            key = str(row.get("orderId") or row.get("planOrderId") or "")
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            rows.append(row)
+        return rows
 
     def _stop_result_verified(self, res: Any) -> tuple[bool, str]:
         if not isinstance(res, dict):
@@ -812,6 +826,8 @@ class LSRLLiveExecutor:
         """Every desired take-profit is either live, complete, or (re-)placed for the unfilled remainder."""
         if setup["engine_closed"] or self.emergency:
             return
+        if self._ledger(setup["hold"]) <= self.rules.qty_step / 2:
+            return                                          # our books hold nothing (flattened): no take-profit can exist
         for level, want in sorted(setup["desired_targets"].items()):
             live = [r for r in self._orders_of(setup["setup_id"], level)
                     if not r["terminal"] and not r["superseded"] and not r["cancel_requested"]]
@@ -1060,19 +1076,32 @@ class LSRLLiveExecutor:
                         ) -> dict[str, tuple[float, dict[str, Any] | None]]:
         """Exchange quantity that is LSRL's to protect. It is ours when (a) our ledger of exchange-confirmed fills says
         so, (b) our resting entry could not be read this cycle and exposure appeared on its side (a fill we cannot see
-        yet), or (c) the ownership registry says the side is ours but no setup explains it (executor state lost).
+        yet), (c) the ownership registry says the side is ours but no setup explains it (executor state lost), or (d) an
+        entry written ahead on that side is still unresolved (accepted, reply lost, lookup failing): its fill is ours.
         Anything else is foreign and is never touched: it halts, it is not protected or closed by us."""
         owned: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        unresolved = self._unresolved_entry_sides()          # an entry we wrote ahead but cannot see: its fill is OURS
         for hold, qty in positions.items():
             if qty <= self.rules.qty_step / 2:
                 continue
             setup = self._active_setup(hold)
             resting = any(r["kind"] == "ENTRY" and not r["terminal"] and self.setups.get(r["setup_id"], {}).get("hold") == hold
                           for r in self.orders.values())
-            if (self._ledger(hold) > EPS or (orders_unreadable and resting)
+            if (self._ledger(hold) > EPS or (orders_unreadable and resting) or hold in unresolved
                     or (setup is None and self._claimed_by_us(hold))):
                 owned[hold] = (qty, setup)
         return owned
+
+    def engine_finished(self, setup_id: str, t_ms: int) -> None:
+        """The engine ended this setup. Entries of it that still rest - tracked or adopted late - will never be managed by
+        anyone: cancel them. A fill that nevertheless lands is exposure without an active setup and is flattened (verified)."""
+        setup = self.setups.get(setup_id)
+        if setup is None or setup["finalized"]:
+            return
+        setup["engine_closed"] = True
+        setup["closed_ms"] = setup.get("closed_ms") or t_ms
+        self._cancel_resting_entries(setup_id)
+        self._persist()
 
     def _cancel_resting_entries(self, setup_id: str | None) -> None:
         """No additional ladder exposure while protection is unproven. Cancels are requests; late fills are still
@@ -1238,12 +1267,12 @@ class LSRLLiveExecutor:
         return self._exposure_cycle(positions, t_ms)
 
     # ------------------------------------------------------------------ restart recovery
-    def _startup_reconcile(self, t_ms: int) -> list[Any]:
-        """Once per process, before anything else: orders the executor recorded write-ahead but never got to track
-        (the process died after the exchange accepted them) are looked up by their deterministic clientOid and
-        adopted; an unreadable answer keeps new exposure blocked and is retried until it is resolved."""
-        if self._recovered:
-            return []
+    def _resolve_expected_entries(self, t_ms: int, *, startup: bool = False) -> bool:
+        """Entries recorded WRITE-AHEAD but never tracked (the process died, or the reply was lost, after the exchange may have
+        accepted them) are looked up by their deterministic clientOid and adopted. This runs at start AND on every poll: an
+        accepted-but-unknown entry that fills in a RUNNING process must not sit as unexplained exposure. Returns True when
+        nothing is left unresolved. An unreadable answer is never 'absent': it stays unresolved and blocks new exposure."""
+        resolved = True
         for setup in self.setups.values():
             for oid, exp in list(setup.get("expected_entries", {}).items()):
                 if oid in self.orders:
@@ -1253,32 +1282,134 @@ class LSRLLiveExecutor:
                     found = self.client.find_order_by_client_oid(self.rules.symbol, oid)
                     status = str(found.get("status"))
                 except Exception as exc:                    # noqa: BLE001
-                    status = "UNKNOWN"
-                    found = {}
-                    self.log.warning("LSRL_LIVE_STARTUP_LOOKUP_FAILED | %s | %s", oid, _reason(exc))
+                    status, found = "UNKNOWN", {}
+                    self.log.warning("LSRL_LIVE_ENTRY_LOOKUP_FAILED | %s | %s", oid, _reason(exc))
                 if status == "UNKNOWN":
-                    self._halt(f"STARTUP_ORDER_STATE_UNKNOWN:{oid}")   # no new exposure until it is resolved
-                    return []
+                    self._halt(f"{'STARTUP_' if startup else ''}ORDER_STATE_UNKNOWN:{oid}")   # no new exposure until resolved
+                    resolved = False
+                    continue
                 if status == "ABSENT":
-                    del setup["expected_entries"][oid]      # it was never placed
+                    exp["absent_polls"] = exp.get("absent_polls", 0) + 1
+                    if startup or exp["absent_polls"] >= EXPECTED_ABSENT_GRACE_POLLS:
+                        del setup["expected_entries"][oid]  # it was never placed
+                    else:
+                        resolved = False                    # visibility can lag an accepted order: do not drop it yet
                     continue
                 row = found.get("order") or {}
                 self.orders[oid] = self._order_rec(exp["tag"], "ENTRY", setup["setup_id"], exp["rung"], oid,
                                                    str(row.get("orderId") or ""), exp["price"], exp["qty"],
-                                                   exp["direction"], exp["t_ms"])
+                                                   exp["direction"], exp["t_ms"], preset_stop=setup.get("protect_price"))
                 del setup["expected_entries"][oid]
-                self._incident("ENTRY_ORDER_ADOPTED_AFTER_RESTART", f"{oid} state={status}", t_ms,
-                               setup_id=setup["setup_id"])
+                self._incident("ENTRY_ORDER_ADOPTED_AFTER_RESTART" if startup else "ENTRY_ORDER_ADOPTED", f"{oid} "
+                               f"state={status}", t_ms, setup_id=setup["setup_id"])
+                if setup["engine_closed"] and str(row.get("state") or row.get("status") or "").lower() in (
+                        "live", "new", "partially_filled"):
+                    self.orders[oid]["cancel_requested"] = True    # the engine has finished with this setup: do not leave it resting
+                    try:
+                        self.client.cancel_futures_order(symbol=self.rules.symbol, client_oid=oid)
+                    except Exception as exc:                # noqa: BLE001
+                        if not ("not exist" in str(exc).lower() or "43001" in str(exc)):
+                            self.orders[oid]["cancel_requested"] = False   # try again through the normal path
+        return resolved
+
+    def _unresolved_entry_sides(self) -> set[str]:
+        return {s["hold"] for s in self.setups.values() if s.get("expected_entries")}
+
+    def _startup_reconcile(self, t_ms: int) -> list[Any]:
+        """Once per process, before anything else: write-ahead entries are resolved (see above); an unreadable answer keeps
+        new exposure blocked and is retried until it is resolved."""
+        if self._recovered:
+            return []
+        if not self._resolve_expected_entries(t_ms, startup=True):
+            return []
+        if not self._startup_audit(t_ms):
+            return []                                       # the exchange could not be read in full: nothing is assumed
         self._recovered = True
         self._persist()
         return []
+
+    def _side_is_ours(self, hold: str) -> bool:
+        """The registry says the side is LSRL's, or LSRL has traded it before (a setup exists in our own records)."""
+        return self._claimed_by_us(hold) or any(s["hold"] == hold for s in self.setups.values())
+
+    def _startup_audit(self, t_ms: int) -> bool:
+        """THE EXCHANGE IS AUTHORITATIVE. Once per process, before anything is managed, read everything the exchange holds on
+        the symbol - positions, resting orders, plan orders - and classify it against local state, never the reverse:
+          * a resting order we track                      -> counted;
+          * a reduce-only take-profit named for us (`lsrl...`) that we no longer track -> CANCELLED (it occupies the position
+            in hedge mode and nobody manages it);
+          * an untracked resting ENTRY on a side we own (state lost) -> CANCELLED: it could fill into exposure we cannot manage;
+          * any other untracked order                     -> LEFT ALONE and reported (it may belong to someone else); it blocks
+            new entries through the entry-cycle gate;
+          * a stop/take-profit PLAN order on a side that is flat and has no live setup -> CANCELLED if the side is ours
+            (a leftover stop would later 'protect' a NEW position at a stale price), otherwise LEFT ALONE and reported.
+        Position protection itself is the poll's job (its stop read-back adopts or repairs). Returns False, and keeps new
+        exposure blocked, when any of the three reads fails: an unreadable answer is never an empty account."""
+        report: dict[str, Any] = {"t_ms": t_ms, "tracked_live": [], "orphan_orders_cancelled": [], "unclassified_orders": [],
+                                  "orphan_plans_cancelled": [], "foreign_plans": [], "stops": [], "cancel_failures": []}
+        try:
+            positions = self._read_positions()
+            pending = _rows(self.client.get_pending_orders(symbol=self.rules.symbol))
+            plans = self._plan_rows()
+        except Exception as exc:                            # noqa: BLE001
+            self._halt(f"STARTUP_EXCHANGE_UNREADABLE:{_reason(exc)}")
+            report["unreadable"] = _reason(exc)
+            self.startup_report = report
+            return False
+        report["positions"] = dict(positions)
+        for row in pending:
+            oid = str(row.get("clientOid") or "")
+            hold = str(row.get("posSide") or row.get("holdSide") or "").lower()
+            if oid in self.orders:
+                report["tracked_live"].append(oid)
+                continue
+            opens = str(row.get("tradeSide") or "").lower() == "open"
+            if oid.startswith("lsrl") or (opens and hold and self._side_is_ours(hold)):
+                kind = "orphan_orders_cancelled"
+                try:
+                    self.client.cancel_futures_order(symbol=self.rules.symbol, order_id=str(row.get("orderId") or "") or None,
+                                                     client_oid=oid or None)
+                    report[kind].append(oid or str(row.get("orderId")))
+                    self._incident("ORPHAN_ORDER_CANCELLED", f"{oid} tradeSide={row.get('tradeSide')} side={hold}", t_ms)
+                except Exception as exc:                    # noqa: BLE001
+                    text = str(exc).lower()
+                    if not ("not exist" in text or "43001" in text):
+                        report["cancel_failures"].append({"order": oid, "error": _reason(exc)})
+                        self._halt(f"STARTUP_ORPHAN_CANCEL_FAILED:{oid}")
+            else:
+                report["unclassified_orders"].append({"clientOid": oid, "side": hold, "tradeSide": row.get("tradeSide")})
+                self._incident("UNCLASSIFIED_ORDER_LEFT_ALONE", f"{oid} side={hold}", t_ms)
+        cancelled_sides: set[str] = set()
+        for plan in plans:
+            ptype = str(plan.get("planType") or plan.get("orderType") or "").lower()
+            hold = str(plan.get("posSide") or plan.get("holdSide") or "").lower()
+            report["stops"].append({"type": ptype, "side": hold, "trigger": plan.get("triggerPrice"), "size": plan.get("size")})
+            flat = positions.get(hold, 0.0) <= self.rules.qty_step / 2 and self._active_setup(hold) is None
+            if not (hold and flat):
+                continue
+            if self._side_is_ours(hold):
+                if hold not in cancelled_sides:
+                    try:
+                        self.client.cancel_all_futures_tpsl_orders(symbol=self.rules.symbol, hold_side=hold)
+                        cancelled_sides.add(hold)
+                        self._incident("ORPHAN_PLAN_ORDERS_CANCELLED", f"side={hold} (flat, no live setup)", t_ms)
+                    except Exception as exc:                # noqa: BLE001
+                        report["cancel_failures"].append({"plan_side": hold, "error": _reason(exc)})
+                        self._halt(f"STARTUP_ORPHAN_PLAN_CANCEL_FAILED:{hold}")
+                report["orphan_plans_cancelled"].append({"type": ptype, "side": hold, "trigger": plan.get("triggerPrice")})
+            else:
+                report["foreign_plans"].append({"type": ptype, "side": hold, "trigger": plan.get("triggerPrice")})
+                self._incident("FOREIGN_PLAN_ORDER_LEFT_ALONE", f"{ptype} side={hold}", t_ms)
+        self.startup_report = report
+        return True
 
     def _fast_watch(self, t_ms: int) -> list[Any]:
         """The runtime polls every 3 s. While an entry rests (or exposure is unresolved) the executor looks for the
         fill itself about once a second, so the time a fill sits unprotected is bounded by this, not by the poll."""
         if not self._fast_watch_enabled or self._in_poll or not self._recovered:
             return []
-        resting = any(r["kind"] == "ENTRY" and not r["terminal"] for r in self.orders.values())
+        resting = (any(r["kind"] == "ENTRY" and not r["terminal"] for r in self.orders.values())
+                   or bool(self._unresolved_entry_sides()))
         if not (resting or self.emergency or self.exposure["state"] in (EXPOSURE_UNPROTECTED, EXPOSURE_CRITICAL)):
             return []
         if t_ms - self._last_fast_ms < FAST_WATCH_MS:
@@ -1309,7 +1440,10 @@ class LSRLLiveExecutor:
     def _poll(self, t_ms: int) -> list[Any]:
         events: list[Any] = []
         events += self._startup_reconcile(t_ms)
+        if self._recovered:
+            self._resolve_expected_entries(t_ms)             # a write-ahead entry from THIS process, accepted but never tracked
         active = (any(not r["terminal"] for r in self.orders.values()) or self.stop or self.emergency
+                  or bool(self._unresolved_entry_sides())
                   or self.pending_central or any(not s["finalized"] for s in self.setups.values())
                   or self.exposure["state"] != EXPOSURE_NONE or not self._recovered or not self._polled_once)
         self._polled_once = True                            # a fresh process ALWAYS reads the exchange once: state may be lost
@@ -1368,6 +1502,8 @@ class LSRLLiveExecutor:
         for sid, setup in self.setups.items():
             if setup["finalized"] or self.emergency:
                 continue
+            if setup.get("expected_entries"):
+                continue                                    # an entry written ahead but not yet resolved may still fill: not finished
             if any(not r["terminal"] for r in self._orders_of(sid)):
                 continue
             if positions is None or positions.get(setup["hold"], 0.0) > self.rules.qty_step / 2:

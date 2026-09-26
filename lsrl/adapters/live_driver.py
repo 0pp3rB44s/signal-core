@@ -52,8 +52,22 @@ class LiveDriver:
             del self.intents[:-self.history_limit]
         for out in self.executor.apply(intents, ev.t_ms):
             self._process(out)
+        self._tell_the_executor_which_setups_ended(records, ev.t_ms)
         if self.executor.halt_reason:
             self.engine.halt(f"EXECUTOR:{self.executor.halt_reason}")
+
+    def _tell_the_executor_which_setups_ended(self, records: list[Record], t_ms: int) -> None:
+        """The engine ends a setup without any stop intent when it never had a position (an entry was rejected, the ladder
+        expired). An entry of that setup the executor holds but the engine no longer knows would rest for ever and its fill
+        would be unmanaged: the executor must hear about it."""
+        finished = getattr(self.executor, "engine_finished", None)
+        if finished is None:
+            return
+        for record in records:
+            if record.kind in ("setup_rejected", "setup_closed"):
+                setup_id = (record.data or {}).get("setup_id")
+                if setup_id:
+                    finished(str(setup_id), t_ms)
 
     def feed(self, ev: Any, *, nav: bool = True) -> None:
         if nav and isinstance(ev, BarClosed) and ev.tf_s == self.engine.cfg.trigger_tf_s:

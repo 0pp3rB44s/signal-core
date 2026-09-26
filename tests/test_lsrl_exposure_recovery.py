@@ -258,7 +258,8 @@ def test_x4_an_ambiguous_order_state_blocks_new_exposure_but_a_visible_fill_is_s
     rig.restart()
     rig.ex.lookup_unknown = True                                 # cannot tell what happened to the resting orders
     rig.drive(4, deliver=False)
-    assert rig.exec.halt_reason and "ORDER_STATE_UNKNOWN" in rig.exec.halt_reason
+    # the exchange cannot be read in full: the startup audit (or, once past it, the order reconcile) blocks new exposure
+    assert rig.exec.halt_reason and any(k in rig.exec.halt_reason for k in ("ORDER_STATE_UNKNOWN", "STARTUP_EXCHANGE_UNREADABLE"))
     assert verdict(rig) == "PROTECTED"                           # the exposure is on the exchange: protect it regardless
     rig.ex.lookup_unknown = False
     rig.drive(10)
