@@ -110,14 +110,34 @@ def build_freeze_document(*, baseline_cap_pct: float = 120.0) -> dict[str, Any]:
         "continuous_driver_file_sha256": continuous_driver_file_hashes,
         "engine_fix_commits": ["bc51531", "6f382d6"],
         "note": "execution assumptions (fee/slippage) are inside per_symbol_funnel_config_digest "
-                "(FunnelConfig.assumed_maker_fee_rate/assumed_taker_fee_rate/assumed_stop_slippage_bps); "
-                "process-down protection, restart reconciliation, and clock/capacity/exposure safety "
-                "are LSRL_V1's own shared, unmodified plumbing (lsrl/adapters/process_down.py, "
-                "lsrl/runtime.py::LSRLRuntime.restore(), lsrl/adapters/capacity_gate.py) and are not "
-                "re-hashed here since this restoration makes zero changes to them.",
+                "(FunnelConfig.assumed_maker_fee_rate/assumed_taker_fee_rate/assumed_stop_slippage_bps). "
+                "Restart reconciliation is continuous_paper_driver.py's own (FunnelEngine.snapshot()/"
+                ".restore(), SimExchange.snapshot()/.restore() - see TUNING_ROUND1_TIMING_RACE_AUDIT's "
+                "disclosed finding that LSRL_V1's own LSRLRuntime/CandleFeed cannot be reused unmodified "
+                "here). RiskManager/CentralRiskGate exposure safety is LSRL_V1's own shared, unmodified "
+                "mechanism (already covered by risk_manager_settings + strategy_file_sha256 above); the "
+                "clock and capacity gates are the DEMO ceremony's own checks (funnel/tools/demo_ceremony.py, "
+                "clients/clock_safety.py), run fresh at ceremony time rather than pinned into this freeze.",
     }
     doc["baseline_hash"] = hashlib.sha256(_canon({k: v for k, v in doc.items() if k != "baseline_hash"}).encode()).hexdigest()
     return doc
+
+
+def verify_baseline_unchanged(*, frozen_path: Path | None = None) -> tuple[bool, list[str]]:
+    """Compare the CURRENT state of every frozen category against the PINNED
+    BASELINE_FREEZE_2026-09-27.json on disk - never against a freshly recomputed top-level hash,
+    which would include today's (constantly moving) git HEAD sha and falsely "detect drift" on every
+    unrelated later commit (a new report, this very ceremony script, and so on). Returns
+    (unchanged, mismatches) where mismatches names exactly which field(s) moved, if any."""
+    frozen_path = frozen_path or (REPO_ROOT / "BASELINE_FREEZE_2026-09-27.json")
+    pinned = json.loads(frozen_path.read_text())
+    current = build_freeze_document(baseline_cap_pct=pinned["baseline_cluster_exposure_cap_pct"])
+    mismatches: list[str] = []
+    for key in ("symbol_universe", "per_symbol_funnel_config_digest", "risk_manager_settings",
+               "feature_engine_file_sha256", "strategy_file_sha256", "continuous_driver_file_sha256"):
+        if current[key] != pinned[key]:
+            mismatches.append(key)
+    return (not mismatches, mismatches)
 
 
 def main() -> None:
