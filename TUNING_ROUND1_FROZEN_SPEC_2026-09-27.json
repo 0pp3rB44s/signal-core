@@ -1,0 +1,8 @@
+{
+  "tuning_change": "app.config.Settings.max_cluster_exposure_pct",
+  "baseline_value": 120.0,
+  "tuned_value": 40.0,
+  "derivation": "35pct (one trade's floor-NAV share) < X < 70pct (two trades'), chosen so post-one-position room (X - 35) falls below planner_min_live_notional_usdt (10.0) at CAPITAL_MIN_USDT (100.0)",
+  "frozen_at_utc": "2026-09-27T00:00:00Z",
+  "frozen_before_any_comparison": true
+}
