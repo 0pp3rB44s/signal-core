@@ -27,6 +27,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.equity import write_equity_snapshot
 from clients.schemas import Candle, ContractSpec, MarketSnapshot, StrategyCandidate, TimeframeSnapshot
 from lsrl.core.gates import RiskDecision, RiskGate, RiskProposal
 from lsrl.core.types import (BarClosed, CancelOrder, DepthSnapshot, Direction, FeedHealth, FillEvent,
@@ -205,6 +206,17 @@ class FunnelEngine:
             self._on_bar(ev)
         elif isinstance(ev, NavEvent):
             self.nav_usdt, self.nav_t_ms = ev.nav_usdt, ev.t_ms
+            # app.equity.resolve_account_equity() - which TradePlanner._position_notional() sizes every
+            # trade from - reads a separate, file-based equity snapshot (state/account_equity.json) that
+            # is otherwise unrelated to this engine's own nav_usdt. Without this, the planner silently
+            # falls back to Settings.account_equity_usdt (a fixed placeholder, 1000.0 by default) instead
+            # of the NAV this engine is actually simulating against - not a planner change, just wiring
+            # this engine into the SAME shared equity-communication channel app/runner.py's own
+            # _scan_cycle already writes to (write_equity_snapshot(live_equity)).
+            try:
+                write_equity_snapshot(float(ev.nav_usdt))
+            except Exception:
+                pass                                     # never let telemetry plumbing break a decision cycle
         elif isinstance(ev, FillEvent):
             self._on_fill(ev)
         elif isinstance(ev, OrderEvent):
@@ -311,7 +323,7 @@ class FunnelEngine:
                 setup_id=setup_id, symbol=self.cfg.symbol, direction=direction, t_ms=t_ms, nav_usdt=self.nav_usdt,
                 entry_prices=(entry_hint,), stop=candidate.detection.invalidation, total_qty=0.0,
                 planned_notional_usdt=provisional_notional, planned_loss_usdt=0.0,
-                strategy_risk_fraction=self.cfg.planner_max_notional_per_trade_usdt / max(self.nav_usdt, EPS),
+                strategy_risk_fraction=self.settings.account_risk_per_trade_pct / 100.0,
                 spread_bps=market.primary.range_pct))
         except Exception as exc:                       # fail closed on ANY gate error, exactly like LSRL_V1
             decision = RiskDecision(False, (f"RISK_GATE_ERROR:{type(exc).__name__}",), None, "ERROR")
