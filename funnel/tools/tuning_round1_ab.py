@@ -212,23 +212,32 @@ def run_variant(name: str, *, max_cluster_exposure_pct: float, per_symbol_inputs
 
 
 def run(symbols: tuple[str, ...] = OWNER_APPROVED_PRODUCTION_SYMBOLS, *, nav_usdt: float = 1000.0) -> dict[str, Any]:
-    per_symbol_inputs, rules_by_symbol = _fetch_all(symbols)
-    timeline = _build_timeline(per_symbol_inputs)
+    """NOTE: this writes OPEN_POSITIONS_PATH (state/executed_trades.json, gitignored scratch) as it runs,
+    to make each variant's simulated portfolio visible to the shared RiskManager's cluster/portfolio checks
+    (see the module docstring). The `finally` below resets it to an empty, harmless state no matter how this
+    function exits, so a crashed or interrupted run can never leave phantom "OPEN" positions on disk to
+    corrupt an unrelated later test run in this same checkout - exactly the failure mode that once caused
+    four of this restoration's own Phase-1 tests to fail for a reason that had nothing to do with them."""
+    try:
+        per_symbol_inputs, rules_by_symbol = _fetch_all(symbols)
+        timeline = _build_timeline(per_symbol_inputs)
 
-    variant_a = run_variant("ORIGINAL", max_cluster_exposure_pct=120.0, per_symbol_inputs=per_symbol_inputs,
-                            rules_by_symbol=rules_by_symbol, timeline=timeline, nav_usdt=nav_usdt)
-    variant_b = run_variant("TUNED", max_cluster_exposure_pct=TUNED_MAX_CLUSTER_EXPOSURE_PCT,
-                            per_symbol_inputs=per_symbol_inputs, rules_by_symbol=rules_by_symbol,
-                            timeline=timeline, nav_usdt=nav_usdt)
+        variant_a = run_variant("ORIGINAL", max_cluster_exposure_pct=120.0, per_symbol_inputs=per_symbol_inputs,
+                                rules_by_symbol=rules_by_symbol, timeline=timeline, nav_usdt=nav_usdt)
+        variant_b = run_variant("TUNED", max_cluster_exposure_pct=TUNED_MAX_CLUSTER_EXPOSURE_PCT,
+                                per_symbol_inputs=per_symbol_inputs, rules_by_symbol=rules_by_symbol,
+                                timeline=timeline, nav_usdt=nav_usdt)
 
-    # Blocked-by-cap: at each (symbol, t_ms) where A had a signal and accepted, but B had the SAME signal
-    # and did not accept, specifically because of a RISK_MANAGER/SIZING-stage rejection.
-    a_accept_keys = {(a["symbol"], a["strategy"], a["t_ms"]) for a in variant_a.accepted}
-    b_accept_keys = {(b["symbol"], b["strategy"], b["t_ms"]) for b in variant_b.accepted}
-    a_signal_keys = {(s["symbol"], s["strategy"], s["t_ms"]) for s in variant_a.signals}
-    b_signal_keys = {(s["symbol"], s["strategy"], s["t_ms"]) for s in variant_b.signals}
-    blocked_by_cap = [{"symbol": k[0], "strategy": k[1], "t_ms": k[2]}
-                      for k in (a_accept_keys & b_signal_keys) - b_accept_keys]
+        # Blocked-by-cap: at each (symbol, t_ms) where A had a signal and accepted, but B had the SAME signal
+        # and did not accept, specifically because of a RISK_MANAGER/SIZING-stage rejection.
+        a_accept_keys = {(a["symbol"], a["strategy"], a["t_ms"]) for a in variant_a.accepted}
+        b_accept_keys = {(b["symbol"], b["strategy"], b["t_ms"]) for b in variant_b.accepted}
+        a_signal_keys = {(s["symbol"], s["strategy"], s["t_ms"]) for s in variant_a.signals}
+        b_signal_keys = {(s["symbol"], s["strategy"], s["t_ms"]) for s in variant_b.signals}
+        blocked_by_cap = [{"symbol": k[0], "strategy": k[1], "t_ms": k[2]}
+                          for k in (a_accept_keys & b_signal_keys) - b_accept_keys]
 
-    return {"variant_a": variant_a, "variant_b": variant_b, "blocked_by_cap": blocked_by_cap, "symbols": symbols,
-           "timeline_length": len(timeline)}
+        return {"variant_a": variant_a, "variant_b": variant_b, "blocked_by_cap": blocked_by_cap, "symbols": symbols,
+               "timeline_length": len(timeline)}
+    finally:
+        _write_open_positions([])
