@@ -58,6 +58,16 @@ STRATEGY_FILES = (
     "funnel/runtime.py",
 )
 
+# The continuous-operation driver actually running PAPER/SHADOW right now (see
+# TUNING_ROUND1_TIMING_RACE_AUDIT_2026-09-27.md's discovery that funnel/runtime.py's
+# LSRLRuntime-based build_funnel_fleet does not work for the funnel's multi-timeframe needs) - part of
+# "current hardened execution architecture" as actually implemented, so it is frozen and hashed too.
+CONTINUOUS_DRIVER_FILES = (
+    "funnel/tools/continuous_paper_driver.py",
+    "funnel/tools/tuning_round1_ab.py",
+    "funnel/tools/live_data_run.py",
+)
+
 RISK_MANAGER_SETTINGS_FIELDS = (
     "account_equity_usdt", "account_risk_per_trade_pct", "default_leverage", "max_leverage",
     "max_open_positions", "max_total_exposure_pct", "max_correlated_positions",
@@ -86,6 +96,7 @@ def build_freeze_document(*, baseline_cap_pct: float = 120.0) -> dict[str, Any]:
     risk_manager_settings = {f: getattr(settings, f) for f in RISK_MANAGER_SETTINGS_FIELDS}
     feature_engine_file_hashes = {f: _sha256_file(f) for f in FEATURE_ENGINE_FILES}
     strategy_file_hashes = {f: _sha256_file(f) for f in STRATEGY_FILES}
+    continuous_driver_file_hashes = {f: _sha256_file(f) for f in CONTINUOUS_DRIVER_FILES}
 
     doc: dict[str, Any] = {
         "spec": "SIGNAL_CORE_FUNNEL_V1_BASELINE_FREEZE",
@@ -96,6 +107,7 @@ def build_freeze_document(*, baseline_cap_pct: float = 120.0) -> dict[str, Any]:
         "risk_manager_settings": risk_manager_settings,
         "feature_engine_file_sha256": feature_engine_file_hashes,
         "strategy_file_sha256": strategy_file_hashes,
+        "continuous_driver_file_sha256": continuous_driver_file_hashes,
         "engine_fix_commits": ["bc51531", "6f382d6"],
         "note": "execution assumptions (fee/slippage) are inside per_symbol_funnel_config_digest "
                 "(FunnelConfig.assumed_maker_fee_rate/assumed_taker_fee_rate/assumed_stop_slippage_bps); "
