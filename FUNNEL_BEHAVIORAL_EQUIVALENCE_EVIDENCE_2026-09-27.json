@@ -1,0 +1,110 @@
+{
+  "HISTORICAL_EVENTS_REPLAYED": 0,
+  "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+  "ARCHITECTURAL_COMPARISON_EVENTS": 1440,
+  "OLD_CANDIDATES": 98,
+  "RESTORED_CANDIDATES": 98,
+  "CANDIDATE_MATCH_RATE": 1.0,
+  "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+  "ENTRY_GEOMETRY_MATCH": 1.0,
+  "EXIT_GEOMETRY_MATCH": 1.0,
+  "mismatches": [],
+  "per_symbol": {
+    "BTCUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 25,
+      "RESTORED_CANDIDATES": 25,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "SOLUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 14,
+      "RESTORED_CANDIDATES": 14,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "SUIUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 3,
+      "RESTORED_CANDIDATES": 3,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "XLMUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 9,
+      "RESTORED_CANDIDATES": 9,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "AVAXUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 11,
+      "RESTORED_CANDIDATES": 11,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "DOGEUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 11,
+      "RESTORED_CANDIDATES": 11,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "SEIUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 7,
+      "RESTORED_CANDIDATES": 7,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    },
+    "TRXUSDT": {
+      "HISTORICAL_EVENTS_REPLAYED": 0,
+      "HISTORICAL_EVENTS_REPLAYED_NOTE": "no raw Aug 2026 archive found on this host; see module docstring",
+      "ARCHITECTURAL_COMPARISON_EVENTS": 180,
+      "OLD_CANDIDATES": 18,
+      "RESTORED_CANDIDATES": 18,
+      "CANDIDATE_MATCH_RATE": 1.0,
+      "STRATEGY_FAMILY_MATCH_RATE": 1.0,
+      "ENTRY_GEOMETRY_MATCH": 1.0,
+      "EXIT_GEOMETRY_MATCH": 1.0,
+      "mismatches": []
+    }
+  }
+}
