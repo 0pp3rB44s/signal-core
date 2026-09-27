@@ -191,24 +191,40 @@ def run_variant(name: str, *, max_cluster_exposure_pct: float, per_symbol_inputs
                 nav_usdt: float) -> VariantState:
     variant = make_variant(name, max_cluster_exposure_pct=max_cluster_exposure_pct, rules_by_symbol=rules_by_symbol)
     _write_open_positions([])                                      # fresh, independent portfolio
-    for as_of_ms, symbol, candle in timeline:
+
+    def build_market(symbol: str, as_of_ms: int, candle: Candle):
         inputs = per_symbol_inputs[symbol]
         primary, confirm, h4, d1, orderbook, contract = (
             inputs["primary"], inputs["confirm"], inputs["h4"], inputs["d1"], inputs["orderbook"], inputs["contract"])
-        try:
-            i = primary.index(candle)
-            h4_closed = _closed_as_of(h4, "4H", as_of_ms)
-            d1_closed = _closed_as_of(d1, "1D", as_of_ms)
-            htf = classify_htf_regime(h4_closed, d1_closed) if h4_closed and d1_closed else {
-                "regime_1d": "neutral", "regime_4h": "neutral", "htf_regime": "neutral"}
-            market = build_market_snapshot(
-                symbol, primary[:i + 1], confirm, as_of_timestamp_ms=as_of_ms,
-                primary_granularity="15m", confirmation_granularity="1h",
-                inputs=LiveMarketContext(orderbook=orderbook, htf_context=htf, contract=contract))
-        except Exception:
-            continue
-        step_variant(variant, symbol, market, t_ms=as_of_ms, nav_usdt=nav_usdt, candle=candle)
+        i = primary.index(candle)
+        h4_closed = _closed_as_of(h4, "4H", as_of_ms)
+        d1_closed = _closed_as_of(d1, "1D", as_of_ms)
+        htf = classify_htf_regime(h4_closed, d1_closed) if h4_closed and d1_closed else {
+            "regime_1d": "neutral", "regime_4h": "neutral", "htf_regime": "neutral"}
+        return build_market_snapshot(
+            symbol, primary[:i + 1], confirm, as_of_timestamp_ms=as_of_ms,
+            primary_granularity="15m", confirmation_granularity="1h",
+            inputs=LiveMarketContext(orderbook=orderbook, htf_context=htf, contract=contract))
+
+    from itertools import groupby
+    for t_ms, group in groupby(timeline, key=lambda e: e[0]):
+        for symbol, candle in order_tied_group(list(group), variant):
+            try:
+                market = build_market(symbol, t_ms, candle)
+            except Exception:
+                continue
+            step_variant(variant, symbol, market, t_ms=t_ms, nav_usdt=nav_usdt, candle=candle)
     return variant
+
+
+def order_tied_group(group: list[tuple[int, str, Candle]], variant: VariantState) -> list[tuple[str, Candle]]:
+    """See TUNING_ROUND1_TIMING_RACE_AUDIT_2026-09-27.md: within one shared timestamp, every symbol that
+    ALREADY has an open/pending setup is processed (its fill recorded) before any symbol that is flat is
+    evaluated for a NEW candidate - so a same-instant fill is always visible to another symbol's exposure
+    check, never dependent on which symbol's name happens to sort first."""
+    already_positioned = [(sym, c) for _t, sym, c in group if variant.engines[sym].setup is not None]
+    flat = [(sym, c) for _t, sym, c in group if variant.engines[sym].setup is None]
+    return already_positioned + flat
 
 
 def run(symbols: tuple[str, ...] = OWNER_APPROVED_PRODUCTION_SYMBOLS, *, nav_usdt: float = 1000.0) -> dict[str, Any]:
