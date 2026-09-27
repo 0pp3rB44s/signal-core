@@ -1,0 +1,951 @@
+{
+  "symbols": {
+    "BTCUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "low_vol_reclaim": 4,
+        "momentum_breakout": 4
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 122,
+        "SCORE": 2
+      },
+      "accepted_setups": [
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "SHORT",
+          "entry": 83905.1,
+          "stop": 84010.45464,
+          "targets": [
+            83768.138968
+          ],
+          "t_ms": 1790385300001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "SHORT",
+          "entry": 83916.4,
+          "stop": 84096.2232,
+          "targets": [
+            83682.62984
+          ],
+          "t_ms": 1790392500001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 84259.3,
+          "stop": 84000.7456,
+          "targets": [
+            84530.78212
+          ],
+          "t_ms": 1790412300001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 84421.1,
+          "stop": 84329.58232,
+          "targets": [
+            84540.072984
+          ],
+          "t_ms": 1790478000001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 84510.0,
+          "stop": 84218.27144,
+          "targets": [
+            84889.247128
+          ],
+          "t_ms": 1790487900001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 84993.2,
+          "stop": 84781.52047999999,
+          "targets": [
+            85215.463496
+          ],
+          "t_ms": 1790504100001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 83905.1,
+          "qty": 0.0004171379332126414,
+          "t_ms": 1790387100001
+        },
+        {
+          "kind": "SL",
+          "price": 84027.256730928,
+          "qty": 0.0004171379332126414,
+          "t_ms": 1790388000001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 83916.4,
+          "qty": 0.00041708176232536193,
+          "t_ms": 1790394300001
+        },
+        {
+          "kind": "SL",
+          "price": 84113.04244464,
+          "qty": 0.00041708176232536193,
+          "t_ms": 1790409600001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 84259.3,
+          "qty": 0.0004153844145394039,
+          "t_ms": 1790414100001
+        },
+        {
+          "kind": "SL",
+          "price": 83983.94545088,
+          "qty": 0.0004153844145394039,
+          "t_ms": 1790415000001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 84421.1,
+          "qty": 0.0004145882960539486,
+          "t_ms": 1790479800001
+        },
+        {
+          "kind": "SL",
+          "price": 84312.716403536,
+          "qty": 0.0004145882960539486,
+          "t_ms": 1790484300001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 84510.0,
+          "qty": 0.0004141521713406697,
+          "t_ms": 1790489700001
+        },
+        {
+          "kind": "TP1",
+          "price": 84889.247128,
+          "qty": 0.0004141521713406697,
+          "t_ms": 1790503200001
+        }
+      ]
+    },
+    "SOLUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "low_vol_reclaim": 5,
+        "momentum_breakout": 2
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 119,
+        "SCORE": 1
+      },
+      "accepted_setups": [
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 121.955,
+          "stop": 121.7445264,
+          "targets": [
+            122.22861568
+          ],
+          "t_ms": 1790379900001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 122.008,
+          "stop": 121.4147904,
+          "targets": [
+            122.77917248
+          ],
+          "t_ms": 1790388000001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 121.21,
+          "stop": 120.4945272,
+          "targets": [
+            121.80544644
+          ],
+          "t_ms": 1790423100001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 121.765,
+          "stop": 120.6364136,
+          "targets": [
+            123.23216232
+          ],
+          "t_ms": 1790437500001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 121.454,
+          "stop": 120.63141759999999,
+          "targets": [
+            122.52335712
+          ],
+          "t_ms": 1790475300001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 121.338,
+          "stop": 121.1320168,
+          "targets": [
+            121.60577816
+          ],
+          "t_ms": 1790493300001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 121.955,
+          "qty": 0.28699110327579846,
+          "t_ms": 1790381700001
+        },
+        {
+          "kind": "SL",
+          "price": 121.72017749472,
+          "qty": 0.28699110327579846,
+          "t_ms": 1790383500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 122.008,
+          "qty": 0.2868664349878697,
+          "t_ms": 1790389800001
+        },
+        {
+          "kind": "SL",
+          "price": 121.39050744192001,
+          "qty": 0.2868664349878697,
+          "t_ms": 1790392500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 121.21,
+          "qty": 0.28875505321343126,
+          "t_ms": 1790424900001
+        },
+        {
+          "kind": "SL",
+          "price": 120.47042829456,
+          "qty": 0.28875505321343126,
+          "t_ms": 1790429400001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 121.765,
+          "qty": 0.2874389192296637,
+          "t_ms": 1790439300001
+        },
+        {
+          "kind": "SL",
+          "price": 120.61228631728,
+          "qty": 0.2874389192296637,
+          "t_ms": 1790455500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 121.454,
+          "qty": 0.2881749468934741,
+          "t_ms": 1790477100001
+        },
+        {
+          "kind": "SL",
+          "price": 120.60729131647999,
+          "qty": 0.2881749468934741,
+          "t_ms": 1790479800001
+        }
+      ]
+    },
+    "SUIUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "momentum_breakout": 3
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 156,
+        "RISK_MANAGER": 1
+      },
+      "accepted_setups": [
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 1.1914,
+          "stop": 1.1734604800000001,
+          "targets": [
+            1.1858415
+          ],
+          "t_ms": 1790436600001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 1.1798,
+          "stop": 1.1632686399999999,
+          "targets": [
+            1.19715793
+          ],
+          "t_ms": 1790474400001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 1.1914,
+          "qty": 29.37720329024677,
+          "t_ms": 1790438400001
+        },
+        {
+          "kind": "SL",
+          "price": 1.1732257879040002,
+          "qty": 29.37720329024677,
+          "t_ms": 1790446500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 1.1798,
+          "qty": 29.66604509238854,
+          "t_ms": 1790476200001
+        },
+        {
+          "kind": "SL",
+          "price": 1.1630359862719999,
+          "qty": 29.66604509238854,
+          "t_ms": 1790483400001
+        }
+      ]
+    },
+    "XLMUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "low_vol_reclaim": 3,
+        "momentum_breakout": 3,
+        "momentum_breakdown": 1
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 138,
+        "SCORE": 1
+      },
+      "accepted_setups": [
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 0.22033,
+          "stop": 0.219694104,
+          "targets": [
+            0.22115666
+          ],
+          "t_ms": 1790380800001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 0.21967,
+          "stop": 0.21742592,
+          "targets": [
+            0.2225873
+          ],
+          "t_ms": 1790385300001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.22077,
+          "stop": 0.218994664,
+          "targets": [
+            0.2216706
+          ],
+          "t_ms": 1790437500001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.22112,
+          "stop": 0.21784558399999998,
+          "targets": [
+            0.21933064
+          ],
+          "t_ms": 1790446500001
+        },
+        {
+          "strategy": "momentum_breakdown",
+          "direction": "SHORT",
+          "entry": 0.21304,
+          "stop": 0.213860952,
+          "targets": [
+            0.212178
+          ],
+          "t_ms": 1790485200001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 0.21754,
+          "stop": 0.216286832,
+          "targets": [
+            0.21916912
+          ],
+          "t_ms": 1790503200001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 0.22033,
+          "qty": 158.85263014569057,
+          "t_ms": 1790382600001
+        },
+        {
+          "kind": "SL",
+          "price": 0.2196501651792,
+          "qty": 158.85263014569057,
+          "t_ms": 1790383500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.21967,
+          "qty": 159.32990394682932,
+          "t_ms": 1790392500001
+        },
+        {
+          "kind": "SL",
+          "price": 0.217382434816,
+          "qty": 159.32990394682932,
+          "t_ms": 1790400600001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.22077,
+          "qty": 158.53603297549486,
+          "t_ms": 1790439300001
+        },
+        {
+          "kind": "SL",
+          "price": 0.21895086506720002,
+          "qty": 158.53603297549486,
+          "t_ms": 1790443800001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.22112,
+          "qty": 158.28509406657017,
+          "t_ms": 1790448300001
+        },
+        {
+          "kind": "SL",
+          "price": 0.21780201488319997,
+          "qty": 158.28509406657017,
+          "t_ms": 1790449200001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.21304,
+          "qty": 164.28839654524973,
+          "t_ms": 1790487000001
+        },
+        {
+          "kind": "SL",
+          "price": 0.2139037241904,
+          "qty": 164.28839654524973,
+          "t_ms": 1790487900001
+        }
+      ]
+    },
+    "AVAXUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "momentum_breakout": 6,
+        "low_vol_reclaim": 1
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 121
+      },
+      "accepted_setups": [
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 10.595,
+          "stop": 10.5485544,
+          "targets": [
+            10.64376788
+          ],
+          "t_ms": 1790369100001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 10.659,
+          "stop": 10.5985144,
+          "targets": [
+            10.72250988
+          ],
+          "t_ms": 1790379000001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 10.967,
+          "stop": 10.6544696,
+          "targets": [
+            10.73960692
+          ],
+          "t_ms": 1790407800001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 10.715,
+          "stop": 10.64148,
+          "targets": [
+            10.810576
+          ],
+          "t_ms": 1790412300001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 10.783,
+          "stop": 10.7224152,
+          "targets": [
+            10.82201404
+          ],
+          "t_ms": 1790420400001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 11.049,
+          "stop": 10.8483144,
+          "targets": [
+            11.25971988
+          ],
+          "t_ms": 1790433900001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 10.91,
+          "stop": 10.8403208,
+          "targets": [
+            10.98316316
+          ],
+          "t_ms": 1790489700001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 10.595,
+          "qty": 3.303445021236432,
+          "t_ms": 1790370900001
+        },
+        {
+          "kind": "SL",
+          "price": 10.546444689120001,
+          "qty": 3.303445021236432,
+          "t_ms": 1790371800001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 10.659,
+          "qty": 3.2836100947556055,
+          "t_ms": 1790380800001
+        },
+        {
+          "kind": "SL",
+          "price": 10.59639469712,
+          "qty": 3.2836100947556055,
+          "t_ms": 1790381700001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 10.967,
+          "qty": 3.1913923588948663,
+          "t_ms": 1790409600001
+        },
+        {
+          "kind": "SL",
+          "price": 10.65233870608,
+          "qty": 3.1913923588948663,
+          "t_ms": 1790410500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 10.715,
+          "qty": 3.2664489034064395,
+          "t_ms": 1790414100001
+        },
+        {
+          "kind": "SL",
+          "price": 10.639351704,
+          "qty": 3.2664489034064395,
+          "t_ms": 1790415000001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 10.783,
+          "qty": 3.245849948993787,
+          "t_ms": 1790427600001
+        },
+        {
+          "kind": "SL",
+          "price": 10.72027071696,
+          "qty": 3.245849948993787,
+          "t_ms": 1790429400001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 11.049,
+          "qty": 3.1677074848402573,
+          "t_ms": 1790435700001
+        },
+        {
+          "kind": "SL",
+          "price": 10.84614473712,
+          "qty": 3.1677074848402573,
+          "t_ms": 1790445600001
+        }
+      ]
+    },
+    "DOGEUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "momentum_breakout": 6,
+        "low_vol_reclaim": 2,
+        "momentum_breakdown": 1
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 113,
+        "SCORE": 1
+      },
+      "accepted_setups": [
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.09836,
+          "stop": 0.097751736,
+          "targets": [
+            0.09842468
+          ],
+          "t_ms": 1790366400001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 0.09854,
+          "stop": 0.09752192000000001,
+          "targets": [
+            0.0998635
+          ],
+          "t_ms": 1790375400001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.09819,
+          "stop": 0.09709226400000001,
+          "targets": [
+            0.09805112
+          ],
+          "t_ms": 1790417700001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.09834,
+          "stop": 0.097941584,
+          "targets": [
+            0.09875834
+          ],
+          "t_ms": 1790436600001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.0987,
+          "stop": 0.097541904,
+          "targets": [
+            0.097948
+          ],
+          "t_ms": 1790445600001
+        },
+        {
+          "strategy": "momentum_breakdown",
+          "direction": "SHORT",
+          "entry": 0.09555,
+          "stop": 0.095936688,
+          "targets": [
+            0.09514398
+          ],
+          "t_ms": 1790485200001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.09813,
+          "stop": 0.097591864,
+          "targets": [
+            0.09869504
+          ],
+          "t_ms": 1790496000001
+        },
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "LONG",
+          "entry": 0.09743,
+          "stop": 0.0971722,
+          "targets": [
+            0.09776514
+          ],
+          "t_ms": 1790501400001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 0.09836,
+          "qty": 355.83570557137045,
+          "t_ms": 1790368200001
+        },
+        {
+          "kind": "SL",
+          "price": 0.09773218565280001,
+          "qty": 355.83570557137045,
+          "t_ms": 1790370000001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.09854,
+          "qty": 355.18571138623906,
+          "t_ms": 1790383500001
+        },
+        {
+          "kind": "SL",
+          "price": 0.09750241561600001,
+          "qty": 355.18571138623906,
+          "t_ms": 1790400600001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.09819,
+          "qty": 356.4517771667176,
+          "t_ms": 1790419500001
+        },
+        {
+          "kind": "TP1",
+          "price": 0.09805112,
+          "qty": 356.4517771667176,
+          "t_ms": 1790421300001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.09834,
+          "qty": 355.9080740288794,
+          "t_ms": 1790438400001
+        },
+        {
+          "kind": "SL",
+          "price": 0.0979219956832,
+          "qty": 355.9080740288794,
+          "t_ms": 1790442900001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.0987,
+          "qty": 354.6099290780142,
+          "t_ms": 1790447400001
+        },
+        {
+          "kind": "SL",
+          "price": 0.0975223956192,
+          "qty": 354.6099290780142,
+          "t_ms": 1790448300001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.09555,
+          "qty": 366.3003663003663,
+          "t_ms": 1790487000001
+        },
+        {
+          "kind": "SL",
+          "price": 0.0959558753376,
+          "qty": 366.3003663003663,
+          "t_ms": 1790487900001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.09813,
+          "qty": 356.6697238357281,
+          "t_ms": 1790497800001
+        },
+        {
+          "kind": "SL",
+          "price": 0.0975723456272,
+          "qty": 356.6697238357281,
+          "t_ms": 1790500500001
+        }
+      ]
+    },
+    "SEIUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "momentum_breakout": 3,
+        "momentum_breakdown": 1
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 147
+      },
+      "accepted_setups": [
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.07442,
+          "stop": 0.072481968,
+          "targets": [
+            0.07424093
+          ],
+          "t_ms": 1790417700001
+        },
+        {
+          "strategy": "momentum_breakdown",
+          "direction": "SHORT",
+          "entry": 0.07233,
+          "stop": 0.07295832000000001,
+          "targets": [
+            0.07167026
+          ],
+          "t_ms": 1790449200001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.07276,
+          "stop": 0.071782528,
+          "targets": [
+            0.07378635
+          ],
+          "t_ms": 1790475300001
+        },
+        {
+          "strategy": "momentum_breakout",
+          "direction": "LONG",
+          "entry": 0.07441,
+          "stop": 0.0739408,
+          "targets": [
+            0.07490266
+          ],
+          "t_ms": 1790494200001
+        }
+      ],
+      "simulated_fills": [
+        {
+          "kind": "ENTRY",
+          "price": 0.07442,
+          "qty": 470.30368180596616,
+          "t_ms": 1790419500001
+        },
+        {
+          "kind": "TP1",
+          "price": 0.07424093,
+          "qty": 470.30368180596616,
+          "t_ms": 1790421300001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.07233,
+          "qty": 483.8932669708281,
+          "t_ms": 1790451000001
+        },
+        {
+          "kind": "TP1",
+          "price": 0.07167026,
+          "qty": 483.8932669708281,
+          "t_ms": 1790455500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.07276,
+          "qty": 481.0335349092908,
+          "t_ms": 1790477100001
+        },
+        {
+          "kind": "SL",
+          "price": 0.0717681714944,
+          "qty": 481.0335349092908,
+          "t_ms": 1790482500001
+        },
+        {
+          "kind": "ENTRY",
+          "price": 0.07441,
+          "qty": 470.36688617121354,
+          "t_ms": 1790501400001
+        },
+        {
+          "kind": "TP1",
+          "price": 0.07490266,
+          "qty": 470.36688617121354,
+          "t_ms": 1790503200001
+        }
+      ]
+    },
+    "TRXUSDT": {
+      "steps_attempted": 180,
+      "steps_built": 180,
+      "build_errors": {},
+      "candidates_by_strategy": {
+        "momentum_breakout": 1,
+        "low_vol_reclaim": 1
+      },
+      "rejections_by_stage": {
+        "FUNNEL": 71,
+        "SCORE": 1
+      },
+      "accepted_setups": [
+        {
+          "strategy": "low_vol_reclaim",
+          "direction": "SHORT",
+          "entry": 0.33706,
+          "stop": 0.33756984,
+          "targets": [
+            0.33639721
+          ],
+          "t_ms": 1790408700001
+        }
+      ],
+      "simulated_fills": []
+    }
+  },
+  "public_endpoints_used": [
+    "/api/v2/mix/market/candles",
+    "/api/v2/mix/market/merge-depth",
+    "/api/v2/mix/market/contracts"
+  ]
+}

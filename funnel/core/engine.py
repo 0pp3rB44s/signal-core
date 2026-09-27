@@ -41,7 +41,11 @@ from vendor_frozen_5a28980d.strategies.strategies.low_vol_reclaim import detect_
 
 # Byte-identical between the frozen commit and this monorepo snapshot (verified at restoration time;
 # see AGENT_A_RESTORATION_2026-09-27.md) - imported from the shared path, not duplicated.
-from strategies.momentum_breakout import MomentumBreakoutStrategy
+# MomentumBreakdownStrategy is a SUBCLASS of MomentumBreakoutStrategy (strategies/momentum_breakout.py:839),
+# not a separate detection path re-derived from one call - the original runner instantiates and calls both
+# separately (app/runner.py:474-475, 1190-1191), and this restoration now does the same (corrected in
+# Phase 2 from an earlier single-instance approximation; see FUNNEL_MARKET_INPUT_RECONSTRUCTION_2026-09-27.md).
+from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.scoring import StrategyScorer
 from strategies.strategies.continuation import detect_continuation
@@ -145,6 +149,7 @@ class FunnelEngine:
         self.taker_fee = cfg.assumed_taker_fee_rate if taker_fee_rate is None else taker_fee_rate
         self.stop_slip_bps = cfg.assumed_stop_slippage_bps if stop_slippage_bps is None else stop_slippage_bps
         self._momentum = MomentumBreakoutStrategy(settings)
+        self._momentum_breakdown = MomentumBreakdownStrategy(settings)
         self._sweep = LiquiditySweepStrategy(settings)
         self._scorer = StrategyScorer(settings)
         self._planner = TradePlanner(settings)
@@ -161,6 +166,7 @@ class FunnelEngine:
         self.seen_setup_ids: list[str] = []
         self._intents: list[Intent] = []
         self._records: list[Record] = []
+        self._pending_live_market: MarketSnapshot | None = None
 
     @property
     def active_setup_id(self) -> str | None:
@@ -207,6 +213,24 @@ class FunnelEngine:
             pass
         return self._intents, self._records
 
+    def run_live_cycle(self, market: MarketSnapshot, *, t_ms: int, nav_usdt: float) -> tuple[list[Intent], list[Record]]:
+        """One real-data decision+fill cycle. `market` must be built by market_features.engine.
+        build_market_snapshot (or MarketFetcher.build_market_snapshot) from freshly-fetched Bitget candles/
+        order-book - see funnel/tools/live_data_run.py - never a fabricated snapshot. Feeds a NavEvent, then
+        a BarClosed synthesized from the real latest-closed primary candle, so this engine's own fill/close
+        bookkeeping (unchanged from the synthetic-lifecycle tests) runs on genuine OHLC."""
+        self.on_event(NavEvent(t_ms=t_ms, nav_usdt=nav_usdt, source="live"))
+        latest = market.primary.candles[-1]
+        self._pending_live_market = market
+        try:
+            bar = BarClosed(t_ms=t_ms, tf_s=self.cfg.primary_tf_s, open_ts_ms=latest.timestamp_ms,
+                            close_ts_ms=latest.timestamp_ms + self.cfg.primary_tf_s * 1000,
+                            open=latest.open, high=latest.high, low=latest.low, close=latest.close,
+                            volume=latest.volume_base)
+            return self.on_event(bar)
+        finally:
+            self._pending_live_market = None
+
     def _record(self, kind: str, t_ms: int, data: dict[str, Any]) -> None:
         self._records.append(Record(kind, t_ms, data))
 
@@ -231,6 +255,9 @@ class FunnelEngine:
             return                                    # one position at a time per symbol; no new detection while in one
         if not self.signal_allowed or self.halted_reason:
             return
+        if self._pending_live_market is not None:
+            self._run_decision_cycle(bar.t_ms, market=self._pending_live_market)
+            return
         if len(self._primary) < 20 or len(self._confirm) < 20:
             return                                     # insufficient history for EMA20 - fail closed, not a fabricated read
         self._run_decision_cycle(bar.t_ms)
@@ -250,8 +277,13 @@ class FunnelEngine:
         return MarketSnapshot(symbol=self.cfg.symbol, contract=contract, primary=primary, confirmation=confirm,
                               alignment=_alignment(primary.trend, confirm.trend), score_hint=100.0, notes=[])
 
-    def _run_decision_cycle(self, t_ms: int) -> None:
-        market = self._market_snapshot(t_ms)
+    def _run_decision_cycle(self, t_ms: int, *, market: MarketSnapshot | None = None) -> None:
+        """`market`, when given, is a REAL snapshot built by market_features.engine.build_market_snapshot
+        from live-fetched candles/order-book (see funnel/tools/live_data_run.py) - the production feature
+        pipeline, unmodified. When omitted (the synthetic-lifecycle test path), it falls back to this
+        engine's own simplified candle-only reconstruction from buffered BarClosed events."""
+        if market is None:
+            market = self._market_snapshot(t_ms)
         if market is None:
             return
         candidate, why = self._detect(market)
@@ -296,16 +328,12 @@ class FunnelEngine:
         self._place_from_plan(setup_id, candidate, plan, t_ms)
 
     def _detect(self, market: MarketSnapshot) -> tuple[StrategyCandidate | None, str]:
-        """Same funnel order the last real-money session logged (StartupRunner: sweep -> momentum -> continuation
-        -> low_vol_reclaim -> selector), preserved for behavioral fidelity."""
+        """Same funnel order and same TWO separate strategy instances the last real-money session used
+        (app/runner.py:1189-1201: self.strategy / self.momentum_strategy / self.momentum_breakdown_strategy
+        / detect_continuation / detect_low_vol_reclaim, in that order), preserved for behavioral fidelity."""
         sweep_candidate = self._sweep.detect(market)
         momentum_candidate = self._momentum.detect(market)
-        momentum_breakdown_candidate = momentum_candidate if (
-            momentum_candidate is not None and momentum_candidate.strategy == "momentum_breakdown") else None
-        if momentum_breakdown_candidate is not None:
-            momentum_candidate = None
-        elif momentum_candidate is not None and momentum_candidate.strategy != "momentum_breakout":
-            momentum_candidate = None
+        momentum_breakdown_candidate = self._momentum_breakdown.detect(market)
         continuation_candidate = detect_continuation(market)
         low_vol_reclaim_candidate = detect_low_vol_reclaim(market)
         winner, why = select_best_candidate(
