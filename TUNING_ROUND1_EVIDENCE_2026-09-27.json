@@ -1,0 +1,321 @@
+{
+  "ORIGINAL": {
+    "n_signals": 51,
+    "n_accepted": 35,
+    "n_trades": 30,
+    "gross_pnl": -6.3097,
+    "net_pnl": -7.0621,
+    "fees": 0.7524,
+    "profit_factor": 0.0846,
+    "mean_trade": -0.2354,
+    "median_trade": -0.2075,
+    "win_rate": 0.1333,
+    "avg_winner": 0.1632,
+    "avg_loser": -0.2967,
+    "max_drawdown": 7.062097,
+    "symbol_concentration_hhi": 0.1644,
+    "strategy_concentration_hhi": 0.4822,
+    "top_symbol_share": 0.2,
+    "top_strategy_share": 0.6333,
+    "by_symbol_n": {
+      "DOGEUSDT": 6,
+      "AVAXUSDT": 5,
+      "XLMUSDT": 5,
+      "BTCUSDT": 6,
+      "SEIUSDT": 4,
+      "SOLUSDT": 3,
+      "SUIUSDT": 1
+    },
+    "by_strategy_n": {
+      "momentum_breakout": 19,
+      "low_vol_reclaim": 8,
+      "momentum_breakdown": 3
+    },
+    "max_simultaneous_same_cluster": 2,
+    "turnover_trades": 30
+  },
+  "TUNED": {
+    "n_signals": 51,
+    "n_accepted": 35,
+    "n_trades": 30,
+    "gross_pnl": -6.3097,
+    "net_pnl": -7.0621,
+    "fees": 0.7524,
+    "profit_factor": 0.0846,
+    "mean_trade": -0.2354,
+    "median_trade": -0.2075,
+    "win_rate": 0.1333,
+    "avg_winner": 0.1632,
+    "avg_loser": -0.2967,
+    "max_drawdown": 7.062097,
+    "symbol_concentration_hhi": 0.1644,
+    "strategy_concentration_hhi": 0.4822,
+    "top_symbol_share": 0.2,
+    "top_strategy_share": 0.6333,
+    "by_symbol_n": {
+      "DOGEUSDT": 6,
+      "AVAXUSDT": 5,
+      "XLMUSDT": 5,
+      "BTCUSDT": 6,
+      "SEIUSDT": 4,
+      "SOLUSDT": 3,
+      "SUIUSDT": 1
+    },
+    "by_strategy_n": {
+      "momentum_breakout": 19,
+      "low_vol_reclaim": 8,
+      "momentum_breakdown": 3
+    },
+    "max_simultaneous_same_cluster": 2,
+    "turnover_trades": 30
+  },
+  "ORIGINAL_robustness": {
+    "excluding_BTCUSDT": {
+      "n_signals": 38,
+      "n_accepted": 28,
+      "n_trades": 24,
+      "gross_pnl": -6.1538,
+      "net_pnl": -6.7662,
+      "fees": 0.6124,
+      "profit_factor": 0.0717,
+      "mean_trade": -0.2819,
+      "median_trade": -0.2463,
+      "win_rate": 0.0833,
+      "avg_winner": 0.2615,
+      "avg_loser": -0.3313,
+      "max_drawdown": 6.766188,
+      "symbol_concentration_hhi": 0.1944,
+      "strategy_concentration_hhi": 0.5938,
+      "top_symbol_share": 0.25,
+      "top_strategy_share": 0.75,
+      "by_symbol_n": {
+        "DOGEUSDT": 6,
+        "AVAXUSDT": 5,
+        "XLMUSDT": 5,
+        "SEIUSDT": 4,
+        "SOLUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "by_strategy_n": {
+        "momentum_breakout": 18,
+        "low_vol_reclaim": 3,
+        "momentum_breakdown": 3
+      },
+      "max_simultaneous_same_cluster": null,
+      "turnover_trades": 24
+    },
+    "excluding_best_symbol": {
+      "n_signals": 46,
+      "n_accepted": 31,
+      "n_trades": 26,
+      "gross_pnl": -6.2993,
+      "net_pnl": -6.9821,
+      "fees": 0.6827,
+      "profit_factor": 0.0182,
+      "mean_trade": -0.2685,
+      "median_trade": -0.2301,
+      "win_rate": 0.0769,
+      "avg_winner": 0.0648,
+      "avg_loser": -0.2963,
+      "max_drawdown": 6.982072,
+      "symbol_concentration_hhi": 0.1953,
+      "strategy_concentration_hhi": 0.4793,
+      "top_symbol_share": 0.2308,
+      "top_strategy_share": 0.6154,
+      "by_symbol_n": {
+        "DOGEUSDT": 6,
+        "AVAXUSDT": 5,
+        "XLMUSDT": 5,
+        "BTCUSDT": 6,
+        "SOLUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "by_strategy_n": {
+        "momentum_breakout": 16,
+        "low_vol_reclaim": 8,
+        "momentum_breakdown": 2
+      },
+      "max_simultaneous_same_cluster": null,
+      "turnover_trades": 26
+    },
+    "excluding_worst_symbol": {
+      "n_signals": 44,
+      "n_accepted": 29,
+      "n_trades": 25,
+      "gross_pnl": -4.0124,
+      "net_pnl": -4.6262,
+      "fees": 0.6138,
+      "profit_factor": 0.1236,
+      "mean_trade": -0.185,
+      "median_trade": -0.17,
+      "win_rate": 0.16,
+      "avg_winner": 0.1632,
+      "avg_loser": -0.2514,
+      "max_drawdown": 4.626217,
+      "symbol_concentration_hhi": 0.1968,
+      "strategy_concentration_hhi": 0.4304,
+      "top_symbol_share": 0.24,
+      "top_strategy_share": 0.56,
+      "by_symbol_n": {
+        "DOGEUSDT": 6,
+        "XLMUSDT": 5,
+        "BTCUSDT": 6,
+        "SEIUSDT": 4,
+        "SOLUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "by_strategy_n": {
+        "momentum_breakout": 14,
+        "low_vol_reclaim": 8,
+        "momentum_breakdown": 3
+      },
+      "max_simultaneous_same_cluster": null,
+      "turnover_trades": 25
+    },
+    "excluding_best_week_note": "week_bucket=2960, pnl=-7.0621",
+    "excluding_worst_week_note": "week_bucket=2960, pnl=-7.0621",
+    "by_symbol_pnl": {
+      "DOGEUSDT": -1.4679,
+      "AVAXUSDT": -2.4359,
+      "XLMUSDT": -1.5673,
+      "BTCUSDT": -0.2959,
+      "SEIUSDT": -0.08,
+      "SOLUSDT": -0.6901,
+      "SUIUSDT": -0.525
+    },
+    "by_week_pnl": {
+      "2960": -7.0621
+    }
+  },
+  "TUNED_robustness": {
+    "excluding_BTCUSDT": {
+      "n_signals": 38,
+      "n_accepted": 28,
+      "n_trades": 24,
+      "gross_pnl": -6.1538,
+      "net_pnl": -6.7662,
+      "fees": 0.6124,
+      "profit_factor": 0.0717,
+      "mean_trade": -0.2819,
+      "median_trade": -0.2463,
+      "win_rate": 0.0833,
+      "avg_winner": 0.2615,
+      "avg_loser": -0.3313,
+      "max_drawdown": 6.766188,
+      "symbol_concentration_hhi": 0.1944,
+      "strategy_concentration_hhi": 0.5938,
+      "top_symbol_share": 0.25,
+      "top_strategy_share": 0.75,
+      "by_symbol_n": {
+        "DOGEUSDT": 6,
+        "AVAXUSDT": 5,
+        "XLMUSDT": 5,
+        "SEIUSDT": 4,
+        "SOLUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "by_strategy_n": {
+        "momentum_breakout": 18,
+        "low_vol_reclaim": 3,
+        "momentum_breakdown": 3
+      },
+      "max_simultaneous_same_cluster": null,
+      "turnover_trades": 24
+    },
+    "excluding_best_symbol": {
+      "n_signals": 46,
+      "n_accepted": 31,
+      "n_trades": 26,
+      "gross_pnl": -6.2993,
+      "net_pnl": -6.9821,
+      "fees": 0.6827,
+      "profit_factor": 0.0182,
+      "mean_trade": -0.2685,
+      "median_trade": -0.2301,
+      "win_rate": 0.0769,
+      "avg_winner": 0.0648,
+      "avg_loser": -0.2963,
+      "max_drawdown": 6.982072,
+      "symbol_concentration_hhi": 0.1953,
+      "strategy_concentration_hhi": 0.4793,
+      "top_symbol_share": 0.2308,
+      "top_strategy_share": 0.6154,
+      "by_symbol_n": {
+        "DOGEUSDT": 6,
+        "AVAXUSDT": 5,
+        "XLMUSDT": 5,
+        "BTCUSDT": 6,
+        "SOLUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "by_strategy_n": {
+        "momentum_breakout": 16,
+        "low_vol_reclaim": 8,
+        "momentum_breakdown": 2
+      },
+      "max_simultaneous_same_cluster": null,
+      "turnover_trades": 26
+    },
+    "excluding_worst_symbol": {
+      "n_signals": 44,
+      "n_accepted": 29,
+      "n_trades": 25,
+      "gross_pnl": -4.0124,
+      "net_pnl": -4.6262,
+      "fees": 0.6138,
+      "profit_factor": 0.1236,
+      "mean_trade": -0.185,
+      "median_trade": -0.17,
+      "win_rate": 0.16,
+      "avg_winner": 0.1632,
+      "avg_loser": -0.2514,
+      "max_drawdown": 4.626217,
+      "symbol_concentration_hhi": 0.1968,
+      "strategy_concentration_hhi": 0.4304,
+      "top_symbol_share": 0.24,
+      "top_strategy_share": 0.56,
+      "by_symbol_n": {
+        "DOGEUSDT": 6,
+        "XLMUSDT": 5,
+        "BTCUSDT": 6,
+        "SEIUSDT": 4,
+        "SOLUSDT": 3,
+        "SUIUSDT": 1
+      },
+      "by_strategy_n": {
+        "momentum_breakout": 14,
+        "low_vol_reclaim": 8,
+        "momentum_breakdown": 3
+      },
+      "max_simultaneous_same_cluster": null,
+      "turnover_trades": 25
+    },
+    "excluding_best_week_note": "week_bucket=2960, pnl=-7.0621",
+    "excluding_worst_week_note": "week_bucket=2960, pnl=-7.0621",
+    "by_symbol_pnl": {
+      "DOGEUSDT": -1.4679,
+      "AVAXUSDT": -2.4359,
+      "XLMUSDT": -1.5673,
+      "BTCUSDT": -0.2959,
+      "SEIUSDT": -0.08,
+      "SOLUSDT": -0.6901,
+      "SUIUSDT": -0.525
+    },
+    "by_week_pnl": {
+      "2960": -7.0621
+    }
+  },
+  "TRADES_BLOCKED_BY_NEW_CAP": 0,
+  "PNL_OF_BLOCKED_TRADES_diagnostic_only": 0.0,
+  "blocked_detail": [],
+  "rejections_by_stage_ORIGINAL": {
+    "FUNNEL": 1022,
+    "SCORE": 5,
+    "RISK_MANAGER": 11
+  },
+  "rejections_by_stage_TUNED": {
+    "FUNNEL": 1022,
+    "SCORE": 5,
+    "RISK_MANAGER": 11
+  }
+}
