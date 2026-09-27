@@ -1,6 +1,11 @@
 {
   "baseline_cluster_exposure_cap_pct": 120.0,
-  "baseline_hash": "f0db73f7148e071808cfc66e237cd8456ada7edaab97b186e1402c463fe6c705",
+  "baseline_hash": "03c0618ea68894ec8ed60bb7d54d4daaf6605cab2371d5ce9caf985381321db8",
+  "continuous_driver_file_sha256": {
+    "funnel/tools/continuous_paper_driver.py": "ade482d93394b929012b334564dc5d24f23668d1d58b6f37e795b3263fd983d1",
+    "funnel/tools/live_data_run.py": "16cc425107260ff094eb15fac0d247569600f66d09dfc60c8f28bd564f3afd2d",
+    "funnel/tools/tuning_round1_ab.py": "f244000fe78aa6092923c0a52075b13ff1d9701cdcc6e1f129021cbb79270673"
+  },
   "engine_fix_commits": [
     "bc51531",
     "6f382d6"
@@ -14,7 +19,7 @@
     "market_data/volatility_engine.py": "b7f1a32d560443e4cb3f7cf1ba218a7dbb2bc1f14c63eacb36577fe13558515d",
     "market_features/engine.py": "1e943796891eb0ccaa62317e4050bd36308f4d0fb5e486b297eb3e51175b3abe"
   },
-  "git_sha": "6f382d626127bce69efc1afadf353570ea0977e3",
+  "git_sha": "ec7617731bfe656ef44037a1580247189fcf0728",
   "note": "execution assumptions (fee/slippage) are inside per_symbol_funnel_config_digest (FunnelConfig.assumed_maker_fee_rate/assumed_taker_fee_rate/assumed_stop_slippage_bps); process-down protection, restart reconciliation, and clock/capacity/exposure safety are LSRL_V1's own shared, unmodified plumbing (lsrl/adapters/process_down.py, lsrl/runtime.py::LSRLRuntime.restore(), lsrl/adapters/capacity_gate.py) and are not re-hashed here since this restoration makes zero changes to them.",
   "per_symbol_funnel_config_digest": {
     "AVAXUSDT": "dd731105ae1c8b1547ff82ec1f74cb06efd8f13e555cd9ba12db1ff7cb276fdd",
