@@ -1,0 +1,67 @@
+{
+  "baseline_cluster_exposure_cap_pct": 120.0,
+  "baseline_hash": "f0db73f7148e071808cfc66e237cd8456ada7edaab97b186e1402c463fe6c705",
+  "engine_fix_commits": [
+    "bc51531",
+    "6f382d6"
+  ],
+  "feature_engine_file_sha256": {
+    "market_data/breakout_engine.py": "8c891d1633bce55ee84e67b1691eeed92c157273e5f5c85b7188e2b7946958ab",
+    "market_data/entry_quality.py": "1c0afc6f07e8a5acddb5dd4aded2d4759361081bf30126b817d97ee91acac8a9",
+    "market_data/htf_regime.py": "f7880154fc3ebc715072b2226589226c547e78f7c7bfce0c78202463bf1af3f6",
+    "market_data/liquidity_heatmap.py": "d6957a70b93bb49fab0a2a0991915095e5450c85e336049e4bc68deac693d9bb",
+    "market_data/orderbook_analyzer.py": "006dd4c8ab455f057a4fe8f97dae37f49c30570f76e481c53702a4b6db6d8bf5",
+    "market_data/volatility_engine.py": "b7f1a32d560443e4cb3f7cf1ba218a7dbb2bc1f14c63eacb36577fe13558515d",
+    "market_features/engine.py": "1e943796891eb0ccaa62317e4050bd36308f4d0fb5e486b297eb3e51175b3abe"
+  },
+  "git_sha": "6f382d626127bce69efc1afadf353570ea0977e3",
+  "note": "execution assumptions (fee/slippage) are inside per_symbol_funnel_config_digest (FunnelConfig.assumed_maker_fee_rate/assumed_taker_fee_rate/assumed_stop_slippage_bps); process-down protection, restart reconciliation, and clock/capacity/exposure safety are LSRL_V1's own shared, unmodified plumbing (lsrl/adapters/process_down.py, lsrl/runtime.py::LSRLRuntime.restore(), lsrl/adapters/capacity_gate.py) and are not re-hashed here since this restoration makes zero changes to them.",
+  "per_symbol_funnel_config_digest": {
+    "AVAXUSDT": "dd731105ae1c8b1547ff82ec1f74cb06efd8f13e555cd9ba12db1ff7cb276fdd",
+    "BTCUSDT": "d8f07f8866328084eb7ae8aed0de53df81d47ae7b2e4e95610bc499568a4dd12",
+    "DOGEUSDT": "a77378ffe8a44e66e3a72206ed7c1e1a7675976c68837a66fdf6c34e4f0069a4",
+    "SEIUSDT": "6eb16429f724f0f912692e7c24a43bdd9420b6f0f4ca9ee43c83a61057fa9ada",
+    "SOLUSDT": "7608260fe1d4d529bcf13055ace53e5385ce2beb9779f6734579c158766889cb",
+    "SUIUSDT": "07e79a66eb4e7ac12f28cdb7d511a078f48522a817c861c8dd0aba24bc7f0422",
+    "TRXUSDT": "8a7e6ef7eb9b1ea3e0b89e6e15fdd2e0f7e1ec60a7c958b2b4ec8a03de3e6aa6",
+    "XLMUSDT": "23975c7d73262a84430165039c1495f836c06630bdef76c005f24e135820ec86"
+  },
+  "risk_manager_settings": {
+    "account_equity_usdt": 1000.0,
+    "account_risk_per_trade_pct": 0.75,
+    "default_leverage": 5.0,
+    "hard_daily_stop_pct": 2.0,
+    "max_cluster_exposure_pct": 120.0,
+    "max_correlated_positions": 2,
+    "max_daily_loss_pct": 1.5,
+    "max_leverage": 5.0,
+    "max_open_positions": 2,
+    "max_total_exposure_pct": 200.0,
+    "planner_max_notional_pct_of_equity": 35.0,
+    "session_risk_multiplier": 0.5,
+    "session_risk_reduction_windows_utc": "08-12,23-01",
+    "weekly_freeze_loss_pct": 7.0
+  },
+  "spec": "SIGNAL_CORE_FUNNEL_V1_BASELINE_FREEZE",
+  "strategy_file_sha256": {
+    "funnel/adapters/strategy_port.py": "469780573e24340eeb199a97e50f0a3c0f4e5d763c37ebbfbd5383ec486d1af7",
+    "funnel/core/engine.py": "1603605afe56ab1989ef5bedcb5179a023338648be948f80b63f17997c3d467c",
+    "funnel/runtime.py": "b630a7897d4ae9907fe4a31297c1ad90bb23c308edef0688b43df76ee5071051",
+    "strategies/liquidity_sweep.py": "f125e045ff46fd569308e55a2eee3bd7c049cea8699c38aa9b4299843d634d4e",
+    "strategies/momentum_breakout.py": "7f2d8c10535192fa21a0028675b88030909cb9cdbf0bbd2519442dec9b2bcdc0",
+    "strategies/scoring.py": "ad5ade86490eb484a0e4c1037324fbe3f182553e1816b0fbafeaa0bd2d10e2e0",
+    "strategies/strategies/continuation.py": "57eccfd6f04db78e6e746621d44261706875763f61bac684c392a4c47bc42f4e",
+    "strategies/strategies/low_vol_reclaim.py": "74173a4110ddd8f857fa2af393678b15989130fbb12f8c3720649fa06421bf04",
+    "strategies/strategies/selector.py": "79fc0fe9c37adaaaffb3ae84267bd872890c8484fcce1af86a8642a761ab614b"
+  },
+  "symbol_universe": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "XLMUSDT",
+    "AVAXUSDT",
+    "DOGEUSDT",
+    "SEIUSDT",
+    "TRXUSDT"
+  ]
+}
