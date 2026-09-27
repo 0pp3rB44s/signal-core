@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "position_history": "sanitized Bitget position-history export, 2026-07-11",
+    "position_state": "sanitized executed-position state captured from the same lifecycles",
+    "market_candles": "Bitget public USDT-FUTURES 1m history-candles API, retrieved 2026-07-31"
+  },
+  "assumptions": {
+    "expected_close_fee_rate": "0.0006",
+    "spread_buffer_pct": "0.02",
+    "slippage_buffer_pct": "0.03",
+    "extra_buffer_pct": "0.01",
+    "mark_safety_ticks": 2,
+    "stop_execution": "market-triggered; hypothetical fills are not claimed"
+  },
+  "trades": [
+    {
+      "id": 2,
+      "symbol": "ATOMUSDT",
+      "direction": "LONG",
+      "planned_avg_entry": "1.59255",
+      "exchange_avg_entry": "1.5959",
+      "confirmed_remaining_quantity": "12",
+      "opening_fee_usdt": "0.01149048",
+      "closing_fee_usdt": "0.01150776",
+      "tick_size": "0.0001",
+      "old_requested_stop": "1.5951",
+      "corrected_be_plus_fees": "1.5988",
+      "decision_timestamp_ms": "1783788540000",
+      "decision_candle": {
+        "open": "1.5999",
+        "high": "1.5999",
+        "low": "1.5999",
+        "close": "1.5999"
+      },
+      "corrected_target_legal": true,
+      "first_later_trade_through_timestamp_ms": "1783788840000",
+      "first_later_trade_through_low": "1.5982",
+      "market_later_traded_through": true,
+      "expected_net_at_target_usdt": "0.00028680",
+      "hypothetical_fill_claimed": false
+    },
+    {
+      "id": 3,
+      "symbol": "FILUSDT",
+      "direction": "LONG",
+      "planned_avg_entry": "0.79315",
+      "exchange_avg_entry": "0.7927",
+      "confirmed_remaining_quantity": "25.9",
+      "opening_fee_usdt": "0.012318558",
+      "closing_fee_usdt": "0.012341868",
+      "tick_size": "0.0001",
+      "old_requested_stop": "0.79441904",
+      "corrected_be_plus_fees": "0.7942",
+      "decision_timestamp_ms": "1783791240000",
+      "decision_timestamp_basis": "first public 1m close satisfying the recorded protection arm and repaired legality conditions",
+      "decision_candle": {
+        "open": "0.7942",
+        "high": "0.7945",
+        "low": "0.7942",
+        "close": "0.7945"
+      },
+      "old_stale_target_legal": false,
+      "corrected_target_legal": true,
+      "first_later_trade_through_timestamp_ms": "1783791360000",
+      "first_later_trade_through_low": "0.7939",
+      "market_later_traded_through": true,
+      "expected_net_at_target_usdt": "0.001847706",
+      "hypothetical_fill_claimed": false
+    },
+    {
+      "id": 4,
+      "symbol": "TRXUSDT",
+      "direction": "SHORT",
+      "planned_avg_entry": "0.32921",
+      "exchange_avg_entry": "0.3286",
+      "confirmed_remaining_quantity": "48",
+      "opening_fee_usdt": "0.00946368",
+      "closing_fee_usdt": "0.009509142",
+      "tick_size": "0.00001",
+      "old_requested_stop": "0.328683264",
+      "corrected_be_plus_fees": "0.32800",
+      "decision_timestamp_ms": "1783758300000",
+      "decision_timestamp_basis": "first public 1m candle after exchange-confirmed entry",
+      "decision_candle": {
+        "open": "0.32865",
+        "high": "0.32876",
+        "low": "0.32865",
+        "close": "0.32876"
+      },
+      "corrected_target_legal": false,
+      "later_minimum_low": "0.32855",
+      "later_maximum_high": "0.3305",
+      "market_later_traded_through": false,
+      "expected_net_at_target_usdt": "0.000443520",
+      "hypothetical_fill_claimed": false
+    }
+  ]
+}

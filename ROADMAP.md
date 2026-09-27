@@ -1,0 +1,243 @@
+# SIGNAL-CORE — OPERATIONELE ROADMAP (kortetermijn-checklists)
+
+> **Strategy status below is superseded as of 2026-08-26.** MicroFlow is
+> retired from LIVE eligibility; the live strategy is now
+> `adaptive_trend_tsmom_v1`. Current truth: `docs/ADAPTIVE_TREND_V1.md`.
+> Sections below are kept for historical record of the MicroFlow research
+> track, not as current operating status.
+
+## Current plan — MicroFlow v1 (2026-08-12)
+
+- [x] Flat account and zero unknown order/intent state verified; candle-first
+      LIVE entry runtime stopped and low-vol family placed on HOLD.
+- [x] Freeze Bitget-native 12-symbol collection universe and baseline event spec.
+- [ ] Merge/deploy PR A: read-only `trade` + `books5` collector, immutable
+      segments, manifests, freshness/sequence safety; zero orders.
+- [ ] Collect at least 100 independent pressure episodes (prefer 200) across
+      symbols, sides and market periods.
+- [ ] Freeze chronological 60/20/20 research split; compare confluence against
+      random, OFI-only, book-only, microprice-only and short momentum.
+- [ ] Implement PR B only if positive net expectancy survives actual 2/6 bps
+      account fees plus measured execution slippage.
+- [ ] Implement PR C and MicroFlow-only LIVE cutover only if every acceptance
+      gate passes. Otherwise keep the collector and leave all new entries OFF.
+
+Leverage promotion is not part of collection. Any initial eligible LIVE pilot
+is capped at 5x or the lower existing production ceiling; 10x requires later
+realized evidence and 20x requires separate owner approval.
+
+VERSIE: 2026-07-18 · STATUS: ACTIEF · VORIGE VERSIE: 2026-07-07 (git-historie)
+
+**De centrale koers staat in [MASTER_PLAN.md](MASTER_PLAN.md)** (missie,
+Path-to-Live A-F, edge-roadmap, planninghorizonten). Dit document bevat de
+uitvoerbare kortetermijn-checklists die daarbij horen. Actuele stand:
+[PROJECT_STATUS.md](PROJECT_STATUS.md); historie: [docs/JOURNAL.md](docs/JOURNAL.md).
+
+═══════════════════════════════════
+NORTH STAR (ongewijzigd)
+═══════════════════════════════════
+
+MISSIE: institutionele crypto-executie-engine die uitsluitend live gaat op
+aantoonbaar, gerepliceerd statistisch bewijs.
+HOOFDREGEL: Safety > Truth > Expectancy > Alpha.
+WERKWIJZE: pre-registratie → data → toetsing → falsificatie → pas dan bouwen.
+
+Kernfeit dat de hele planning stuurt: **er is geen bewezen edge** (fases
+2-4D verworpen). Alles hieronder dient dataverzameling, validatie en
+operationele betrouwbaarheid — niet het forceren van een strategie.
+
+═══════════════════════════════════
+VANDAAG (2026-07-18)
+═══════════════════════════════════
+
+DOEL: documentatie gesynchroniseerd; archiver stabiel; runnerplan gereed.
+DUUR: 1 dag. AFHANKELIJKHEDEN: geen.
+ACCEPTATIE: PR met docsync gemerged; archiver ≥ 12 h onafgebroken OK;
+runner-stappenplan goedgekeurd door eigenaar.
+RISICO: geen — alleen documentatie en observatie.
+
+- [x] Archiver in productie vanaf gemergede main (PR #11), hersteltest OK.
+- [x] Documentatie gelijkgetrokken (README/PROJECT_STATUS/ROADMAP/CHANGELOG).
+- [ ] Archiver-health einde dag controleren (status.json, groei, 0 errors).
+
+═══════════════════════════════════
+MORGEN (2026-07-19) — INTEL RUNNER OPERATIONEEL
+═══════════════════════════════════
+
+DOEL: Runner draait de archiver (en optioneel forward-paper) vanaf een
+geannoteerde `runner-v*`-tag. DUUR: 0,5-1 dag.
+AFHANKELIJKHEDEN: eigenaar aanwezig voor .env-aanmaak en tag-autorisatie.
+RISICO'S: Intel-Homebrew/Python-afwijkingen (afgedekt door preflight);
+netwerk-/certificaatverschillen (archiver gebruikt certifi).
+ACCEPTATIE: `deploy_runner.sh --preflight` PASS; archiver op runner levert
+> 1 uur data met 0 errors; rollback-pad aantoonbaar getest.
+
+Stappenplan (details: docs/RUNNER_MIGRATION.md):
+1. Runner: `git fetch origin --prune --tags`; schone checkout bevestigen.
+2. `scripts/bootstrap_mac.sh --recreate-venv` (3.11-venv → backup, 3.12 op
+   /usr/local-Homebrew; weigert Apple-system-Python).
+3. `scripts/verify_checkout.sh` + `scripts/verify_repository_hygiene.sh`.
+4. `scripts/create_runner_env_template.sh` → eigenaar vult .env lokaal
+   (nooit via git; alleen presence-check).
+5. Eigenaar maakt geannoteerde tag `runner-v2026.07.19.1` op de gewenste
+   main-commit en pusht die (of autoriseert expliciet).
+6. `scripts/deploy_runner.sh --preflight runner-v2026.07.19.1` → PASS.
+7. `scripts/deploy_runner.sh runner-v2026.07.19.1` (maakt backup-ref).
+8. `scripts/start_archiver.sh` op de runner; status.json + groei valideren.
+9. Rollbacktest: `deploy_runner.sh --rollback refs/runner-backups/<ref>`
+   en weer vooruit.
+10. Werk-Mac-archiver stoppen zodra de runner-archiver ≥ 1 h stabiel is
+    (één producent per ARCHIVE_DIR; geen dubbele verzameling).
+
+═══════════════════════════════════
+DEZE WEEK (t/m 2026-07-25)
+═══════════════════════════════════
+
+DOEL: 24/7 dataverzameling + forward-paper terug in de lucht.
+AFHANKELIJKHEDEN: runner operationeel. DUUR: 2-3 dagen werk.
+RISICO'S: onverklaarde bot-stop herhaalt zich (mitigatie: supervisor +
+stop-oorzaakanalyse eerst). ACCEPTATIE: bot ≥ 5 dagen onafgebroken in
+strict forward-paper-only; archiver 7 dagen 100% dagdekking; dagelijkse
+health-check gedocumenteerd.
+
+- [x] Root cause bot-stop 2026-07-15 vastgesteld (audit 2026-07-18): nette
+      SIGTERM na 13 scancycli — bewuste stop, geen crash.
+- [ ] Bot herstarten in strict FORWARD_PAPER_ONLY onder supervisor
+      (`scripts/run_supervised.sh`), notify-only watchdog blijft.
+- [ ] Dagelijkse operationele check (5 min): archiver-status, botproces,
+      forward-paper-heartbeats, disk.
+- [ ] Branch-opschoning: gemergde/stale branches archiveren of verwijderen
+      (25 remote branches → doel < 10).
+- [ ] Besluit eigenaar over ongemergede CLOSED_SYNCED-backfill-branch.
+
+═══════════════════════════════════
+KOMENDE 2 WEKEN (t/m 2026-08-01)
+═══════════════════════════════════
+
+DOEL: bewezen stabiele observatie-omgeving + datakwaliteitsrapport week 1.
+ACCEPTATIE: ≥ 14 dagen archiefdata zonder gaten > 3× interval; forward-
+paper-stroom compleet (funnel → plan → forward-outcome); geautomatiseerde
+datakwaliteitscontrole (script, geen handwerk).
+
+- [ ] Wekelijks datakwaliteitsscript (dekking, gaps, dedupe-ratio's,
+      veldvulling) + rapport in reports/.
+- [ ] Forward-paper-pariteitsmeting: signaaltijd vs uitvoerbare tijd,
+      spread/slippage-aannames vs realiteit (alleen meten, niets tunen).
+- [ ] Bot-venv op Work Mac migreren naar 3.12 via bootstrap (stil moment).
+
+═══════════════════════════════════
+KOMENDE MAAND (t/m 2026-08-18)
+═══════════════════════════════════
+
+DOEL: eerste toetsbare microstructuur-dataset (≥ 4 weken) + voorbereide
+pre-registraties. ACCEPTATIE: ≥ 28 dagen data per bron; ≥ 2 volledig
+uitgeschreven pre-registraties (mechanisme, poorten, power) zonder ook
+maar één blik op de uitkomstdata.
+
+- [ ] Pre-registraties opstellen voor de eerst ontgrendelde families
+      (kandidaten: liquidatie-cascade-dynamiek; orderbook-imbalance op
+      10s-resolutie — nieuw regime van data, nieuw mechanisme-argument,
+      geen recycling van H-4D-1-parameters).
+- [ ] Power-analyses vooraf op verzamelde datavolumes.
+- [ ] Legacy-besluit: dashboards/agents/optimizer bevriezen of verwijderen.
+
+═══════════════════════════════════
+KOMENDE 2 MAANDEN (t/m 2026-09-18)
+═══════════════════════════════════
+
+DOEL: eerste hypothesecyclus op eigen microstructuurdata afgerond met
+verdict; live-gate-checklist itereren op bewijs. ACCEPTATIE: verdict
+(PASS → falsificatiebatterij → eventueel EDGE_ACCEPTANCE_REPORT; FAIL →
+gedocumenteerde verwerping); geen enkele live-activering zonder de
+volledige checklist in PROJECT_STATUS.md.
+
+- [ ] H-5-x uitvoeren exact volgens registratie (DEV/REP chronologisch).
+- [ ] Bij PASS: falsificatie + forward-paper-verificatie vóór enige
+      implementatie-discussie.
+- [ ] Bij FAIL: volgende geregistreerde familie of verlengde verzameling.
+
+═══════════════════════════════════
+GEPARKEERD TOT LIVE-GATE (niet vergeten, nu niet doen)
+═══════════════════════════════════
+
+- Protection-action-integratietests + lifecycle-action-validatie.
+- ACCOUNT_EQUITY_USDT-fallback in .env actualiseren.
+- heartbeat/memory/cpu/disk-monitor uitbreiden.
+- Fee-drag-heranalyse bij elke kandidaat-strategie (historisch: kosten >
+  edge; 24,5% WR churn was de doodsoorzaak van fase 2-3).
+
+═══════════════════════════════════
+AANVULLING 2026-07-27 — RC1-uitkomst (vervangt niets hierboven)
+═══════════════════════════════════
+
+De forward-paper-validatie is uitgevoerd en geauditeerd. Uitkomst: 72-uurscriterium
+NIET gehaald (20,56 u effectief van 72). Auditoordeel: NOT READY FOR NEXT PHASE.
+
+AFGEROND
+- Forward-paper-levenscyclus end-to-end aantoonbaar, inclusief herstartherstel.
+- Vijf blokkerende defecten opgelost, elk met regressietest (suite 339 passed, 2×).
+- Veiligheidsmodel geverifieerd: 16/16 configuratiecombinaties, 0 schendingen;
+  0 private endpoints en 0 orderaanroepen over de hele campagne.
+- Bewijsarchief vastgelegd en gechecksummed (912 KB, 63 bestanden, 63/63 OK).
+
+BLOKKEREND VOOR EEN VOLGENDE VALIDATIERONDE (geen codewijziging in RC1)
+- R1 Geen herstel na host-reboot: supervisor overleeft geen herstart (CRITICAL).
+- R2 Host-sleep schortte het proces 22,19 u op ondanks power-assertion (CRITICAL).
+- R3 Niets bewaakt de monitor; die stopte stil en niemand merkte het (HIGH).
+- R4 Heartbeat-versheid wordt door geen enkele levende consument beoordeeld (HIGH).
+
+NIET AANGETOOND
+- Live orderpad: nooit uitgevoerd (0 private calls, by design).
+- TP- en partial-exit-paden: in de run nooit bereikt.
+- Risk-gate-blokkade: 0 rejects in het venster.
+
+VOLGENDE VALIDATIERONDE VEREIST (voorwaarden, geen implementatie in RC1)
+- Boot-persistente supervisie, geverifieerd met een echte reboot.
+- Sleep-preventie met onafhankelijke controle dat de assertion nog leeft.
+- Bewaking van de bewaker plus een off-host alerteringspad.
+- Schone werkboom als harde precondititie: de strict launcher weigert te starten op
+  een vuile boom, wat elke automatische herstart stil breekt.
+
+Volledige risicolijst: docs/RISK_REGISTER.md · Beperkingen: docs/KNOWN_LIMITATIONS.md
+
+## Profitability-roadmap (vanaf 2026-08-10) — OBSERVABILITY_FIRST
+
+- [x] **Stap 1 — observability.** Gerankte-plannen-feed + `participation_score`
+      propagatie. *Exit: beide velden gevuld in een verse snapshot.*
+- [ ] **Stap 2 — datacollectie.** Tot ≥ 30 POST_DIRECTION_FIX closes met ≥ 10
+      LONG en ≥ 3 strategieën. Geen wijzigingen. *Exit: drempel gehaald, of 14
+      dagen verstreken zonder haalbaarheid.*
+- [ ] **Stap 3 — toets twee openstaande hypotheses** (directionele participatie,
+      momentum entry-capaciteit) met random control en leave-one-symbol-out.
+      *Exit: één overleeft, of beide vallen af.*
+- [ ] **Stap 4 — profitability-verdict** in `PROJECT_STATUS.md`. Bij overleving
+      replay + behavioural diff + patch; anders expliciet besluit over koers.
+## Dashboard (vanaf 2026-08-10)
+
+- [x] **P0 — veiligheid.** `app/dashboard.py` verwijderd: `.env`-mutatie en
+      engine-start buiten de vier autorisatielagen van `launch_live.sh`.
+      Regressietests toegevoegd.
+- [ ] **P1 — profitability.** RANKING/PLANS-pagina op de ranked-plan feed
+      (PR #34), fees/funding als aparte posten op `/performance`, per-strategie
+      funnel-uitsplitsing.
+- [ ] **P2.** Instelbare data-root zodat het dashboard tegen een immutable
+      snapshot kan draaien; `data_store/funnel_events.jsonl` en de `state/`
+      health-bestanden aan de sync-allowlist; `dashboard_v2/` opruimen.
+## End-to-end lineage (2026-08-10)
+
+- [x] `plan_id` en `candidate_id` op OPEN/CLOSE in `trade_dataset_v2`
+      (metadata-only, backward compatible).
+- [ ] Na deployment: dashboard `executable → geopend` per strategie invullen
+      (vereist ook de ranked-plan feed voor `selected`).
+- [ ] Overweeg `order_intent_id` zodra intents een stabiele eigen identiteit
+      dragen; nu bestaat die niet als apart veld.
+## Dashboard profitability (2026-08-10)
+
+- [x] Per-strategie funnel met expliciete `INCOMPLETE_LINEAGE` waar stadia geen
+      cohort delen.
+- [x] Economics per strategie uit authoritative LIVE closes, met
+      gross/fees/funding/net apart en vaste bewijsbanden.
+- [x] Ranking-sectie als grens; toont `RANKED_PLAN_TELEMETRY_NOT_AVAILABLE`.
+- [ ] Ranking vullen zodra de ranked-plan feed in production zit.
+- [ ] `plan_id` of `candidate_id` meeschrijven op positierijen, zodat
+      `executable → geopend` een echt cohort wordt.

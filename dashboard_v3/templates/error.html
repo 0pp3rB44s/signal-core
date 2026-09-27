@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ code }}{% endblock %}
+{% block heading %}Fout {{ code }}{% endblock %}
+{% block content %}
+<div class="card"><div class="body">
+  <div class="notice t-warn"><span class="nt">▲ {{ code }}</span><p>{{ message }}</p></div>
+  <p style="margin-top:12px"><a href="/">Terug naar Command Centre</a></p>
+</div></div>
+{% endblock %}

@@ -1,0 +1,2190 @@
+import logging
+from pathlib import Path
+import json
+import fcntl
+import math
+import os
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone, timedelta
+from collections import Counter
+
+from app.config import Settings
+from app.equity import write_equity_snapshot
+from app.runtime_diagnostics import runtime_heartbeat, set_runtime_mode
+from clients.bitget_rest import BitgetRestClient
+from clients.bitget_public_client import BitgetPublicClient
+from clients.schemas import ExecutionReport, MarketSnapshot, PositionUpdate, StrategyCandidate, StrategyScore, TradePlan, SweepDetection
+from candidate_lifecycle import deterministic_candidate_id
+from market_features.engine import latest_closed_candle
+from data.market_fetcher import MarketFetcher
+from data.watchlist import get_watchlist
+from market_data.market_data_service import MarketDataService
+from market_data.multi_timeframe_cache import MultiTimeframeCache
+from execution.execution_service import ExecutionService
+from risk.mandatory_authorization import RiskAuthorizationStore, record_authorization
+from execution.dynamic_grid_service import DynamicGridService
+from execution.position_manager import PositionManager
+from execution.portfolio_selector import select_execution_winner
+from telemetry.ranked_plans import RankedPlanLogger
+from execution.runtime_lock import trading_state_lock
+from forward_paper.service import ForwardPaperService
+from execution.state_store import JsonStateStore
+from planning.trade_planner import TradePlanner
+from risk.risk_manager import RiskManager
+from risk.cooldown_manager import SymbolCooldownManager
+from agents_v2.learning.coach_rules import run as run_coach_rules
+from strategies.forward_paper_smoke import smoke_plan
+from strategies.liquidity_sweep import LiquiditySweepStrategy
+from strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakdownStrategy
+from strategies.strategies.continuation import detect_continuation
+from strategies.strategies.low_vol_reclaim import detect_low_vol_reclaim
+from strategies.strategies.selector import select_best_candidate
+from strategies.scoring import StrategyScorer
+from telemetry.trade_logger import (
+    ExecutionCsvLogger,
+    MarketScanCsvLogger,
+    PositionUpdateCsvLogger,
+    StrategyCandidateCsvLogger,
+    TradePlanCsvLogger,
+    StrategyPerformanceLogger,
+)
+
+from telemetry.market_context_logger import MarketContextLogger
+from telemetry.funnel import (
+    FunnelTelemetry,
+    classify_reason_codes,
+    snapshot_context,
+    stable_scan_id,
+)
+
+
+#: Keys a recovery sweep must report before its result can be trusted. A result
+#: missing any of them is an unknown state, not a clean one.
+STARTUP_RECOVERY_REQUIRED_STATS = frozenset(
+    {"blocked", "still_pending", "ambiguous", "unresolved_total", "recovered"}
+)
+LIVE_V2_STRATEGY_ID = "low_vol_reclaim_v2"
+
+
+def _stat_int(stats: dict, key: str) -> int:
+    """Read one counter, treating anything unreadable as "not zero"."""
+    value = stats.get(key)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
+
+
+def route_new_entry_plans(
+    plans: list,
+    *,
+    enabled_strategies: set[str],
+    legacy_new_entries_enabled: bool,
+    require_explicit_allowlist: bool,
+) -> tuple[list, list[tuple[object, str]]]:
+    """Apply entry eligibility after ranking without changing ranking order.
+
+    Detection and ranking may continue for observability. Only exact strategy
+    identifiers in the configured entry allowlist may cross into execution.
+    The legacy kill switch deliberately exempts v2 and nothing else.
+    """
+    enabled = {str(value).strip().lower() for value in enabled_strategies if str(value).strip()}
+    allowed: list = []
+    blocked: list[tuple[object, str]] = []
+    for plan in plans:
+        strategy_id = str(getattr(plan, "strategy", "") or "").strip().lower()
+        if not strategy_id:
+            blocked.append((plan, "missing_strategy_id"))
+            continue
+        if require_explicit_allowlist and not enabled:
+            blocked.append((plan, "live_entry_allowlist_missing"))
+            continue
+        if enabled and strategy_id not in enabled:
+            blocked.append((plan, "strategy_not_entry_allowlisted"))
+            continue
+        if not legacy_new_entries_enabled and strategy_id != LIVE_V2_STRATEGY_ID:
+            blocked.append((plan, "legacy_new_entries_disabled"))
+            continue
+        allowed.append(plan)
+    return allowed, blocked
+
+
+class ScanCycleProducedNoMarketData(RuntimeError):
+    """A scan cycle requested symbols but could not build a single snapshot.
+
+    Raised so a total market-data failure is counted as a failed cycle instead of
+    being reported as a successful one. Per-symbol errors are swallowed by design,
+    so without this a fault hitting every symbol looks like a healthy empty scan.
+    """
+
+
+# --- Execution-Aware Scoring Helpers ---
+def _extract_note_float(notes: list[str], marker: str, default: float = 0.0) -> float:
+    note_text = " ".join(str(note).lower() for note in (notes or []))
+    marker = marker.lower()
+
+    if marker not in note_text:
+        return default
+
+    try:
+        section = note_text.split(marker, 1)[1]
+        raw = section.split()[0].strip(";|,")
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _direction_entry_quality(
+    snapshot: MarketSnapshot, direction: str, default: float = 100.0
+) -> float:
+    """Return the entry quality the producer computed for ``direction``.
+
+    ``market_features.engine`` runs ``EntryQualityAnalyzer`` once per direction
+    and publishes the result twice: structurally under
+    ``snapshot.context["entry_quality"][direction]``, and as text in the notes.
+    The structured value is the same object the analyzer returned, so it is
+    read first; the notes are a rendering of it and are only parsed when the
+    context is missing or malformed.
+
+    The note fallback reads ``entry_quality_long=`` / ``entry_quality_short=``,
+    which the producer emits as standalone notes. The combined
+    ``entry_quality long=100 short=70`` line is not used: no marker beginning
+    ``entry_quality short=`` ever appears in it, so matching against that form
+    silently returned ``default`` for every short.
+    """
+    key = str(direction or "").upper()
+    if key not in {"LONG", "SHORT"}:
+        return default
+
+    context = getattr(snapshot, "context", None)
+    if isinstance(context, dict):
+        bucket = (context.get("entry_quality") or {})
+        if isinstance(bucket, dict):
+            payload = bucket.get(key)
+            if isinstance(payload, dict):
+                try:
+                    value = float(payload.get("entry_quality_score"))
+                except (TypeError, ValueError):
+                    value = None
+                if value is not None and math.isfinite(value):
+                    return value
+
+    return _extract_note_float(
+        snapshot.notes or [],
+        "entry_quality_long=" if key == "LONG" else "entry_quality_short=",
+        default,
+    )
+
+
+#: A symbol whose rankable plans disagree on side. Distinct from "no plan", so
+#: the caller can log the collision instead of silently scoring one side.
+_DIRECTION_AMBIGUOUS = "AMBIGUOUS"
+
+
+def _rankable_plan_directions(plans) -> dict[str, str]:
+    """Map each symbol to the side that will actually be ranked.
+
+    ``select_execution_winner`` keys execution scores by symbol, but an
+    execution score is only correct once the side is known: a snapshot that is
+    a clean long is usually a late short. The side therefore comes from the
+    plans that will be ranked, and only ``EXECUTABLE`` plans are ranked.
+
+    A symbol carrying both sides as ``EXECUTABLE`` in one scan would make a
+    symbol key ambiguous. That did not occur once in 590 production scans, but
+    it is not structurally impossible, so it is reported as ambiguous rather
+    than resolved by picking a side.
+    """
+    sides: dict[str, set[str]] = {}
+    for plan in plans or []:
+        if str(getattr(plan, "verdict", "") or "").upper() != "EXECUTABLE":
+            continue
+        symbol = str(getattr(plan, "symbol", "") or "").upper()
+        side = str(getattr(plan, "direction", "") or "").upper()
+        if symbol and side in {"LONG", "SHORT"}:
+            sides.setdefault(symbol, set()).add(side)
+    return {
+        symbol: (next(iter(found)) if len(found) == 1 else _DIRECTION_AMBIGUOUS)
+        for symbol, found in sides.items()
+    }
+
+
+def _execution_scores_by_symbol(snapshots, plans, log=None) -> dict[str, float]:
+    """Build the symbol-keyed execution scores ``select_execution_winner`` reads.
+
+    The selector's key stays the symbol; what changes is that the value is the
+    score of the side actually being ranked, rather than the more favourable of
+    the two sides.
+    """
+    directions = _rankable_plan_directions(plans)
+    scores: dict[str, float] = {}
+    for snapshot in snapshots or []:
+        symbol = snapshot.symbol.upper()
+        direction = directions.get(symbol)
+        if direction == _DIRECTION_AMBIGUOUS:
+            if log is not None:
+                log.warning(
+                    "EXECUTION_SCORE_DIRECTION_AMBIGUOUS | symbol=%s "
+                    "| falling back to direction-agnostic score",
+                    symbol,
+                )
+            direction = None
+        scores[symbol] = _execution_aware_score(snapshot, direction)
+    return scores
+
+
+def _execution_aware_score(
+    snapshot: MarketSnapshot, direction: str | None = None
+) -> float:
+    """Score a snapshot for execution quality.
+
+    ``direction`` selects which side's entry quality is charged against the
+    score. It is optional because several callers rank or log snapshots before
+    any direction exists; without it the previous direction-agnostic
+    ``max(long, short)`` is kept, which is the most permissive of the two and
+    therefore never penalises a snapshot a caller cannot yet attribute.
+    """
+    notes = snapshot.notes or []
+    note_text = " ".join(str(note).lower() for note in notes)
+
+    score = float(snapshot.score_hint or 0.0)
+    close_pos = _extract_note_float(notes, "close_pos=", 0.5)
+
+    if direction is None:
+        long_score = _direction_entry_quality(snapshot, "LONG")
+        short_score = _direction_entry_quality(snapshot, "SHORT")
+        entry_quality = max(long_score, short_score)
+    else:
+        entry_quality = _direction_entry_quality(snapshot, direction)
+
+    if entry_quality < 50:
+        score -= 18
+    elif entry_quality < 65:
+        score -= 12
+    elif entry_quality < 80:
+        score -= 6
+
+    if "late long entry near candle high" in note_text:
+        score -= 18
+        if close_pos >= 0.90:
+            score -= 12
+        elif close_pos >= 0.80:
+            score -= 6
+
+    if "late short entry near candle low" in note_text:
+        score -= 18
+        if close_pos <= 0.10:
+            score -= 12
+        elif close_pos <= 0.20:
+            score -= 6
+
+    if "wide spread" in note_text:
+        score -= 8
+
+    if "orderbook bias against long" in note_text or "orderbook bias against short" in note_text:
+        score -= 8
+
+    if "upper wick rejection risk" in note_text or "lower wick rejection risk" in note_text:
+        score -= 4
+
+    return score
+
+
+def _build_fallback_candidate(snapshot: MarketSnapshot, settings: Settings) -> StrategyCandidate | None:
+    note_text = " ".join(str(note).lower() for note in (snapshot.notes or []))
+
+    fallback_strategy_name = "adaptive_momentum_continuation"
+    enabled_strategies = settings.enabled_strategy_set
+    disabled_strategies = settings.disabled_strategy_set
+    explicitly_enabled = fallback_strategy_name in enabled_strategies
+    explicitly_disabled = fallback_strategy_name in disabled_strategies
+
+    if explicitly_disabled or not explicitly_enabled:
+        logging.getLogger("fallback_candidate_bridge").info(
+            "ADAPTIVE_CONTINUATION_DISABLED | %s | source=env_or_dotenv | guard=builder | explicitly_enabled=%s | explicitly_disabled=%s",
+            snapshot.symbol,
+            explicitly_enabled,
+            explicitly_disabled,
+        )
+        return None
+
+    execution_score = _execution_aware_score(snapshot)
+    alignment = (snapshot.alignment or "").lower()
+    primary_trend = (snapshot.primary.trend or "").lower()
+    confirmation_trend = (snapshot.confirmation.trend or "").lower()
+
+    if execution_score < 75.0:
+        return None
+
+    bullish = (
+        alignment == "aligned_bullish"
+        and primary_trend == "bullish"
+        and confirmation_trend == "bullish"
+    )
+
+    bearish = (
+        alignment == "aligned_bearish"
+        and primary_trend == "bearish"
+        and confirmation_trend == "bearish"
+    )
+
+    if not bullish and not bearish:
+        return None
+
+    if not (
+        "volume expansion" in note_text
+        or "range expansion" in note_text
+        or "breakout_pressure=" in note_text
+        or "higher_lows_building=true" in note_text
+        or "higher_highs_building=true" in note_text
+    ):
+        return None
+
+    direction = "LONG" if bullish else "SHORT"
+
+    pressure_score = _extract_note_float(snapshot.notes or [], "pressure_score=", 0.0)
+    expansion_prob = _extract_note_float(snapshot.notes or [], "expansion_prob=", 0.0)
+    breakout_ready = "breakout_ready=true" in note_text
+
+    close_pos = _extract_note_float(snapshot.notes or [], "close_pos=", 0.50)
+    direction_entry_quality = _direction_entry_quality(snapshot, direction)
+
+    if direction_entry_quality < 75.0:
+        logging.getLogger("fallback_candidate_bridge").info(
+            "LATE_ENTRY_BLOCKED | %s | direction=%s | reason=entry_quality_below_75 | entry_quality=%.2f | close_pos=%.2f | execution_score=%.2f",
+            snapshot.symbol,
+            direction,
+            direction_entry_quality,
+            close_pos,
+            execution_score,
+        )
+        return None
+
+    if direction == "LONG" and close_pos >= 0.75:
+        logging.getLogger("fallback_candidate_bridge").info(
+            "LATE_ENTRY_BLOCKED | %s | direction=LONG | reason=long_too_high_in_candle | entry_quality=%.2f | close_pos=%.2f | execution_score=%.2f",
+            snapshot.symbol,
+            direction_entry_quality,
+            close_pos,
+            execution_score,
+        )
+        return None
+
+    if direction == "SHORT" and close_pos <= 0.25:
+        logging.getLogger("fallback_candidate_bridge").info(
+            "LATE_ENTRY_BLOCKED | %s | direction=SHORT | reason=short_too_low_in_candle | entry_quality=%.2f | close_pos=%.2f | execution_score=%.2f",
+            snapshot.symbol,
+            direction_entry_quality,
+            close_pos,
+            execution_score,
+        )
+        return None
+
+    latest_close = float(snapshot.primary.latest_close or 0.0)
+    range_pct = max(float(snapshot.primary.range_pct or 0.0), 0.35)
+
+    stop_distance_pct = max(range_pct * 0.45, 0.20)
+
+    if direction == "LONG":
+        invalidation = latest_close * (1.0 - stop_distance_pct / 100.0)
+        reclaim_level = latest_close * 0.998
+    else:
+        invalidation = latest_close * (1.0 + stop_distance_pct / 100.0)
+        reclaim_level = latest_close * 1.002
+
+    detection = SweepDetection(
+        side=direction,
+        swept_level=latest_close,
+        sweep_extreme=latest_close,
+        reclaim_level=reclaim_level,
+        entry_hint=latest_close,
+        invalidation=invalidation,
+        displacement_pct=range_pct,
+        bars_since_sweep=0,
+        volume_ratio_on_sweep=float(snapshot.primary.volume_ratio_20 or 1.0),
+        local_range_size_pct=range_pct,
+        reason_flags=["fallback_candidate_bridge"],
+    )
+
+    fallback_notes = list(snapshot.notes or [])
+    fallback_notes.append("fallback_candidate_bridge=true")
+    fallback_notes.append(f"fallback_execution_score={execution_score:.1f}")
+    fallback_notes.append(f"fallback_entry_quality={direction_entry_quality:.2f}")
+    fallback_notes.append(f"fallback_close_pos={close_pos:.2f}")
+    fallback_notes.append(f"pressure_score={pressure_score:.2f}")
+    fallback_notes.append(f"expansion_prob={expansion_prob:.2f}")
+    fallback_notes.append(f"breakout_context_ready={breakout_ready}")
+
+    primary_volume_ratio = float(getattr(snapshot.primary, "volume_ratio_20", 0.0) or 0.0)
+    fallback_notes.append(f"participation_score={primary_volume_ratio:.2f}")
+    fallback_notes.append(f"followthrough_volume_ratio={primary_volume_ratio:.2f}")
+    fallback_notes.append(f"volume_ratio={primary_volume_ratio:.2f}")
+
+    if pressure_score <= 0.0 or expansion_prob <= 0.0:
+        logging.getLogger("fallback_candidate_bridge").info(
+            "FALLBACK_BLOCKED_MISSING_PRESSURE | %s | pressure_score=%.2f | expansion_prob=%.2f",
+            snapshot.symbol,
+            pressure_score,
+            expansion_prob,
+        )
+        return None
+
+    return StrategyCandidate(
+        candidate_id=deterministic_candidate_id("adaptive_momentum_continuation", snapshot.symbol, direction, latest_closed_candle(snapshot.primary).timestamp_ms),
+        candidate_candle_open_timestamp_ms=latest_closed_candle(snapshot.primary).timestamp_ms,
+        symbol=snapshot.symbol,
+        strategy="adaptive_momentum_continuation",
+        direction=direction,
+        primary_granularity=snapshot.primary.granularity,
+        confirmation_granularity=snapshot.confirmation.granularity,
+        market=snapshot,
+        detection=detection,
+        notes=fallback_notes,
+        candidate_status="fallback_candidate",
+    )
+
+
+class StartupRunner:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.log = logging.getLogger(self.__class__.__name__)
+        self.client = (
+            BitgetPublicClient(settings=settings)
+            if settings.forward_paper_only
+            else BitgetRestClient(settings=settings)
+        )
+        self.fetcher = MarketFetcher(client=self.client, settings=settings)
+        self.multi_tf_cache = MultiTimeframeCache()
+        self.market_data_service = MarketDataService(
+            rest_client=self.client,
+            cache=self.multi_tf_cache,
+        )
+        self.scan_logger = MarketScanCsvLogger()
+        self.market_context_logger = MarketContextLogger()
+        self.candidate_logger = StrategyCandidateCsvLogger(settings=settings)
+        self.trade_plan_logger = TradePlanCsvLogger()
+        self.ranked_plan_logger = RankedPlanLogger(log=self.log)
+        self.strategy_performance_logger = StrategyPerformanceLogger()
+        self.execution_logger = ExecutionCsvLogger()
+        self.position_logger = PositionUpdateCsvLogger()
+        self.funnel_telemetry = FunnelTelemetry(settings)
+        self.strategy = LiquiditySweepStrategy(settings=settings)
+        self.momentum_strategy = MomentumBreakoutStrategy(settings=settings)
+        self.momentum_breakdown_strategy = MomentumBreakdownStrategy(settings=settings)
+        self.scorer = StrategyScorer(settings=settings)
+        self.risk_manager = RiskManager(settings=settings)
+        self.trade_planner = TradePlanner(settings=settings)
+        self._risk_authorization_store = RiskAuthorizationStore()
+        self.execution_service = None if settings.forward_paper_only else ExecutionService(settings=settings)
+        self.dynamic_grid = DynamicGridService(
+            settings=settings, client=self.client, cache=self.multi_tf_cache,
+            entry_submitter=(
+                self.execution_service.entry_submitter if self.execution_service is not None else None
+            ),
+        )
+        self.forward_paper = ForwardPaperService(
+            settings=settings,
+            events_path=settings.forward_paper_events_path,
+            outcomes_path=settings.forward_paper_outcomes_path,
+            quality_path=settings.forward_paper_quality_path,
+            funnel_telemetry=self.funnel_telemetry,
+        )
+        self.position_manager = None if settings.forward_paper_only else PositionManager(settings=settings)
+        self.cooldown_store = JsonStateStore("state/symbol_cooldowns.json")
+        self.cooldown_manager = SymbolCooldownManager(self.cooldown_store)
+        self.signal_cooldown_minutes = 30
+        self.recent_close_cooldown_minutes = 15
+        self._last_scan_log = {}
+        self._last_top_symbols = []
+        self._last_plan_summary = None
+        self._last_position_snapshot = {}
+        self._last_no_setup_log = {}
+        self._last_no_candidate_intelligence_log = {}
+        self._last_network_error_log = None
+        self._last_reject_log = {}
+        self._last_sweep_reject_log = {}
+        self._last_continuation_reject_log = {}
+        self._scan_in_progress = False
+        self._scan_lock_path = "state/scan_cycle.lock"
+        self._consecutive_scan_failures = 0
+        self._learning_refresh_proc: subprocess.Popen | None = None
+        self._position_snapshots: list[MarketSnapshot] = []
+        self._position_snapshots_lock = threading.Lock()
+        self._position_sync_lock = threading.Lock()
+        self._position_monitor_wakeup = threading.Event()
+        self._position_monitor_thread: threading.Thread | None = None
+        self._startup_close_recovery_complete = bool(settings.forward_paper_only)
+        self.microflow_runtime = None
+        if settings.microflow_scalper_enabled and self.execution_service is not None:
+            from microflow.live import MicroflowLiveRuntime
+            self.microflow_runtime = MicroflowLiveRuntime(
+                settings=settings,
+                execution_client=self.execution_service.client,
+                execute_plans=self._execute_selected_plans,
+                risk_manager=self.risk_manager,
+            )
+            self.execution_service.microflow_entry_guard = (
+                self.microflow_runtime.pre_submit_guard
+            )
+        self.lsrl = self._build_lsrl()
+
+    def _build_lsrl(self):
+        """LSRL_V1 (default OFF). SHADOW/PAPER are observational: a failure to build them is logged and
+        must not take the trading engine down. MICRO_LIVE is fail-loud: it refuses to start unarmed."""
+        settings = self.settings
+        mode = str(settings.lsrl_mode).strip().upper()
+        if not settings.lsrl_enabled or mode == "OFF":
+            return None
+        from lsrl.runtime import build_runtime
+        try:
+            return build_runtime(
+                settings, client=self.client, execution_service=self.execution_service,
+                risk_manager=self.risk_manager,
+            )
+        except Exception as exc:
+            if mode == "MICRO_LIVE":
+                raise
+            self.log.critical("LSRL_START_FAILED | mode=%s | %s: %s", mode, type(exc).__name__, exc)
+            return None
+
+    def _startup_recovery_verdict(self, stats) -> tuple[bool, str]:
+        """Decide whether a recovery sweep leaves anything unaccounted for.
+
+        The gate used to ask one question — `stats["blocked"]` — and a sweep sets
+        that flag only when it aborts. A lifecycle the exchange could not resolve,
+        or one that several history rows fit, raises inside the per-row loop, is
+        counted into `still_pending`, and the sweep returns normally. So a startup
+        with unresolved economics reported "complete" and let the bot open new
+        positions while an earlier close counted nowhere.
+
+        Every state other than a fully accounted sweep is refused.
+        """
+        if not isinstance(stats, dict):
+            return False, f"UNKNOWN: recovery returned {type(stats).__name__}, not a dict"
+        missing = sorted(STARTUP_RECOVERY_REQUIRED_STATS.difference(stats))
+        if missing:
+            return False, f"UNKNOWN: recovery result is missing {missing}"
+        if stats.get("blocked"):
+            return False, "BLOCKED: recovery aborted"
+        if _stat_int(stats, "ambiguous"):
+            return False, f"AMBIGUOUS: {_stat_int(stats, 'ambiguous')} lifecycle(s) match more than one history row"
+        if _stat_int(stats, "still_pending"):
+            return False, f"PENDING: {_stat_int(stats, 'still_pending')} lifecycle(s) have no exchange economics yet"
+        # The sweep is bounded, so "nothing pending" is not "nothing left": rows
+        # past the limit were never attempted. Require that everything unresolved
+        # was actually recovered before calling the phase complete.
+        unresolved = _stat_int(stats, "unresolved_total")
+        recovered = _stat_int(stats, "recovered")
+        if unresolved != recovered:
+            return False, f"INCOMPLETE: {unresolved - recovered} unresolved row(s) not attempted this sweep"
+        return True, "COMPLETE"
+
+    def _ensure_startup_close_recovery(self) -> bool:
+        """Gate every new execution behind one fully accounted exchange-truth sweep."""
+        if self._startup_close_recovery_complete:
+            return True
+        if self.position_manager is None:
+            self.log.critical("STARTUP_CLOSE_RECOVERY_BLOCKED | reason=no position manager")
+            return False
+        try:
+            stats = self.position_manager.recover_provisional_close_rows()
+        except Exception as exc:
+            self.log.critical("STARTUP_CLOSE_RECOVERY_BLOCKED | reason=UNKNOWN | error=%s", exc)
+            return False
+
+        complete, verdict = self._startup_recovery_verdict(stats)
+        if not complete:
+            self.log.critical(
+                "STARTUP_CLOSE_RECOVERY_BLOCKED | verdict=%s | stats=%s | new_entries_blocked=True",
+                verdict, stats,
+            )
+            return False
+
+        self._startup_close_recovery_complete = True
+        self.log.warning("STARTUP_CLOSE_RECOVERY_COMPLETE | %s", stats)
+        return True
+
+    def _execute_selected_plans(self, selected_plans: list) -> list:
+        """The only scanner entry to ExecutionService, recovery-gated."""
+        if self.execution_service is None:
+            return []
+        if not self._ensure_startup_close_recovery():
+            self.log.critical(
+                "EXECUTION_BLOCKED_BY_STARTUP_CLOSE_RECOVERY | selected_plans=%s",
+                len(selected_plans),
+            )
+            return []
+        with trading_state_lock():
+            return self.execution_service.execute(selected_plans)
+
+    def _run_dynamic_grid(self, equity_usdt: float, risk_stop_reason: str = "") -> None:
+        if not self.settings.dynamic_grid_enabled:
+            return
+        if self.settings.dynamic_grid_mode.strip().upper() == "LIVE":
+            if not self._ensure_startup_close_recovery():
+                self.log.critical("DYNAMIC_GRID_BLOCKED_BY_STARTUP_CLOSE_RECOVERY")
+                return
+            with trading_state_lock():
+                self.dynamic_grid.cycle(
+                    equity_usdt=equity_usdt, risk_stop_reason=risk_stop_reason
+                )
+            return
+        self.dynamic_grid.cycle(
+            equity_usdt=equity_usdt, risk_stop_reason=risk_stop_reason
+        )
+
+    def _maybe_refresh_learning_reports(self) -> None:
+        """Regenerate the daily learning/expectancy reports when they go stale.
+
+        The launchd job that used to do this gets blocked by macOS TCC (launchd
+        children may not write inside ~/Desktop), so the bot — started from a
+        terminal that does have that access — refreshes its own learning input.
+        Runs as a background subprocess so the scan loop never stalls on it.
+        """
+        if self._learning_refresh_proc is not None:
+            if self._learning_refresh_proc.poll() is None:
+                return
+            exit_code = self._learning_refresh_proc.returncode
+            self._learning_refresh_proc = None
+            if exit_code == 0:
+                self.log.info("LEARNING_REFRESH_OK | strategy_expectancy.json regenerated")
+            else:
+                self.log.warning("LEARNING_REFRESH_FAILED | exit_code=%s", exit_code)
+
+        report_path = Path("reports/backtests/strategy_expectancy.json")
+        try:
+            age_hours = (time.time() - report_path.stat().st_mtime) / 3600.0
+        except OSError:
+            age_hours = float("inf")
+
+        if age_hours < 24.0:
+            return
+
+        chain = (
+            "import subprocess, sys;"
+            "subprocess.run([sys.executable, '-m', 'telemetry.dataset_builder'], check=False);"
+            "subprocess.run([sys.executable, 'scripts/run_backtest.py', '--validation-only'], check=True);"
+            "subprocess.run([sys.executable, 'morning_audit.py'], check=False)"
+        )
+        try:
+            with open("logs/daily_learning_report.log", "a", encoding="utf-8") as log_handle:
+                self._learning_refresh_proc = subprocess.Popen(
+                    [sys.executable, "-c", chain],
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            self.log.info("LEARNING_REFRESH_STARTED | report_age_hours=%.1f", age_hours)
+        except Exception as exc:
+            self.log.warning("LEARNING_REFRESH_SPAWN_FAILED | error=%s", exc)
+
+    def _is_network_resolution_error(self, exc: Exception) -> bool:
+        error_text = str(exc).lower()
+        return (
+            "failed to resolve" in error_text
+            or "nameresolutionerror" in error_text
+            or "nodename nor servname provided" in error_text
+            or "temporary failure in name resolution" in error_text
+        )
+
+    def run(self) -> None:
+        self.log.info("Starting Bitget AI Agent Phase 7")
+        if self.settings.forward_paper_only:
+            self.log.warning("FORWARD_PAPER_ONLY ACTIVE")
+            self.log.warning("PRIVATE EXCHANGE CALLS DISABLED")
+        # Record the runtime mode once so every later heartbeat is attributable,
+        # then beat immediately: startup is a lifecycle stage in every mode.
+        set_runtime_mode(
+            "FORWARD_PAPER" if self.settings.forward_paper_only else str(self.settings.execution_mode)
+        )
+        runtime_heartbeat("startup_checks")
+        self._startup_checks()
+
+        if self.microflow_runtime is not None:
+            if not self._ensure_startup_close_recovery():
+                raise RuntimeError("MicroFlow startup blocked by close-recovery gate")
+            self.microflow_runtime.start()
+
+        if self.lsrl is not None:
+            if self.lsrl.mode.value == "MICRO_LIVE" and not self._ensure_startup_close_recovery():
+                raise RuntimeError("LSRL MICRO_LIVE startup blocked by close-recovery gate")
+            try:
+                self.lsrl.start()
+            except Exception as exc:
+                if self.lsrl.mode.value == "MICRO_LIVE":
+                    raise
+                # SHADOW / PAPER are observational: a bad state file or a REST hiccup must not take the engine down
+                self.log.critical("LSRL_START_FAILED | mode=%s | %s: %s", self.lsrl.mode.value, type(exc).__name__, exc)
+                self.lsrl = None
+
+        if self.settings.position_manager_enabled and self.settings.position_loop_enabled:
+            self._position_monitor_thread = threading.Thread(
+                target=self._position_monitor_loop,
+                name="position-monitor",
+                daemon=True,
+            )
+            self._position_monitor_thread.start()
+            self.log.info(
+                "POSITION_MONITOR_STARTED | interval=%ss",
+                self.settings.position_check_interval_sec,
+            )
+
+        if self.settings.scan_on_start:
+            self._scan_cycle_iteration()
+
+        if self.settings.scan_loop_enabled:
+            self.log.info("Scan loop enabled | interval=%ss", self.settings.scan_interval_sec)
+            while True:
+                time.sleep(self.settings.scan_interval_sec)
+                self._scan_cycle_iteration()
+        elif self.microflow_runtime is not None or self.lsrl is not None:
+            # The WebSocket/decision workers are the MicroFlow engine (and the LSRL runtime thread is
+            # LSRL). Keep the supported app.main owner alive even when candle scanning is off.
+            self.log.info(
+                "%s event loop active | legacy scan loop disabled",
+                "MicroFlow" if self.microflow_runtime is not None else "LSRL",
+            )
+            while True:
+                time.sleep(1.0)
+
+    def _scan_cycle_iteration(self) -> bool:
+        """Run one scan cycle without allowing a transient failure to kill the loop.
+
+        Mirrors _position_monitor_iteration. Before this existed, any exception
+        escaping _scan_cycle terminated the process: on 2026-07-24 a DNS blip
+        raised BitgetRetryableError out of fetch_contracts and the bot stayed
+        down for 20 hours. A long-running collector must outlive the network.
+
+        Failures are never silent: each one is logged with a distinct marker and
+        the consecutive-failure count is published to the runtime heartbeat so
+        health checks can fail on a wedged loop.
+        """
+        try:
+            self._scan_cycle()
+        except Exception as exc:
+            self._consecutive_scan_failures += 1
+            self.log.exception(
+                "SCAN_CYCLE_FAILED | consecutive=%s | network=%s | error=%s",
+                self._consecutive_scan_failures,
+                self._is_network_resolution_error(exc),
+                exc,
+            )
+            runtime_heartbeat(
+                "scan_cycle_failed",
+                consecutive_scan_failures=self._consecutive_scan_failures,
+                error_type=type(exc).__name__,
+            )
+            return False
+
+        if self._consecutive_scan_failures:
+            self.log.info(
+                "SCAN_CYCLE_RECOVERED | after_failures=%s", self._consecutive_scan_failures
+            )
+            self._consecutive_scan_failures = 0
+        return True
+
+    def scan_once(self) -> None:
+        """Run one complete public detector-to-paper scan cycle."""
+        self._scan_cycle()
+
+    def _position_monitor_loop(self) -> None:
+        interval = max(1, int(self.settings.position_check_interval_sec))
+        while True:
+            self._position_monitor_wakeup.wait(timeout=interval)
+            self._position_monitor_wakeup.clear()
+            self._position_monitor_iteration()
+
+    def _position_monitor_iteration(self) -> bool:
+        """Run one cycle without allowing a transient failure to kill the loop."""
+        try:
+            self._position_monitor_cycle()
+            return True
+        except Exception as exc:
+            self.log.exception("POSITION_MONITOR_FAILED | error=%s", exc)
+            return False
+
+    def _position_monitor_cycle(self) -> None:
+        with self._position_snapshots_lock:
+            snapshots = list(self._position_snapshots)
+        if snapshots:
+            self._sync_positions(snapshots, use_snapshot_context=False, caller="monitor")
+
+    def _sync_positions(
+        self, snapshots: list[MarketSnapshot], *, use_snapshot_context: bool,
+        caller: str = "main",
+    ) -> None:
+        if (
+            not snapshots
+            or not self.settings.position_manager_enabled
+            or self.position_manager is None
+        ):
+            return
+        # The exchange fetch runs OUTSIDE trading_state_lock on purpose. It used to
+        # run inline while the lock was held; with 3 retries at up to 15s each plus
+        # backoff, one degraded Bitget response could hold the lock ~49s, blocking
+        # the other sync caller (main cycle vs. the 30s position-monitor thread) for
+        # that whole duration. The lock now protects only local-state reconciliation.
+        self.log.info("POSITION_SYNC_FETCH_STARTED | caller=%s", caller)
+        fetch_started = time.perf_counter()
+        exchange_snapshot = self.position_manager.fetch_exchange_snapshot()
+        fetch_duration_ms = (time.perf_counter() - fetch_started) * 1000.0
+        self.log.info(
+            "POSITION_SYNC_FETCH_COMPLETED | caller=%s | fetch_duration_ms=%.1f | ok=%s",
+            caller, fetch_duration_ms, exchange_snapshot.ok,
+        )
+        # Same reasoning as the exchange-positions fetch above: recovery's own
+        # Bitget close-history fetch (only performed when something is actually
+        # pending) used to run inline inside sync(), inside the lock. It is now
+        # pre-run here so a slow/retried history fetch cannot hold the lock.
+        self.log.info("CLOSE_RECOVERY_FETCH_STARTED | caller=%s", caller)
+        recovery_fetch_started = time.perf_counter()
+        recovery_stats = self.position_manager.recover_provisional_close_rows()
+        recovery_fetch_duration_ms = (time.perf_counter() - recovery_fetch_started) * 1000.0
+        self.log.info(
+            "CLOSE_RECOVERY_FETCH_COMPLETED | caller=%s | duration_ms=%.1f | "
+            "recovered=%s | still_pending=%s | blocked=%s",
+            caller, recovery_fetch_duration_ms,
+            recovery_stats.get("recovered"), recovery_stats.get("still_pending"),
+            recovery_stats.get("blocked"),
+        )
+        lock_wait_started = time.perf_counter()
+        with self._position_sync_lock:
+            with trading_state_lock():
+                lock_acquired_at = time.perf_counter()
+                snapshot_age_ms = exchange_snapshot.age_ms()
+                snapshot_discarded_stale = exchange_snapshot.ok and not exchange_snapshot.usable()
+                position_updates = self.position_manager.sync(
+                    snapshots,
+                    use_snapshot_context=use_snapshot_context,
+                    exchange_snapshot=exchange_snapshot,
+                    recovery_stats=recovery_stats,
+                )
+                lock_hold_ms = (time.perf_counter() - lock_acquired_at) * 1000.0
+        lock_wait_ms = (lock_acquired_at - lock_wait_started) * 1000.0 - lock_hold_ms
+        self.log.info(
+            "POSITION_SYNC_RECONCILE_DONE | caller=%s | snapshot_age_ms=%.0f | "
+            "snapshot_discarded_stale=%s | lock_wait_ms=%.1f | lock_hold_ms=%.1f",
+            caller, snapshot_age_ms, snapshot_discarded_stale,
+            max(0.0, lock_wait_ms), lock_hold_ms,
+        )
+        if position_updates:
+            self._emit_position_summary(position_updates)
+            self.position_logger.append_rows(position_updates)
+
+    def _startup_checks(self) -> None:
+        self.log.info("Running startup checks")
+        contracts = self.fetcher.fetch_contracts(force_refresh=True)
+        self.log.info(
+            "Public API OK | product_type=%s | contracts=%s",
+            self.settings.bitget_product_type,
+            len(contracts),
+        )
+
+        if self.client.has_credentials:
+            try:
+                account_payload = self.client.ping_private_account()
+                accounts = account_payload.get("data", [])
+                self.log.info("Private API OK | accounts=%s", len(accounts))
+            except Exception as exc:
+                self.log.warning("Private API check failed: %s", exc)
+        else:
+            self.log.warning("Private API skipped | credentials missing")
+
+    def _cooldown_file_path(self) -> Path:
+        return Path("state/symbol_cooldowns.json")
+
+    def _load_cooldown_data(self) -> dict:
+        path = self._cooldown_file_path()
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text() or "{}")
+        except Exception:
+            return {}
+
+    def _save_cooldown_data(self, data: dict) -> None:
+        path = self._cooldown_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+    def _cooldown_is_on(self, key: str, minutes: int) -> bool:
+        data = self._load_cooldown_data()
+        record = data.get(key)
+
+        if record is None and isinstance(data.get("cooldowns"), dict):
+            record = data["cooldowns"].get(key)
+
+        if record is None:
+            return False
+
+        now = datetime.now(timezone.utc)
+
+        try:
+            if isinstance(record, dict):
+                until_raw = record.get("until") or record.get("expires_at")
+                created_raw = record.get("created_at") or record.get("timestamp")
+
+                if until_raw:
+                    until = datetime.fromisoformat(str(until_raw).replace("Z", "+00:00"))
+                    return until > now
+
+                if created_raw:
+                    created = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+                    return created + timedelta(minutes=minutes) > now
+
+            if isinstance(record, str):
+                until = datetime.fromisoformat(record.replace("Z", "+00:00"))
+                return until > now
+        except Exception:
+            return False
+
+        return False
+
+    def _cooldown_register(self, key: str, minutes: int, reason: str) -> None:
+        data = self._load_cooldown_data()
+        target = data["cooldowns"] if isinstance(data.get("cooldowns"), dict) else data
+
+        now = datetime.now(timezone.utc)
+        until = now + timedelta(minutes=minutes)
+
+        target[key] = {
+            "created_at": now.isoformat(),
+            "until": until.isoformat(),
+            "minutes": minutes,
+            "reason": reason,
+        }
+
+        self._save_cooldown_data(data)
+
+    def _scan_cycle(self) -> None:
+        if self._scan_in_progress:
+            self.log.warning("SCAN_SKIPPED | previous scan cycle still running")
+            return
+
+        self._scan_in_progress = True
+        scan_lock_handle = None
+        scan_completed = False
+        plans: list[TradePlan] = []
+        snapshots: list[MarketSnapshot] = []
+        scan_id = stable_scan_id()
+
+        try:
+            os.makedirs("state", exist_ok=True)
+            scan_lock_handle = open(self._scan_lock_path, "w")
+            try:
+                fcntl.flock(scan_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.log.warning("SCAN_SKIPPED | another runner process is already scanning")
+                return
+
+            live_equity = float(self.settings.account_equity_usdt)
+            grid_risk_stop_reason = ""
+
+            # Liveness telemetry is mode-independent. It used to be emitted only
+            # in forward-paper mode, which left LIVE with no heartbeat at all --
+            # a 3 h host suspension on 2026-07-29 went undetected as a result.
+            runtime_heartbeat("scan_cycle_start", scan_started=True)
+
+            try:
+                agent_report = run_coach_rules()
+                self.log.info(
+                    "AI_AGENT_DECISIONS_REFRESHED | decision_count=%s",
+                    agent_report.get("decision_count", 0),
+                )
+            except Exception as exc:
+                self.log.warning("AI_AGENT_DECISIONS_REFRESH_FAILED | error=%s", exc)
+
+            self._maybe_refresh_learning_reports()
+
+            if self.client.has_credentials:
+                try:
+                    accounts_payload = self.client.get_accounts()
+                    for account in accounts_payload.get("data") or []:
+                        if str(account.get("marginCoin", "")).upper() != "USDT":
+                            continue
+                        live_equity = float(
+                            account.get("accountEquity")
+                            or account.get("usdtEquity")
+                            or account.get("equity")
+                            or 0.0
+                        )
+                        if live_equity > 0:
+                            write_equity_snapshot(live_equity)
+                        break
+                except Exception as exc:
+                    self.log.warning("EQUITY_SNAPSHOT_FAILED | error=%s", exc)
+
+            weekly_freeze_active = False
+            try:
+                day_mode = self.risk_manager.day_mode()
+                if day_mode.get("mode") == "RED":
+                    grid_risk_stop_reason = "daily_or_weekly_drawdown_gate_red"
+                weekly_freeze_active = bool(day_mode.get("mode") == "RED")
+                self.log.info(
+                    "DAY_MODE | mode=%s | daily_pnl=%.2f | daily_loss_pct=%.2f | consecutive_losses=%s | weekly_pnl=%.2f | weekly_loss_pct=%.2f | equity=%.2f (%s)",
+                    day_mode["mode"],
+                    day_mode["daily_realized_pnl"],
+                    day_mode["daily_loss_pct"],
+                    day_mode["consecutive_losses"],
+                    day_mode["weekly_realized_pnl"],
+                    day_mode["weekly_loss_pct"],
+                    day_mode["account_equity"],
+                    day_mode["equity_source"],
+                )
+            except Exception as exc:
+                self.log.warning("DAY_MODE_CHECK_FAILED | error=%s", exc)
+
+            # Shadow-only evaluation: never submits an order itself, never
+            # blocks the cycle on failure. See app/adaptive_trend_scan.py
+            # module docstring for the scope boundary this deliberately
+            # stays inside of.
+            from app.adaptive_trend_scan import run_adaptive_trend_shadow_scan
+            adaptive_trend_scan_result = run_adaptive_trend_shadow_scan(
+                client=self.client, settings=self.settings,
+                weekly_freeze_active=weekly_freeze_active,
+            )
+            # Owner-gated, default OFF. When false: nothing below this line
+            # runs -- no TradePlan, no ExecutionService.execute(), no durable
+            # intent, no Bitget call. The weekly freeze (already reflected in
+            # `weekly_freeze_active` above, via route_selected_candidate's
+            # rejection_reason) is independent of and not replaced by this
+            # flag -- both must separately allow an entry.
+            if (
+                self.settings.adaptive_trend_live_entry_enabled
+                and self.execution_service is not None
+                and "error" not in adaptive_trend_scan_result
+            ):
+                from execution.adaptive_trend_entry import submit_adaptive_trend_entry
+                submit_adaptive_trend_entry(
+                    winner=adaptive_trend_scan_result.get("winner"),
+                    winner_sizing=adaptive_trend_scan_result.get("winner_sizing"),
+                    weekly_freeze_active=weekly_freeze_active,
+                    execution_service=self.execution_service,
+                    retired=self.settings.adaptive_trend_retired,
+                )
+
+            try:
+                contracts = self.fetcher.fetch_contracts(force_refresh=False)
+            except Exception as exc:
+                # Sat directly above the guarded refresh_many block and was the
+                # only unprotected network call in the cycle; a DNS failure here
+                # killed the process on 2026-07-24.
+                if self._is_network_resolution_error(exc):
+                    error_signature = ("fetch_contracts", str(exc)[:180])
+                    if self._last_network_error_log != error_signature:
+                        self.log.error(
+                            "API_NETWORK_UNAVAILABLE | stage=fetch_contracts | action=skip_scan_cycle_preserve_local_state | error=%s",
+                            exc,
+                        )
+                        self._last_network_error_log = error_signature
+                else:
+                    self.log.warning("FETCH_CONTRACTS_FAILED | error=%s", exc)
+                return
+
+            symbols = get_watchlist(self.settings, contracts=contracts)
+            if self.settings.forward_paper_only:
+                runtime_heartbeat("market_refresh_start", symbol_count=len(symbols))
+
+            try:
+                self.market_data_service.refresh_many(
+                    symbols=symbols,
+                    limit=200,
+                )
+
+                self.log.info(
+                    "MULTI_TF_REFRESH_OK | symbols=%s",
+                    len(symbols),
+                )
+                if self.settings.forward_paper_only:
+                    runtime_heartbeat("market_refresh_complete", symbol_count=len(symbols))
+
+            except Exception as exc:
+                self.log.warning(
+                    "MULTI_TF_REFRESH_FAILED | error=%s",
+                    exc,
+                )
+                if self._is_network_resolution_error(exc):
+                    error_signature = ("multi_tf_refresh", str(exc)[:180])
+                    if self._last_network_error_log != error_signature:
+                        self.log.error(
+                            "API_NETWORK_UNAVAILABLE | stage=multi_tf_refresh | action=skip_scan_cycle_preserve_local_state | error=%s",
+                            exc,
+                        )
+                        self._last_network_error_log = error_signature
+                    self.log.warning(
+                        "NETWORK_RECOVERY_MODE | stage=multi_tf_refresh | sleep_seconds=60"
+                    )
+                    time.sleep(60)
+                    return
+
+            try:
+                self._run_dynamic_grid(live_equity, grid_risk_stop_reason)
+            except Exception as exc:
+                # The grid is isolated: fail it closed without interrupting
+                # position management for pre-cutover strategies.
+                self.log.exception("DYNAMIC_GRID_FAILED_CLOSED | error=%s", exc)
+
+            self.log.info(
+                "Scanning watchlist | symbols=%s | primary=%s | confirm=%s",
+                len(symbols),
+                self.settings.bitget_default_granularity,
+                self.settings.bitget_confirmation_granularity,
+            )
+
+            snapshots = []
+            candidates: list[tuple[StrategyCandidate, StrategyScore]] = []
+            plans = []
+            for symbol in symbols:
+                if self.settings.forward_paper_only:
+                    runtime_heartbeat("symbol_scan_start", symbol=symbol)
+                try:
+                    snapshot = self.fetcher.build_market_snapshot(symbol, as_of_timestamp_ms=int(time.time() * 1000))
+                    multi_tf_snapshot = self.market_data_service.get_symbol_snapshot(symbol)
+
+                    self.log.info(
+                        "MULTI_TF_STATE | %s | available=%s | stale=%s",
+                        symbol,
+                        self.multi_tf_cache.get_available_timeframes(symbol),
+                        self.multi_tf_cache.is_symbol_stale(symbol),
+                    )
+                    snapshots.append(snapshot)
+                    self.market_context_logger.append(
+                        symbol=snapshot.symbol,
+                        alignment=snapshot.alignment,
+                        score_hint=snapshot.score_hint,
+                        primary_trend=snapshot.primary.trend,
+                        confirmation_trend=snapshot.confirmation.trend,
+                        volatility_rank=getattr(snapshot, "volatility_rank", 0.0),
+                        notes=snapshot.notes,
+                        orderbook_context=(getattr(snapshot, "context", None) or {}).get("orderbook"),
+                    )
+                    scan_signature = (
+                        snapshot.alignment,
+                        round(snapshot.score_hint, 1),
+                        snapshot.primary.trend,
+                        snapshot.confirmation.trend,
+                        round(snapshot.primary.change_pct, 3),
+                        round(snapshot.primary.volume_ratio_20, 2),
+                    )
+
+                    previous_signature = self._last_scan_log.get(snapshot.symbol)
+
+                    if previous_signature != scan_signature:
+                        self.log.info(
+                            "SCAN | %s | align=%s | score_hint=%.1f | %s=%s %.3f%% vr=%.2f | %s=%s | notes=%s",
+                            snapshot.symbol,
+                            snapshot.alignment,
+                            snapshot.score_hint,
+                            snapshot.primary.granularity,
+                            snapshot.primary.trend,
+                            snapshot.primary.change_pct,
+                            snapshot.primary.volume_ratio_20,
+                            snapshot.confirmation.granularity,
+                            snapshot.confirmation.trend,
+                            "; ".join(snapshot.notes),
+                        )
+                        self._last_scan_log[snapshot.symbol] = scan_signature
+
+                    sweep_candidate = self.strategy.detect(snapshot)
+                    momentum_candidate = self.momentum_strategy.detect(snapshot)
+                    momentum_breakdown_candidate = self.momentum_breakdown_strategy.detect(snapshot)
+                    continuation_candidate = None
+                    low_vol_reclaim_candidate = None
+
+                    try:
+                        continuation_candidate = detect_continuation(snapshot)
+                    except Exception:
+                        continuation_candidate = None
+
+                    try:
+                        low_vol_reclaim_candidate = detect_low_vol_reclaim(snapshot)
+                    except Exception as exc:
+                        self.log.warning(
+                            "LOW_VOL_RECLAIM_ERROR | %s | error=%s",
+                            snapshot.symbol,
+                            exc,
+                        )
+                        low_vol_reclaim_candidate = None
+
+                    funnel_context = snapshot_context(snapshot)
+                    detector_results = (
+                        ("liquidity_sweep_reversal", "UNKNOWN", sweep_candidate),
+                        ("momentum_breakout", "LONG", momentum_candidate),
+                        ("momentum_breakdown", "SHORT", momentum_breakdown_candidate),
+                        ("trend_continuation", "UNKNOWN", continuation_candidate),
+                        ("low_vol_reclaim", "UNKNOWN", low_vol_reclaim_candidate),
+                    )
+                    observed_candidates: list[StrategyCandidate] = []
+                    for attempted_strategy, attempted_direction, detected_candidate in detector_results:
+                        direction = (
+                            detected_candidate.direction if detected_candidate is not None
+                            else attempted_direction
+                        )
+                        candidate_id = (
+                            detected_candidate.candidate_id
+                            if detected_candidate is not None
+                            else deterministic_candidate_id(
+                                attempted_strategy, snapshot.symbol, direction,
+                                funnel_context["candle_open_timestamp"],
+                            )
+                        )
+                        common = dict(
+                            scan_id=scan_id, candidate_id=candidate_id,
+                            strategy=attempted_strategy, symbol=snapshot.symbol,
+                            direction=direction, **{
+                                key: funnel_context[key] for key in (
+                                    "timeframe", "candle_open_timestamp", "signal_timestamp",
+                                    "session", "regime",
+                                )
+                            },
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="DETECTOR_ATTEMPT", passed=True,
+                            primary_reason_code="ATTEMPTED", **common,
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="DETECTOR_DECISION",
+                            passed=detected_candidate is not None,
+                            primary_reason_code=("DETECTED" if detected_candidate else "NO_DETECTION"),
+                            **common,
+                        )
+                        if detected_candidate is not None:
+                            observed_candidates.append(detected_candidate)
+
+                    debug_symbols = self.settings.strategy_debug_symbol_set
+                    if snapshot.symbol.upper() in debug_symbols:
+                        self.log.info(
+                            "STRATEGY_ROUTE | %s | sweep=%s | continuation=%s | low_vol_reclaim=%s | momentum_breakout=%s | momentum_breakdown=%s",
+                            snapshot.symbol,
+                            sweep_candidate.strategy if sweep_candidate else "none",
+                            continuation_candidate.strategy if continuation_candidate else "none",
+                            low_vol_reclaim_candidate.strategy if low_vol_reclaim_candidate else "none",
+                            momentum_candidate.strategy if momentum_candidate else "none",
+                            momentum_breakdown_candidate.strategy if momentum_breakdown_candidate else "none",
+                        )
+
+                    selector_result = select_best_candidate(
+                        sweep_candidate,
+                        continuation_candidate,
+                        low_vol_reclaim_candidate,
+                        momentum_candidate,
+                        momentum_breakdown_candidate,
+                    )
+
+                    if selector_result is None:
+                        self.log.error(
+                            "SELECTOR_NONE_RETURN | %s | sweep=%s | continuation=%s | low_vol_reclaim=%s | momentum_breakout=%s | momentum_breakdown=%s | treating_as_no_candidate",
+                            snapshot.symbol,
+                            sweep_candidate.strategy if sweep_candidate else "none",
+                            continuation_candidate.strategy if continuation_candidate else "none",
+                            low_vol_reclaim_candidate.strategy if low_vol_reclaim_candidate else "none",
+                            momentum_candidate.strategy if momentum_candidate else "none",
+                            momentum_breakdown_candidate.strategy if momentum_breakdown_candidate else "none",
+                        )
+                        candidate = None
+                        selector_reason = "selector_none_return_treated_as_no_candidate"
+                    else:
+                        try:
+                            candidate, selector_reason = selector_result
+                        except Exception as exc:
+                            self.log.exception(
+                                "SELECTOR_BAD_RETURN | %s | result=%r | error=%s | treating_as_no_candidate",
+                                snapshot.symbol,
+                                selector_result,
+                                exc,
+                            )
+                            candidate = None
+                            selector_reason = "selector_bad_return_treated_as_no_candidate"
+
+                    if candidate is None:
+                        enabled_strategies = self.settings.enabled_strategy_set
+                        disabled_strategies = self.settings.disabled_strategy_set
+
+                        fallback_strategy_name = "adaptive_momentum_continuation"
+                        fallback_enabled = (
+                            fallback_strategy_name in enabled_strategies
+                            if enabled_strategies
+                            else True
+                        )
+                        fallback_disabled = fallback_strategy_name in disabled_strategies
+
+                        if fallback_disabled or not fallback_enabled:
+                            self.log.info(
+                                "ADAPTIVE_CONTINUATION_DISABLED | %s | source=env | enabled=%s | disabled=%s",
+                                snapshot.symbol,
+                                fallback_enabled,
+                                fallback_disabled,
+                            )
+                        else:
+                            fallback_candidate = _build_fallback_candidate(snapshot, self.settings)
+                            fallback_direction = (
+                                fallback_candidate.direction if fallback_candidate is not None else "UNKNOWN"
+                            )
+                            fallback_id = deterministic_candidate_id(
+                                fallback_strategy_name, snapshot.symbol, fallback_direction,
+                                funnel_context["candle_open_timestamp"],
+                            )
+                            if fallback_candidate is not None:
+                                fallback_id = fallback_candidate.candidate_id
+                            fallback_common = dict(
+                                scan_id=scan_id, candidate_id=fallback_id,
+                                strategy=fallback_strategy_name, symbol=snapshot.symbol,
+                                direction=fallback_direction, timeframe=funnel_context["timeframe"],
+                                candle_open_timestamp=funnel_context["candle_open_timestamp"],
+                                signal_timestamp=funnel_context["signal_timestamp"],
+                                session=funnel_context["session"], regime=funnel_context["regime"],
+                            )
+                            self.funnel_telemetry.event(
+                                event_type="DETECTOR_ATTEMPT", passed=True,
+                                primary_reason_code="FALLBACK_ATTEMPTED", **fallback_common,
+                            )
+                            self.funnel_telemetry.event(
+                                event_type="DETECTOR_DECISION",
+                                passed=fallback_candidate is not None,
+                                primary_reason_code=(
+                                    "FALLBACK_DETECTED" if fallback_candidate is not None
+                                    else "FALLBACK_NO_DETECTION"
+                                ),
+                                **fallback_common,
+                            )
+
+                            if fallback_candidate is not None:
+                                candidate = fallback_candidate
+                                observed_candidates.append(fallback_candidate)
+                                selector_reason = (
+                                    f"fallback adaptive continuation bridge | execution_score="
+                                    f"{_execution_aware_score(snapshot):.1f}"
+                                )
+
+                                self.log.warning(
+                                    "FALLBACK_CANDIDATE_BRIDGE | %s | direction=%s | execution_score=%.1f | alignment=%s | trend=%s/%s",
+                                    snapshot.symbol,
+                                    candidate.direction,
+                                    _execution_aware_score(snapshot),
+                                    snapshot.alignment,
+                                    snapshot.primary.trend,
+                                    snapshot.confirmation.trend,
+                                )
+
+                    selector_choice = candidate
+                    selector_reject_code = None
+                    if candidate is not None:
+                        signal_cooldown_key = f"signal::{candidate.symbol}::{candidate.direction}::{candidate.strategy}"
+                        recent_close_key = f"recent_close::{candidate.symbol}"
+
+                        if self._cooldown_is_on(
+                            signal_cooldown_key,
+                            minutes=self.signal_cooldown_minutes,
+                        ):
+                            self.log.info(
+                                "DUPLICATE_SIGNAL_BLOCKED | %s | direction=%s | strategy=%s",
+                                candidate.symbol,
+                                candidate.direction,
+                                candidate.strategy,
+                            )
+                            candidate = None
+                            selector_reason = "duplicate_signal_cooldown"
+                            selector_reject_code = "SIGNAL_COOLDOWN"
+                        elif self._cooldown_is_on(
+                            recent_close_key,
+                            minutes=self.recent_close_cooldown_minutes,
+                        ):
+                            self.log.info(
+                                "RECENT_CLOSE_COOLDOWN_BLOCKED | %s | direction=%s | strategy=%s",
+                                candidate.symbol,
+                                candidate.direction,
+                                candidate.strategy,
+                            )
+                            candidate = None
+                            selector_reason = "recent_close_cooldown"
+                            selector_reject_code = "RECENT_CLOSE_COOLDOWN"
+
+                    if candidate is not None and selector_reason:
+                        candidate.notes.append(f"selector: {selector_reason}")
+                    if candidate is not None and candidate.direction == "SHORT":
+                        candidate.notes.append("LIVE SHORT ENABLED")
+                    if candidate is None:
+                        no_candidate_intelligence_signature = (
+                            selector_reason,
+                            sweep_candidate.strategy if sweep_candidate else "none",
+                            continuation_candidate.strategy if continuation_candidate else "none",
+                            low_vol_reclaim_candidate.strategy if low_vol_reclaim_candidate else "none",
+                            momentum_candidate.strategy if momentum_candidate else "none",
+                            momentum_breakdown_candidate.strategy if momentum_breakdown_candidate else "none",
+                            snapshot.alignment,
+                            snapshot.primary.trend,
+                            snapshot.confirmation.trend,
+                            round(float(snapshot.score_hint or 0.0), 1),
+                            round(float(snapshot.primary.volume_ratio_20 or 0.0), 2),
+                            round(float(getattr(snapshot, "volatility_rank", 0.0) or 0.0), 1),
+                        )
+
+                        previous_no_candidate_intelligence_signature = self._last_no_candidate_intelligence_log.get(snapshot.symbol)
+
+                        if previous_no_candidate_intelligence_signature != no_candidate_intelligence_signature:
+                            self.log.info(
+                                "NO_CANDIDATE_INTELLIGENCE | %s | selector_reason=%s | sweep=%s | continuation=%s | low_vol_reclaim=%s | momentum_breakout=%s | momentum_breakdown=%s | align=%s | score_hint=%.1f | volatility_rank=%.1f | vr=%.2f | trend=%s/%s | notes=%s",
+                                snapshot.symbol,
+                                selector_reason,
+                                sweep_candidate.strategy if sweep_candidate else "none",
+                                continuation_candidate.strategy if continuation_candidate else "none",
+                                low_vol_reclaim_candidate.strategy if low_vol_reclaim_candidate else "none",
+                                momentum_candidate.strategy if momentum_candidate else "none",
+                                momentum_breakdown_candidate.strategy if momentum_breakdown_candidate else "none",
+                                snapshot.alignment,
+                                snapshot.score_hint,
+                                getattr(snapshot, "volatility_rank", 0.0),
+                                snapshot.primary.volume_ratio_20,
+                                snapshot.primary.trend,
+                                snapshot.confirmation.trend,
+                                "; ".join(snapshot.notes or [])[:300],
+                            )
+                            self._last_no_candidate_intelligence_log[snapshot.symbol] = no_candidate_intelligence_signature
+
+                        self.strategy_performance_logger.append_setup_event(
+                            symbol=snapshot.symbol,
+                            strategy="NO_SETUP",
+                            direction="NONE",
+                            verdict="NO_CANDIDATE",
+                            score=round(float(snapshot.score_hint or 0.0), 2),
+                            stage="SCAN_REJECT",
+                            reasons=[
+                                f"selector_reason={selector_reason}",
+                                f"alignment={snapshot.alignment}",
+                                f"primary_trend={snapshot.primary.trend}",
+                                f"confirmation_trend={snapshot.confirmation.trend}",
+                                f"volume_ratio={round(snapshot.primary.volume_ratio_20, 2)}",
+                                f"volatility_rank={round(getattr(snapshot, 'volatility_rank', 0.0), 2)}",
+                            ],
+                            notes=list(snapshot.notes or []),
+                        )
+                    if candidate is None:
+                        no_setup_signature = (
+                            selector_reason,
+                            snapshot.alignment,
+                            round(snapshot.score_hint, 1),
+                            round(snapshot.primary.volume_ratio_20, 2),
+                            snapshot.primary.trend,
+                            snapshot.confirmation.trend,
+                        )
+
+                        previous_signature = self._last_no_setup_log.get(snapshot.symbol)
+
+                        if previous_signature != no_setup_signature:
+                            self.log.info(
+                                "NO_SETUP | %s | reason=%s | align=%s | score_hint=%.1f | volatility_rank=%.1f | vr=%.2f | trend=%s/%s",
+                                snapshot.symbol,
+                                selector_reason,
+                                snapshot.alignment,
+                                snapshot.score_hint,
+                                getattr(snapshot, "volatility_rank", 0.0),
+                                snapshot.primary.volume_ratio_20,
+                                snapshot.primary.trend,
+                                snapshot.confirmation.trend,
+                            )
+                            self._last_no_setup_log[snapshot.symbol] = no_setup_signature
+
+
+                    if candidate is not None:
+                        cooldown_payload = self.cooldown_manager.as_log_payload(candidate.symbol)
+                        if cooldown_payload is not None:
+                            remaining_minutes = cooldown_payload.get("remaining_minutes", 0)
+                            reason = cooldown_payload.get("reason", "cooldown")
+                            until = cooldown_payload.get("until", "")
+
+                            self.log.warning(
+                                "SYMBOL_COOLDOWN_ACTIVE | %s | remaining_minutes=%s | reason=%s | until=%s",
+                                candidate.symbol,
+                                remaining_minutes,
+                                reason,
+                                until,
+                            )
+
+                            candidate.notes.append(f"symbol cooldown active ({remaining_minutes}m)")
+                            candidate = None
+                            selector_reject_code = "SYMBOL_COOLDOWN"
+
+
+                    if candidate is not None:
+                        duplicate_block = self._duplicate_continuation_block(candidate)
+                        if duplicate_block is not None:
+                            self.log.warning(
+                                "DUPLICATE_CONTINUATION_BLOCKED | %s | reason=%s",
+                                candidate.symbol,
+                                duplicate_block,
+                            )
+                            candidate.notes.append(f"duplicate continuation blocked ({duplicate_block})")
+                            candidate = None
+                            selector_reject_code = "DUPLICATE_CONTINUATION"
+
+                    for observed in observed_candidates:
+                        observed_id = observed.candidate_id
+                        selected = observed is candidate
+                        rejected_after_selection = (
+                            candidate is None
+                            and observed is selector_choice
+                            and selector_reject_code is not None
+                        )
+                        self.funnel_telemetry.event(
+                            scan_id=scan_id, candidate_id=observed_id,
+                            event_type="SELECTOR_DECISION", strategy=observed.strategy,
+                            symbol=observed.symbol, direction=observed.direction,
+                            timeframe=funnel_context["timeframe"],
+                            candle_open_timestamp=funnel_context["candle_open_timestamp"],
+                            signal_timestamp=funnel_context["signal_timestamp"],
+                            session=funnel_context["session"], regime=funnel_context["regime"],
+                            passed=selected,
+                            primary_reason_code=(
+                                "SELECTED" if selected else
+                                selector_reject_code if rejected_after_selection else "NOT_SELECTED"
+                            ),
+                        )
+
+                    if candidate is not None:
+                        score = self.scorer.score(candidate)
+                        candidate_id = candidate.candidate_id
+                        funnel_common = dict(
+                            scan_id=scan_id, candidate_id=candidate_id,
+                            strategy=candidate.strategy, symbol=candidate.symbol,
+                            direction=candidate.direction, timeframe=funnel_context["timeframe"],
+                            candle_open_timestamp=str(candidate.candidate_candle_open_timestamp_ms),
+                            signal_timestamp=funnel_context["signal_timestamp"],
+                            session=funnel_context["session"], regime=funnel_context["regime"],
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="SCORING_DECISION", passed=score.verdict == "GO",
+                            primary_reason_code={"GO": "SCORE_GO", "WATCH": "SCORE_WATCH"}.get(
+                                score.verdict, "SCORE_NO_GO"
+                            ), details={"score": float(score.total)}, **funnel_common,
+                        )
+                        candidates.append((candidate, score))
+                        risk = self.risk_manager.evaluate(candidate, score)
+                        self.funnel_telemetry.event(
+                            event_type="RISK_DECISION", passed=bool(risk.allowed),
+                            primary_reason_code="RISK_ALLOWED" if risk.allowed else "RISK_BLOCKED",
+                            secondary_reason_codes=classify_reason_codes(
+                                getattr(risk, "reasons", []) or []
+                            ),
+                            details={"status": str(risk.status)}, **funnel_common,
+                        )
+                        plan = self.trade_planner.build(candidate, score, risk)
+                        # Record the RiskVerdict already obtained above, bound to this
+                        # plan's own final economics -- ExecutionService.execute() requires
+                        # a matching record before it will act on any plan (Deployment Gap
+                        # #1 fix, integrated 2026-09-18). Recorded regardless of verdict so
+                        # a denial is on record too, not only approvals.
+                        record_authorization(
+                            risk, candidate, plan_id=plan.plan_id,
+                            position_notional_usdt=plan.position_notional_usdt,
+                            store=self._risk_authorization_store,
+                        )
+                        executable = plan.verdict == "EXECUTABLE"
+                        self.funnel_telemetry.event(
+                            event_type="PLANNER_DECISION", passed=executable,
+                            primary_reason_code="PLAN_EXECUTABLE" if executable else "PLAN_BLOCKED",
+                            secondary_reason_codes=classify_reason_codes(
+                                list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
+                            ),
+                            details={"verdict": str(plan.verdict), "plan_id": plan.plan_id}, **funnel_common,
+                        )
+                        self.funnel_telemetry.event(
+                            event_type="EXECUTABLE_DECISION", passed=executable,
+                            primary_reason_code="PLAN_EXECUTABLE" if executable else "PLAN_BLOCKED",
+                            secondary_reason_codes=classify_reason_codes(
+                                list(getattr(risk, "reasons", []) or []) + list(plan.notes or [])
+                            ),
+                            details={"plan_id": plan.plan_id}, **funnel_common,
+                        )
+                        self.strategy_performance_logger.append_setup_event(
+                            symbol=plan.symbol,
+                            strategy=plan.strategy,
+                            direction=plan.direction,
+                            verdict=plan.verdict,
+                            score=round(float(score.total), 2),
+                            stage="PLAN",
+                            reasons=list(getattr(risk, "reasons", []) or []) + list(getattr(score, "reasons", []) or []),
+                            notes=list(candidate.notes or []) + list(plan.notes or []),
+                        )
+                        plans.append(plan)
+                        if (
+                            plan.verdict == "BLOCKED"
+                            and score.total >= 64.0
+                            and risk.allowed
+                            and any(
+                                "planner_soft_bridge_candidate=true" in str(note)
+                                for note in (plan.notes or [])
+                            )
+                        ):
+                            self.log.warning(
+                                "PLANNER_SOFT_BRIDGE | %s | strategy=%s | score=%.1f | risk_status=%s",
+                                plan.symbol,
+                                plan.strategy,
+                                score.total,
+                                risk.status,
+                            )
+                        if plan.verdict != "EXECUTABLE":
+                            self.strategy_performance_logger.append_setup_event(
+                                symbol=plan.symbol,
+                                strategy=plan.strategy,
+                                direction=plan.direction,
+                                verdict=plan.verdict,
+                                score=round(float(score.total), 2),
+                                stage="PLAN_REJECT",
+                                reasons=list(getattr(risk, "reasons", []) or []),
+                                notes=list(candidate.notes or []) + list(plan.notes or []),
+                            )
+                            reject_signature = (
+                                plan.verdict,
+                                risk.status,
+                                score.verdict,
+                                round(score.total, 1),
+                                round(plan.risk_reward_ratio, 2),
+                                "; ".join(getattr(risk, "reasons", []) or []),
+                            )
+
+                            previous_signature = self._last_reject_log.get(plan.symbol)
+
+                            if previous_signature != reject_signature:
+                                self.log.info(
+                                    "REJECTED_SETUP | %s | %s | %s | plan_verdict=%s | risk_verdict=%s | score_verdict=%s | score=%.1f | rr=%.2f | reasons=%s | notes=%s",
+                                    plan.symbol,
+                                    plan.strategy,
+                                    plan.direction,
+                                    plan.verdict,
+                                    risk.status,
+                                    score.verdict,
+                                    score.total,
+                                    plan.risk_reward_ratio,
+                                    "; ".join(getattr(risk, "reasons", []) or []),
+                                    "; ".join(candidate.notes or []),
+                                )
+                                self._last_reject_log[plan.symbol] = reject_signature
+                        else:
+                            self.log.info(
+                                "ACCEPTED_SETUP | %s | %s | %s | score=%.1f | rr=%.2f | volatility_rank=%.1f | reasons=%s",
+                                plan.symbol,
+                                plan.strategy,
+                                plan.direction,
+                                score.total,
+                                plan.risk_reward_ratio,
+                                getattr(candidate.market, "volatility_rank", 0.0),
+                                "; ".join(candidate.notes or []),
+                            )
+                        self.log.info(
+                            "SETUP | %s | %s | %s | score=%.1f | verdict=%s | entry=%.6f | invalidation=%.6f | notes=%s",
+                            candidate.symbol,
+                            candidate.strategy,
+                            candidate.direction,
+                            score.total,
+                            score.verdict,
+                            candidate.detection.entry_hint,
+                            candidate.detection.invalidation,
+                            "; ".join(candidate.notes),
+                        )
+                        self.log.info(
+                            "PLAN | %s | %s | %s | score=%.1f | verdict=%s | entries=%s | sl=%.6f | tp=%s | rr=%.2f | risk=%.2f%% | lev=%.1fx | notional=%.2f",
+                            plan.symbol,
+                            plan.strategy,
+                            plan.direction,
+                            plan.score,
+                            plan.verdict,
+                            ", ".join(f"{x:.6f}" for x in plan.entry_prices),
+                            plan.stop_loss,
+                            ", ".join(f"{x:.6f}" for x in plan.take_profits),
+                            plan.risk_reward_ratio,
+                            plan.account_risk_pct,
+                            plan.leverage,
+                            plan.position_notional_usdt,
+                        )
+                except Exception as exc:
+                    if self._is_network_resolution_error(exc):
+                        error_signature = ("symbol_scan", str(exc)[:180])
+                        if self._last_network_error_log != error_signature:
+                            self.log.error(
+                                "API_NETWORK_UNAVAILABLE | stage=symbol_scan | symbol=%s | action=break_scan_cycle_preserve_local_state | error=%s",
+                                symbol,
+                                exc,
+                            )
+                            self._last_network_error_log = error_signature
+                        break
+                    self.log.exception("Scan failed for %s: %s", symbol, exc)
+
+            # A cycle that requested symbols but built no snapshot did not succeed,
+            # however far it got. The per-symbol handler above deliberately swallows
+            # failures so one bad symbol cannot stop the others, which means a fault
+            # affecting EVERY symbol would otherwise reach the end of the cycle and
+            # publish scan_cycle_complete with snapshot_count=0. That is exactly what
+            # happened on 2026-07-25: an invalid confirmation granularity returned
+            # HTTP 400 for all 106 cycles while the heartbeat reported success and the
+            # health check reported HEALTHY. Fail loudly so _scan_cycle_iteration
+            # counts it and the health check can see a wedged loop.
+            if symbols and not snapshots:
+                raise ScanCycleProducedNoMarketData(
+                    f"no market snapshot could be built for any of {len(symbols)} "
+                    f"requested symbol(s): {', '.join(map(str, symbols[:5]))}"
+                )
+
+            if snapshots:
+                self._emit_summary(snapshots)
+                self.scan_logger.append_rows(snapshots)
+
+            # --- FAST LANE (eigenaar 2026-07-07): 5m-entries op de sterkste
+            # symbolen van de basisscan. Zelfde detectoren, zelfde scorer,
+            # zelfde risk gates, zelfde planner — frequentie komt uit meer
+            # detectiekansen (12 verse 5m-candles/uur i.p.v. 4 op 15m), NIET
+            # uit lossere poorten. Volledig omkapseld: kan de basisscan en
+            # executie nooit breken. Cooldowns/positie-guards dwingt de
+            # execution-laag zelf af.
+            if bool(getattr(self.settings, "fast_lane_enabled", True)):
+                try:
+                    min_hint = float(getattr(self.settings, "fast_lane_min_score_hint", 50.0))
+                    lane_limit = int(getattr(self.settings, "fast_lane_symbols", 8))
+                    ranked = sorted(
+                        (s for s in snapshots if s.score_hint >= min_hint),
+                        key=lambda s: s.score_hint,
+                        reverse=True,
+                    )[:lane_limit]
+                    lane_primary = str(getattr(self.settings, "fast_lane_granularity", "5m"))
+                    lane_confirm = str(getattr(self.settings, "fast_lane_confirmation_granularity", "15m"))
+                    fast_plans = 0
+                    for base_snapshot in ranked:
+                        try:
+                            snap_fast = self.fetcher.build_market_snapshot(
+                                base_snapshot.symbol,
+                                as_of_timestamp_ms=int(time.time() * 1000),
+                                primary_granularity=lane_primary,
+                                confirmation_granularity=lane_confirm,
+                            )
+                            detected: list[tuple[StrategyCandidate, dict]] = []
+                            fast_context = snapshot_context(snap_fast)
+                            fast_detectors = (
+                                ("liquidity_sweep_reversal", "UNKNOWN", self.strategy.detect),
+                                ("momentum_breakout", "LONG", self.momentum_strategy.detect),
+                                ("momentum_breakdown", "SHORT", self.momentum_breakdown_strategy.detect),
+                                ("trend_continuation", "UNKNOWN", detect_continuation),
+                                ("low_vol_reclaim", "UNKNOWN", detect_low_vol_reclaim),
+                            )
+                            for fast_strategy, default_direction, detector in fast_detectors:
+                                fast_candidate = None
+                                detector_error = False
+                                try:
+                                    fast_candidate = detector(snap_fast)
+                                except Exception:
+                                    detector_error = True
+                                fast_direction = (
+                                    fast_candidate.direction if fast_candidate is not None
+                                    else default_direction
+                                )
+                                fast_candidate_id = (
+                                    fast_candidate.candidate_id if fast_candidate is not None
+                                    else deterministic_candidate_id(
+                                        fast_strategy, snap_fast.symbol, fast_direction,
+                                        fast_context["candle_open_timestamp"],
+                                    )
+                                )
+                                fast_common = dict(
+                                    scan_id=scan_id, candidate_id=fast_candidate_id,
+                                    strategy=fast_strategy, symbol=snap_fast.symbol,
+                                    direction=fast_direction, timeframe=fast_context["timeframe"],
+                                    candle_open_timestamp=(
+                                        str(fast_candidate.candidate_candle_open_timestamp_ms)
+                                        if fast_candidate is not None
+                                        else fast_context["candle_open_timestamp"]
+                                    ),
+                                    signal_timestamp=fast_context["signal_timestamp"],
+                                    session=fast_context["session"], regime=fast_context["regime"],
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="DETECTOR_ATTEMPT", passed=True,
+                                    primary_reason_code="ATTEMPTED", **fast_common,
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="DETECTOR_DECISION",
+                                    passed=fast_candidate is not None,
+                                    primary_reason_code=(
+                                        "DETECTOR_ERROR" if detector_error else
+                                        "DETECTED" if fast_candidate is not None else "NO_DETECTION"
+                                    ),
+                                    **fast_common,
+                                )
+                                if fast_candidate is not None:
+                                    detected.append((fast_candidate, fast_common))
+                            for fast_candidate, fast_common in detected:
+                                self.funnel_telemetry.event(
+                                    event_type="SELECTOR_DECISION", passed=True,
+                                    primary_reason_code="SELECTED",
+                                    details={"selection_path": "fast_lane_implicit"},
+                                    **fast_common,
+                                )
+                                fast_candidate.notes.append("fast_lane=true")
+                                fast_candidate.notes.append(f"fast_lane_granularity={lane_primary}")
+                                fast_score = self.scorer.score(fast_candidate)
+                                self.funnel_telemetry.event(
+                                    event_type="SCORING_DECISION",
+                                    passed=fast_score.verdict == "GO",
+                                    primary_reason_code={
+                                        "GO": "SCORE_GO", "WATCH": "SCORE_WATCH",
+                                    }.get(fast_score.verdict, "SCORE_NO_GO"),
+                                    details={"score": float(fast_score.total)}, **fast_common,
+                                )
+                                candidates.append((fast_candidate, fast_score))
+                                fast_risk = self.risk_manager.evaluate(fast_candidate, fast_score)
+                                fast_secondary = classify_reason_codes(
+                                    getattr(fast_risk, "reasons", []) or []
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="RISK_DECISION", passed=bool(fast_risk.allowed),
+                                    primary_reason_code=(
+                                        "RISK_ALLOWED" if fast_risk.allowed else "RISK_BLOCKED"
+                                    ), secondary_reason_codes=fast_secondary,
+                                    details={"status": str(fast_risk.status)}, **fast_common,
+                                )
+                                fast_plan = self.trade_planner.build(fast_candidate, fast_score, fast_risk)
+                                record_authorization(
+                                    fast_risk, fast_candidate, plan_id=fast_plan.plan_id,
+                                    position_notional_usdt=fast_plan.position_notional_usdt,
+                                    store=self._risk_authorization_store,
+                                )
+                                fast_executable = fast_plan.verdict == "EXECUTABLE"
+                                fast_secondary = classify_reason_codes(
+                                    list(getattr(fast_risk, "reasons", []) or [])
+                                    + list(fast_plan.notes or [])
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="PLANNER_DECISION", passed=fast_executable,
+                                    primary_reason_code=(
+                                        "PLAN_EXECUTABLE" if fast_executable else "PLAN_BLOCKED"
+                                    ), secondary_reason_codes=fast_secondary,
+                                    details={"verdict": str(fast_plan.verdict)}, **fast_common,
+                                )
+                                self.funnel_telemetry.event(
+                                    event_type="EXECUTABLE_DECISION", passed=fast_executable,
+                                    primary_reason_code=(
+                                        "PLAN_EXECUTABLE" if fast_executable else "PLAN_BLOCKED"
+                                    ), secondary_reason_codes=fast_secondary,
+                                    details={"plan_id": fast_plan.plan_id}, **fast_common,
+                                )
+                                plans.append(fast_plan)
+                                fast_plans += 1
+                                self.log.info(
+                                    "FAST_LANE_PLAN | %s | strategy=%s | direction=%s | verdict=%s | score=%.1f",
+                                    fast_plan.symbol,
+                                    fast_plan.strategy,
+                                    fast_plan.direction,
+                                    fast_plan.verdict,
+                                    float(fast_score.total),
+                                )
+                        except Exception as lane_exc:
+                            self.log.warning("FAST_LANE_SYMBOL_FAILED | %s | error=%s", base_snapshot.symbol, lane_exc)
+                    if ranked:
+                        self.log.info(
+                            "FAST_LANE_SCAN | symbols=%s | granularity=%s/%s | plans=%s",
+                            len(ranked),
+                            lane_primary,
+                            lane_confirm,
+                            fast_plans,
+                        )
+                except Exception as lane_exc:
+                    self.log.warning("FAST_LANE_FAILED | error=%s", lane_exc)
+
+            # NON-PRODUCTION lifecycle validation. Config forces this off unless the
+            # runtime is strict forward-paper-only, so it can never reach execution.
+            if self.settings.forward_paper_smoke_strategy_enabled:
+                for snapshot in snapshots:
+                    smoke = smoke_plan(self.settings, snapshot)
+                    if smoke is not None:
+                        plans.append(smoke)
+
+            if candidates:
+                self._emit_candidate_summary(candidates)
+                self.candidate_logger.append_rows(candidates)
+            if plans:
+                self._emit_plan_summary(plans)
+                self.trade_plan_logger.append_rows(plans)
+
+            try:
+                self.forward_paper.process(plans, snapshots, scan_id=scan_id)
+            except Exception as exc:
+                # Paper telemetry must never interrupt scans or weaken live
+                # execution safety. Corruption fails the paper writer closed.
+                self.log.exception("FORWARD_PAPER_FAILED_CLOSED | error=%s", exc)
+
+            execution_scores = _execution_scores_by_symbol(snapshots, plans, self.log)
+            selection = select_execution_winner(
+                plans,
+                allowed_symbols=(
+                    self.settings.production_symbol_set
+                    if self.settings.is_live_execution
+                    else None
+                ),
+                execution_scores=execution_scores,
+            )
+            # Records the ranking the selector just produced. Pure output:
+            # `selection` is not read back, mutated or re-sorted here.
+            self.ranked_plan_logger.append(
+                scan_id, datetime.now(timezone.utc).isoformat(), selection
+            )
+            selected_plans = [selection.winner] if selection.winner is not None else []
+            selected_plans, entry_routing_rejects = route_new_entry_plans(
+                selected_plans,
+                enabled_strategies=self.settings.enabled_strategy_set,
+                legacy_new_entries_enabled=self.settings.old_strategies_new_entries_enabled,
+                require_explicit_allowlist=self.settings.is_live_execution,
+            )
+            for blocked_plan, reason in entry_routing_rejects:
+                self.log.warning(
+                    "ENTRY_STRATEGY_ROUTING_BLOCKED | plan_id=%s | strategy_id=%s | reason=%s",
+                    getattr(blocked_plan, "plan_id", ""),
+                    getattr(blocked_plan, "strategy", ""),
+                    reason,
+                )
+            for allowed_plan in selected_plans:
+                self.log.info(
+                    "ENTRY_STRATEGY_ROUTING_PASS | plan_id=%s | strategy_id=%s | "
+                    "allowlist_exact_match=True | legacy_kill_switch_bypass=v2_only",
+                    getattr(allowed_plan, "plan_id", ""),
+                    getattr(allowed_plan, "strategy", ""),
+                )
+            if selection.winner_metrics is not None:
+                metrics = selection.winner_metrics
+                self.log.info(
+                    "PORTFOLIO_WINNER | symbol=%s | plan_id=%s | execution_score=%.8f | "
+                    "expectancy=%.8f | setup_quality=%.8f | liquidity_spread_quality=%.8f | "
+                    "valid_candidates=%s | rejected_candidates=%s",
+                    metrics.plan.symbol,
+                    metrics.plan.plan_id,
+                    metrics.execution_score,
+                    metrics.expectancy,
+                    metrics.setup_quality,
+                    metrics.liquidity_spread_quality,
+                    len(selection.ranked),
+                    len(selection.rejected),
+                )
+            exec_reports = self._execute_selected_plans(selected_plans)
+            if exec_reports:
+                self._emit_execution_summary(exec_reports)
+                self.execution_logger.append_rows(exec_reports)
+
+            if snapshots and self.settings.position_manager_enabled:
+                with self._position_snapshots_lock:
+                    self._position_snapshots = list(snapshots)
+                self._sync_positions(snapshots, use_snapshot_context=True, caller="main")
+
+            scan_completed = True
+            executable_count = sum(plan.verdict == "EXECUTABLE" for plan in plans)
+            runtime_heartbeat(
+                "scan_cycle_complete",
+                scan_completed=True,
+                snapshot_count=len(snapshots),
+                plan_count=len(plans),
+                executable_plan_count=executable_count,
+            )
+            self.log.info(
+                "SCAN_CYCLE_COMPLETED | snapshots=%s | plans=%s | executable=%s",
+                len(snapshots),
+                len(plans),
+                executable_count,
+            )
+
+
+        finally:
+            if scan_lock_handle is not None:
+                try:
+                    fcntl.flock(scan_lock_handle, fcntl.LOCK_UN)
+                    scan_lock_handle.close()
+                except Exception:
+                    pass
+            self._scan_in_progress = False
+            # Mode-independent: a started-but-unfinished cycle must be visible,
+            # and must never advance scan_cycles_completed.
+            if not scan_completed:
+                runtime_heartbeat("scan_cycle_incomplete")
+
+    def _active_symbol_cooldown(self, symbol: str) -> dict | None:
+        return self.cooldown_manager.as_log_payload(symbol)
+
+
+    def _duplicate_continuation_block(self, candidate: StrategyCandidate) -> str | None:
+        cooldowns = self.cooldown_store.load(default={})
+        if not isinstance(cooldowns, dict):
+            return None
+
+        payload = cooldowns.get(candidate.symbol)
+        if not isinstance(payload, dict):
+            return None
+
+        reason = str(payload.get("reason") or "")
+        price_return_pct_value = float(payload.get("price_return_pct") or 0.0)
+        cooldown_minutes = int(payload.get("cooldown_minutes") or 0)
+
+        explosive_move = price_return_pct_value >= 0.5
+        recent_close = cooldown_minutes > 0
+
+        if explosive_move and recent_close:
+            return f"recent explosive move after {reason}"
+
+        return None
+
+    def _emit_summary(self, snapshots: list[MarketSnapshot]) -> None:
+        ranked = sorted(snapshots, key=_execution_aware_score, reverse=True)
+        top = ranked[:3]
+        alignments = Counter(s.alignment for s in snapshots)
+
+        current_top_symbols = [snap.symbol for snap in top]
+
+        if current_top_symbols != self._last_top_symbols:
+            self.log.info(
+                "SUMMARY | total=%s | aligned_bullish=%s | aligned_bearish=%s | conflicted=%s | mixed=%s",
+                len(snapshots),
+                alignments.get("aligned_bullish", 0),
+                alignments.get("aligned_bearish", 0),
+                alignments.get("conflicted", 0),
+                alignments.get("mixed", 0),
+            )
+
+            for idx, snap in enumerate(top, start=1):
+                execution_score = _execution_aware_score(snap)
+                self.log.info(
+                    "TOP%d | %s | score_hint=%.1f | execution_score=%.1f | align=%s | close=%.6f | notes=%s",
+                    idx,
+                    snap.symbol,
+                    snap.score_hint,
+                    execution_score,
+                    snap.alignment,
+                    snap.primary.latest_close,
+                    "; ".join(snap.notes),
+                )
+
+            self._last_top_symbols = current_top_symbols
+
+    def _emit_candidate_summary(self, candidates: list[tuple[StrategyCandidate, StrategyScore]]) -> None:
+        ranked = sorted(candidates, key=lambda row: row[1].total, reverse=True)[: self.settings.strategy_candidate_limit]
+        verdicts = Counter(score.verdict for _, score in candidates)
+        self.log.info(
+            "SETUP_SUMMARY | total=%s | go=%s | watch=%s | no_go=%s",
+            len(candidates),
+            verdicts.get("GO", 0),
+            verdicts.get("WATCH", 0),
+            verdicts.get("NO_GO", 0),
+        )
+        for idx, (candidate, score) in enumerate(ranked, start=1):
+            self.log.info(
+                "CANDIDATE%d | %s | %s | score=%.1f | verdict=%s | alignment=%s | entry=%.6f | reclaim=%.6f | invalidation=%.6f",
+                idx,
+                candidate.symbol,
+                candidate.direction,
+                score.total,
+                score.verdict,
+                candidate.market.alignment,
+                candidate.detection.entry_hint,
+                candidate.detection.reclaim_level,
+                candidate.detection.invalidation,
+            )
+
+    def _emit_plan_summary(self, plans: list[TradePlan]) -> None:
+        ranked = sorted(plans, key=lambda plan: (plan.verdict == "EXECUTABLE", plan.score, plan.risk_reward_ratio), reverse=True)
+        executable = sum(1 for plan in plans if plan.verdict == "EXECUTABLE")
+        blocked = len(plans) - executable
+        plan_signature = (len(plans), executable, blocked)
+
+        if self._last_plan_summary != plan_signature:
+            self.log.info("PLAN_SUMMARY | total=%s | executable=%s | blocked=%s", len(plans), executable, blocked)
+            self._last_plan_summary = plan_signature
+        for idx, plan in enumerate(ranked[: self.settings.strategy_candidate_limit], start=1):
+            self.log.info(
+                "TRADEPLAN%d | %s | %s | verdict=%s | score=%.1f | rr=%.2f | entries=%s | sl=%.6f | tp1=%.6f",
+                idx,
+                plan.symbol,
+                plan.direction,
+                plan.verdict,
+                plan.score,
+                plan.risk_reward_ratio,
+                ", ".join(f"{x:.6f}" for x in plan.entry_prices),
+                plan.stop_loss,
+                plan.take_profits[0] if plan.take_profits else 0.0,
+            )
+
+    def _emit_execution_summary(self, reports: list[ExecutionReport]) -> None:
+        counts = Counter(report.status for report in reports)
+        self.log.info(
+            "EXEC_SUMMARY | total=%s | simulated=%s | executed=%s | skipped=%s",
+            len(reports),
+            counts.get("SIMULATED", 0),
+            counts.get("EXECUTED", 0),
+            counts.get("SKIPPED", 0),
+        )
+        for idx, report in enumerate(reports[: self.settings.execution_plan_limit], start=1):
+            self.log.info(
+                "EXECUTION%d | %s | %s | mode=%s | status=%s | planned_avg_entry=%.6f | "
+                "exchange_avg_entry=%.6f | entry_source=%s | sl=%.6f | tp1=%.6f | msg=%s",
+                idx,
+                report.symbol,
+                report.direction,
+                report.mode,
+                report.status,
+                report.planned_avg_entry,
+                report.exchange_avg_entry,
+                report.exchange_avg_entry_source or "UNCONFIRMED",
+                report.stop_loss,
+                report.take_profits[0] if report.take_profits else 0.0,
+                report.message,
+            )
+
+    def _emit_position_summary(self, updates: list[PositionUpdate]) -> None:
+        counts = Counter(update.status for update in updates)
+        self.log.info(
+            "POSITION_SUMMARY | total=%s | open=%s | closed=%s",
+            len(updates),
+            counts.get("OPEN", 0),
+            counts.get("CLOSED", 0),
+        )
+        for idx, update in enumerate(updates[: self.settings.execution_plan_limit], start=1):
+            position_signature = (
+                update.status,
+                round(update.current_price, 4),
+                round(update.price_return_pct, 2),
+                round(update.stop_loss, 6),
+                update.break_even_active,
+                update.tp1_hit,
+                update.tp2_hit,
+                update.tp3_hit,
+            )
+
+            previous_signature = self._last_position_snapshot.get(update.symbol)
+
+            if previous_signature != position_signature:
+                self.log.info(
+                    "POSITION%d | %s | status=%s | mark=%.6f | price_return_pct=%.3f%% | "
+                    "margin_roi_pct=%.3f%% | net_return_pct=%.3f%% | sl=%.6f | "
+                    "protection_state=%s | be=%s | tp1=%s | tp2=%s | tp3=%s | note=%s",
+                    idx,
+                    update.symbol,
+                    update.status,
+                    update.current_price,
+                    update.price_return_pct,
+                    update.margin_roi_pct,
+                    update.estimated_net_return_pct,
+                    update.stop_loss,
+                    update.protection_state,
+                    update.break_even_active,
+                    update.tp1_hit,
+                    update.tp2_hit,
+                    update.tp3_hit,
+                    update.note,
+                )
+
+                self._last_position_snapshot[update.symbol] = position_signature
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    settings = Settings()
+    StartupRunner(settings).run()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% import "base.html" as ui with context %}
+{% block title %}Collectors{% endblock %}{% block heading %}Collectors / sensor health{% endblock %}
+{% set c = d.panels.operations.collectors %}{% block content %}
+<div class="grid g2" style="margin-bottom:14px">
+ <div class="card"><div class="body">{{ ui.metric('CLEAN_DATA_START_UTC', c.clean_data_start_utc or 'UNKNOWN') }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('EARLIEST_RESEARCH_DATE', c.earliest_research_date or 'UNKNOWN') }}</div></div>
+</div>
+{% for item in c.collectors %}<div class="card" style="margin-bottom:14px"><header><h3>{{ item.name }}</h3><span class="spacer"></span>{{ ui.badge(item.status) }}</header>
+ <div class="body"><div class="grid g4">
+  {{ ui.metric('PID', item.pid or 'UNKNOWN', 'alive=' ~ (item.alive if item.alive is not none else 'UNKNOWN')) }}
+  {{ ui.metric('Last update', dt_utc(item.last_update)) }}
+  {{ ui.metric('Errors', item.error_count if item.error_count is not none else 'UNKNOWN') }}
+  {{ ui.metric('Read-only', (item.payload.get('research_only') if item.payload.get('research_only') is not none else item.payload.get('read_only','UNKNOWN'))|string|upper, 'orders_allowed=' ~ item.payload.get('orders_allowed','UNKNOWN')) }}
+ </div><p><code>subscriptions={{ item.payload.get('subscription_acks','UNKNOWN') }}/{{ item.payload.get('expected_subscription_acks', item.payload.get('expected_acks','UNKNOWN')) }} · frames={{ item.payload.get('frames','UNKNOWN') }} · last_frame_age_ms={{ item.payload.get('last_frame_age_ms','UNKNOWN') }} · reconnects={{ item.payload.get('reconnects','UNKNOWN') }} · dns_errors={{ item.payload.get('dns_errors','UNKNOWN') }} · malformed_frames={{ item.payload.get('malformed_frames','UNKNOWN') }} · parse_failures={{ item.payload.get('parse_failures','UNKNOWN') }} · clock_futures_ms={{ item.payload.get('clock_offset_futures_ms','UNKNOWN') }} · clock_spot_ms={{ item.payload.get('clock_offset_spot_ms','UNKNOWN') }}</code></p></div>
+ <div class="body flush"><div class="scroll"><table><thead><tr><th>Stream</th><th class="n">Rows</th><th class="n">Last age</th><th>Status</th></tr></thead><tbody>
+ {% if item.streams %}{% for name,stream in item.streams.items() %}<tr><td>{{ name }}</td><td class="n">{{ stream.get('rows','UNKNOWN') }}</td><td class="n">{{ ago(stream.get('last_event_age_s')) }}</td><td><span class="tag">{{ stream.get('status','UNKNOWN') }}</span></td></tr>{% endfor %}
+ {% elif item.rows %}{% for name,count in item.rows.items() %}<tr><td>{{ name }}</td><td class="n">{{ count }}</td><td class="n">UNKNOWN</td><td><span class="tag">{{ item.payload.get(name ~ '_stream_health','UNKNOWN') }}</span></td></tr>{% endfor %}
+ {% else %}<tr><td colspan="4">STREAMS=UNKNOWN</td></tr>{% endif %}</tbody></table></div></div>{{ ui.provenance(item.provenance) }}
+</div>{% endfor %}{% endblock %}

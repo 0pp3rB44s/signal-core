@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_DIR"
+
+mkdir -p logs state
+
+stop_pid_file() {
+  local name="$1"
+  local pid_file="$2"
+
+  if [ -f "$pid_file" ]; then
+    local pid
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      if ps -p "$pid" > /dev/null 2>&1; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+      echo "$name stopped (PID $pid)"
+    else
+      echo "$name pid file found, but process not running"
+    fi
+    rm -f "$pid_file"
+  else
+    echo "$name not running"
+  fi
+}
+
+STOP_REASON="${1:-manual_stop}"
+
+# Laat een eventuele supervisor (scripts/run_supervised.sh) netjes stoppen
+# in plaats van de bot direct te herstarten.
+touch state/supervisor.stop
+
+# Idem voor de launchd live-agent (com.cgc.live, risico R1): zonder deze vlag
+# ziet KeepAlive een niet-nul exit en zet de engine gewoon weer aan. Een
+# bewuste stop moet een reboot overleven; `rm state/live.stop` hervat.
+touch state/live.stop
+
+# The launchd notifier (scripts/install_launchd.sh) doesn't restart the
+# bot, but bootout it anyway so a deliberate stop doesn't get a "bot is
+# down" notification 5 minutes later.
+launchctl bootout "gui/$(id -u)/com.cgc.tradingbot" >/dev/null 2>&1 || true
+
+# The live supervisor DOES restart the engine, so it must go too. The stop flag
+# above already makes the agent decline, but booting it out means a deliberate
+# stop does not hang on that one file being present and readable.
+# launch_live.sh clears the flag and re-bootstraps the agent, so the pair stays
+# symmetric across a stop/start cycle.
+launchctl bootout "gui/$(id -u)/com.cgc.live" >/dev/null 2>&1 || true
+
+stop_pid_file "bot" "state/bot.pid"
+stop_pid_file "dashboard" "state/dashboard.pid"
+
+# Safety cleanup for orphan project processes.
+pkill -f "python3 -u -m app.main" >/dev/null 2>&1 || true
+pkill -f "python3 -m app.main" >/dev/null 2>&1 || true
+pkill -f "python3 -u -m dashboard_v2.app" >/dev/null 2>&1 || true
+pkill -f "python3 -m dashboard_v2.app" >/dev/null 2>&1 || true
+pkill -f "python3 -u -m dashboard_v3.app" >/dev/null 2>&1 || true
+pkill -f "python3 -m dashboard_v3.app" >/dev/null 2>&1 || true
+
+STOP_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "$STOP_TS | ALL_PROCESSES_STOPPED | reason=$STOP_REASON" >> logs/runtime.log
+
+echo "all project processes stopped"

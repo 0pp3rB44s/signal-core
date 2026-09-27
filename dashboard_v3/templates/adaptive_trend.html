@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}AdaptiveTrend{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>{{ at.strategy_id }} <span class="tag">{{ at.timeframe }}</span>
+    {{ badge(at.signal_status) }}</h2>
+  <div class="grid g4">
+    {{ metric("Next 6H boundary", dt_utc(at.next_boundary)) }}
+    {{ metric("Last signal", dt_utc(at.last_signal_at) if at.last_signal_at else "UNKNOWN") }}
+    {{ metric("Winner", at.winner_symbol or "NONE ACTIONABLE") }}
+    {{ metric("Shadow decisions", at.shadow_rows) }}
+  </div>
+  <div class="grid g4">
+    {{ metric("MOM threshold", at.spec.mom_threshold) }}
+    {{ metric("MOM lookback", at.spec.mom_lookback ~ " candles") }}
+    {{ metric("ATR", "period " ~ at.spec.atr_period ~ " × " ~ at.spec.atr_mult) }}
+    {{ metric("Max positions", at.spec.max_open_positions) }}
+  </div>
+  <p class="s">Exit model: {{ at.spec.exit_model }}. Values below are what the strategy
+     recorded — nothing here is recomputed from candles.</p>
+  {{ provenance(at.provenance.shadow) }}
+</div>
+
+<div class="card">
+  <h2>Per symbol</h2>
+  {% if at.shadow_rows == 0 %}
+    <div class="empty">
+      <strong>No shadow decisions recorded.</strong>
+      <p>The strategy has not written a decision to
+        <code>data_store/adaptive_trend/shadow_decisions.jsonl</code>.
+        Every symbol below reads UNKNOWN — this is not "no signal", it is "not observed".</p>
+    </div>
+  {% endif %}
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>Symbol</th><th>Side</th><th>6H close</th><th>MOM</th><th>Δ threshold</th>
+      <th>ATR14</th><th>Strength</th><th>Actionable</th><th>Entry</th><th>Initial stop</th>
+      <th>Notional</th><th>Risk</th><th>Decision</th><th>Reason</th><th>Seen</th>
+    </tr></thead>
+    <tbody>
+    {% for v in at.per_symbol %}
+      <tr{% if at.winner_symbol == v.symbol %} class="t-ok"{% endif %}>
+        <td><strong>{{ v.symbol }}</strong>{% if at.winner_symbol == v.symbol %} <span class="tag">WINNER</span>{% endif %}</td>
+        <td>{{ v.side or "UNKNOWN" }}</td>
+        <td>{{ num(v.six_h_close, 4) }}</td>
+        <td>{{ num(v.mom, 4) }}</td>
+        <td class="{% if v.distance_from_threshold is not none %}{{ 'pos' if v.distance_from_threshold >= 0 else 'neg' }}{% endif %}">
+          {{ num(v.distance_from_threshold, 4) }}</td>
+        <td>{{ num(v.atr, 4) }}</td>
+        <td>{{ num(v.mom_strength, 3) }}</td>
+        <td>{% if v.actionable is none %}<span class="unknown">UNKNOWN</span>
+            {% elif v.actionable %}<span class="t-ok">YES</span>
+            {% else %}<span class="t-warn">NO</span>{% endif %}</td>
+        <td>{{ num(v.entry_candidate, 4) }}</td>
+        <td>{{ num(v.initial_stop, 4) }}</td>
+        <td>{{ num(v.notional, 2) }}</td>
+        <td>{{ pct(v.risk_pct, 2) }}</td>
+        <td>{{ v.decision or "UNKNOWN" }}</td>
+        <td class="s">{{ v.rejection_reason or "—" }}</td>
+        <td class="s">{{ dt_utc(v.timestamp) if v.timestamp else "UNKNOWN" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Decisions recorded</h2>
+  {% if at.decision_counts %}
+    <div class="grid g4">
+    {% for key, count in at.decision_counts.items() %}
+      {{ metric(key, count) }}
+    {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty">No decisions recorded yet.</div>
+  {% endif %}
+  <p class="s">Blocked: {{ at.blocked_count }} · Actionable now: {{ at.actionable_count }}.
+     A blocked decision is the risk layer working, not a fault.</p>
+</div>
+
+{% endblock %}

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cgc.tradingbot</string>
+
+    <!-- Notification-only watchdog, NOT an auto-restarter. It runs
+         briefly every 5 minutes, checks via pgrep (no file access
+         needed) whether `app.main` is running, and if not, shows a
+         macOS notification -- it never tries to (re)start the bot
+         itself.
+
+         Two earlier approaches were tried and both failed:
+         1. Keeping the bot directly under launchd (KeepAlive, execing
+            .venv/bin/python3 -m app.main): failed with EX_CONFIG deep
+            inside the live scan cycle for reasons that couldn't be
+            isolated without risking the live account, even though
+            every other piece (imports, config, a real authenticated
+            Bitget API call, the coach gate, get_watchlist()) worked
+            fine in isolation via ~15 throwaway probe jobs.
+         2. A periodic watchdog that backgrounds a new bot process
+            (`nohup .venv/bin/python3 -u -m app.main &`) when the bot
+            isn't running: the backgrounded child gets killed the
+            instant the launchd-spawned checker shell exits, regardless
+            of `nohup` or `setsid` -- confirmed directly. This is macOS
+            process-coalition cleanup, not something a shell trick can
+            route around.
+
+         So restarting is left to you: run scripts/start_bot.sh (proven
+         reliable, used for months) when this notifies you the bot is
+         down. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd __PROJECT_DIR__ &amp;&amp; pgrep -f "app.main" &gt;/dev/null 2&gt;&amp;1 || osascript -e 'display notification "Run scripts/start_bot.sh from a terminal." with title "CGC trading bot is DOWN" sound name "Basso"'</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <!-- Check every 5 minutes, plus once immediately when loaded. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/logs/watchdog.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/logs/watchdog.out</string>
+</dict>
+</plist>

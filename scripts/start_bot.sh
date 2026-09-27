@@ -1,0 +1,70 @@
+#!/bin/bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_DIR"
+
+# HARDENING (2026-09-20/21): this launcher has none of the live ceremony's four layers. Refuse before
+# ANYTHING else -- including reading .env -- if the environment the APP would resolve is live-capable
+# (decided by the app's own settings, see app/launch_guard.py), and never SIGKILL a running LIVE engine
+# (or any app.main from another directory) below.
+. scripts/lib/env_guard.sh
+guard_assert_not_live_capable_env ".venv/bin/python3"
+guard_assert_no_live_engine_running "state/live_runtime.state"
+
+
+if [ ! -d ".venv" ]; then
+  echo "ERROR: .venv not found. Run: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+  exit 1
+fi
+
+if [ ! -f ".env" ]; then
+  echo "ERROR: .env not found. Create it locally; required names are listed in config/runtime_keys.txt."
+  exit 1
+fi
+
+source .venv/bin/activate
+
+APP_ENV_VALUE="$(grep -E '^APP_ENV=' .env | tail -1 | cut -d '=' -f2- || echo 'unknown')"
+APP_MODE_VALUE="$(grep -E '^APP_MODE=' .env | tail -1 | cut -d '=' -f2- || echo 'unknown')"
+EXECUTION_MODE_VALUE="$(grep -E '^EXECUTION_MODE=' .env | tail -1 | cut -d '=' -f2- || echo 'unknown')"
+
+printf '\n'
+echo "=== CGC BOOT STATUS ==="
+echo "environment: $APP_ENV_VALUE"
+echo "mode: $APP_MODE_VALUE"
+echo "execution: $EXECUTION_MODE_VALUE"
+printf '\n'
+
+# ensure folders exist
+mkdir -p logs state
+
+# cleanup stale pid
+if [ -f state/bot.pid ]; then
+  OLD_PID="$(cat state/bot.pid 2>/dev/null || true)"
+  if [ -n "$OLD_PID" ] && ! ps -p "$OLD_PID" >/dev/null 2>&1; then
+    rm -f state/bot.pid
+    echo "removed stale bot.pid"
+  fi
+fi
+
+# prevent duplicate bot processes -- of THIS project only (never another checkout's engine)
+guard_kill_own_app_main "$PROJECT_DIR"
+
+sleep 1
+
+# start bot in background and store PID
+START_REASON="${1:-manual_start}"
+nohup python3 -u -m app.main > logs/bot.out 2>&1 &
+BOT_START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "$BOT_START_TS | BOT_START | reason=$START_REASON | env=$APP_ENV_VALUE | mode=$APP_MODE_VALUE | execution=$EXECUTION_MODE_VALUE" >> logs/runtime.log
+echo $! > state/bot.pid
+
+sleep 1
+
+if ps -p $(cat state/bot.pid) > /dev/null; then
+    echo "bot started successfully (PID $(cat state/bot.pid))"
+else
+    echo "bot failed to start"
+    exit 1
+fi

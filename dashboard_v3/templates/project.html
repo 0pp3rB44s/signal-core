@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% import "base.html" as ui with context %}
+{% block title %}Project{% endblock %}{% block heading %}Canonical project state (read-only){% endblock %}
+{% set p = d.panels.operations.project %}{% block content %}
+<div class="grid g4" style="margin-bottom:14px">
+ <div class="card"><div class="body">{{ ui.metric('Vault', 'AVAILABLE' if p.root_available else 'UNKNOWN', p.root) }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('Open P0', p.open_p0 if p.open_p0 is not none else 'UNKNOWN') }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('Open P1', p.open_p1 if p.open_p1 is not none else 'UNKNOWN') }}</div></div>
+ <div class="card"><div class="body">{{ ui.metric('Latest review', p.latest_trade_review) }}</div></div>
+</div>
+<div class="card" style="margin-bottom:14px"><header><h3>Canonical disposition</h3>{{ ui.badge(p.status) }}</header><div class="body"><p><b>Strategy:</b> {{ p.strategy_disposition }}</p><p><b>Latest decision:</b> {{ p.latest_strategy_decision }}</p></div></div>
+<div class="grid g2">{% for doc in p.documents %}<div class="card"><header><h3>{{ doc.name }}</h3><span class="spacer"></span><span class="tag">{{ dt_utc(doc.mtime) }}</span></header><div class="body"><pre>{{ doc.lines|join('\n') if doc.exists else 'UNKNOWN — file unavailable' }}</pre></div></div>{% endfor %}</div>
+{% endblock %}

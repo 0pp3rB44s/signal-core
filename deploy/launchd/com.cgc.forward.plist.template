@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Boot-persistent supervision for FORWARD PAPER (RC2 Phase 3, closes risk R1).
+
+  The audit proved nohup is insufficient: a host reboot on 2026-07-27 ended the
+  validation run and nothing restarted it for 7.82 h. launchd starts this agent
+  at load and at every login/boot, and restarts it if it exits.
+
+  Install:   bash deploy/launchd/install_forward_agent.sh
+  Uninstall: bash deploy/launchd/uninstall_forward_agent.sh
+
+  __PROJECT_DIR__ is substituted by the installer.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>              <string>com.cgc.forward</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__PROJECT_DIR__/deploy/launchd/forward_agent.sh</string>
+  </array>
+  <key>WorkingDirectory</key>   <string>__PROJECT_DIR__</string>
+
+  <!-- start at load (and therefore at boot/login) -->
+  <key>RunAtLoad</key>          <true/>
+  <!-- restart if the supervisor exits for any reason -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>   <false/>
+  </dict>
+  <!-- do not hammer on a crash-loop; launchd enforces a floor anyway -->
+  <key>ThrottleInterval</key>   <integer>60</integer>
+
+  <key>StandardOutPath</key>    <string>__PROJECT_DIR__/logs/launchd_forward.out</string>
+  <key>StandardErrorPath</key>  <string>__PROJECT_DIR__/logs/launchd_forward.err</string>
+
+  <key>ProcessType</key>        <string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>             <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>PYTHONUNBUFFERED</key> <string>1</string>
+  </dict>
+</dict>
+</plist>

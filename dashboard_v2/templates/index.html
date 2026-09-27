@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CGC Trading Desk</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  <script defer src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</head>
+<body>
+{% from 'Components' import level_badge, position_card %}
+<div class="loading-bar" id="loading-bar"></div>
+
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <span class="brand-dot {{ 'good' if data.bot.running else 'danger' }}" id="brand-dot" aria-hidden="true"></span>
+    <div>
+      <strong>CGC Trading Desk</strong>
+      <small>{{ data.bot.env }} · {{ data.bot.execution_mode }}</small>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav" aria-label="Dashboard tabs">
+    <button type="button" class="tab-link active" data-tab-target="overview">⌂ Overview</button>
+    <button type="button" class="tab-link" data-tab-target="positions">◈ Positions</button>
+    <button type="button" class="tab-link" data-tab-target="scanner">◎ Scanner</button>
+    <button type="button" class="tab-link" data-tab-target="performance">▦ Performance</button>
+    <button type="button" class="tab-link" data-tab-target="logs">⌁ Logs & Alerts</button>
+  </nav>
+
+  <a class="sidebar-logout" href="{{ url_for('logout') }}">Sign out</a>
+</aside>
+
+<main class="desk">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">CGC TRADING DESK</p>
+      <h1 id="page-title">Execution Control Center</h1>
+      <p class="subtitle" id="generated-at" data-bind="meta.generated_at">Last updated: {{ data.meta.generated_at }}</p>
+    </div>
+
+    <div class="bot-control-card {{ 'good' if data.bot.running else 'danger' }}" id="bot-control-card">
+      <div class="bot-control-status">
+        <span>Bot</span>
+        <strong id="bot-status-text" data-bind="bot.status">{{ data.bot.status }}</strong>
+        <small id="bot-pid-text">{{ 'pid ' ~ data.bot.pid if data.bot.pid else 'not running' }}</small>
+      </div>
+      <div class="bot-control-actions">
+        <button type="button" id="btn-start-bot" class="btn-start" {{ 'disabled' if data.bot.running else '' }}>Start</button>
+        <button type="button" id="btn-stop-bot" class="btn-stop" {{ 'disabled' if not data.bot.running else '' }}>Stop</button>
+      </div>
+      <p class="bot-control-message" id="bot-control-message"></p>
+    </div>
+  </header>
+
+  <section id="overview" class="tab-panel active">
+    <div class="kpi-grid">
+      <article class="kpi-card">
+        <span>Wallet Equity</span>
+        <strong id="wallet-equity" data-bind="wallet.equity">{{ data.wallet.equity }}</strong>
+        <small>USDT</small>
+      </article>
+      <article class="kpi-card">
+        <span>Available</span>
+        <strong id="wallet-available" data-bind="wallet.available">{{ data.wallet.available }}</strong>
+        <small>USDT</small>
+      </article>
+      <article class="kpi-card">
+        <span>Used Margin</span>
+        <strong id="wallet-used-margin" data-bind="wallet.used_margin">{{ data.wallet.used_margin }}</strong>
+        <small>USDT</small>
+      </article>
+      <article class="kpi-card {{ data.equity_curve.level }}">
+        <span>Total PnL (closed trades)</span>
+        <strong id="equity-total-pnl" data-bind="equity_curve.total_pnl">{{ data.equity_curve.total_pnl }}</strong>
+        <small>{{ data.equity_curve.closed_trades }} closed trades</small>
+      </article>
+    </div>
+
+    <div class="panel-row">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Risk Snapshot</h2>
+          {{ level_badge(data.risk.level, data.risk.risk_state) }}
+        </div>
+        <div class="stat-list" id="risk-stat-list">
+          <div><span>Open Positions</span><strong>{{ data.risk.open_positions }} / {{ data.risk.max_positions }}</strong></div>
+          <div><span>Exposure</span><strong>{{ data.risk.exposure_pct }}%</strong></div>
+          <div><span>Daily Loss</span><strong>{{ data.risk.daily_loss_pct }}% <small>(soft {{ data.risk.max_daily_loss_pct }}% · hard {{ data.risk.hard_daily_stop_pct }}%)</small></strong></div>
+          <div><span>Risk per Trade</span><strong>{{ data.risk.risk_pct }}%</strong></div>
+          <div><span>Max Drawdown</span><strong>{{ data.risk.max_drawdown }}%</strong></div>
+        </div>
+        {% if data.risk.alerts %}
+          <ul class="alert-list">
+            {% for alert in data.risk.alerts %}<li class="{{ data.risk.level }}">{{ alert }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>AI Learning Coach</h2>
+          {{ level_badge(data.ai_coach.level, (data.ai_coach.blocked_strategies|length + data.ai_coach.blocked_symbols|length) ~ ' active blocks') }}
+        </div>
+        <div class="stat-list">
+          {% for row in data.ai_coach.blocked_strategies %}
+            <div><span>Strategy blocked</span><strong class="danger">{{ row.strategy }}</strong><small>{{ row.reason }}</small></div>
+          {% endfor %}
+          {% for row in data.ai_coach.blocked_symbols %}
+            <div><span>Symbol blocked</span><strong class="danger">{{ row.symbol }}</strong><small>{{ row.reason }}</small></div>
+          {% endfor %}
+          {% if not data.ai_coach.blocked_strategies and not data.ai_coach.blocked_symbols %}
+            <div><span>Status</span><strong class="good">No active blocks</strong></div>
+          {% endif %}
+        </div>
+        {% if data.ai_coach.notes %}
+          <ul class="note-list">
+            {% for note in data.ai_coach.notes[:3] %}<li>{{ note.reason }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+      </section>
+    </div>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Recent Activity</h2>
+        <small>Last executed/rejected setups from the live scan</small>
+      </div>
+      <div class="log-list" id="recent-activity-list">
+        {% for event in data.execution_timeline[:8] %}
+          <code class="{{ event.level }}">{{ event.timestamp }} · {{ event.summary }}</code>
+        {% else %}
+          <code>No recent activity yet.</code>
+        {% endfor %}
+      </div>
+    </section>
+  </section>
+
+  <section id="positions" class="tab-panel">
+    <div class="panel-header">
+      <h2>Open Positions</h2>
+      {{ level_badge('' if data.positions else 'neutral', (data.positions|length) ~ ' open') }}
+    </div>
+    <div class="position-summary-grid">
+      <div><span>Protected</span><strong class="good">{{ data.protection_summary.protected_positions }}</strong></div>
+      <div><span>Warnings</span><strong class="warning">{{ data.protection_summary.warning_positions }}</strong></div>
+      <div><span>Danger</span><strong class="danger">{{ data.protection_summary.danger_positions }}</strong></div>
+      <div><span>Orphan Risk</span><strong class="danger">{{ data.protection_summary.orphan_risk_positions }}</strong></div>
+    </div>
+
+    <div class="position-list" id="position-list">
+      {% for p in data.positions %}
+        {% set protection = (data.position_protection | selectattr('symbol', 'equalto', p.symbol) | list | first) %}
+        {{ position_card(p, protection) }}
+      {% else %}
+        <div class="empty-state"><strong>No open positions</strong><span>The bot is scanning; no active exposure right now.</span></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="scanner" class="tab-panel">
+    <div class="panel-header">
+      <h2>Live Scanner</h2>
+      <small>What the bot is looking at right now</small>
+    </div>
+    <div class="candidate-grid" id="candidate-grid">
+      {% for c in data.candidate_board %}
+        <article class="candidate-card {{ c.level }}">
+          <div class="candidate-head"><strong>{{ c.symbol }}</strong>{{ level_badge(c.level, c.level) }}</div>
+          <p>{{ c.summary }}</p>
+        </article>
+      {% else %}
+        <div class="empty-state"><strong>No candidates</strong><span>No scanner candidates right now.</span></div>
+      {% endfor %}
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Volatility Heatmap</h2>
+    </div>
+    <div class="stat-list" id="volatility-list">
+      {% for row in data.volatility_heatmap %}
+        <div>
+          <span>{{ row.symbol }} · {{ row.alignment }}</span>
+          <strong class="{{ row.level }}">VR {{ row.volume_ratio }} · VOL {{ row.volatility_rank }}</strong>
+          <small>score {{ row.score_hint }} · {{ row.primary_trend }}/{{ row.confirmation_trend }}{% if row.volume_expansion %} · volume expansion{% endif %}</small>
+        </div>
+      {% else %}
+        <div><span>No scan data yet</span></div>
+      {% endfor %}
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Liquidity Heatmap <small>(read-only)</small></h2>
+    </div>
+    <div class="stat-list" id="liquidity-heatmap-list">
+      {% if data.liquidity_heatmap and data.liquidity_heatmap.available %}
+        {% for row in data.liquidity_heatmap.symbols %}
+          <div>
+            <span>{{ row.symbol }}{% if row.risk_zone %} · ⚠ risk zone{% endif %}</span>
+            <strong>boven {{ row.liquidity_above }} / onder {{ row.liquidity_below }} · magneet {{ row.magnet_direction }}</strong>
+            <small>bid wall {{ row.nearest_bid_wall }}{% if row.bid_wall_strength %} (x{{ row.bid_wall_strength }}){% endif %}
+              · ask wall {{ row.nearest_ask_wall }}{% if row.ask_wall_strength %} (x{{ row.ask_wall_strength }}){% endif %}
+              · spread {{ row.spread_bps }} bps</small>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div><span>Nog geen liquidity-data</span></div>
+      {% endif %}
+    </div>
+
+    {% if data.cooldowns %}
+      <div class="panel-header compact">
+        <h2>Symbol Cooldowns</h2>
+      </div>
+      <div class="stat-list">
+        {% for row in data.cooldowns %}
+          <div><span>{{ row.symbol }}</span><strong>{{ row.remaining_minutes }} min remaining</strong></div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <section id="performance" class="tab-panel">
+    <div class="chart-grid">
+      <article class="chart-card">
+        <div class="chart-card-header">
+          <span>Equity Curve (closed trades)</span>
+          <strong>{{ data.equity_curve.growth_pct }}%</strong>
+        </div>
+        <svg id="equity-curve-chart" class="line-chart" viewBox="0 0 420 160" preserveAspectRatio="none"></svg>
+      </article>
+      <article class="chart-card">
+        <div class="chart-card-header"><span>PnL Pace</span></div>
+        <div id="pnl-bar-chart" class="pnl-bar-chart">
+          <div><span>Day</span><strong id="pnl-bar-day-fill"></strong><small id="pnl-bar-day">{{ data.periodic_pnl.daily }}</small></div>
+          <div><span>Week</span><strong id="pnl-bar-week-fill"></strong><small id="pnl-bar-week">{{ data.periodic_pnl.weekly }}</small></div>
+          <div><span>Month (est.)</span><strong id="pnl-bar-month-fill"></strong><small id="pnl-bar-month">{{ data.periodic_pnl.monthly }}</small></div>
+        </div>
+      </article>
+    </div>
+
+    <div class="stat-list">
+      <div><span>Total Events</span><strong>{{ data.stats.total_events }}</strong></div>
+      <div><span>Executed</span><strong class="good">{{ data.stats.executed_trades }}</strong></div>
+      <div><span>Skipped</span><strong>{{ data.stats.skipped_trades }}</strong></div>
+      <div><span>Failed</span><strong class="danger">{{ data.stats.failed_trades }}</strong></div>
+      <div><span>Fees Paid</span><strong>{{ data.execution_leakage.total_fees }}</strong></div>
+      <div><span>Avg Slippage</span><strong>{{ data.execution_leakage.avg_slippage_pct }}%</strong></div>
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Strategy Performance <small>(live, from closed trades)</small></h2>
+    </div>
+    <div class="stat-list" id="strategy-performance-list">
+      {% for row in data.strategy_performance.strategies %}
+        <div>
+          <span>{{ row.strategy }}</span>
+          <strong class="{{ row.level }}">{{ row.status }}</strong>
+          <small>closed {{ row.closed_trades }} · win {{ row.winrate }} · exp {{ row.expectancy }} · net {{ row.net_pnl }} · exec rate {{ row.executable_rate }}</small>
+        </div>
+      {% else %}
+        <div><span>No strategy performance data yet</span></div>
+      {% endfor %}
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Backtest Reference</h2>
+      <small class="reference-tag">Snapshot — generated {{ data.backtest_reference.generated_at or 'never' }}, not live</small>
+    </div>
+    <div class="stat-list reference-block">
+      {% for row in data.backtest_reference.strategies %}
+        <div><span>{{ row.name }}</span><strong class="{{ row.level }}">{{ row.status }}</strong><small>trades {{ row.trades }} · exp {{ row.expectancy }} · win {{ row.winrate }}</small></div>
+      {% else %}
+        <div><span>No backtest data available</span></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="logs" class="tab-panel">
+    <div class="panel-header">
+      <h2>Protection Alerts</h2>
+      {{ level_badge('good' if not data.protection_alerts else 'danger', (data.protection_alerts|length) ~ ' alerts') }}
+    </div>
+    <div class="log-list" id="protection-alerts-list">
+      {% for alert in data.protection_alerts %}
+        <code class="{{ alert.level }}">{{ alert.message }}</code>
+      {% else %}
+        <code class="success">No protection alerts</code>
+      {% endfor %}
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Rejection Analytics</h2>
+      <small>{{ data.rejection_analytics.total }} rejects in recent scans</small>
+    </div>
+    <div class="panel-row">
+      <div class="stat-list">
+        {% for row in data.rejection_analytics.top_reasons %}
+          <div><span>{{ row.reason }}</span><strong>{{ row.count }}</strong></div>
+        {% else %}
+          <div><span>No rejection reasons yet</span></div>
+        {% endfor %}
+      </div>
+      <div class="stat-list">
+        {% for row in data.rejection_analytics.top_symbols %}
+          <div><span>{{ row.symbol }}</span><strong>{{ row.count }}</strong></div>
+        {% else %}
+          <div><span>No rejected symbols yet</span></div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Bot Errors</h2>
+    </div>
+    <div class="log-list">
+      {% for err in data.bot.recent_errors %}
+        <code class="danger">{{ err }}</code>
+      {% else %}
+        <code class="success">No recent errors</code>
+      {% endfor %}
+    </div>
+
+    <div class="panel-header compact">
+      <h2>Execution Feed</h2>
+    </div>
+    <div class="log-list" id="execution-feed-list">
+      {% for event in data.execution_timeline %}
+        <code class="{{ event.level }}">{{ event.timestamp }} · {{ event.summary }}</code>
+      {% else %}
+        <code>No execution timeline entries.</code>
+      {% endfor %}
+    </div>
+  </section>
+</main>
+
+<script id="initial-equity-points" type="application/json">{{ data.equity_curve.points | tojson }}</script>
+</body>
+</html>

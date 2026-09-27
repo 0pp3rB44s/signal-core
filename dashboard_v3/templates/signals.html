@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Signals{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>Signal timeline <span class="tag">{{ rows|length }} of {{ total }}</span></h2>
+  <form method="get" class="filters">
+    <label>Window
+      <select name="window" onchange="this.form.submit()">
+        {% for w in ["today", "24h", "7d", "all"] %}
+        <option value="{{ w }}"{% if window == w %} selected{% endif %}>{{ w }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Symbol
+      <select name="symbol" onchange="this.form.submit()">
+        <option value="">all</option>
+        {% for s in symbols %}<option value="{{ s }}"{% if symbol == s %} selected{% endif %}>{{ s }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Decision
+      <select name="decision" onchange="this.form.submit()">
+        <option value="">all</option>
+        {% for d in decisions %}<option value="{{ d }}"{% if decision == d %} selected{% endif %}>{{ d }}</option>{% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit">Apply</button></noscript>
+  </form>
+
+  {% if not rows %}
+    <div class="empty">
+      <strong>No signals in this window.</strong>
+      <p>{% if total == 0 %}No AdaptiveTrend decision has been recorded at all.
+         {% else %}{{ total }} decisions exist outside the selected filters.{% endif %}</p>
+    </div>
+  {% else %}
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>Timestamp</th><th>Symbol</th><th>Side</th><th>MOM</th><th>ATR</th><th>Strength</th>
+      <th>Decision</th><th>Reason</th><th>Mode</th><th>Entry</th><th>Initial stop</th>
+      <th>Notional</th><th>Risk</th><th>SHA</th>
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="s">{{ dt_utc(r.timestamp) if r.timestamp else "UNKNOWN" }}</td>
+        <td><strong>{{ r.symbol }}</strong></td>
+        <td>{{ r.side or "—" }}</td>
+        <td>{{ num(r.mom, 4) }}</td>
+        <td>{{ num(r.atr, 4) }}</td>
+        <td>{{ num(r.mom_strength, 3) }}</td>
+        <td>{{ r.decision or "UNKNOWN" }}</td>
+        <td class="s">{{ r.rejection_reason or "—" }}</td>
+        <td><span class="tag">{{ "LIVE" if r.decision == "EXECUTED" else "SHADOW" }}</span></td>
+        <td>{{ num(r.entry_candidate, 4) }}</td>
+        <td>{{ num(r.initial_stop, 4) }}</td>
+        <td>{{ num(r.notional, 2) }}</td>
+        <td>{{ pct(r.risk_pct, 2) }}</td>
+        <td class="s">{{ (r.code_sha or "—")[:7] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="s">Every row is a decision the strategy actually recorded. Nothing here is
+     reconstructed; a reconstructed row would be labelled as such.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

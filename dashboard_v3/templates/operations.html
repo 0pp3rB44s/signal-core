@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "base.html" as ui with context %}
+{% block title %}System{% endblock %}
+{% block heading %}System / deployment{% endblock %}
+{% set o = d.panels.operations %}{% set dep = o.deployment %}{% set rt = d.panels.runtime %}
+{% set ex = d.panels.exchange %}{% set rec = o.reconciliation %}
+{% block content %}
+<div class="grid g4" style="margin-bottom:14px">
+  <div class="card"><div class="body">{{ ui.metric('SHA reconcile', dep.sha.match, 'production / runner / marker / runtime', 'pos' if dep.sha.match == 'MATCH' else 'neg') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Engine PID', rt.engine.pid if rt.engine.alive else ('OFFLINE' if rt.engine.pid else 'UNKNOWN'), rt.engine.uptime_label) }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Executors', rt.engine.live_pids|length if rt.engine.live_pids else ('UNKNOWN' if not rt.engine.pid else 0), 'app.main process matches') }}</div></div>
+  <div class="card"><div class="body">{{ ui.metric('Worktree', 'CLEAN' if dep.worktree.clean else ('DIRTY' if dep.worktree.known else 'UNKNOWN'), (dep.worktree.total|string ~ ' changes') if dep.worktree.total is not none else '') }}</div></div>
+</div>
+<div class="grid g2">
+ <div class="card"><header><h3>Deployment identity</h3>{{ ui.badge(dep.sha.status) }}</header><div class="body flush"><table>
+  <tbody>{% for key,value in dep.sha.shas.items() %}<tr><td>{{ key|upper }}</td><td><code>{{ value or 'UNKNOWN' }}</code></td></tr>{% endfor %}</tbody>
+ </table></div></div>
+ <div class="card"><header><h3>Supervision / stop flags</h3><span class="spacer"></span><span class="tag">read-only probe</span></header><div class="body">
+  <p>SUPERVISOR_STATUS={{ dep.supervisor_status }}{% if dep.supervisor_pids %} · PID {{ dep.supervisor_pids|join(', ') }}{% endif %}</p>
+  {% for flag in dep.stop_flags %}<div class="signal"><span class="g {{ 't-block' if flag.set else 't-ok' }}">{{ '■' if flag.set else '●' }}</span><span class="l"><code>{{ flag.path }}</code></span><span class="d">{{ 'SET' if flag.set else 'absent' }}</span></div>{% endfor %}
+ </div></div>
+ <div class="card"><header><h3>Account</h3>{{ ui.badge(ex.status) }}</header><div class="body"><div class="grid g2">
+  {{ ui.metric('Equity', money(ex.account.equity, ex.account.margin_coin) if ex.reachable else 'UNKNOWN') }}
+  {{ ui.metric('Available', money(ex.account.available, ex.account.margin_coin) if ex.reachable else 'UNKNOWN') }}
+  {{ ui.metric('Locked', money(ex.account.locked, ex.account.margin_coin) if ex.reachable else 'UNKNOWN') }}
+  {{ ui.metric('Unrealised', money(ex.account.unrealised, ex.account.margin_coin) if ex.reachable else 'UNKNOWN') }}
+ </div></div></div>
+ <div class="card"><header><h3>Orders / reconciliation</h3>{{ ui.badge(rec.status) }}</header><div class="body"><div class="grid g2">
+  {{ ui.metric('Normal orders', ex.normal_order_count if ex.reachable else 'UNKNOWN') }}
+  {{ ui.metric('Plan / protective', ex.plan_order_count if ex.reachable else 'UNKNOWN') }}
+  {{ ui.metric('Unresolved intents', rec.unresolved_count if rec.unresolved_count is not none else 'UNKNOWN') }}
+  {{ ui.metric('Positions', ex.position_count if ex.reachable else 'UNKNOWN') }}
+ </div><p><b>Startup recovery</b><br><code>{{ rec.startup_recovery }}</code></p><p><b>Ownership audit</b><br><code>{{ rec.ownership_audit }}</code></p></div></div>
+</div>
+{% if dep.worktree.rows %}<div class="card" style="margin-top:14px"><header><h3>Worktree differences (bounded)</h3></header><div class="body"><pre>{{ dep.worktree.rows|join('\n') }}</pre></div></div>{% endif %}
+{% endblock %}

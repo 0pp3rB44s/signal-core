@@ -1,0 +1,30 @@
+# Generated runtime evidence and pids stay out of git so the strict launcher's
+# clean-tree gate keeps passing across supervisor restarts. Only the harness and
+# the human-written run verdicts are tracked. A dirty tree makes every automatic
+# restart fail closed.
+snapshots/
+manifest.json
+incidents.log
+*.log
+*.pid
+*.out
+*.jsonl
+*.json
+# Preserved evidence from invalidated runs: keep the written verdict, ignore the raw
+# artefacts it describes.
+invalidated_run_*/**
+!invalidated_run_*/INVALID.md
+
+# --- Permanent evidence archive (RC1) -------------------------------------
+# The validation campaign is preserved as ONE checksummed, compressed bundle so
+# the evidence lives in repository history rather than only on one machine.
+# 912 KB compressed from 12 MB. The expanded working copy stays ignored; the
+# bundle, its digest and the archive index are tracked.
+archive/*
+!archive/README.md
+!archive/RC1_forward_paper_validation.tar.gz
+!archive/RC1_forward_paper_validation.tar.gz.sha256
+# Raw audit capture directories: fully contained in the RC evidence bundle above,
+# so they are not tracked separately. A clean tree is a hard precondition for the
+# strict launcher's restart path.
+closeout_*/

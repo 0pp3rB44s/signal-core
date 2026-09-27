@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="nl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Terminal · login</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}">
+</head><body>
+<div style="min-height:100vh;display:grid;place-items:center;padding:20px">
+  <form method="post" class="card" style="width:min(360px,100%)">
+    <header><h3>Terminal · toegang</h3></header>
+    <div class="body">
+      <p style="margin:0 0 14px;color:var(--ink-dim);font-size:12.5px">
+        Read-only operations console. Geen order- of procesbesturing.
+      </p>
+      {% if error %}<div class="notice t-crit"><span class="nt">✕ {{ error }}</span></div>{% endif %}
+      <label style="display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px">Wachtwoord</label>
+      <input type="password" name="password" autofocus required autocomplete="current-password"
+        style="width:100%;padding:10px;background:var(--panel-2);border:1px solid var(--line);border-radius:4px;color:var(--ink);font-family:var(--mono);font-size:14px">
+      <button type="submit" style="width:100%;margin-top:12px;padding:10px;background:var(--accent);border:0;border-radius:4px;color:#04121f;font-weight:700;font-size:13px;letter-spacing:.06em;cursor:pointer">INLOGGEN</button>
+    </div>
+  </form>
+</div>
+</body></html>

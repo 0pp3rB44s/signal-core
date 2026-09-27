@@ -1,0 +1,73 @@
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Credentials, keys, and machine-local configuration
+credentials/
+**/credentials/
+secrets/
+**/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Python and tool caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+cache/
+**/cache/
+
+# Editor and operating-system artifacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime state and output
+logs/
+state/
+state_backup/
+backups/
+data_store/
+runtime/
+pids/
+*.pid
+reports/runtime_snapshots/
+*.bak*
+*.backup*
+*.tmp
+*.temp
+
+# Generated reports / audits
+reports/
+full_tree.txt
+project_inventory.txt
+*.save
+0
+archive/
+# Local datasets
+data/historical/
+data/**/*.csv
+data/**/*.tsv
+data/**/*.json
+data/**/*.jsonl
+data/**/*.parquet
+data/**/*.pkl
+data/**/*.pickle
+data/**/*.db
+data/**/*.sqlite
+datasets/
+local_data/
+.worktrees/
+state/LIVE_PILOT_AUTHORISATION

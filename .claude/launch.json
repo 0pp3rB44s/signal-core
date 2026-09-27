@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-v3-dev",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "dashboard_v3.devserver"],
+      "port": 8531
+    }
+  ]
+}
