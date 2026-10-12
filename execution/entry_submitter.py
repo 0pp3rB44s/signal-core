@@ -28,6 +28,7 @@ from clients.bitget_base_client import (
     BitgetOrderSubmissionAmbiguous,
     PrivateExchangeCallBlocked,
 )
+from execution.emergency_stop import EmergencyStop
 from execution.order_identity import (
     ENTRY_LEG_MARKET,
     OrderIdentityError,
@@ -154,6 +155,20 @@ class EntryOrderSubmitter:
         symbol = str(getattr(plan, "symbol", "")).upper()
         direction = str(getattr(plan, "direction", "")).upper()
         plan_id = str(getattr(plan, "plan_id", ""))
+
+        # Universal chokepoint for the emergency stop: nothing that reaches the
+        # exchange as a new entry may pass while the flag is engaged (fail-closed).
+        stop_reason = (getattr(self, "emergency_stop", None) or EmergencyStop()).reason()
+        if stop_reason:
+            self.log.critical(
+                "ENTRY_BLOCKED_EMERGENCY_STOP | %s | plan_id=%s | leg=%s | %s",
+                symbol, plan_id, leg, stop_reason,
+            )
+            return EntrySubmissionResult(
+                status=RESULT_REJECTED,
+                classification="EMERGENCY_STOP",
+                message=f"entry blocked: {stop_reason}",
+            )
 
         try:
             client_oid = self.client_oid_for(plan, leg=leg)

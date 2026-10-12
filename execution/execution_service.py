@@ -11,6 +11,7 @@ from app.equity import resolve_account_equity
 from clients.bitget_order_client import BitgetOrderClientMixin
 from clients.bitget_rest import BitgetRestClient
 from clients.schemas import ExecutionReport, TradePlan
+from execution.emergency_stop import EmergencyStop
 from execution.entry_submitter import (
     EntryOrderSubmitter,
     RESULT_ADOPTED,
@@ -201,6 +202,8 @@ class ExecutionService:
             else None
         )
         self.intent_store = OrderIntentStore()
+        # MVP emergency stop: file flag, fail-closed, blocks NEW entries only.
+        self.emergency_stop = EmergencyStop()
         self.entry_submitter = EntryOrderSubmitter(
             client=self.client,
             intent_store=self.intent_store,
@@ -2197,6 +2200,11 @@ class ExecutionService:
         consumes its verdict once — the same single delivery the inline version
         produced on the cycle it reconciled.
         """
+        # Emergency stop applies in EVERY mode and is evaluated first.
+        stop_reason = self.emergency_stop.reason()
+        if stop_reason:
+            return stop_reason
+
         if self.settings.execution_mode.upper() != "LIVE":
             return ""
 
