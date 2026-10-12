@@ -1,0 +1,3 @@
+{"symbol": "BTCUSDT", "direction": "LONG", "notional_usdt": 10.0, "stop_pct": 0.5, "take_profit_pct": 0.8,
+ "required_leverage": 10, "margin_mode": "isolated", "pos_mode": "hedge_mode", "max_notional_usdt": 15.0,
+ "fill_timeout_s": 20.0, "hold_seconds": 0.0, "taker_fee_rate": 0.0006}
