@@ -17,7 +17,7 @@ Niets herschreven. Drie kleine, geteste toevoegingen + twee minimale haken in be
 - `execution_status_v1` (schema: `contracts/execution_status_v1.schema.json`): `connection`, `mode`, `account`, `positions`, `orders`, `fills`, `risk`, `emergency_stop`, `heartbeat`, `producer{generated_at_*, ttl_s, read_only}`, `content_sha256`.
 - Regels: onbekend is `null`/`"UNKNOWN"`, **nooit 0**; geen exchange-snapshot ⇒ `source = UNAVAILABLE` en `risk.entries_blocked = true`; positie zonder bevestigde SL ⇒ `stop_loss_confirmed: false|null`, `risk.operator_attention_required = true`; `fills` zijn expliciet gelabeld `LOCAL_JOURNAL_NOT_EXCHANGE_TRUTH`.
 - `ExchangeReadOnlyProbe`: uitsluitend GET's (accounts, account-config, posities, open orders, TP/SL-plannen, server-time).
-- Exporter: `scripts/export_execution_status.py [--probe-exchange] [--out-dir export/mission_control]` — atomair, geen secrets. **Mission Control-frontend niet aangeraakt**; Agent B consumeert het bestand.
+- Exporter: `scripts/export_execution_status.py [--probe-exchange] [--out-dir state/mission_control_export]` — atomair, geen secrets. **Mission Control-frontend niet aangeraakt**; Agent B consumeert het bestand.
 
 ## 3. Gecontroleerde smoke-lifecycle — `execution/smoke_lifecycle.py` + `scripts/live_smoke_test.py` (nieuw)
 Eén trade: `PRECHECK → SIZING → ENTRY_PERSISTED → ENTRY_SUBMITTED → FILL_CONFIRMED → PROTECTION_CONFIRMED → EXIT_SUBMITTED → FLAT_CONFIRMED → DONE`, elke fase in een **hash-gekoppeld journal** (`state/live_smoke_journal.jsonl`) en een staatsbestand (`state/live_smoke_state.json`).

@@ -3,7 +3,7 @@
 
 Default: LOCAL ONLY (no network). `--probe-exchange` adds GET-only exchange reads
 via the bot's existing client; credentials come from the normal Settings/env and
-are never printed. Output dir default: export/mission_control/.
+are never printed. Output dir default: state/mission_control_export/ (git-ignored; keeps production checkouts clean).
 """
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from execution.status_contract import ExchangeReadOnlyProbe, JSON_SCHEMA, build_
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe-exchange", action="store_true")
-    ap.add_argument("--out-dir", default="export/mission_control")
+    # default lives under the git-ignored state/ so exporting never dirties a production checkout
+    ap.add_argument("--out-dir", default="state/mission_control_export")
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--print-schema", action="store_true")
     a = ap.parse_args(argv)
