@@ -125,6 +125,7 @@ def test_status_contract_position_stop_unconfirmed_when_plan_orders_unreadable(t
 
 
 # ===================================================== smoke lifecycle (mocked)
+# entry_effect: fill | exception_fill (ambiguous POST, adopted) | exception_nofill (ABSENT) | exception_unknown | nofill | rejected | raise_fill
 class FakeExchange:
     """Scriptable exchange that obeys the `ExchangePort` protocol; every call is recorded."""
 
@@ -134,7 +135,7 @@ class FakeExchange:
         self.cfg.update(kw.pop("cfg", {}))
         self.price = kw.pop("price", 100.0)
         self.contract_status = kw.pop("contract_status", "normal")
-        self.entry_effect = kw.pop("entry_effect", "fill")        # fill | exception_fill | exception_nofill | exception_unknown | nofill
+        self.entry_effect = kw.pop("entry_effect", "fill")
         self.protect_ok = kw.pop("protect_ok", True)
         self.close_works = kw.pop("close_works", True)
         self.read_fails = kw.pop("read_fails", False)
@@ -181,13 +182,34 @@ class FakeExchange:
         return (n, None) if n * ref_price >= 5.0 else (n, "BELOW_MIN_NOTIONAL")
 
     # writes
-    def place_market_entry(self, symbol, direction, size, client_oid, ref_price):
-        self._rec("place_market_entry", client_oid, size)
-        if self.entry_effect in {"fill", "exception_fill"}:
-            self.position = {"symbol": symbol, "holdSide": "long" if direction == "LONG" else "short", "total": str(size), "openPriceAvg": str(ref_price)}
-        if self.entry_effect.startswith("exception"):
-            raise TimeoutError("response lost")
-        return {"code": "00000", "data": {"orderId": "ord-1", "clientOid": client_oid}}
+    def make_plan(self, symbol, direction, tag):
+        self._rec("make_plan")
+        from types import SimpleNamespace
+        return SimpleNamespace(symbol=symbol, direction=direction)
+
+    def entry_client_oid(self, plan):
+        return "fakeoid"
+
+    def submit_entry(self, plan, size, notional, ref_price):
+        """Mimics the production EntryOrderSubmitter result classes."""
+        self._rec("submit_entry", "fakeoid", size)
+        eff = self.entry_effect
+        res = lambda st, cls="": {"status": st, "client_oid": "fakeoid", "order_id": "ord-1" if st in {"ACCEPTED", "ADOPTED"} else "", "classification": cls, "message": ""}  # noqa: E731
+        if eff in {"fill", "exception_fill", "raise_fill"}:
+            self.position = {"symbol": plan.symbol, "holdSide": "long" if plan.direction == "LONG" else "short", "total": str(size), "openPriceAvg": str(ref_price)}
+        if eff == "raise_fill":
+            raise TimeoutError("submitter crashed after the POST")
+        if eff == "fill":
+            return res("ACCEPTED")
+        if eff == "exception_fill":
+            return res("ADOPTED", "FOUND")
+        if eff == "exception_nofill":
+            return res("ABANDONED", "ABSENT")
+        if eff == "exception_unknown":
+            return res("BLOCKED_UNKNOWN", "UNKNOWN")
+        if eff == "rejected":
+            return res("REJECTED")
+        return res("ACCEPTED")  # nofill: acknowledged but no position
 
     def lookup_order(self, symbol, client_oid):
         self._rec("lookup_order", client_oid)
@@ -255,7 +277,7 @@ def test_preflight_dry_run_sends_no_order_and_journals():
     ex = FakeExchange()
     res = make_run(ex).run(execute=False)
     assert res["outcome"] == "DRY_RUN_COMPLETE" and res["journal_chain_valid"]
-    assert n(ex, "place_market_entry") == 0 and n(ex, "place_protection") == 0 and n(ex, "close_full") == 0
+    assert n(ex, "submit_entry") == 0 and n(ex, "place_protection") == 0 and n(ex, "close_full") == 0
     assert phases(res) == ["PRECHECK", "SIZING", "DRY_RUN_COMPLETE"]
 
 
@@ -266,10 +288,10 @@ def test_happy_path_all_ten_steps():
     assert res["outcome"] == "DONE" and res["journal_chain_valid"]
     assert phases(res) == ["PRECHECK", "SIZING", "ENTRY_PERSISTED", "ENTRY_SUBMITTED", "FILL_CONFIRMED",
                            "PROTECTION_ATTEMPT", "PROTECTION_CONFIRMED", "EXIT_SUBMITTED", "FLAT_CONFIRMED", "DONE"]
-    assert n(ex, "place_market_entry") == 1 and n(ex, "place_protection") == 1 and n(ex, "close_full") == 1
+    assert n(ex, "submit_entry") == 1 and n(ex, "place_protection") == 1 and n(ex, "close_full") == 1
     assert ex.position is None and ex.plans == []
     # Size was normalised DOWN and never inflated to hit the minimum.
-    assert ex.calls[[c[0] for c in ex.calls].index("place_market_entry")][2] == 0.1
+    assert ex.calls[[c[0] for c in ex.calls].index("submit_entry")][2] == 0.1
 
 
 def test_ack_is_not_a_fill_no_position_means_no_protection_and_no_phantom_exit():
@@ -283,21 +305,21 @@ def test_ack_is_not_a_fill_no_position_means_no_protection_and_no_phantom_exit()
 def test_ambiguous_submit_is_reconciled_never_resent_and_position_is_protected_then_closed():
     ex = FakeExchange(entry_effect="exception_fill")
     res = make_run(ex).run(execute=True, authorised=True)
-    assert n(ex, "place_market_entry") == 1  # exactly one POST
+    assert n(ex, "submit_entry") == 1  # exactly one POST
     assert res["outcome"] == "DONE"
-    assert "ENTRY_SUBMIT_EXCEPTION" in phases(res) and "FILL_CONFIRMED" in phases(res)
+    assert "ENTRY_SUBMITTED" in phases(res) and "FILL_CONFIRMED" in phases(res)
 
 
 def test_ambiguous_submit_definitively_absent_aborts_cleanly():
     ex = FakeExchange(entry_effect="exception_nofill")
     res = make_run(ex).run(execute=True, authorised=True)
-    assert res["outcome"] == "ABORTED" and n(ex, "place_market_entry") == 1 and n(ex, "close_full") == 0
+    assert res["outcome"] == "ABORTED" and n(ex, "submit_entry") == 1 and n(ex, "close_full") == 0
 
 
 def test_ambiguous_submit_unknown_blocks_and_engages_emergency_stop():
     ex = FakeExchange(entry_effect="exception_unknown")
     res = make_run(ex).run(execute=True, authorised=True)
-    assert res["outcome"] == "BLOCKED_UNKNOWN" and n(ex, "place_market_entry") == 1
+    assert res["outcome"] == "BLOCKED_UNKNOWN" and n(ex, "submit_entry") == 1
     assert EmergencyStop("state/EMERGENCY_STOP.json").is_active()
 
 
@@ -335,27 +357,27 @@ def test_precheck_failures_abort_before_any_order(kw, needle):
     ex = FakeExchange(**kw)
     res = make_run(ex).run(execute=True, authorised=True)
     assert res["outcome"] == "ABORTED" and needle in res["reason"]
-    assert n(ex, "place_market_entry") == 0
+    assert n(ex, "submit_entry") == 0
 
 
 def test_account_not_flat_aborts():
     ex = FakeExchange()
     ex.position = {"symbol": "ETHUSDT", "holdSide": "long", "total": "1"}
     res = make_run(ex).run(execute=True, authorised=True)
-    assert res["outcome"] == "ABORTED" and "not flat" in res["reason"] and n(ex, "place_market_entry") == 0
+    assert res["outcome"] == "ABORTED" and "not flat" in res["reason"] and n(ex, "submit_entry") == 0
 
 
 def test_emergency_stop_blocks_smoke_run():
     EmergencyStop("state/EMERGENCY_STOP.json").engage("halt", by="t")
     ex = FakeExchange()
     res = make_run(ex).run(execute=True, authorised=True)
-    assert res["outcome"] == "ABORTED" and "EMERGENCY_STOP" in res["reason"] and n(ex, "place_market_entry") == 0
+    assert res["outcome"] == "ABORTED" and "EMERGENCY_STOP" in res["reason"] and n(ex, "submit_entry") == 0
 
 
 def test_execute_without_authorisation_places_nothing():
     ex = FakeExchange()
     res = make_run(ex).run(execute=True, authorised=False)
-    assert res["outcome"] == "ABORTED" and n(ex, "place_market_entry") == 0
+    assert res["outcome"] == "ABORTED" and n(ex, "submit_entry") == 0
 
 
 def test_restart_reconciliation_after_crash_between_submit_and_protection_never_resubmits():
@@ -372,7 +394,7 @@ def test_restart_reconciliation_after_crash_between_submit_and_protection_never_
     res = SmokeRun.resume(ex, state_path="state/smoke_state.json", journal_path="state/smoke_journal.jsonl",
                           emergency=EmergencyStop("state/EMERGENCY_STOP.json"), sleep=lambda s: None, poll_s=0.1)
     assert res["outcome"] == "DONE"
-    assert n(ex, "place_market_entry") == 0 and n(ex, "place_protection") == 1 and n(ex, "close_full") == 1
+    assert n(ex, "submit_entry") == 0 and n(ex, "place_protection") == 1 and n(ex, "close_full") == 1
     assert Journal.verify(Path("state/smoke_journal.jsonl"))
 
 
@@ -380,7 +402,7 @@ def test_resume_with_no_persisted_entry_is_a_noop():
     ex = FakeExchange()
     make_run(ex).run(execute=False)
     res = SmokeRun.resume(ex, state_path="state/smoke_state.json", journal_path="state/smoke_journal.jsonl", sleep=lambda s: None)
-    assert res["outcome"] == "DRY_RUN_COMPLETE" and n(ex, "place_market_entry") == 0 and n(ex, "close_full") == 0
+    assert res["outcome"] == "DRY_RUN_COMPLETE" and n(ex, "submit_entry") == 0 and n(ex, "close_full") == 0
 
 
 def test_journal_chain_detects_tampering():
@@ -406,3 +428,102 @@ def test_execution_service_entry_guard_returns_emergency_reason_in_every_mode():
     assert svc._entry_guard_reason() == ""            # DRY_RUN, not engaged
     svc.emergency_stop.engage("owner halt", by="t")
     assert svc._entry_guard_reason().startswith("EMERGENCY_STOP")  # applies before the LIVE-only checks
+
+
+def test_submitter_exception_after_post_is_reconciled_not_resent():
+    ex = FakeExchange(entry_effect="raise_fill")
+    res = make_run(ex).run(execute=True, authorised=True)
+    assert n(ex, "submit_entry") == 1 and res["outcome"] == "DONE"
+    assert "ENTRY_SUBMIT_EXCEPTION" in phases(res)
+
+
+def test_exchange_reject_aborts_without_position_or_exit():
+    ex = FakeExchange(entry_effect="rejected")
+    res = make_run(ex).run(execute=True, authorised=True)
+    assert res["outcome"] == "ABORTED" and n(ex, "close_full") == 0 and n(ex, "place_protection") == 0
+
+
+# ---- the REAL EntryOrderSubmitter behind BitgetPort (fake exchange client, no network) -------------------
+class FakeBitgetClient:
+    def __init__(self, post_effect=None, lookup=None):
+        self.posts: list[dict] = []
+        self.intent_state_at_post: list = []
+        self.post_effect, self.lookup = post_effect, lookup or {"status": "ABSENT", "order": None, "source": "t", "errors": []}
+
+    def place_futures_market_order(self, **kw):
+        store = OrderIntentStore("state/order_intents.json")
+        row = store.get(kw["client_oid"])
+        self.intent_state_at_post.append(row["state"] if row else "MISSING")
+        self.posts.append(kw)
+        if isinstance(self.post_effect, Exception):
+            raise self.post_effect
+        return {"code": "00000", "data": {"orderId": "srv-1", "clientOid": kw["client_oid"]}}
+
+    def find_order_by_client_oid(self, symbol, client_oid, product_type=None):
+        return self.lookup
+
+    def get_all_positions(self):
+        return {"data": []}
+
+    @staticmethod
+    def extract_order_id(payload):
+        d = (payload or {}).get("data") or {}
+        return str(d.get("orderId") or "")
+
+    @staticmethod
+    def extract_fill_metrics(payload):
+        return {"order_id": "", "avg_price": 0.0, "filled_qty": 0.0, "state": ""}
+
+
+def _real_port(client):
+    from execution.smoke_lifecycle import BitgetPort
+    return BitgetPort(client, bot_identity="bgai", intent_path="state/order_intents.json")
+
+
+def test_smoke_entry_uses_real_submitter_intent_persisted_before_single_post():
+    c = FakeBitgetClient()
+    port = _real_port(c)
+    plan = port.make_plan("BTCUSDT", "LONG", "t1")
+    res = port.submit_entry(plan, 0.0001, 8.2, 82_000.0)
+    assert res["status"] in {"ACCEPTED", "ADOPTED"} and len(c.posts) == 1
+    assert c.intent_state_at_post == ["PREPARED"] or c.intent_state_at_post[0] != "MISSING"  # intent existed before the POST
+    assert c.posts[0]["client_oid"] == port.entry_client_oid(plan) == res["client_oid"]
+
+
+def test_smoke_entry_ambiguous_post_is_reconciled_by_client_oid_never_resent():
+    from clients.bitget_base_client import BitgetOrderSubmissionAmbiguous
+
+    found = {"status": "FOUND", "order": {"orderId": "srv-9", "clientOid": "x", "state": "filled", "priceAvg": "82000", "baseVolume": "0.0001"},
+             "source": "t", "errors": []}
+    c = FakeBitgetClient(post_effect=BitgetOrderSubmissionAmbiguous("timeout", client_oid="x"), lookup=found)
+    port = _real_port(c)
+    res = port.submit_entry(port.make_plan("BTCUSDT", "LONG", "t2"), 0.0001, 8.2, 82_000.0)
+    assert len(c.posts) == 1                              # exactly one POST despite the ambiguity
+    assert res["status"] == "ADOPTED"                     # reconciled to the live order
+
+
+def test_smoke_entry_unknown_after_ambiguous_post_blocks():
+    from clients.bitget_base_client import BitgetOrderSubmissionAmbiguous
+
+    unknown = {"status": "UNKNOWN", "order": None, "source": "t", "errors": ["timeout"]}
+    c = FakeBitgetClient(post_effect=BitgetOrderSubmissionAmbiguous("timeout", client_oid="x"), lookup=unknown)
+    port = _real_port(c)
+    res = port.submit_entry(port.make_plan("BTCUSDT", "LONG", "t3"), 0.0001, 8.2, 82_000.0)
+    assert len(c.posts) == 1 and res["status"] == "BLOCKED_UNKNOWN"
+
+
+def test_smoke_entry_blocked_by_emergency_stop_through_real_submitter():
+    EmergencyStop().engage("halt", by="t")
+    c = FakeBitgetClient()
+    port = _real_port(c)
+    res = port.submit_entry(port.make_plan("BTCUSDT", "LONG", "t4"), 0.0001, 8.2, 82_000.0)
+    assert res["status"] == "REJECTED" and res["classification"] == "EMERGENCY_STOP" and c.posts == []
+
+
+def test_smoke_module_entry_call_is_wrapped_in_submit_entry():
+    """Mirrors tests/test_entry_path_audit.py's contract for the one allow-listed call site."""
+    src = (Path(__file__).resolve().parents[1] / "execution" / "smoke_lifecycle.py").read_text()
+    assert src.count(".place_futures_market_order(") == 1
+    call_site = src.split(".place_futures_market_order(", 1)[0]
+    assert "def _place(client_oid)" in call_site.rsplit("def submit_entry", 1)[1]   # only inside submit_entry's _place helper
+    assert "self._submitter().submit_entry(" in src

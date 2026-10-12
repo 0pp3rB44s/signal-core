@@ -10,8 +10,11 @@ every step confirmed against exchange truth:
 Invariants:
 * An API acknowledgement is never a fill; a position exists only after the
   position endpoint shows it. A position is never "closed" until it reads flat.
-* The order intent (clientOid) is persisted BEFORE submit; an ambiguous submit is
-  never re-sent - it is reconciled (lookup + positions) or the run BLOCKS.
+* The entry goes through the production `EntryOrderSubmitter.submit_entry` (the
+  project's single protected entry path, tests/test_entry_path_audit.py): the
+  order intent (clientOid) is persisted in `state/order_intents.json` BEFORE the
+  POST, so the bot's own startup recovery also reconciles a crashed smoke run.
+  An ambiguous submit is never re-sent - it is reconciled or the run BLOCKS.
 * Stop-loss not confirmed -> fail-safe full close; close not confirmed ->
   emergency stop engaged and OPERATOR ATTENTION escalated.
 * Exchange state unknown -> no order.
@@ -78,7 +81,9 @@ class ExchangePort(Protocol):
     def last_price(self, symbol: str) -> float: ...
     def contract(self, symbol: str) -> dict[str, Any]: ...       # status, min_trade_usdt, min_trade_num
     def normalize_size(self, symbol: str, size: float, ref_price: float) -> tuple[float, str | None]: ...
-    def place_market_entry(self, symbol: str, direction: str, size: float, client_oid: str, ref_price: float) -> dict[str, Any]: ...
+    def make_plan(self, symbol: str, direction: str, tag: str) -> Any: ...                        # TradePlan-compatible identity object
+    def entry_client_oid(self, plan: Any) -> str: ...
+    def submit_entry(self, plan: Any, size: float, notional: float, ref_price: float) -> dict[str, Any]: ...  # via EntryOrderSubmitter
     def lookup_order(self, symbol: str, client_oid: str) -> dict[str, Any]: ...   # {"status": FOUND|ABSENT|UNKNOWN, "order": ...}
     def place_protection(self, symbol: str, direction: str, size: float, stop: float, tps: list[float]) -> dict[str, Any]: ...
     def close_full(self, symbol: str, direction: str, size: float, reason: str) -> dict[str, Any]: ...
@@ -87,8 +92,47 @@ class ExchangePort(Protocol):
 class BitgetPort:
     """Adapter over the production `BitgetRestClient`. GET + the order/close calls the bot already uses."""
 
-    def __init__(self, client: Any, product_type: str = "USDT-FUTURES") -> None:
+    def __init__(self, client: Any, product_type: str = "USDT-FUTURES", *, bot_identity: str = "bgai",
+                 intent_path: str = "state/order_intents.json") -> None:
         self.c, self.pt = client, product_type
+        self.bot_identity, self.intent_path = bot_identity, intent_path
+        self._sub: Any = None
+
+    def _submitter(self) -> Any:
+        if self._sub is None:
+            import logging
+
+            from execution.entry_submitter import EntryOrderSubmitter
+            from execution.order_intent_store import OrderIntentStore
+
+            self._sub = EntryOrderSubmitter(client=self.c, intent_store=OrderIntentStore(self.intent_path),
+                                            session_id=f"smoke-{uuid.uuid4().hex[:10]}", execution_mode="LIVE",
+                                            bot_identity=self.bot_identity, log=logging.getLogger("smoke_lifecycle"))
+        return self._sub
+
+    def make_plan(self, symbol, direction, tag):
+        from candidate_lifecycle import deterministic_candidate_id, deterministic_plan_id
+        from clients.schemas import TradePlan
+
+        candle_ms = int(time.time() * 1000)
+        cid = deterministic_candidate_id("smoke_lifecycle", symbol, direction, candle_ms)
+        return TradePlan(candidate_id=cid, candidate_candle_open_timestamp_ms=candle_ms, plan_id=deterministic_plan_id(cid),
+                         symbol=symbol, strategy="smoke_lifecycle", direction=direction, verdict="EXECUTABLE", score=0.0,
+                         entry_prices=[0.0], stop_loss=0.0, take_profits=[], risk_reward_ratio=0.0, account_risk_pct=0.0,
+                         leverage=0.0, position_notional_usdt=0.0, notes=[f"smoke:{tag}"], reasons=[], geometry_entry=0.0)
+
+    def entry_client_oid(self, plan):
+        return self._submitter().client_oid_for(plan)
+
+    def submit_entry(self, plan, size, notional, ref_price):
+        def _place(client_oid):  # fed by the submitter, which persisted the intent first
+            return self.c.place_futures_market_order(symbol=plan.symbol, direction=plan.direction, size=size, client_oid=client_oid,
+                                                     margin_mode="isolated", reference_price=ref_price)
+
+        r = self._submitter().submit_entry(plan=plan, size=size, side="buy" if plan.direction == "LONG" else "sell",
+                                           order_type="market", leg="market", place=_place, notional_usdt=notional)
+        return {"status": r.status, "client_oid": r.client_oid, "order_id": r.order_id, "classification": r.classification,
+                "message": r.message}
 
     def account(self, symbol):
         cfg = (self.c._request("GET", "/api/v2/mix/account/account",
@@ -121,10 +165,6 @@ class BitgetPort:
     def normalize_size(self, symbol, size, ref_price):
         n, reason = self.c.validate_entry_size(symbol, size, reference_price=ref_price)
         return float(n), reason
-
-    def place_market_entry(self, symbol, direction, size, client_oid, ref_price):
-        return self.c.place_futures_market_order(symbol=symbol, direction=direction, size=size, client_oid=client_oid,
-                                                 margin_mode="isolated", reference_price=ref_price)
 
     def lookup_order(self, symbol, client_oid):
         return self.c.find_order_by_client_oid(symbol, client_oid)
@@ -314,15 +354,25 @@ class SmokeRun:
             self._phase("ABORTED", reason=str(exc))
             return self._result("ABORTED", reason=str(exc))
 
-        # ---- ENTRY: persist intent first, then submit exactly once
-        client_oid = f"smoke{self.run_id}"
+        # ---- ENTRY: through the production EntryOrderSubmitter (intent persisted first, one POST, classified outcome)
+        plan = self.port.make_plan(s.symbol, s.direction, self.run_id)
+        client_oid = self.port.entry_client_oid(plan)
         self._save(client_oid=client_oid, size=size, stop=stop, take_profit=tp)
-        self._phase("ENTRY_PERSISTED", client_oid=client_oid, size=size)
+        self._phase("ENTRY_PERSISTED", client_oid=client_oid, size=size, path="EntryOrderSubmitter.submit_entry")
         try:
-            resp = self.port.place_market_entry(s.symbol, s.direction, size, client_oid, pre["price"])
-            self._phase("ENTRY_SUBMITTED", client_oid=client_oid, ack=_ack(resp))
-        except Exception as exc:  # ambiguous: NEVER re-send
+            res = self.port.submit_entry(plan, size, size * pre["price"], pre["price"])
+        except Exception as exc:  # ambiguous: NEVER re-send; reconcile below
             self._phase("ENTRY_SUBMIT_EXCEPTION", client_oid=client_oid, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+            return self._after_entry()
+        status = str(res.get("status", "")).upper()
+        self._phase("ENTRY_SUBMITTED", client_oid=client_oid, status=status, classification=res.get("classification"),
+                    order_id=res.get("order_id"), note="ACK_IS_NOT_A_FILL")
+        if status in {"REJECTED", "NOT_SENT"} or (status == "ABANDONED" and str(res.get("classification", "")).upper() == "ABSENT"):
+            reason = f"entry not placed: {status}/{res.get('classification')}: {str(res.get('message'))[:120]}"
+            self._phase("ABORTED", reason=reason)
+            return self._result("ABORTED", reason=reason)
+        if status == "BLOCKED_UNKNOWN":
+            return self._block_unknown(f"entry outcome UNKNOWN per submitter ({res.get('classification')})")
         return self._after_entry()
 
     def _after_entry(self) -> dict[str, Any]:

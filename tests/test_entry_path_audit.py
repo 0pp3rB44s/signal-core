@@ -51,6 +51,7 @@ def test_no_production_code_places_an_entry_order_outside_the_protected_path():
         REPO / "clients" / "bitget_rest.py",           # thin alias
         REPO / "execution" / "maker_entry.py",         # _place(), fed by the submitter
         REPO / "execution" / "execution_service.py",   # wrapped in submit_entry()
+        REPO / "execution" / "smoke_lifecycle.py",     # BitgetPort._place, wrapped in submit_entry() (see test_tradingbot_mvp)
     }
     pattern = re.compile(r"\.place_futures_(market|limit)_order\s*\(")
 
